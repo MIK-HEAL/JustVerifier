@@ -9,6 +9,7 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20the%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/85dKfuGM9)
 
 > ### 🔓 Science is not a privilege.
+>
 > It shouldn't require a subscription tier, a supported billing region, or one company's approval to put AI to work on real research. Peer review doesn't check your credit card. A hypothesis doesn't care what currency your lab is funded in. Knowledge has always advanced by being shared, checked, and rebuilt in the open — the tools that now sit at the center of that process are the last thing that should be locked behind a paywall. **That belief is the entire reason this project exists**, and it's non-negotiable as the project grows.
 
 **📣 We're building this in public.** Follow the architecture take shape and join the debates as they happen — 🐦 **[@aipoch_ai on X](https://x.com/aipoch_ai)** and 💬 **[our Discord](https://discord.gg/85dKfuGM9)** are where it's actually discussed, before it ever lands in a doc like this one.
@@ -19,6 +20,7 @@
 
 ## Table of Contents
 
+- [Quick Start](#quick-start)
 - [Why](#why)
 - [Open Science vs. Claude Science](#open-science-vs-claude-science)
 - [Vision](#vision)
@@ -35,6 +37,42 @@
 - [Star History](#star-history)
 
 ---
+
+## Quick Start
+
+Two ways to get the app running — pick whichever matches how you work.
+
+### Option 1 — Hand it to an AI agent
+
+If you use a coding agent (Claude Code, Codex, WorkBuddy, Cursor, …), one sentence is enough — the agent will clone, install, and launch it on its own:
+
+> Clone https://github.com/aipoch/open-science.git, install its dependencies, and run it in development mode.
+
+That's genuinely all the context an agent needs today: it's a standard Electron + npm project, `npm install` handles every setup step (Prisma client generation, native Electron dependencies) automatically via `postinstall`, and `npm run dev` opens the desktop window.
+
+### Option 2 — Manual setup
+
+Prerequisites: [Node.js](https://nodejs.org/) (LTS or newer) with npm, and Git. Optional: `python3` on your `PATH` if you want the built-in notebook kernel to execute code.
+
+```bash
+# 1. Get the code
+git clone https://github.com/aipoch/open-science.git
+cd open-science
+
+# 2. Install dependencies
+#    (postinstall auto-runs `prisma generate` + `electron-builder install-app-deps` — no extra steps)
+npm install
+
+# 3. Run the app in development mode
+npm run dev
+```
+
+`npm run dev` builds the Electron main/preload bundles, starts the renderer dev server on `localhost:5173`, and opens the **Open Science** desktop window automatically. Development data is isolated under `~/.open-science-project`, so it never touches a production install's data.
+
+> **Tip:** on a cold first launch the window occasionally fails to appear even though the process is running — just `Ctrl+C` and run `npm run dev` again.
+
+To run agent sessions inside the app, the bundled Claude ACP agent picks up your existing Claude Code login (or `ANTHROPIC_API_KEY`) from your environment. To package an installable app instead of running from source, see [Getting Started](#getting-started).
+
 
 ## Why
 
@@ -70,19 +108,19 @@ We keep referencing Claude Science throughout this document because it deserves 
 
 So let's be direct about where each project actually stands, instead of hand-waving it:
 
-| | Claude Science | Open Science |
-|---|---|---|
-| **Source** | Closed source | Open source, Apache-2.0 |
-| **Model** | Claude models only | Model-agnostic — Claude, GPT, Gemini, DeepSeek, Qwen, or a local open-weight model |
-| **Deployment** | Anthropic-hosted cloud | Self-hosted by default; your infrastructure, your data doesn't have to leave it |
-| **Pricing** | Seat-based subscription (Claude Pro/Max/Team/Enterprise) | Free and open; you pay only for the compute/model calls you choose to make |
-| **Availability** | Gated by Anthropic billing region and plan tier | Runs anywhere you can run the software |
-| **Skills** | ~60 curated skills, Anthropic-maintained | Open skills commons — community-contributed, versioned in git, forkable (seeded by [aipoch/medical-research-skills](https://github.com/aipoch/medical-research-skills)) |
-| **Domain scope today** | Life sciences (genomics, proteomics, structural biology, cheminformatics) | Life sciences, plus social science and economics from day one (planned) |
-| **Compute** | SSH/HPC access plus Modal for on-demand GPUs | Pluggable compute fabric — any HPC scheduler, any cloud GPU provider (planned) |
-| **Reviewer / verification agent** | Yes, shipping today | Yes, planned as an open, inspectable layer ([Phase 4](#roadmap)) |
-| **Customization** | Configure agents inside Anthropic's product surface | Every layer — gateway, skill runtime, compute broker, reviewer — is inspectable and replaceable |
-| **Maturity** | A shipping, polished product, in use today | Pre-alpha: architecture and vision stage (see [Roadmap](#roadmap)) |
+|                                   | Claude Science                                                            | Open Science                                                                                                                                                            |
+| --------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Source**                        | Closed source                                                             | Open source, Apache-2.0                                                                                                                                                 |
+| **Model**                         | Claude models only                                                        | Model-agnostic — Claude, GPT, Gemini, DeepSeek, Qwen, or a local open-weight model                                                                                      |
+| **Deployment**                    | Anthropic-hosted cloud                                                    | Self-hosted by default; your infrastructure, your data doesn't have to leave it                                                                                         |
+| **Pricing**                       | Seat-based subscription (Claude Pro/Max/Team/Enterprise)                  | Free and open; you pay only for the compute/model calls you choose to make                                                                                              |
+| **Availability**                  | Gated by Anthropic billing region and plan tier                           | Runs anywhere you can run the software                                                                                                                                  |
+| **Skills**                        | ~60 curated skills, Anthropic-maintained                                  | Open skills commons — community-contributed, versioned in git, forkable (seeded by [aipoch/medical-research-skills](https://github.com/aipoch/medical-research-skills)) |
+| **Domain scope today**            | Life sciences (genomics, proteomics, structural biology, cheminformatics) | Life sciences, plus social science and economics from day one (planned)                                                                                                 |
+| **Compute**                       | SSH/HPC access plus Modal for on-demand GPUs                              | Pluggable compute fabric — any HPC scheduler, any cloud GPU provider (planned)                                                                                          |
+| **Reviewer / verification agent** | Yes, shipping today                                                       | Yes, planned as an open, inspectable layer ([Phase 4](#roadmap))                                                                                                        |
+| **Customization**                 | Configure agents inside Anthropic's product surface                       | Every layer — gateway, skill runtime, compute broker, reviewer — is inspectable and replaceable                                                                         |
+| **Maturity**                      | A shipping, polished product, in use today                                | Pre-alpha: architecture and vision stage (see [Roadmap](#roadmap))                                                                                                      |
 
 The Maturity row matters most, so we won't bury it: if you need a working AI research assistant today, Claude Science is the more capable choice. Open Science's advantage isn't feature parity yet — it's the structural ceiling underneath.
 
@@ -92,7 +130,7 @@ But look again at the Source and Availability rows, because those are the ones w
 
 Our long-run bet: **the AI research assistant becomes infrastructure, not a product.** In the world we're building toward —
 
-- A PhD student with a laptop and an OpenRouter key, a national lab with an air-gapped GPU cluster, and a biotech with an enterprise model contract are all running the *same* open orchestration core — they've just pointed it at different models and compute.
+- A PhD student with a laptop and an OpenRouter key, a national lab with an air-gapped GPU cluster, and a biotech with an enterprise model contract are all running the _same_ open orchestration core — they've just pointed it at different models and compute.
 - Domain expertise compounds in public. A protocol-design skill written by a genomics lab in Shanghai and a statistics-review skill written by a methodologist in Boston both live in the open skills commons, get used by thousands of other labs, and get better through real usage instead of being reinvented behind each institution's firewall.
 - Reproducibility stops being a virtue people feel guilty about skipping. Every figure, every number in a manuscript, carries its lineage — the exact code, environment, and data version that produced it — because the tooling makes that the default output, not extra work.
 - No researcher is locked out of AI-augmented science by the country they live in, the model vendor their institution can legally contract with, or their ability to pay a per-seat SaaS fee.
@@ -181,14 +219,14 @@ flowchart TB
     style Core fill:#eef5ff,stroke:#3366cc,stroke-width:2px
 ```
 
-- **Agent Harness / Orchestration Core.** A coordinating agent that plans multi-step research tasks and executes tool calls, with typed activity visualization and a permission gate for higher-risk actions. *Shipping today* via an Agent Client Protocol (ACP) runtime. Specialist sub-agents (genomics, proteomics, structural biology, cheminformatics, and — unlike most current tools in this space — non-life-science domains like social science and economics) and a dedicated reviewer agent are planned.
-- **Model Layer.** A unified gateway in front of any LLM provider or self-hosted model, with per-agent routing — a cheap fast model for grunt-work sub-tasks, a frontier model for synthesis and writing, a local model for anything that can't leave the building. *Planned* — today's runtime is wired to a single agent backend.
-- **Skills Commons.** An open, versioned registry of agent skills — protocol design, statistical review, literature synthesis, figure generation, and domain-specific analysis pipelines — designed to interoperate with [aipoch/medical-research-skills](https://github.com/aipoch/medical-research-skills) as its first and largest skill pack. *Planned.*
-- **Data & Knowledge Layer.** Connectors to the open scientific commons — PubMed/PMC, UniProt, PDB, Ensembl, Reactome, ClinVar, ChEMBL, GEO, arXiv/bioRxiv/medRxiv, OpenAlex — plus a connector framework for institutional and proprietary datasets that never leave the researcher's access boundary. *Planned.*
-- **Compute Fabric.** A broker that scales a job from a laptop kernel, to an institutional Slurm/HPC cluster, to on-demand cloud GPUs, with job submission, monitoring, and cost guardrails handled automatically instead of hand-written SSH scripts. *Planned* — all execution today runs locally.
-- **Scientific Artifacts & Notebooks.** *Shipping today*: a persistent Python notebook kernel with durable run history, artifact file storage organized by project/session/message/run, and in-app rendering for CSV, FASTA, HTML, image, JSON, Markdown, and text files. Native structure/genome/chemical viewers and reproducible manuscript/figure generation with inline citations are planned.
-- **Verification & Provenance Layer.** A lineage graph connecting every claim back to the figure, code, and dataset version that generated it, with automated checks for citation accuracy, unit consistency, and statistical-method appropriateness. *Planned.*
-- **Interfaces.** *Shipping today*: a local Electron desktop app for individual researchers and small labs, with project/session management and a home page. A CLI/SDK for scripting and embedding, and an optional self-hosted web app for teams, are planned — both designed to eventually talk to the same orchestration core.
+- **Agent Harness / Orchestration Core.** A coordinating agent that plans multi-step research tasks and executes tool calls, with typed activity visualization and a permission gate for higher-risk actions. _Shipping today_ via an Agent Client Protocol (ACP) runtime. Specialist sub-agents (genomics, proteomics, structural biology, cheminformatics, and — unlike most current tools in this space — non-life-science domains like social science and economics) and a dedicated reviewer agent are planned.
+- **Model Layer.** A unified gateway in front of any LLM provider or self-hosted model, with per-agent routing — a cheap fast model for grunt-work sub-tasks, a frontier model for synthesis and writing, a local model for anything that can't leave the building. _Planned_ — today's runtime is wired to a single agent backend.
+- **Skills Commons.** An open, versioned registry of agent skills — protocol design, statistical review, literature synthesis, figure generation, and domain-specific analysis pipelines — designed to interoperate with [aipoch/medical-research-skills](https://github.com/aipoch/medical-research-skills) as its first and largest skill pack. _Planned._
+- **Data & Knowledge Layer.** Connectors to the open scientific commons — PubMed/PMC, UniProt, PDB, Ensembl, Reactome, ClinVar, ChEMBL, GEO, arXiv/bioRxiv/medRxiv, OpenAlex — plus a connector framework for institutional and proprietary datasets that never leave the researcher's access boundary. _Planned._
+- **Compute Fabric.** A broker that scales a job from a laptop kernel, to an institutional Slurm/HPC cluster, to on-demand cloud GPUs, with job submission, monitoring, and cost guardrails handled automatically instead of hand-written SSH scripts. _Planned_ — all execution today runs locally.
+- **Scientific Artifacts & Notebooks.** _Shipping today_: a persistent Python notebook kernel with durable run history, artifact file storage organized by project/session/message/run, and in-app rendering for CSV, FASTA, HTML, image, JSON, Markdown, and text files. Native structure/genome/chemical viewers and reproducible manuscript/figure generation with inline citations are planned.
+- **Verification & Provenance Layer.** A lineage graph connecting every claim back to the figure, code, and dataset version that generated it, with automated checks for citation accuracy, unit consistency, and statistical-method appropriateness. _Planned._
+- **Interfaces.** _Shipping today_: a local Electron desktop app for individual researchers and small labs, with project/session management and a home page. A CLI/SDK for scripting and embedding, and an optional self-hosted web app for teams, are planned — both designed to eventually talk to the same orchestration core.
 
 ## Current Status
 
@@ -250,7 +288,7 @@ Packaged output lands under `dist/`. On macOS, see the Gatekeeper note below bef
 
 ## Building From Source (macOS Gatekeeper Note)
 
-Open Science isn't distributed with an Apple Developer ID certificate, so a self-built (or community-distributed) `.app` isn't notarized by Apple. The build pipeline still applies a **deep ad-hoc signature** at pack time (see `build/adhoc-sign.cjs`), which prevents the unrecoverable *"Open Science is damaged and can't be opened"* Gatekeeper error — but a downloaded/quarantined copy will still show the *"Open Science can't be opened because the developer cannot be verified"* prompt on first launch.
+Open Science isn't distributed with an Apple Developer ID certificate, so a self-built (or community-distributed) `.app` isn't notarized by Apple. The build pipeline still applies a **deep ad-hoc signature** at pack time (see `build/adhoc-sign.cjs`), which prevents the unrecoverable _"Open Science is damaged and can't be opened"_ Gatekeeper error — but a downloaded/quarantined copy will still show the _"Open Science can't be opened because the developer cannot be verified"_ prompt on first launch.
 
 To run it, either:
 
@@ -313,12 +351,12 @@ See [`ROADMAP.md`](ROADMAP.md#boundaries--non-goals) for the full, maintained li
 
 This project is at the stage where architecture decisions are still being made — the best way to have influence is to show up now.
 
-| | |
-|---|---|
-| 🐦 **X** | Follow **[@aipoch_ai](https://x.com/aipoch_ai)** for build-in-public updates, roadmap calls, and announcements. |
-| 💬 **Discord** | **[Join the community](https://discord.gg/85dKfuGM9)** — this is where architecture debates, RFC drafts, and skill-writing happen in real time. |
-| 🐛 **Issues** | Open an [Issue](https://github.com/aipoch/open-science/issues) for concrete proposals, especially for the unimplemented items in the [Capability Map](ROADMAP.md#capability-map). |
-| 🗣️ **Discussions** | Open a [Discussion](https://github.com/aipoch/open-science/discussions) if you want to propose or debate a piece of the architecture above. |
+|                    |                                                                                                                                                                                   |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🐦 **X**           | Follow **[@aipoch_ai](https://x.com/aipoch_ai)** for build-in-public updates, roadmap calls, and announcements.                                                                   |
+| 💬 **Discord**     | **[Join the community](https://discord.gg/85dKfuGM9)** — this is where architecture debates, RFC drafts, and skill-writing happen in real time.                                   |
+| 🐛 **Issues**      | Open an [Issue](https://github.com/aipoch/open-science/issues) for concrete proposals, especially for the unimplemented items in the [Capability Map](ROADMAP.md#capability-map). |
+| 🗣️ **Discussions** | Open a [Discussion](https://github.com/aipoch/open-science/discussions) if you want to propose or debate a piece of the architecture above.                                       |
 
 ## License
 
