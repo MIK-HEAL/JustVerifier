@@ -20,7 +20,8 @@
     "postinstall": "prisma generate && electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:mac": "electron-vite build && electron-builder --mac",
-    "build:linux": "electron-vite build && electron-builder --linux"
+    "build:linux": "electron-vite build && electron-builder --linux",
+    "predev": "node scripts/dev-app-branding.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.55.0",
