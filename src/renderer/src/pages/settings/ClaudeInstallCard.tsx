@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import type { ClaudeInstallSource } from '../../../../shared/settings'
-import { CLAUDE_INSTALL_SOURCES } from '../../../../shared/settings'
+import { getClaudeInstallSources, getNodeInstallHint } from '../../../../shared/settings'
 
 type ClaudeInstallCardProps = {
   isInstalling: boolean
@@ -22,7 +22,11 @@ const ClaudeInstallCard = ({
   const [source, setSource] = useState<ClaudeInstallSource>(
     npmAvailable ? 'npm' : 'official-script'
   )
-  const selectedSource = CLAUDE_INSTALL_SOURCES.find((item) => item.id === source)
+  // Sources carry platform-specific copy (e.g. install.ps1 vs install.sh), so resolve them for the
+  // host the app is running on.
+  const installSources = useMemo(() => getClaudeInstallSources(window.api?.platform), [])
+  const nodeHint = useMemo(() => getNodeInstallHint(window.api?.platform), [])
+  const selectedSource = installSources.find((item) => item.id === source)
   const npmMissing = source === 'npm' && !npmAvailable
 
   return (
@@ -39,7 +43,7 @@ const ClaudeInstallCard = ({
           onChange={(event) => setSource(event.target.value as ClaudeInstallSource)}
           className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring"
         >
-          {CLAUDE_INSTALL_SOURCES.map((item) => (
+          {installSources.map((item) => (
             <option key={item.id} value={item.id}>
               {item.label}
               {item.requiresNpm && !npmAvailable ? ' (npm not found)' : ''}
@@ -61,9 +65,27 @@ const ClaudeInstallCard = ({
       ) : null}
 
       {npmMissing ? (
-        <p className="mt-2 text-xs text-destructive" role="alert">
-          npm was not found on this machine. Use the official script or install npm first.
-        </p>
+        <div className="mt-2 space-y-1.5 text-xs text-destructive" role="alert">
+          <p>
+            npm was not found. Switch to the official installer above (it needs no Node.js), or
+            install Node.js first — it includes npm.
+          </p>
+          {nodeHint.command ? (
+            <pre
+              className="overflow-x-auto rounded-lg bg-muted px-3 py-2 font-mono text-foreground"
+              aria-label="Node.js install command"
+            >
+              {nodeHint.command}
+            </pre>
+          ) : null}
+          <p className="text-muted-foreground">
+            Or download it from{' '}
+            <a href={nodeHint.url} target="_blank" rel="noreferrer" className="underline">
+              {nodeHint.url}
+            </a>
+            , then restart the app so npm is detected.
+          </p>
+        </div>
       ) : null}
 
       <button
