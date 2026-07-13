@@ -17,9 +17,11 @@ import { ResizablePanel } from '@/components/ui/resizable'
 import { cn } from '@/lib/utils'
 import type { ChatSession } from '@/stores/session-store'
 
+import { ComposerDropOverlay } from './ComposerDropOverlay'
 import { ComposerModelPicker } from './ComposerModelPicker'
 import { submitMessageDraftFromKeyDown } from './message-draft-keyboard'
 import { PermissionApprovalControls } from './PermissionApprovalControls'
+import { useFileDropZone } from './useFileDropZone'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
 
 const composerInteractiveTransitionClassName = 'transition-colors duration-200 ease-out'
@@ -104,6 +106,12 @@ const ConversationPanel = ({
 }: ConversationPanelProps): React.JSX.Element => {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
+  // Drag-and-drop shares the same staging callback as the picker and paste paths.
+  const { isDragging, dropZoneProps } = useFileDropZone({
+    enabled: canEditDraft,
+    onFiles: onStageAttachmentFiles
+  })
+
   // Keeps keyboard submission behavior colocated with the composer while the helper owns rules.
   const handleMessageDraftKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     submitMessageDraftFromKeyDown(event, canSendMessage)
@@ -121,18 +129,16 @@ const ConversationPanel = ({
     }
   }
 
-  // Treats pasted clipboard images exactly like selected files, then keeps text paste behavior intact.
+  // Treats pasted clipboard files exactly like selected files, then keeps text paste behavior intact.
   const handleMessageDraftPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>): void => {
     if (!canEditDraft) return
 
-    const imageFiles = Array.from(event.clipboardData.files).filter((file) =>
-      file.type.startsWith('image/')
-    )
+    const files = Array.from(event.clipboardData.files)
 
-    if (imageFiles.length === 0) return
+    if (files.length === 0) return
 
     event.preventDefault()
-    onStageAttachmentFiles(imageFiles)
+    onStageAttachmentFiles(files)
   }
 
   return (
@@ -210,7 +216,10 @@ const ConversationPanel = ({
                   <form
                     className="relative z-10 flex flex-col gap-2 rounded-2xl bg-bg-000 px-3 py-2 shadow-card-opaque transition-shadow duration-[180ms] ease-out"
                     onSubmit={onSendMessage}
+                    {...dropZoneProps}
                   >
+                    {/* File-drag overlay is scoped to the composer input card only. */}
+                    {isDragging ? <ComposerDropOverlay /> : null}
                     <div className="flex flex-col gap-2">
                       {attachments.length > 0 ? (
                         <div className="flex max-h-[92px] flex-wrap gap-2 overflow-y-auto border-b border-border-200 pb-2">
