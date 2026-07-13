@@ -30,7 +30,11 @@ import type {
 } from '../../shared/acp'
 import { spawnClaudeAgentAcp, type SpawnClaudeAgentAcpOptions } from './agent-process'
 import { createLogger } from '../logger'
-import { toAcpRuntimeEvent } from './runtime-events'
+import {
+  extractProviderToolName,
+  extractToolFailureText,
+  toAcpRuntimeEvent
+} from './runtime-events'
 import { readWorkspaceTextFile, writeWorkspaceTextFile } from './filesystem'
 import { AcpPermissionBroker } from './permission-broker'
 import { createArtifactMcpServerConfig } from '../artifacts/mcp-server'
@@ -1277,15 +1281,38 @@ class AcpRuntime {
     })
   }
 
-  // Hands permission requests to the broker so the renderer can answer later.
-  private handlePermissionRequest(
+  // Hands permission requests to the broker so the renderer can answer later. Any failure is logged with
+  // its real message before it propagates: the ACP SDK collapses a thrown handler error into a bare
+  // -32603 "Internal error" (real detail buried in `data.details`), so this is the only place the true
+  // cause is captured in the app log. The error is rethrown unchanged to preserve protocol behavior.
+  private async handlePermissionRequest(
     params: RequestPermissionRequest
   ): Promise<RequestPermissionResponse> {
-    if (!this.sessions.has(params.sessionId)) {
-      throw new Error(`Unknown ACP session: ${params.sessionId}`)
-    }
+    // Fork point: a WebFetch/server-side tool that never reaches this line means the "Internal error"
+    // originated elsewhere. Debug level keeps it out of normal runs. Log the tool identity (name/kind),
+    // never the title — a WebFetch title is the full URL with query params (user data).
+    log.debug('permission request received', {
+      tool: extractProviderToolName(params.toolCall) ?? params.toolCall?.kind,
+      toolCallId: params.toolCall?.toolCallId,
+      sessionId: params.sessionId,
+      optionCount: params.options?.length
+    })
 
-    return this.permissionBroker.requestPermission(params)
+    try {
+      if (!this.sessions.has(params.sessionId)) {
+        throw new Error(`Unknown ACP session: ${params.sessionId}`)
+      }
+
+      return await this.permissionBroker.requestPermission(params)
+    } catch (error) {
+      log.error('permission request failed', {
+        message: errorMessage(error),
+        tool: extractProviderToolName(params.toolCall) ?? params.toolCall?.kind,
+        toolCallId: params.toolCall?.toolCallId,
+        sessionId: params.sessionId
+      })
+      throw error
+    }
   }
 
   // Normalizes low-level session notifications into runtime/workspace events.
@@ -1297,6 +1324,19 @@ class AcpRuntime {
         ? { ...notification, sessionId: appSessionId }
         : notification
     const event = toAcpRuntimeEvent(routed, this.nextEventId())
+
+    // Tool results (e.g. WebFetch's claude.ai domain-safety preflight, a failed Bash command) stream as
+    // tool_call_update content, which the session-update log omits — so a tool that runs and fails leaves
+    // no trace. Surface failures with the tool name and a bounded, text-only reason; never the arguments,
+    // raw output, or the URL/command-bearing title, to keep user data out of the log.
+    if (event.kind === 'tool' && event.status === 'failed') {
+      log.warn('tool call failed', {
+        tool: event.providerToolName ?? event.toolKind,
+        toolCallId: event.toolCallId,
+        sessionId: event.sessionId,
+        reason: extractToolFailureText(event.toolContent)
+      })
+    }
 
     if ((event.kind === 'message' || event.kind === 'thought') && !event.text) {
       return
