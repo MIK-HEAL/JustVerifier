@@ -3,8 +3,10 @@ import { MessageScrollerItem } from '@/components/ui/message-scroller'
 import { cn, formatByteSize } from '@/lib/utils'
 import type { ChatMessage, ChatSession } from '@/stores/session-store'
 import { Collapsible } from 'radix-ui'
+import { FileText, Image as ImageIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import type { ArtifactPreviewResult } from '../../../../shared/artifacts'
+import type { MessagePart } from '../../../../shared/session-persistence'
 import { getUploadedAttachmentName } from '../../../../shared/uploads'
 
 import { ArtifactPreview } from './artifact-preview'
@@ -19,6 +21,7 @@ import {
 
 type MessageArtifact = NonNullable<ChatSession['artifacts']>[number]
 type MessageUploadAttachment = NonNullable<ChatMessage['uploads']>[number]
+type ArtifactMentionPart = Extract<MessagePart, { type: 'artifact' }>
 type ArtifactPreviewState = Record<string, ArtifactPreviewResult | undefined>
 type ArtifactPreviewCache = {
   key: string
@@ -29,6 +32,8 @@ type WorkspaceMessageItemProps = {
   message: ChatMessage
   onPreviewArtifact: (artifact: MessageArtifact) => void
   onPreviewUploadAttachment: (attachment: MessageUploadAttachment) => void
+  onOpenSkillMention: (skillId: string, name: string) => void
+  onPreviewMentionArtifact: (part: ArtifactMentionPart) => void
   artifacts?: MessageArtifact[]
 }
 
@@ -40,8 +45,16 @@ const artifactGalleryClassName = 'grid max-w-full grid-cols-[repeat(auto-fill,12
 
 const userMessageBubbleClassName =
   'max-w-[90%] break-words rounded-2xl bg-bg-300 px-3.5 py-2 text-sm text-message-user-text md:max-w-[min(85%,56rem)] md:px-4 md:py-2.5 md:text-[15px]'
+// Staged uploads render as gray file pills inside the sent bubble.
 const uploadedAttachmentButtonClassName =
-  'inline-flex max-w-full items-center rounded-md border border-border-200 bg-bg-000/70 px-1.5 py-0.5 text-left text-[13px] leading-5 text-text-000 transition-colors hover:bg-bg-000 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-200/60'
+  'inline-flex max-w-full items-center gap-1.5 rounded-md border border-border-200 bg-bg-200 px-2 py-0.5 text-left text-[13px] leading-5 text-text-000 transition-colors hover:bg-bg-000 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-200/60'
+// Shared pill shape for inline skill/artifact mentions in the sent bubble. Capped width + truncation
+// keeps a long file/skill name from overflowing the bubble.
+const mentionPillClassName =
+  'inline-block max-w-[220px] truncate align-middle rounded px-1.5 py-0.5 mx-0.5 text-sm font-medium'
+// Interactive additions layered onto the pill shape when a mention resolves to a clickable target.
+const mentionButtonClassName =
+  'cursor-pointer hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-200/60'
 
 const assistantMessageSurfaceClassName =
   'relative w-full max-w-[56rem] text-sm leading-relaxed text-text-000 md:text-[15px]'
@@ -207,7 +220,7 @@ const MessageArtifactList = ({
   )
 }
 
-// Renders uploaded files inside the sent user bubble as preview-opening filename buttons.
+// Renders uploaded files inside the sent user bubble as gray file pills that open a preview.
 const MessageUploadAttachmentList = ({
   attachments,
   onPreviewUploadAttachment
@@ -218,10 +231,11 @@ const MessageUploadAttachmentList = ({
   if (attachments.length === 0) return null
 
   return (
-    <div className="mb-1.5 flex flex-col items-start gap-1">
+    <div className="mb-1.5 flex flex-wrap items-start gap-1.5">
       {attachments.map((attachment) => {
         // Use the original display name so pasted/renamed files match the composer chip.
         const attachmentName = getUploadedAttachmentName(attachment)
+        const Icon = attachment.mimeType?.startsWith('image/') ? ImageIcon : FileText
 
         return (
           <button
@@ -234,7 +248,8 @@ const MessageUploadAttachmentList = ({
             aria-label={`Preview uploaded attachment ${attachmentName}`}
             title={attachment.path}
           >
-            <span className="min-w-0 truncate">@{attachmentName}</span>
+            <Icon className="h-3.5 w-3.5 shrink-0 text-text-300" aria-hidden="true" />
+            <span className="min-w-0 truncate">{attachmentName}</span>
           </button>
         )
       })}
@@ -242,11 +257,69 @@ const MessageUploadAttachmentList = ({
   )
 }
 
+// Renders a user message's structured mention segments as inline styled pills.
+const MessagePartsContent = ({
+  parts,
+  onOpenSkillMention,
+  onPreviewMentionArtifact
+}: {
+  parts: MessagePart[]
+  onOpenSkillMention: (skillId: string, name: string) => void
+  onPreviewMentionArtifact: (part: ArtifactMentionPart) => void
+}): React.JSX.Element => (
+  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+    {parts.map((part, index) => {
+      if (part.type === 'skill') {
+        return (
+          <button
+            key={index}
+            type="button"
+            className={cn(
+              mentionPillClassName,
+              mentionButtonClassName,
+              'bg-skill-chip text-skill-chip-foreground'
+            )}
+            onClick={() => onOpenSkillMention(part.id, part.name)}
+            aria-label={`Open skill ${part.name}`}
+          >
+            /{part.name}
+          </button>
+        )
+      }
+      if (part.type === 'artifact') {
+        return (
+          <button
+            key={index}
+            type="button"
+            className={cn(
+              mentionPillClassName,
+              mentionButtonClassName,
+              'bg-mention-chip text-mention-chip-foreground'
+            )}
+            onClick={() => onPreviewMentionArtifact(part)}
+            aria-label={`Preview ${part.name}`}
+          >
+            @{part.name}
+          </button>
+        )
+      }
+
+      return (
+        <span key={index} className="whitespace-pre-wrap">
+          {part.text}
+        </span>
+      )
+    })}
+  </p>
+)
+
 // Renders one chat message with user bubbles and full-width assistant markdown surfaces.
 const WorkspaceMessageItem = ({
   message,
   onPreviewArtifact,
   onPreviewUploadAttachment,
+  onOpenSkillMention,
+  onPreviewMentionArtifact,
   artifacts = []
 }: WorkspaceMessageItemProps): React.JSX.Element => {
   const isUserMessage = message.role === 'user'
@@ -268,7 +341,14 @@ const WorkspaceMessageItem = ({
                 attachments={uploads}
                 onPreviewUploadAttachment={onPreviewUploadAttachment}
               />
-              {message.content ? (
+              {/* Structured parts drive styled pills; plain content is the backward-compatible fallback. */}
+              {message.parts && message.parts.length > 0 ? (
+                <MessagePartsContent
+                  parts={message.parts}
+                  onOpenSkillMention={onOpenSkillMention}
+                  onPreviewMentionArtifact={onPreviewMentionArtifact}
+                />
+              ) : message.content ? (
                 <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                   {message.content}
                 </p>
@@ -287,3 +367,4 @@ const WorkspaceMessageItem = ({
 }
 
 export { WorkspaceMessageItem }
+export type { ArtifactMentionPart }
