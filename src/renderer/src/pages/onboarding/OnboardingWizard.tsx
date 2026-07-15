@@ -13,10 +13,15 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { cn } from '@/lib/utils'
 import { APP } from '../../../../shared/app-config'
-import type { UpsertProviderRequest } from '../../../../shared/settings'
+import type {
+  ClaudeInstallResult,
+  ClaudeInstallSource,
+  UpsertProviderRequest
+} from '../../../../shared/settings'
 import { useSettingsStore } from '@/stores/settings-store'
 import { ClaudeInstallCard } from '../settings/ClaudeInstallCard'
 import { ClaudeStatusCard } from '../settings/ClaudeStatusCard'
+import { EnvironmentSetupCard } from './EnvironmentSetupCard'
 import { ProviderForm } from '../settings/ProviderForm'
 import {
   createEmptyProviderFormValue,
@@ -27,6 +32,7 @@ import {
 import { describeValidation } from '../settings/validation-message'
 
 type WizardStep = 'claude' | 'provider'
+type EnvironmentMode = 'automatic' | 'manual'
 
 // Keeps the two-step sequence visible without turning the lightweight setup flow into navigation.
 const OnboardingProgress = ({ step }: { step: WizardStep }): React.JSX.Element => {
@@ -52,7 +58,7 @@ const OnboardingProgress = ({ step }: { step: WizardStep }): React.JSX.Element =
         >
           {providerActive ? <Check className="size-3" strokeWidth={2.4} /> : '1'}
         </span>
-        <span>Claude runtime</span>
+        <span>Environment</span>
       </li>
       <li
         aria-current={providerActive ? 'step' : undefined}
@@ -89,10 +95,10 @@ const toUpsertRequest = (value: ProviderFormValue): UpsertProviderRequest => ({
   key: value.key || undefined
 })
 
-// First-run gate: confirm/install claude, then configure and validate a model provider. Reuses the
-// same cards/form as the settings page so both surfaces stay in sync. Shown only on a genuine first
-// run (see startup-gate); once onboarding completes it never reappears — later issues are fixed in
-// Settings — so there is no recovery mode and no props.
+// First-run gate: inspect the host (automatic checks, with the original manual installer kept as a
+// tab), then configure and validate a model provider. Reuses the same cards/form as the settings
+// page so both surfaces stay in sync. For completed users App can re-open only the environment
+// portion when a required dependency later disappears (recovery mode).
 const OnboardingWizard = (): React.JSX.Element => {
   const claude = useSettingsStore((state) => state.claude)
   const preflight = useSettingsStore((state) => state.preflight)
@@ -100,17 +106,26 @@ const OnboardingWizard = (): React.JSX.Element => {
   const isInstalling = useSettingsStore((state) => state.isInstalling)
   const installLogs = useSettingsStore((state) => state.installLogs)
   const installProgress = useSettingsStore((state) => state.installProgress)
-  const installError = useSettingsStore((state) => state.installError)
+  const storeInstallError = useSettingsStore((state) => state.installError)
   const npmAvailable = useSettingsStore((state) => state.npmAvailable)
   const encryptionAvailable = useSettingsStore((state) => state.encryptionAvailable)
-  const load = useSettingsStore((state) => state.load)
-  const detectClaude = useSettingsStore((state) => state.detectClaude)
+  const onboardingCompletedAt = useSettingsStore((state) => state.onboardingCompletedAt)
+  const environmentCheck = useSettingsStore((state) => state.environmentCheck)
+  const environmentCheckError = useSettingsStore((state) => state.environmentCheckError)
+  const isCheckingEnvironment = useSettingsStore((state) => state.isCheckingEnvironment)
+  const checkEnvironment = useSettingsStore((state) => state.checkEnvironment)
+  const closeEnvironmentRepair = useSettingsStore((state) => state.closeEnvironmentRepair)
   const installClaude = useSettingsStore((state) => state.installClaude)
   const saveAndActivateProvider = useSettingsStore((state) => state.saveAndActivateProvider)
   const completeOnboarding = useSettingsStore((state) => state.completeOnboarding)
 
-  // Always confirm Claude first, even when already detected (the explicit first-run confirmation).
+  // A completed user re-opened only for a regressed required check: environment repair, no model step.
+  const isRecovery = onboardingCompletedAt !== undefined
+  // First-time setup always starts on the visible environment summary, even when every check has
+  // already passed. The user explicitly continues to model configuration after reviewing it.
   const [step, setStep] = useState<WizardStep>('claude')
+  const [environmentMode, setEnvironmentMode] = useState<EnvironmentMode>('automatic')
+  const [automaticInstallError, setAutomaticInstallError] = useState<string | undefined>(undefined)
   const [formValue, setFormValue] = useState<ProviderFormValue>(() =>
     createEmptyProviderFormValue()
   )
@@ -120,23 +135,59 @@ const OnboardingWizard = (): React.JSX.Element => {
   const [showProviderErrors, setShowProviderErrors] = useState(false)
   const [validationMessage, setValidationMessage] = useState<string | undefined>(undefined)
   const [validationOk, setValidationOk] = useState(false)
-  const didAutoDetect = useRef(false)
+  const didRequestCheck = useRef(false)
 
-  // Load settings once, then auto-detect claude so the Claude step shows a fresh status. Detection no
-  // longer auto-advances: the user must explicitly confirm with Continue.
+  // App starts this check on every launch. This local fallback also keeps the wizard self-contained in
+  // tests or alternate entry surfaces where it may be mounted without App as its parent.
   useEffect(() => {
-    void (async () => {
-      await load()
-
-      if (!didAutoDetect.current) {
-        didAutoDetect.current = true
-        await detectClaude()
-      }
-    })()
-  }, [load, detectClaude])
+    if (
+      !environmentCheck &&
+      !environmentCheckError &&
+      !isCheckingEnvironment &&
+      !didRequestCheck.current
+    ) {
+      didRequestCheck.current = true
+      void checkEnvironment()
+    }
+  }, [environmentCheck, environmentCheckError, isCheckingEnvironment, checkEnvironment])
 
   // Onboarding always creates a provider, so required fields must be filled before it can continue.
   const formErrors = getProviderFormErrors(formValue)
+
+  const describeInstallFailure = (result: ClaudeInstallResult): string => {
+    if (result.error) return result.error
+    if (result.timedOut) return 'The installer timed out before Claude was ready.'
+    if (result.exitCode !== undefined) return `The installer exited with code ${result.exitCode}.`
+
+    return 'Claude was not detected after the installer finished.'
+  }
+
+  const handleEnvironmentCheck = async (): Promise<void> => {
+    setAutomaticInstallError(undefined)
+    await checkEnvironment()
+  }
+
+  const handleInstall = async (source: ClaudeInstallSource): Promise<void> => {
+    setAutomaticInstallError(undefined)
+
+    try {
+      const result = await installClaude(
+        source,
+        source === 'managed' ? environmentCheck?.recommendedRegistry : undefined
+      )
+
+      if (!result.ok) {
+        setAutomaticInstallError(describeInstallFailure(result))
+        return
+      }
+
+      await checkEnvironment()
+    } catch (error) {
+      setAutomaticInstallError(
+        error instanceof Error ? error.message : 'The installer could not be started.'
+      )
+    }
+  }
 
   const handleSaveProvider = async (): Promise<void> => {
     // First submit attempt surfaces any missing required fields instead of testing an incomplete draft.
@@ -167,6 +218,8 @@ const OnboardingWizard = (): React.JSX.Element => {
     }
   }
 
+  const environmentReady = environmentCheck?.ready ?? false
+
   return (
     <main className="h-svh overflow-y-auto bg-bg-10 text-text-000">
       <div className="mx-auto min-h-full w-full max-w-[1040px] px-8 py-7">
@@ -184,74 +237,169 @@ const OnboardingWizard = (): React.JSX.Element => {
           className="mt-12 grid grid-cols-[240px_minmax(0,1fr)] gap-10"
         >
           <section aria-labelledby="onboarding-introduction-title" className="pt-2">
-            <p className="text-[11px] font-medium text-text-100">FIRST-TIME SETUP</p>
+            <p className="text-[11px] font-medium text-text-100">
+              {isRecovery ? 'NEEDS ATTENTION' : 'FIRST-TIME SETUP'}
+            </p>
             <h1
               id="onboarding-introduction-title"
               className="mt-2 font-serif text-[28px] leading-[1.15] font-medium text-text-000"
             >
-              Set up your research workspace.
+              {isRecovery ? 'Open Science needs attention' : 'Set up your research workspace.'}
             </h1>
             <p className="mt-3 max-w-60 text-sm leading-5 text-text-100">
-              Two quick checks connect the local runtime and the model you want to use.
+              {isRecovery
+                ? 'A required environment check changed since your last launch. Repair it to continue.'
+                : 'A quick host check confirms this computer is ready, then you connect the model you want to use.'}
             </p>
-            <OnboardingProgress step={step} />
+            {/* Recovery only reopens the environment portion, so the two-step tracker does not apply. */}
+            {!isRecovery ? <OnboardingProgress step={step} /> : null}
           </section>
 
           {/* One stable work surface keeps the two setup steps aligned as their content changes. */}
           <Card className="min-h-[420px] gap-0 rounded-lg bg-bg-000 py-0 shadow-card ring-1 ring-border-200">
-            <CardHeader className="gap-1 rounded-t-lg px-6 py-5">
-              <CardTitle className="text-[15px] font-semibold">
-                {step === 'claude' ? 'Connect Claude' : 'Connect a model'}
-              </CardTitle>
-              <CardDescription className="text-xs leading-5">
-                {step === 'claude'
-                  ? 'Open Science uses Claude Code as its local agent runtime.'
-                  : 'Choose the provider Open Science should use for new research sessions.'}
-              </CardDescription>
-            </CardHeader>
-            <Separator className="bg-border-200" />
-
             {step === 'claude' ? (
               <>
+                <CardHeader className="gap-1 rounded-t-lg px-6 py-5">
+                  <CardTitle className="text-[15px] font-semibold">
+                    {isRecovery ? 'Repair environment' : 'Prepare environment'}
+                  </CardTitle>
+                  <CardDescription className="text-xs leading-5">
+                    {isRecovery
+                      ? 'Resolve the required item below to return to Open Science.'
+                      : 'Open Science confirms its core requirements before your first research session.'}
+                  </CardDescription>
+                </CardHeader>
+                <Separator className="bg-border-200" />
+
                 <CardContent className="flex-1 px-6 py-5">
-                  <section aria-label="Confirm Claude" className="space-y-5">
-                    <ClaudeStatusCard
-                      claude={claude}
-                      claudeReady={preflight.claudeReady}
-                      isDetecting={isDetectingClaude}
-                      onDetect={() => void detectClaude()}
-                      embedded
-                    />
-                    {/* Once Claude is ready, installation controls no longer add useful choices. */}
-                    {!preflight.claudeReady ? (
-                      <>
-                        <Separator className="bg-border-200" />
-                        <ClaudeInstallCard
+                  <section aria-label="Prepare environment" className="space-y-5">
+                    <div
+                      className="grid grid-cols-2 gap-1 rounded-lg bg-bg-10 p-1 ring-1 ring-border-200"
+                      role="tablist"
+                      aria-label="Environment setup mode"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={environmentMode === 'automatic'}
+                        aria-controls="automatic-environment-panel"
+                        id="automatic-environment-tab"
+                        onClick={() => setEnvironmentMode('automatic')}
+                        className={cn(
+                          'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                          environmentMode === 'automatic'
+                            ? 'bg-bg-000 text-text-000 shadow-sm ring-1 ring-border-200'
+                            : 'text-text-100 hover:text-text-000'
+                        )}
+                      >
+                        Automatic detection
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={environmentMode === 'manual'}
+                        aria-controls="manual-environment-panel"
+                        id="manual-environment-tab"
+                        onClick={() => setEnvironmentMode('manual')}
+                        className={cn(
+                          'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                          environmentMode === 'manual'
+                            ? 'bg-bg-000 text-text-000 shadow-sm ring-1 ring-border-200'
+                            : 'text-text-100 hover:text-text-000'
+                        )}
+                      >
+                        Manual setup
+                      </button>
+                    </div>
+
+                    {environmentMode === 'automatic' ? (
+                      <div
+                        id="automatic-environment-panel"
+                        role="tabpanel"
+                        aria-labelledby="automatic-environment-tab"
+                      >
+                        <EnvironmentSetupCard
+                          environment={environmentCheck}
+                          isChecking={isCheckingEnvironment}
                           isInstalling={isInstalling}
                           installLogs={installLogs}
                           installProgress={installProgress}
-                          installError={installError}
-                          npmAvailable={npmAvailable}
-                          onInstall={(source) => void installClaude(source)}
+                          error={
+                            automaticInstallError ?? storeInstallError ?? environmentCheckError
+                          }
+                          onCheck={() => void handleEnvironmentCheck()}
+                          onInstall={() => void handleInstall('managed')}
+                        />
+                      </div>
+                    ) : (
+                      <div
+                        id="manual-environment-panel"
+                        role="tabpanel"
+                        aria-labelledby="manual-environment-tab"
+                        className="space-y-5"
+                      >
+                        <p className="rounded-lg bg-bg-10 px-3 py-2 text-xs leading-relaxed text-text-100 ring-1 ring-border-200">
+                          Advanced fallback: pick the original installer source and copyable
+                          scripts. Use Re-detect after completing any external permission or
+                          installation step.
+                        </p>
+                        <ClaudeStatusCard
+                          claude={claude}
+                          claudeReady={preflight.claudeReady}
+                          isDetecting={isDetectingClaude || isCheckingEnvironment}
+                          onDetect={() => void handleEnvironmentCheck()}
                           embedded
                         />
-                      </>
-                    ) : null}
+                        {!preflight.claudeReady ? (
+                          <>
+                            <Separator className="bg-border-200" />
+                            <ClaudeInstallCard
+                              isInstalling={isInstalling}
+                              installLogs={installLogs}
+                              installProgress={installProgress}
+                              installError={storeInstallError}
+                              npmAvailable={npmAvailable}
+                              onInstall={(source) => void handleInstall(source)}
+                              embedded
+                            />
+                          </>
+                        ) : null}
+                      </div>
+                    )}
                   </section>
                 </CardContent>
-                <CardFooter className="mt-auto justify-end rounded-b-lg border-border-200 bg-bg-10 px-6 py-3">
+                <CardFooter className="mt-auto items-center justify-between gap-4 rounded-b-lg border-border-200 bg-bg-10 px-6 py-3">
+                  <p className="text-xs leading-5 text-text-100">
+                    {environmentReady
+                      ? 'All required environment checks passed.'
+                      : 'Complete every required item above to continue.'}
+                  </p>
                   <Button
                     type="button"
-                    onClick={() => setStep('provider')}
-                    disabled={!preflight.claudeReady}
+                    onClick={() => {
+                      if (isRecovery) {
+                        closeEnvironmentRepair()
+                      } else {
+                        setStep('provider')
+                      }
+                    }}
+                    disabled={!environmentReady}
                     className="px-4"
                   >
-                    Continue
+                    {isRecovery ? 'Return to Open Science' : 'Continue'}
                   </Button>
                 </CardFooter>
               </>
             ) : (
               <>
+                <CardHeader className="gap-1 rounded-t-lg px-6 py-5">
+                  <CardTitle className="text-[15px] font-semibold">Connect a model</CardTitle>
+                  <CardDescription className="text-xs leading-5">
+                    Choose the provider Open Science should use for new research sessions.
+                  </CardDescription>
+                </CardHeader>
+                <Separator className="bg-border-200" />
+
                 <CardContent className="flex-1 px-6 py-5">
                   <section aria-label="Configure model">
                     {!encryptionAvailable ? (
