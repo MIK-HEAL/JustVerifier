@@ -577,6 +577,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                     }
                     isRefreshingModels={isRefreshingModels}
                     disabled={isSaving}
+                    encryptionAvailable={encryptionAvailable}
                   />
                   {statusMessage ? (
                     <p
