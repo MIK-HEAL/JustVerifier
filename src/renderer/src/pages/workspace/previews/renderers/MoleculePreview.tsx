@@ -7,11 +7,14 @@ import { getFileExtension } from '../../preview-support'
 import { PreviewFallbackCard, PreviewLoadingContent } from '../PreviewFallback'
 import type { PreviewFileRendererProps } from '../preview-types'
 import { usePreviewFileContent } from '../usePreviewFileContent'
+import { buildReactionMarkup } from './reaction-markup'
 
 type OclModule = typeof import('openchemlib')
 
 // SMILES sources parse via fromSmiles; molfile/SDF via fromMolfile (which reads the first record).
 const SMILES_EXTENSIONS = new Set(['smi', 'smiles'])
+// MDL reaction files render as a laid-out row of component depictions instead of one molecule.
+const REACTION_EXTENSIONS = new Set(['rxn'])
 
 const MoleculePreviewCanvas = ({
   content,
@@ -37,15 +40,23 @@ const MoleculePreviewCanvas = ({
     if (container.clientWidth <= 0 || container.clientHeight <= 0) return
 
     try {
-      const molecule = SMILES_EXTENSIONS.has(extension)
-        ? ocl.Molecule.fromSmiles(content)
-        : ocl.Molecule.fromMolfile(content)
-      const svg = molecule.toSVG(container.clientWidth, container.clientHeight, svgId, {
-        autoCrop: true,
-        autoCropMargin: 16
-      })
+      if (REACTION_EXTENSIONS.has(extension)) {
+        // Each reaction component is bounded by the tile height so the row fits and scrolls if wide.
+        const componentHeight = Math.max(80, Math.min(container.clientHeight - 24, 260))
+        container.innerHTML = buildReactionMarkup(ocl, content, svgId, {
+          width: Math.round(componentHeight * 1.2),
+          height: componentHeight
+        })
+      } else {
+        const molecule = SMILES_EXTENSIONS.has(extension)
+          ? ocl.Molecule.fromSmiles(content)
+          : ocl.Molecule.fromMolfile(content)
+        container.innerHTML = molecule.toSVG(container.clientWidth, container.clientHeight, svgId, {
+          autoCrop: true,
+          autoCropMargin: 16
+        })
+      }
 
-      container.innerHTML = svg
       setError(undefined)
     } catch (renderError) {
       container.replaceChildren()
