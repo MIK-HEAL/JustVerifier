@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { chmod, rm } from 'node:fs/promises'
 import { arch as osArch } from 'node:os'
 import { join } from 'node:path'
@@ -18,8 +18,10 @@ import {
 // App-managed OpenCode installer. opencode ships per-platform native packages
 // (`opencode-<os>-<arch>[-musl]`) as optionalDependencies of the `opencode-ai` wrapper, with the binary
 // at `package/bin/opencode` — the same native-package model as Claude, so the shared download/verify/
-// extract helpers are reused. Non-AVX2 `-baseline` variants are not selected; modern CPUs get the
-// standard build. Every side-effecting dependency is injectable so the flow is unit-testable offline.
+// extract helpers are reused. Modern CPUs get the standard build; a non-AVX2 x64 host whose post-install
+// smoke check dies on an illegal instruction (SIGILL on POSIX, the NTSTATUS illegal-instruction exit
+// status on Windows) falls back once to the `-baseline` variant opencode publishes for x64 (no fragile
+// pre-detection). Every side-effecting dependency is injectable so the flow is unit-testable offline.
 
 // Wrapper package (its dist-tags.latest gives the version) and the native-package name prefix. Note the
 // native packages are `opencode-<key>`, NOT `opencode-ai-<key>`, so the prefix differs from the wrapper.
@@ -149,23 +151,69 @@ const resolveNative = async (
 }
 
 // Post-install smoke check. A native package can download+extract cleanly yet still be unrunnable on
-// this host (e.g. a non-AVX2 x64 CPU dies with SIGILL at first spawn), so we execute `--version` before
-// treating the install as successful. `ok:false` carries a human reason plus the raw signal so the
-// caller can add an actionable hint.
+// this host (e.g. a non-AVX2 x64 CPU dies on an illegal instruction at first spawn), so we execute
+// `--version` before treating the install as successful. `ok:false` carries a human reason plus an
+// `illegalInstruction` flag (the AVX2-baseline signal) so the caller can add an actionable hint.
 export type VerifyBinaryResult =
-  { ok: true } | { ok: false; reason: string; signal?: string | null }
+  { ok: true } | { ok: false; reason: string; illegalInstruction: boolean }
 export type VerifyBinary = (binPath: string) => VerifyBinaryResult
 
-// Default verifier: run the installed binary with `--version` and classify failures. A spawn error, a
-// terminating signal (SIGILL etc.), or a non-zero exit all mean the binary is not usable here.
-const defaultVerifyBinary: VerifyBinary = (binPath) => {
-  const probe = spawnSync(binPath, ['--version'], { encoding: 'utf8', timeout: 15_000 })
-  if (probe.error) return { ok: false, reason: `spawn error: ${probe.error.message}` }
-  if (probe.signal) return { ok: false, reason: `killed by ${probe.signal}`, signal: probe.signal }
+// Windows reports an illegal instruction not as a signal but as NTSTATUS STATUS_ILLEGAL_INSTRUCTION in
+// the exit status. Node surfaces it as the unsigned value (3221225501) or its signed 32-bit form
+// (-1073741795), so accept both.
+const ILLEGAL_INSTRUCTION_STATUS = 0xc000001d
+const isIllegalInstructionStatus = (status: number | null | undefined): boolean =>
+  status === ILLEGAL_INSTRUCTION_STATUS || status === (ILLEGAL_INSTRUCTION_STATUS | 0)
+
+// Just the fields of a spawnSync result the classifier reads.
+export type VersionProbe = Partial<Pick<SpawnSyncReturns<string>, 'error' | 'signal' | 'status'>>
+export type VersionProbeSpawn = (
+  command: string,
+  args: readonly string[],
+  options: { encoding: 'utf8'; timeout: number }
+) => VersionProbe
+
+// Runs the installed binary with `--version`. The injectable spawn (defaulting to the real spawnSync)
+// lets tests lock the exact args and timeout without a real process.
+export const runVersionProbe = (
+  binPath: string,
+  spawn: VersionProbeSpawn = spawnSync as unknown as VersionProbeSpawn
+): VersionProbe => spawn(binPath, ['--version'], { encoding: 'utf8', timeout: 15_000 })
+
+// Pure classifier for a version probe. A spawn error, a terminating signal, or a non-zero exit all mean
+// the binary is not usable here; `illegalInstruction` is the AVX2-baseline signal (SIGILL on POSIX, the
+// NTSTATUS illegal-instruction exit status on Windows). The injectable platform makes the Windows
+// status branch testable off-Windows.
+export const classifyVerifyResult = (
+  probe: VersionProbe,
+  platform: NodeJS.Platform = process.platform
+): VerifyBinaryResult => {
+  if (probe.error)
+    return { ok: false, reason: `spawn error: ${probe.error.message}`, illegalInstruction: false }
+  if (probe.signal)
+    return {
+      ok: false,
+      reason: `killed by ${probe.signal}`,
+      illegalInstruction: probe.signal === 'SIGILL'
+    }
   if (probe.status !== 0)
-    return { ok: false, reason: `\`--version\` exited with code ${probe.status}` }
+    return {
+      ok: false,
+      reason: `\`--version\` exited with code ${probe.status}`,
+      illegalInstruction: platform === 'win32' && isIllegalInstructionStatus(probe.status)
+    }
   return { ok: true }
 }
+
+// Default verifier: probe the installed binary, then classify. Exported so the production classification
+// (not just injected fakes) is exercised by tests.
+export const defaultVerifyBinary: VerifyBinary = (binPath) =>
+  classifyVerifyResult(runVersionProbe(binPath))
+
+// The baseline native package inserts `baseline` right after the x64 arch token, BEFORE any `-musl`
+// suffix, matching what opencode publishes: linux-x64 → linux-x64-baseline, linux-x64-musl →
+// linux-x64-baseline-musl. Every x64 key has exactly one `x64` token, so a single replace is correct.
+const baselinePackageKey = (key: string): string => key.replace('x64', 'x64-baseline')
 
 export type InstallManagedOpencodeOptions = {
   installId: string
@@ -179,6 +227,13 @@ export type InstallManagedOpencodeOptions = {
   verifyBinary?: VerifyBinary
   tmpDir?: string
 }
+
+// Outcome of one package-key install attempt: a runnable binary, or a soft "extracted but won't run"
+// failure (smoke check) the caller may recover from via the baseline retry. Resolve/download/extract
+// errors are thrown instead (registry-level, handled by moving to the next registry).
+type PackageAttempt =
+  | { ok: true; version: string }
+  | { ok: false; error: string; illegalInstruction: boolean; resolvedVersion: string }
 
 // Downloads + installs the managed opencode binary, trying each registry in order. Resolves (never
 // rejects) with a structured outcome the service can persist.
@@ -198,7 +253,14 @@ export const installManagedOpencode = async ({
   const scratch = tmpDir ?? managedOpencodeDir(dataRoot)
   let lastError = 'no registries configured'
 
-  for (const registry of registries) {
+  // Downloads, extracts, and smoke-checks one package key. Throws on registry-level errors (so the
+  // caller can advance to the next registry); returns a soft failure only when the binary extracted
+  // cleanly but does not run on this CPU.
+  const installFromPackage = async (
+    registry: string,
+    packageKey: string,
+    pinnedVersion: string | undefined
+  ): Promise<PackageAttempt> => {
     const tgzPath = join(scratch, `opencode-download-${Date.now()}.tgz`)
 
     try {
@@ -207,9 +269,9 @@ export const installManagedOpencode = async ({
         kind: 'log',
         installId,
         stream: 'system',
-        chunk: `Resolving OpenCode from ${registry} …\n`
+        chunk: `Resolving ${OPENCODE_PLATFORM_PREFIX}-${packageKey} from ${registry} …\n`
       })
-      const resolution = await resolveNative(registry, platform.key, version, fetchJson)
+      const resolution = await resolveNative(registry, packageKey, pinnedVersion, fetchJson)
 
       await downloadAndVerify({
         url: resolution.tarball,
@@ -231,29 +293,86 @@ export const installManagedOpencode = async ({
       if (process.platform !== 'win32') await chmod(destPath, 0o755)
 
       // Smoke-check the binary before reporting success — a clean download does not guarantee it runs
-      // on this CPU. Remove the unusable binary and fail loudly so no broken path gets persisted.
+      // on this CPU. Remove the unusable binary and report a soft failure so no broken path is persisted.
       const verification = verifyBinary(destPath)
       if (!verification.ok) {
         await rm(destPath, { force: true }).catch(() => undefined)
-        const hint =
-          verification.signal === 'SIGILL'
-            ? ' Your CPU may not support the required instruction set (AVX2).'
-            : ''
-        throw new Error(`OpenCode installed but failed to run (${verification.reason}).${hint}`)
+        const illegalInstruction = verification.illegalInstruction
+        const hint = illegalInstruction
+          ? ' Your CPU may not support the required instruction set (AVX2).'
+          : ''
+        return {
+          ok: false,
+          illegalInstruction,
+          resolvedVersion: resolution.version,
+          error: `OpenCode installed but failed to run (${verification.reason}).${hint}`
+        }
       }
 
-      onEvent({
-        kind: 'log',
-        installId,
-        stream: 'system',
-        chunk: `Installed OpenCode ${resolution.version}.\n`
-      })
+      return { ok: true, version: resolution.version }
+    } finally {
+      await rm(tgzPath, { force: true }).catch(() => undefined)
+    }
+  }
 
-      return {
-        result: { installId, ok: true },
-        resolvedPath: destPath,
-        version: resolution.version
+  // x64 hosts have a `-baseline` native package variant that drops AVX2; a musl or plain x64 key still
+  // contains "x64". arm64 has no baseline, so it is never retried.
+  const isX64 = platform.key.includes('x64')
+
+  for (const registry of registries) {
+    try {
+      const standard = await installFromPackage(registry, platform.key, version)
+      if (standard.ok) {
+        onEvent({
+          kind: 'log',
+          installId,
+          stream: 'system',
+          chunk: `Installed OpenCode ${standard.version}.\n`
+        })
+        return {
+          result: { installId, ok: true },
+          resolvedPath: destPath,
+          version: standard.version
+        }
       }
+
+      // The standard build extracted but died on this CPU. On a non-AVX2 x64 host (illegal instruction:
+      // SIGILL on POSIX, the NTSTATUS status on Windows) retry once with the `-baseline` variant so the
+      // onboarding "auto-installable" claim actually holds. If the baseline package is missing (404 at
+      // resolve) or also fails to run, surface the illegal-instruction/AVX2 diagnosis rather than
+      // crashing on an unverifiable package name.
+      if (standard.illegalInstruction && isX64) {
+        onEvent({
+          kind: 'log',
+          installId,
+          stream: 'system',
+          chunk: 'Standard build is not runnable on this CPU; retrying the -baseline variant …\n'
+        })
+        try {
+          const baseline = await installFromPackage(
+            registry,
+            baselinePackageKey(platform.key),
+            standard.resolvedVersion
+          )
+          if (baseline.ok) {
+            onEvent({
+              kind: 'log',
+              installId,
+              stream: 'system',
+              chunk: `Installed OpenCode ${baseline.version} (baseline).\n`
+            })
+            return {
+              result: { installId, ok: true },
+              resolvedPath: destPath,
+              version: baseline.version
+            }
+          }
+        } catch {
+          // Baseline unavailable (e.g. 404): fall through to the illegal-instruction/AVX2 error below.
+        }
+      }
+
+      throw new Error(standard.error)
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
       onEvent({
@@ -262,8 +381,6 @@ export const installManagedOpencode = async ({
         stream: 'system',
         chunk: `${registry} failed: ${lastError}\n`
       })
-    } finally {
-      await rm(tgzPath, { force: true }).catch(() => undefined)
     }
   }
 
