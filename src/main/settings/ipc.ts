@@ -78,6 +78,25 @@ const registerSettingsIpcHandlers = ({
     service.installClaude(request, broadcastInstallEvent)
   )
 
+  ipcMain.handle('settings:uninstall-claude', async () => {
+    const { snapshot, activeBackendAffected } = await service.uninstallClaude()
+
+    // Reconnect only when the removed runtime backed the active framework (its live agent is now stale,
+    // possibly auto-switched to the other). Uninstalling the inactive runtime touches nothing the live
+    // agent depends on, so it must not churn the connection.
+    if (activeBackendAffected) onActiveProviderChanged?.()
+
+    return snapshot
+  })
+
+  ipcMain.handle('settings:uninstall-opencode', async () => {
+    const { snapshot, activeBackendAffected } = await service.uninstallOpencode()
+
+    if (activeBackendAffected) onActiveProviderChanged?.()
+
+    return snapshot
+  })
+
   ipcMain.handle('settings:upsert-provider', async (_event, request: UpsertProviderRequest) => {
     const snapshot = await service.upsertProvider(request)
 

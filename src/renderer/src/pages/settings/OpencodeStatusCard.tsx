@@ -1,9 +1,11 @@
 import { useMemo } from 'react'
-import { CheckCircle2, RefreshCw, XCircle } from 'lucide-react'
+import { CheckCircle2, RefreshCw, Trash2, XCircle } from 'lucide-react'
 
 import { ExternalTextLink } from '@/components/ExternalTextLink'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
 import type {
   ClaudeInstallProgressEvent,
   ClaudeInstallSource,
@@ -14,6 +16,9 @@ import { ClaudeInstallCard } from './ClaudeInstallCard'
 
 type OpencodeStatusCardProps = {
   opencode: OpencodeInfo
+  // Whether the detected opencode is actually runnable (preflight ran `--version`). Selection gates on
+  // this, not on a mere cached path, so a stale/corrupt binary can't be chosen as the active backend.
+  opencodeReady: boolean
   isDetecting: boolean
   onDetect: () => void
   // Install picker (managed / npm / script, managed first) shown when opencode isn't detected.
@@ -23,6 +28,18 @@ type OpencodeStatusCardProps = {
   installError: string | undefined
   npmAvailable: boolean
   onInstall: (source: ClaudeInstallSource) => void
+  // Marks this as the runtime the selected agent framework uses, so it stands out when both cards show.
+  active?: boolean
+  // Selects OpenCode as the active framework (settings only). The card's title acts as a radio option.
+  onSelect?: () => void
+  // Locks selection (e.g. while an install/uninstall is in flight) so the backend can't be switched
+  // mid-operation.
+  selectDisabled?: boolean
+  // Uninstall is offered only for the app-managed install (a binary the app owns in its data dir).
+  // Disabled while this is the active runtime — the user must switch to the other framework first.
+  managed?: boolean
+  isUninstalling?: boolean
+  onUninstall?: () => void
 }
 
 // Shows whether a runnable opencode executable was found (path + version) plus a re-detect action,
@@ -30,6 +47,7 @@ type OpencodeStatusCardProps = {
 // binary, first recommendation) with a link to opencode's docs for a manual install.
 const OpencodeStatusCard = ({
   opencode,
+  opencodeReady,
   isDetecting,
   onDetect,
   isInstalling,
@@ -37,35 +55,92 @@ const OpencodeStatusCard = ({
   installProgress,
   installError,
   npmAvailable,
-  onInstall
+  onInstall,
+  active = false,
+  onSelect,
+  selectDisabled = false,
+  managed = false,
+  isUninstalling = false,
+  onUninstall
 }: OpencodeStatusCardProps): React.JSX.Element => {
   const found = Boolean(opencode.resolvedPath)
   const installSources = useMemo(() => getOpencodeInstallSources(window.api?.platform), [])
+  // Only a ready runtime can be chosen as the active framework — switching to a missing or unrunnable
+  // agent would strand sessions. Gate on preflight readiness (matches Claude's claudeReady), not a mere
+  // cached path, so a stale/corrupt binary shows no radio and isn't clickable.
+  const selectable = Boolean(onSelect) && opencodeReady
+
+  const heading = (
+    <>
+      {selectable ? (
+        <span
+          aria-hidden="true"
+          className={cn(
+            'flex size-4 shrink-0 items-center justify-center rounded-full border',
+            active ? 'border-primary' : 'border-muted-foreground/50'
+          )}
+        >
+          {active ? <span className="size-2 rounded-full bg-primary" /> : null}
+        </span>
+      ) : null}
+      <span className="text-sm font-medium text-foreground">
+        {found ? 'OpenCode is installed' : 'OpenCode not detected'}
+      </span>
+      {found ? (
+        <CheckCircle2 className="size-4 text-primary" aria-hidden="true" />
+      ) : (
+        <XCircle className="size-4 text-muted-foreground" aria-hidden="true" />
+      )}
+      {active ? <Badge variant="secondary">Active</Badge> : null}
+    </>
+  )
 
   return (
-    <Card className="gap-0 rounded-lg py-0">
+    <Card className={cn('gap-0 rounded-lg py-0', active && 'ring-1 ring-primary')}>
       <CardContent className="p-4">
         <div className="flex items-center justify-between gap-3">
+          {selectable ? (
+            <button
+              type="button"
+              role="radio"
+              aria-checked={active}
+              aria-label="Use OpenCode"
+              onClick={onSelect}
+              disabled={selectDisabled}
+              className="-m-1 flex cursor-pointer items-center gap-2 rounded-md p-1 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60"
+            >
+              {heading}
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">{heading}</div>
+          )}
           <div className="flex items-center gap-2">
-            {found ? (
-              <CheckCircle2 className="size-4 text-primary" aria-hidden="true" />
-            ) : (
-              <XCircle className="size-4 text-muted-foreground" aria-hidden="true" />
-            )}
-            <span className="text-sm font-medium text-foreground">
-              {found ? 'OpenCode is installed' : 'OpenCode not detected'}
-            </span>
+            {managed && onUninstall && found ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                onClick={onUninstall}
+                disabled={active || isUninstalling || isDetecting}
+                title={
+                  active ? 'Switch to the other framework before uninstalling OpenCode' : undefined
+                }
+              >
+                <Trash2 aria-hidden="true" />
+                Uninstall
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onDetect}
+              disabled={isDetecting || isUninstalling}
+            >
+              <RefreshCw className={isDetecting ? 'animate-spin' : ''} aria-hidden="true" />
+              {isDetecting ? 'Detecting…' : 'Re-detect'}
+            </Button>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onDetect}
-            disabled={isDetecting}
-          >
-            <RefreshCw className={isDetecting ? 'animate-spin' : ''} aria-hidden="true" />
-            {isDetecting ? 'Detecting…' : 'Re-detect'}
-          </Button>
         </div>
         {found ? (
           <dl className="mt-3 space-y-1 text-xs text-muted-foreground">

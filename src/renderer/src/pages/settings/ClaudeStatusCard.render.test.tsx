@@ -35,6 +35,11 @@ const render = (embedded = false): void => {
   })
 }
 
+const findUninstallButton = (): HTMLButtonElement | undefined =>
+  Array.from(container.querySelectorAll('button')).find((button) =>
+    button.textContent?.includes('Uninstall')
+  )
+
 describe('ClaudeStatusCard surface', () => {
   it('uses shadcn card and button slots', () => {
     render()
@@ -49,5 +54,102 @@ describe('ClaudeStatusCard surface', () => {
 
     expect(card?.className).toContain('ring-0')
     expect(card?.className).toContain('bg-transparent')
+  })
+
+  it('hides the uninstall action unless the install is app-managed', () => {
+    render()
+
+    expect(findUninstallButton()).toBeUndefined()
+  })
+
+  it('offers an uninstall action for a managed install and fires onUninstall on click', () => {
+    const onUninstall = vi.fn()
+
+    act(() => {
+      root.render(
+        <ClaudeStatusCard
+          claude={{ resolvedPath: '/data/claude-code/bin/claude', version: '2.1.0' }}
+          claudeReady
+          isDetecting={false}
+          onDetect={vi.fn()}
+          managed
+          onUninstall={onUninstall}
+        />
+      )
+    })
+
+    const button = findUninstallButton()
+    expect(button).toBeDefined()
+
+    act(() => button?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(onUninstall).toHaveBeenCalledTimes(1)
+  })
+
+  it('exposes a radio selector that fires onSelect, and disables uninstall while active', () => {
+    const onSelect = vi.fn()
+
+    act(() => {
+      root.render(
+        <ClaudeStatusCard
+          claude={{ resolvedPath: '/data/claude-code/bin/claude', version: '2.1.0' }}
+          claudeReady
+          isDetecting={false}
+          onDetect={vi.fn()}
+          active
+          onSelect={onSelect}
+          managed
+          onUninstall={vi.fn()}
+        />
+      )
+    })
+
+    const radio = container.querySelector<HTMLButtonElement>('[role="radio"]')
+    expect(radio?.getAttribute('aria-checked')).toBe('true')
+
+    // The active runtime can't be uninstalled — switch away first.
+    expect(findUninstallButton()?.disabled).toBe(true)
+
+    act(() => radio?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(onSelect).toHaveBeenCalledTimes(1)
+  })
+
+  it('locks selection while selectDisabled (e.g. during an install)', () => {
+    const onSelect = vi.fn()
+
+    act(() => {
+      root.render(
+        <ClaudeStatusCard
+          claude={{ resolvedPath: '/data/claude-code/bin/claude', version: '2.1.0' }}
+          claudeReady
+          isDetecting={false}
+          onDetect={vi.fn()}
+          onSelect={onSelect}
+          selectDisabled
+        />
+      )
+    })
+
+    const radio = container.querySelector<HTMLButtonElement>('[role="radio"]')
+    expect(radio?.disabled).toBe(true)
+
+    act(() => radio?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('is not selectable when the runtime is not installed', () => {
+    act(() => {
+      root.render(
+        <ClaudeStatusCard
+          claude={{}}
+          claudeReady={false}
+          isDetecting={false}
+          onDetect={vi.fn()}
+          onSelect={vi.fn()}
+        />
+      )
+    })
+
+    // No radio control appears for an uninstalled runtime — you can't switch to a missing agent.
+    expect(container.querySelector('[role="radio"]')).toBeNull()
   })
 })
