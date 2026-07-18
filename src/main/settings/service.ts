@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
-import { access, readdir } from 'node:fs/promises'
+import { access, mkdir, readdir, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 
@@ -21,8 +21,10 @@ import type {
   DeleteSkillRequest,
   EnvironmentCheckResult,
   InstallClaudeRequest,
+  InstallOpencodeRequest,
   NcbiCredentialsView,
   Preflight,
+  ProviderApiType,
   ProviderDraft,
   ProviderView,
   RefreshProviderModelsRequest,
@@ -48,17 +50,40 @@ import type {
   ValidateProviderRequest,
   ValidateProviderResult
 } from '../../shared/settings'
+import { isProviderUsableByFramework } from '../../shared/settings'
 import {
   defaultVendorModel,
   getOfficialVendor,
   isOfficialVendorId,
+  resolveVendorApiType,
   resolveVendorBaseUrl,
-  resolveVendorModelsUrl
+  resolveVendorModelsUrl,
+  resolveVendorOpenAiBaseUrl
 } from '../../shared/provider-registry'
 import { resolveStorageRoot } from '../storage-root'
+import {
+  DEFAULT_AGENT_FRAMEWORK_ID,
+  getAgentFramework,
+  listAgentFrameworks,
+  type AgentFrameworkId,
+  type ResolvedAgentBackend
+} from '../agent-framework'
 import { createDefaultDetectDeps, detectClaude, type ClaudeDetectDeps } from './claude-detect'
+import {
+  createDefaultDetectDeps as createOpencodeDetectDeps,
+  detectOpencode,
+  type OpencodeDetectDeps
+} from './opencode-detect'
+import {
+  installManagedOpencode,
+  managedOpencodeDir,
+  type InstallManagedOpencodeOptions
+} from './managed-opencode'
+import { opencodeConfigDir } from '../agent-framework/opencode'
+import { ClaudeCodeSkillMaterializer } from '../skills/materializer'
 import { provisionAppClaudeConfigDir } from './claude-config-provision'
 import { detectNpmAvailable, runInstallWithFallback } from './claude-install'
+import { OPENCODE_INSTALL_TARGET } from './opencode-install'
 import { runEnvironmentCheck } from './environment-check'
 import {
   DEFAULT_REGISTRIES,
@@ -76,6 +101,7 @@ import { SettingsRepository } from './repository'
 import { sanitizeCustomMcpServer } from './repository'
 import { CONNECTOR_CATALOG } from '../connectors/catalog'
 import { getConnectorTools } from '../connectors/registry'
+import { renderConnectorInstructions } from '../connectors/skill-doc'
 import { SkillRegistry, type BundledSkill } from '../skills/registry'
 import { UserSkillRepository } from '../skills/user-skill-repository'
 import { decodeBoundedBase64 } from '../skills/import-limits'
@@ -128,6 +154,7 @@ export type SettingsServiceOptions = {
   repository?: SettingsRepository
   storageRoot?: string
   detectDeps?: ClaudeDetectDeps
+  opencodeDetectDeps?: OpencodeDetectDeps
   // The machine's own Claude config dir, read to reuse its login for the "local" provider. Injectable
   // so tests don't touch the real ~/.claude.
   userClaudeDir?: string
@@ -141,6 +168,10 @@ export type SettingsServiceOptions = {
   installManagedClaudeImpl?: (
     options: InstallManagedClaudeOptions
   ) => Promise<ManagedInstallOutcome>
+  // Same for the managed OpenCode installer.
+  installManagedOpencodeImpl?: (
+    options: InstallManagedOpencodeOptions
+  ) => Promise<ManagedInstallOutcome>
 }
 
 // Orchestrates the settings units (repository + crypto + detect/install + validate) behind one
@@ -150,12 +181,16 @@ class SettingsService {
   private readonly repository: SettingsRepository
   private readonly storageRoot: string
   private readonly detectDeps: ClaudeDetectDeps
+  private readonly opencodeDetectDeps: OpencodeDetectDeps
   private readonly userClaudeDir: string
   private readonly skillRegistry: SkillRegistry
   private readonly userSkills: UserSkillRepository
   private readonly executeClaudeProbe: ExecuteClaudeProbe
   private readonly installManagedClaudeImpl: (
     options: InstallManagedClaudeOptions
+  ) => Promise<ManagedInstallOutcome>
+  private readonly installManagedOpencodeImpl: (
+    options: InstallManagedOpencodeOptions
   ) => Promise<ManagedInstallOutcome>
   private providerSequence = 0
   // Skills force-loaded for the current turn: subtracted from the stored disabled set at spawn time so
@@ -172,11 +207,19 @@ class SettingsService {
       ...baseDetectDeps,
       extraDirs: [...(baseDetectDeps.extraDirs ?? []), managedClaudeDir(this.storageRoot)]
     }
+    // Same rationale for opencode: probe the app-managed dir so a managed opencode is re-detected
+    // (its bare `which/where` PATH lookup would otherwise never see the app-owned install dir).
+    const baseOpencodeDetectDeps = options.opencodeDetectDeps ?? createOpencodeDetectDeps()
+    this.opencodeDetectDeps = {
+      ...baseOpencodeDetectDeps,
+      extraDirs: [...(baseOpencodeDetectDeps.extraDirs ?? []), managedOpencodeDir(this.storageRoot)]
+    }
     this.userClaudeDir = options.userClaudeDir ?? defaultUserClaudeDir()
     this.skillRegistry = options.skillRegistry ?? new SkillRegistry()
     this.userSkills = options.userSkills ?? new UserSkillRepository(this.storageRoot)
     this.executeClaudeProbe = options.executeClaudeProbe ?? executeClaudeProbe
     this.installManagedClaudeImpl = options.installManagedClaudeImpl ?? installManagedClaude
+    this.installManagedOpencodeImpl = options.installManagedOpencodeImpl ?? installManagedOpencode
   }
 
   // Returns the raw stored settings document (unmasked), for main-process bootstrap needs (e.g. priming
@@ -191,11 +234,47 @@ class SettingsService {
 
     return {
       claude: settings.claude ?? {},
+      opencode: { resolvedPath: settings.opencodePath, version: settings.opencodeVersion },
       activeProviderId: settings.activeProviderId,
       activeModel: settings.activeModel,
       providers: settings.providers.map((provider) => this.toProviderView(provider)),
+      agentFrameworkId: settings.agentFrameworkId ?? DEFAULT_AGENT_FRAMEWORK_ID,
+      agentFrameworks: listAgentFrameworks().map((framework) => ({
+        id: framework.id,
+        displayName: framework.displayName,
+        supportsSkills: framework.supportsSkills,
+        supportedApiTypes: [...framework.supportedApiTypes]
+      })),
       onboardingCompletedAt: settings.onboardingCompletedAt
     }
+  }
+
+  // Selects the agent backend to drive; the caller reconnects so the choice applies to the next spawn.
+  async setAgentFramework(id: AgentFrameworkId): Promise<SettingsSnapshot> {
+    await this.repository.setAgentFramework(id)
+
+    return this.getSettingsView()
+  }
+
+  // Detects the opencode executable and persists its path, mirroring detectClaude. Returns the refreshed
+  // snapshot so the settings card reflects the result.
+  async detectOpencode(): Promise<SettingsSnapshot> {
+    const detected = await detectOpencode(this.opencodeDetectDeps)
+
+    if (detected) {
+      await this.repository.setOpencodeInfo(detected.resolvedPath, detected.version)
+    } else {
+      // Live probe found nothing. Only forget the stored record when its binary is actually gone from
+      // disk (a real uninstall) — a transient probe miss (e.g. a slow --version, a GUI PATH gap) must
+      // not wipe a still-installed opencode.
+      const cached = (await this.repository.getSettings()).opencodePath
+
+      if (cached && !(await this.pathExists(cached))) {
+        await this.repository.clearOpencodeInfo()
+      }
+    }
+
+    return this.getSettingsView()
   }
 
   // The full skill catalog across every source: bundled (featured) + imported + personal.
@@ -358,52 +437,128 @@ class SettingsService {
   // Computes the two startup gates, re-checking the claude path each call as the design requires.
   async getPreflight(): Promise<Preflight> {
     const settings = await this.repository.getSettings()
+    // Validate each recorded runtime exactly as the authoritative env check does — by invoking
+    // `--version`, not mere X_OK — so a corrupt-but-executable binary cannot pass preflight and get
+    // auto-selected as "ready" only to be rejected later by the env gate that actually runs it.
     const claudePathExists = settings.claude?.resolvedPath
-      ? await this.pathExists(settings.claude.resolvedPath)
+      ? (await this.detectDeps.getVersion(settings.claude.resolvedPath)) !== undefined
+      : false
+    const opencodePathExists = settings.opencodePath
+      ? (await this.opencodeDetectDeps.getVersion(settings.opencodePath)) !== undefined
+      : false
+
+    const agentFrameworkId = settings.agentFrameworkId ?? DEFAULT_AGENT_FRAMEWORK_ID
+    const framework = getAgentFramework(agentFrameworkId)
+    const activeProvider = settings.activeProviderId
+      ? settings.providers.find((provider) => provider.id === settings.activeProviderId)
+      : undefined
+    // Resolve compatibility here where the vendor registry is available (official apiType) and pass the
+    // boolean into the pure preflight computation.
+    const activeProviderCompatible = activeProvider
+      ? isProviderUsableByFramework(
+          { apiType: this.resolveProviderApiType(activeProvider), type: activeProvider.type },
+          framework
+        )
       : false
 
     return computePreflight({
       settings,
       claudePathExists,
-      isProviderKeyUsable: (provider) => this.isProviderKeyUsable(provider)
+      opencodePathExists,
+      agentFrameworkId,
+      isProviderKeyUsable: (provider) => this.isProviderKeyUsable(provider),
+      activeProviderCompatible
     })
   }
 
-  // Re-runs the complete host inspection on every app launch. Claude detection is part of the same
-  // pass so a runtime installed outside Open Science between launches is picked up immediately.
+  // Re-runs the complete host inspection on every app launch, for the SELECTED framework's runtime, so
+  // a runtime installed outside Open Science between launches is picked up and onboarding can be
+  // completed with Claude or OpenCode alone.
   async checkEnvironment(): Promise<EnvironmentCheckResult> {
-    // Prefer a previously recorded runtime that still runs over this launch's re-detection. This keeps
-    // a healthy app-managed (or manually chosen) executable from being silently replaced by a PATH
-    // entry discovered later — e.g. an npm `claude.cmd` that only works via a shell — and uses the
-    // `--version` probe (not mere file existence) as the real usability signal, so a stale-but-present
-    // path is never reported as healthy.
-    const cached = (await this.repository.getSettings()).claude
-    let claude: ClaudeDetectResult | undefined
+    const settings = await this.repository.getSettings()
+    const agentFrameworkId = settings.agentFrameworkId ?? DEFAULT_AGENT_FRAMEWORK_ID
+
+    // Detect every framework's runtime so onboarding can show them side by side; only the selected
+    // one's readiness gates Continue (enforced inside runEnvironmentCheck).
+    const [claudeRuntime, opencodeRuntime] = await Promise.all([
+      this.resolveClaudeRuntime(settings),
+      this.resolveOpencodeRuntime(settings)
+    ])
+
+    return runEnvironmentCheck({
+      storageRoot: this.storageRoot,
+      agentFrameworkId,
+      frameworks: [
+        {
+          id: 'claude-code',
+          label: getAgentFramework('claude-code').displayName,
+          runtime: claudeRuntime
+        },
+        {
+          id: 'opencode',
+          label: getAgentFramework('opencode').displayName,
+          runtime: opencodeRuntime
+        }
+      ],
+      encryptionAvailable: this.isEncryptionAvailable()
+    })
+  }
+
+  // Resolves the Claude runtime for the environment check. Prefers a previously recorded runtime that
+  // still runs over this launch's re-detection, keeping a healthy app-managed/manual executable from
+  // being replaced by a PATH entry discovered later; the `--version` probe (not mere file existence)
+  // is the usability signal, so a stale-but-present path is never reported healthy.
+  private async resolveClaudeRuntime(settings: StoredSettings): Promise<ClaudeDetectResult> {
+    const cached = settings.claude
 
     if (cached?.resolvedPath) {
       const version = await this.detectDeps.getVersion(cached.resolvedPath)
 
       if (version) {
-        claude = { found: true, path: cached.resolvedPath, version }
-
         // Keep the stored version in sync when an in-place update changed it under the same path.
         if (version !== cached.version) {
           await this.repository.setClaudeInfo({ resolvedPath: cached.resolvedPath, version })
         }
+
+        return { found: true, path: cached.resolvedPath, version }
       }
     }
 
-    // No healthy recorded runtime: fall back to a full detection pass, which persists what it finds so
-    // a runtime installed outside Open Science between launches is picked up.
-    if (!claude) {
-      claude = await this.detectClaude()
+    // No healthy recorded runtime: full detection, which persists what it finds.
+    return this.detectClaude()
+  }
+
+  // Same recorded-runtime-first logic for OpenCode, mapped into the shared detect-result shape.
+  private async resolveOpencodeRuntime(settings: StoredSettings): Promise<ClaudeDetectResult> {
+    const cachedPath = settings.opencodePath
+
+    if (cachedPath) {
+      const version = await this.opencodeDetectDeps.getVersion(cachedPath)
+
+      if (version) {
+        if (version !== settings.opencodeVersion) {
+          await this.repository.setOpencodeInfo(cachedPath, version)
+        }
+
+        return { found: true, path: cachedPath, version }
+      }
     }
 
-    return runEnvironmentCheck({
-      storageRoot: this.storageRoot,
-      claude,
-      encryptionAvailable: this.isEncryptionAvailable()
-    })
+    // Probe once (not twice): detect, then persist a hit or clear a truly-gone record — same rule as
+    // detectOpencode — so the card/gates stay accurate without running the full PATH/version probe again.
+    const detected = await detectOpencode(this.opencodeDetectDeps)
+
+    if (detected) {
+      await this.repository.setOpencodeInfo(detected.resolvedPath, detected.version)
+
+      return { found: true, path: detected.resolvedPath, version: detected.version }
+    }
+
+    if (cachedPath && !(await this.pathExists(cachedPath))) {
+      await this.repository.clearOpencodeInfo()
+    }
+
+    return { found: false }
   }
 
   // Detects claude and persists the resolved path/version for later spawns.
@@ -412,6 +567,15 @@ class SettingsService {
 
     if (result.found && result.path) {
       await this.repository.setClaudeInfo({ resolvedPath: result.path, version: result.version })
+    } else {
+      // Live probe missed it. A GUI launch can have a narrower PATH than the installing shell, so only
+      // forget the cached record when the stored binary is actually gone from disk (a real uninstall) —
+      // mirroring checkEnvironment's cached-path resilience so the status surfaces cannot disagree.
+      const cached = (await this.repository.getSettings()).claude
+
+      if (cached?.resolvedPath && !(await this.pathExists(cached.resolvedPath))) {
+        await this.repository.setClaudeInfo({})
+      }
     }
 
     return result
@@ -463,6 +627,44 @@ class SettingsService {
 
     if (result.ok) {
       await this.detectClaude()
+    }
+
+    return result
+  }
+
+  // Installs OpenCode from the requested source (app-managed download is the first recommendation, like
+  // Claude). Managed downloads the native binary and persists its path + version; npm/script shell out
+  // and then re-detect. Streams progress on the shared install-log channel.
+  async installOpencode(
+    request: InstallOpencodeRequest,
+    onEvent: (event: ClaudeInstallEvent) => void
+  ): Promise<ClaudeInstallResult> {
+    this.providerSequence += 1
+    const installId = `install-opencode-${Date.now()}-${this.providerSequence}`
+
+    if (request.source === 'managed') {
+      const outcome = await this.installManagedOpencodeImpl({
+        installId,
+        onEvent,
+        dataRoot: this.storageRoot
+      })
+
+      if (outcome.result.ok && outcome.resolvedPath) {
+        await this.repository.setOpencodeInfo(outcome.resolvedPath, outcome.version)
+      }
+
+      return outcome.result
+    }
+
+    const result = await runInstallWithFallback({
+      source: request.source,
+      installId,
+      onEvent,
+      installTarget: OPENCODE_INSTALL_TARGET
+    })
+
+    if (result.ok) {
+      await this.detectOpencode()
     }
 
     return result
@@ -562,6 +764,8 @@ class SettingsService {
 
       provider.baseUrl = baseUrl
       provider.model = model
+      // Which chat API this gateway speaks (drives per-framework availability); defaults to anthropic.
+      provider.apiType = request.apiType ?? existing?.apiType ?? 'anthropic'
       credentialsChanged = Boolean(request.key)
     } else {
       // claude-default: optional model override, no credentials of its own.
@@ -695,6 +899,25 @@ class SettingsService {
     const settings = await this.repository.getSettings()
 
     return settings.connectors
+  }
+
+  // Materializes the enabled skill set into opencode's isolated config dir (same skills/<name>/SKILL.md
+  // layout Claude uses), so opencode's native skill tool discovers them. A turn-forced skill overrides
+  // its disabled state, mirroring the Claude provisioning path.
+  private async materializeOpencodeSkills(settings: StoredSettings): Promise<void> {
+    const disabled = new Set(
+      (settings.disabledSkillIds ?? []).filter((id) => !this.turnForcedSkillIds.has(id))
+    )
+    const enabled = (await this.skillCatalog()).filter((skill) => !disabled.has(skill.id))
+
+    await new ClaudeCodeSkillMaterializer().sync(opencodeConfigDir(this.storageRoot), enabled)
+  }
+
+  // Bundled connectors the user hasn't turned off (default-on), for opencode instruction delivery.
+  private enabledConnectorIds(connectors: StoredConnectors | undefined): string[] {
+    const disabled = new Set(connectors?.disabledConnectorIds ?? [])
+
+    return CONNECTOR_CATALOG.map((meta) => meta.id).filter((id) => !disabled.has(id))
   }
 
   // Projects the bundled catalog into renderer views, applying the stored opt-out / auto-allow sets.
@@ -903,7 +1126,15 @@ class SettingsService {
   // Builds the spawn env for the active provider, read fresh so switching takes effect on reconnect.
   async resolveActiveSpawnConfig(): Promise<AgentSpawnConfig> {
     const settings = await this.repository.getSettings()
-    const executablePath = settings.claude?.resolvedPath
+    let executablePath = settings.claude?.resolvedPath
+
+    // Trust the stored path only if it still exists. A user who uninstalled Claude leaves a stale path
+    // behind; spawning it launches a ghost that dies immediately (surfacing as write EPIPE), so fall
+    // back to a live detect and, if that also finds nothing, fail with a clear, actionable message.
+    if (!executablePath || !(await this.pathExists(executablePath))) {
+      const detected = await detectClaude(this.detectDeps)
+      executablePath = detected.found ? detected.path : undefined
+    }
 
     if (!executablePath) {
       throw new Error('Claude executable is not configured. Complete onboarding in settings.')
@@ -951,6 +1182,113 @@ class SettingsService {
     return { envOverrides, executablePath }
   }
 
+  // Resolves the active agent backend for one connect: the selected framework plus its spawn inputs.
+  // Claude reuses the existing provider-env path unchanged; other frameworks (opencode) map the active
+  // provider to their own native config (a generated opencode.json) via the framework adapter and get
+  // it written to disk before spawn. The framework can be forced with OPEN_SCIENCE_AGENT_FRAMEWORK for
+  // the spike until the settings selector lands.
+  async resolveActiveAgentBackend(): Promise<ResolvedAgentBackend> {
+    const settings = await this.repository.getSettings()
+    const forced = process.env.OPEN_SCIENCE_AGENT_FRAMEWORK
+    const frameworkId: AgentFrameworkId =
+      forced === 'opencode' || forced === 'claude-code'
+        ? forced
+        : (settings.agentFrameworkId ?? DEFAULT_AGENT_FRAMEWORK_ID)
+    const framework = getAgentFramework(frameworkId)
+
+    // Enforce provider↔framework compatibility up front so an incompatible pair fails with a clear
+    // message instead of spawning an agent that can't use the credentials — e.g. OpenCode + a Local
+    // Claude provider (Claude-only login), or Claude + an OpenAI-only gateway.
+    const activeProvider = settings.activeProviderId
+      ? settings.providers.find((provider) => provider.id === settings.activeProviderId)
+      : undefined
+
+    if (!activeProvider) {
+      throw new Error('No active model provider is configured. Configure one in settings.')
+    }
+
+    if (
+      !isProviderUsableByFramework(
+        { apiType: this.resolveProviderApiType(activeProvider), type: activeProvider.type },
+        framework
+      )
+    ) {
+      throw new Error(
+        `The active model isn't compatible with ${framework.displayName}. Open Settings → Model to pick a compatible model or switch the agent framework.`
+      )
+    }
+
+    if (framework.id === 'claude-code') {
+      // Unchanged Claude path: skills provisioning + Anthropic-shaped env + local-auth handling.
+      const { envOverrides, executablePath } = await this.resolveActiveSpawnConfig()
+
+      return { framework, executablePath, env: envOverrides }
+    }
+
+    // opencode maps the provider onto its own isolated config; the adapter writes it before spawn, and
+    // the enabled skill set is materialized into opencode's config dir (its native skill tool discovers
+    // them on-demand, same SKILL.md layout as Claude).
+    await this.materializeOpencodeSkills(settings)
+    const executablePath = await this.resolveOpencodeExecutable(settings.opencodePath)
+    const provider = this.resolveProvider(activeProvider, settings.activeModel)
+    const modelConfig = framework.prepareModelConfig(provider, {
+      storageRoot: this.storageRoot,
+      executablePath,
+      // Connector conventions + tools, so opencode uses host.mcp instead of raw HTTP (it has no skill
+      // docs like Claude). Enabled bundled connectors only.
+      instructions: renderConnectorInstructions(this.enabledConnectorIds(settings.connectors))
+    })
+    await this.writeAgentConfigFiles(modelConfig.configFiles)
+
+    // opencode picks the model from its own provider config; drive the app's active model over the ACP
+    // session model configOption (applied best-effort per session by the runtime).
+    return {
+      framework,
+      executablePath,
+      env: modelConfig.env ?? {},
+      args: modelConfig.args,
+      sessionModel: provider.model
+    }
+  }
+
+  // Locates the opencode binary: an explicitly stored path wins, else a best-effort PATH lookup.
+  private async resolveOpencodeExecutable(storedPath: string | undefined): Promise<string> {
+    // Trust the stored path only if it still exists. A user who uninstalled opencode leaves a stale
+    // path behind; spawning it launches a ghost that dies immediately (surfacing as write EPIPE), so
+    // fall back to a live detect and, if that also finds nothing, fail with a clear, actionable message.
+    if (storedPath && (await this.pathExists(storedPath))) return storedPath
+
+    const detected = await detectOpencode(this.opencodeDetectDeps)
+
+    if (!detected) {
+      throw new Error(
+        'opencode executable not found. Install opencode or set its path in settings.'
+      )
+    }
+
+    return detected.resolvedPath
+  }
+
+  // Writes a framework's generated config files (e.g. opencode.json) to disk ahead of spawn.
+  private async writeAgentConfigFiles(
+    files: { path: string; content: string }[] | undefined
+  ): Promise<void> {
+    for (const file of files ?? []) {
+      await mkdir(dirname(file.path), { recursive: true })
+      await writeFile(file.path, file.content, 'utf8')
+    }
+  }
+
+  // The chat API a provider speaks: official providers come from the registry, custom gateways from
+  // their stored/drafted apiType, everything else defaults to Anthropic /v1/messages.
+  private resolveProviderApiType(provider: StoredProvider): ProviderApiType {
+    if (provider.type === 'official' && provider.vendorId) {
+      return resolveVendorApiType(provider.vendorId)
+    }
+
+    return provider.apiType ?? 'anthropic'
+  }
+
   // Maps a stored provider to its masked renderer view, flagging custom keys that no longer decrypt.
   private toProviderView(provider: StoredProvider): ProviderView {
     const hasKey = Boolean(provider.keyRef)
@@ -962,6 +1300,7 @@ class SettingsService {
       id: provider.id,
       type: provider.type,
       name: provider.name,
+      apiType: this.resolveProviderApiType(provider),
       baseUrl: provider.baseUrl,
       model: provider.model,
       vendorId: provider.vendorId,
@@ -1022,8 +1361,10 @@ class SettingsService {
       return {
         type: 'custom',
         baseUrl: resolveVendorBaseUrl(provider.vendorId, provider.region),
+        openaiBaseUrl: resolveVendorOpenAiBaseUrl(provider.vendorId, provider.region),
         model: modelOverride ?? defaultVendorModel(provider.vendorId),
-        key
+        key,
+        apiType: this.resolveProviderApiType(provider)
       }
     }
 
@@ -1031,7 +1372,8 @@ class SettingsService {
       type: provider.type,
       baseUrl: provider.baseUrl,
       model: modelOverride ?? provider.model,
-      key
+      key,
+      apiType: this.resolveProviderApiType(provider)
     }
   }
 
@@ -1042,8 +1384,11 @@ class SettingsService {
       return {
         type: 'custom',
         baseUrl: resolveVendorBaseUrl(draft.vendorId, draft.region),
+        openaiBaseUrl: resolveVendorOpenAiBaseUrl(draft.vendorId, draft.region),
         model: draft.model ?? defaultVendorModel(draft.vendorId),
-        key: draft.key
+        key: draft.key,
+        // Official vendors declare their own endpoint; a custom draft carries the user's choice.
+        apiType: resolveVendorApiType(draft.vendorId)
       }
     }
 
@@ -1051,7 +1396,8 @@ class SettingsService {
       type: draft.type,
       baseUrl: draft.baseUrl,
       model: draft.model,
-      key: draft.key
+      key: draft.key,
+      apiType: draft.apiType ?? 'anthropic'
     }
   }
 

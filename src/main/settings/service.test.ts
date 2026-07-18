@@ -1,5 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execPath } from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -47,6 +47,9 @@ const createService = (
     userClaudeDir?: string
     executeClaudeProbe?: (executablePath: string, env: NodeJS.ProcessEnv) => Promise<void>
     installManagedClaudeImpl?: ManagedInstallImpl
+    installManagedOpencodeImpl?: ManagedInstallImpl
+    // When set, opencode detection resolves this path/version; otherwise it finds nothing.
+    opencodeDetected?: { path: string; version: string }
   } = {}
 ): InstanceType<typeof SettingsService> =>
   new SettingsService({
@@ -57,12 +60,27 @@ const createService = (
     executeClaudeProbe: options.executeClaudeProbe,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     installManagedClaudeImpl: options.installManagedClaudeImpl as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    installManagedOpencodeImpl: options.installManagedOpencodeImpl as any,
     detectDeps: {
       env: {},
       homePath: '/home',
       platform: 'linux',
       isExecutable: () => Promise.resolve(true),
       getVersion: () => Promise.resolve(detectResult.version),
+      resolveNpmBinDirs: () => Promise.resolve([])
+    },
+    // Isolated so opencode detection never probes the real host during tests. Finds nothing unless the
+    // caller declares an installed path (isExecutable/getVersion then answer for exactly that path).
+    opencodeDetectDeps: {
+      env: options.opencodeDetected ? { PATH: dirname(options.opencodeDetected.path) } : {},
+      homePath: '/home',
+      platform: 'linux',
+      isExecutable: (path) => Promise.resolve(path === options.opencodeDetected?.path),
+      getVersion: (path) =>
+        Promise.resolve(
+          path === options.opencodeDetected?.path ? options.opencodeDetected.version : undefined
+        ),
       resolveNpmBinDirs: () => Promise.resolve([])
     }
   })
@@ -296,7 +314,36 @@ describe('SettingsService: preflight & spawn config', () => {
     await service.validateProvider({ providerId: created.id })
     await service.setActiveProvider(created.id)
 
-    expect(await service.getPreflight()).toEqual({ claudeReady: true, activeProviderReady: true })
+    expect(await service.getPreflight()).toEqual({
+      claudeReady: true,
+      opencodeReady: false,
+      agentFrameworkId: 'claude-code',
+      agentReady: true,
+      activeProviderReady: true
+    })
+  })
+
+  it('does not report claude ready when the recorded binary exists but fails --version', async () => {
+    // Executable-but-corrupt runtime: execPath is a real file (X_OK passes) yet `--version` fails.
+    // Preflight must validate via --version like the env check, so this must NOT pass as ready.
+    const service = createService({ found: false })
+    await repository.setClaudeInfo({ resolvedPath: execPath, version: '2.1.0' })
+
+    const preflight = await service.getPreflight()
+
+    expect(preflight.claudeReady).toBe(false)
+    expect(preflight.agentReady).toBe(false)
+  })
+
+  it('does not report opencode ready when the recorded binary exists but fails --version', async () => {
+    // Same for OpenCode: the recorded path is a real executable, but its --version probe fails
+    // (no opencodeDetected declared, so the injected getVersion returns undefined for it).
+    const service = createService({ found: true, path: '/bin/claude', version: '2.1.0' })
+    await repository.setOpencodeInfo(execPath, '1.18.3')
+
+    const preflight = await service.getPreflight()
+
+    expect(preflight.opencodeReady).toBe(false)
   })
 
   it('builds spawn env from the active provider with the decrypted key', async () => {
@@ -554,8 +601,22 @@ describe('SettingsService: official vendors', () => {
     })
 
     expect(result.ok).toBe(true)
-    // The probe hits the registry base URL (+ the client's /v1/messages suffix).
-    expect(fetchMock.mock.calls[0][0]).toBe('https://api.deepseek.com/anthropic/v1/messages')
+    // DeepSeek is a dual-endpoint vendor (apiType 'both'), so the probe prefers its OpenAI base +
+    // /v1/chat/completions rather than the Anthropic route.
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.deepseek.com/v1/chat/completions')
+  })
+
+  it('validates an anthropic-only official draft against its /v1/messages route', async () => {
+    const service = createService()
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // Claude (anthropic-only) keeps the Anthropic Messages probe.
+    await service.validateProvider({
+      draft: { type: 'official', vendorId: 'anthropic', key: 'sk-a' }
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.anthropic.com/v1/messages')
   })
 })
 
@@ -827,6 +888,108 @@ describe('installClaude (app-managed source)', () => {
   })
 })
 
+describe('installOpencode', () => {
+  it('routes a managed install through the managed installer and persists path + version', async () => {
+    const service = createService(undefined, {
+      installManagedOpencodeImpl: async ({ installId }) => ({
+        result: { installId, ok: true },
+        resolvedPath: '/data/opencode-managed/bin/opencode',
+        version: '1.18.3'
+      })
+    })
+
+    const result = await service.installOpencode({ source: 'managed' }, () => undefined)
+
+    expect(result.ok).toBe(true)
+    expect((await service.getSettingsView()).opencode).toEqual({
+      resolvedPath: '/data/opencode-managed/bin/opencode',
+      version: '1.18.3'
+    })
+  })
+
+  it('does not persist opencode info when the managed install fails', async () => {
+    const service = createService(undefined, {
+      installManagedOpencodeImpl: async ({ installId }) => ({
+        result: { installId, ok: false, error: 'all registries failed' }
+      })
+    })
+
+    const result = await service.installOpencode({ source: 'managed' }, () => undefined)
+
+    expect(result.ok).toBe(false)
+    expect((await service.getSettingsView()).opencode).toEqual({})
+  })
+})
+
+describe('detectOpencode', () => {
+  it('clears a stale record when nothing runnable is found (e.g. after an uninstall)', async () => {
+    // Simulate a prior install still recorded in settings.
+    await repository.setOpencodeInfo('/gone/bin/opencode', '1.18.3')
+    const service = createService() // default deps find nothing
+
+    const snapshot = await service.detectOpencode()
+
+    // The stale path/version are forgotten so the card and gates reflect the uninstall.
+    expect(snapshot.opencode).toEqual({})
+    expect((await repository.getSettings()).opencodePath).toBeUndefined()
+  })
+
+  it('records the detected path + version when opencode is present', async () => {
+    const service = createService(undefined, {
+      opencodeDetected: { path: '/usr/local/bin/opencode', version: '1.19.0' }
+    })
+
+    const snapshot = await service.detectOpencode()
+
+    expect(snapshot.opencode).toEqual({
+      resolvedPath: '/usr/local/bin/opencode',
+      version: '1.19.0'
+    })
+  })
+
+  it('keeps a still-present record when the live probe misses (GUI PATH gap, not an uninstall)', async () => {
+    // A real executable the probe fails to see (e.g. narrower GUI PATH). The record must survive.
+    const present = join(storageRoot, 'opencode-present')
+    await writeFile(present, '', 'utf8')
+    await chmod(present, 0o755)
+    await repository.setOpencodeInfo(present, '1.18.3')
+    const service = createService() // default deps find nothing
+
+    const snapshot = await service.detectOpencode()
+
+    expect(snapshot.opencode).toEqual({ resolvedPath: present, version: '1.18.3' })
+  })
+})
+
+describe('detectClaude hardening', () => {
+  it('forgets the recorded claude when its binary is gone from disk (uninstall)', async () => {
+    await repository.setClaudeInfo({ resolvedPath: '/gone/bin/claude', version: '2.1.0' })
+    // found:false + version:undefined makes the injected probe report nothing runnable.
+    const service = createService({ found: false, path: undefined, version: undefined })
+
+    await service.detectClaude()
+
+    // The stale path is forgotten (an empty claude record sanitizes away to undefined on read).
+    expect((await repository.getSettings()).claude?.resolvedPath).toBeUndefined()
+  })
+
+  it('keeps the cached claude on a transient probe miss when its binary still exists', async () => {
+    const present = join(storageRoot, 'claude-present')
+    await writeFile(present, '', 'utf8')
+    await chmod(present, 0o755)
+    await repository.setClaudeInfo({ resolvedPath: present, version: '2.1.0' })
+    const service = createService({ found: false, path: undefined, version: undefined })
+
+    await service.detectClaude()
+
+    // A GUI PATH gap must not wipe a still-installed claude.
+    expect((await repository.getSettings()).claude).toEqual({
+      resolvedPath: present,
+      version: '2.1.0'
+    })
+  })
+})
+
 describe('checkEnvironment', () => {
   it('keeps a cached executable that still runs when a GUI PATH cannot rediscover it', async () => {
     await repository.setClaudeInfo({ resolvedPath: execPath, version: '2.1.0' })
@@ -847,8 +1010,8 @@ describe('checkEnvironment', () => {
 
     const result = await service.checkEnvironment()
 
-    expect(result.claude).toEqual({ found: true, path: execPath, version: '2.1.0' })
-    expect(result.checks.find((check) => check.id === 'claude')?.status).toBe('passed')
+    expect(result.runtime).toEqual({ found: true, path: execPath, version: '2.1.0' })
+    expect(result.checks.find((check) => check.id === 'agent')?.status).toBe('passed')
   })
 
   it('does not overwrite a healthy recorded executable with a freshly detected PATH entry', async () => {
@@ -875,7 +1038,7 @@ describe('checkEnvironment', () => {
     const result = await service.checkEnvironment()
 
     // The recorded runtime is retained rather than being replaced by the PATH discovery.
-    expect(result.claude).toEqual({ found: true, path: execPath, version: '2.1.0' })
+    expect(result.runtime).toEqual({ found: true, path: execPath, version: '2.1.0' })
     expect((await repository.getSettings()).claude?.resolvedPath).toBe(execPath)
   })
 
@@ -901,7 +1064,60 @@ describe('checkEnvironment', () => {
 
     const result = await service.checkEnvironment()
 
-    expect(result.claude).toEqual({ found: true, path: found, version: '2.2.0' })
+    expect(result.runtime).toEqual({ found: true, path: found, version: '2.2.0' })
     expect((await repository.getSettings()).claude?.resolvedPath).toBe(found)
+  })
+
+  it('checks both framework runtimes together and gates on the selected one (OpenCode)', async () => {
+    await repository.setAgentFramework('opencode')
+    // Claude is detectable (default detectDeps) and OpenCode is declared installed; both rows appear,
+    // but the result's runtime + gating reflect the SELECTED framework (OpenCode).
+    const service = createService(undefined, {
+      opencodeDetected: { path: '/usr/local/bin/opencode', version: '1.19.0' }
+    })
+
+    const result = await service.checkEnvironment()
+
+    const agentRows = result.checks.filter((check) => check.id === 'agent')
+    expect(agentRows.map((row) => row.label)).toEqual(['Claude Code runtime', 'OpenCode runtime'])
+    expect(agentRows.every((row) => row.status === 'passed')).toBe(true)
+    expect(result.agentFrameworkId).toBe('opencode')
+    expect(result.runtime).toEqual({
+      found: true,
+      path: '/usr/local/bin/opencode',
+      version: '1.19.0'
+    })
+  })
+
+  it('persists a freshly detected OpenCode runtime discovered during the dual probe', async () => {
+    // No recorded opencode; the parallel probe detects one on PATH and must record it so later
+    // gates/cards read the same runtime without re-probing.
+    const service = createService(undefined, {
+      opencodeDetected: { path: '/usr/local/bin/opencode', version: '1.19.0' }
+    })
+
+    await service.checkEnvironment()
+
+    const settings = await repository.getSettings()
+    expect(settings.opencodePath).toBe('/usr/local/bin/opencode')
+    expect(settings.opencodeVersion).toBe('1.19.0')
+  })
+
+  it('gates on the selected framework: OpenCode selected but missing blocks while Claude passes', async () => {
+    await repository.setAgentFramework('opencode')
+    // Claude is detectable (default detectDeps); OpenCode is declared absent (no opencodeDetected).
+    const service = createService()
+
+    const result = await service.checkEnvironment()
+
+    const agentRows = result.checks.filter((check) => check.id === 'agent')
+    expect(agentRows.map((row) => `${row.label}:${row.status}`)).toEqual([
+      'Claude Code runtime:passed',
+      'OpenCode runtime:failed'
+    ])
+    // Selection drives readiness: the missing selected runtime blocks Continue even though Claude runs.
+    expect(result.agentFrameworkId).toBe('opencode')
+    expect(result.ready).toBe(false)
+    expect(result.runtime).toEqual({ found: false })
   })
 })

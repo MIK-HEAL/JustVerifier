@@ -17,6 +17,7 @@ import type { MessagePart } from '../../../../shared/session-persistence'
 import { usePreviewWorkbenchStore } from '../../stores/preview-workbench-store'
 import { useSessionStore, type ChatMessage } from '../../stores/session-store'
 import { useAcpRuntime } from './useAcpRuntime'
+import { buildHistoryPreamble } from './history-preamble'
 import { applyWorkspaceRuntimeEvent, syncWorkspacePermissionState } from './workspace-events'
 
 type SendWorkspaceMessageInput = {
@@ -84,6 +85,15 @@ const getResumeFailureMessage = (error: unknown): string => {
 
   if (/connection (failed|was superseded)|ACP connection/i.test(message)) {
     return 'Could not reconnect to the agent; check it is installed, then click Resume to retry.'
+  }
+
+  // Model↔framework mismatch is now flagged proactively in Settings → Model, so keep this soft and
+  // actionable rather than an alarming "resume failed" — the fix lives in settings, not here. Anchor
+  // to the specific marker from the thrown error (settings/service.ts: "The active model isn't
+  // compatible with <framework>…") so unrelated "not compatible with" errors — notably an ACP
+  // protocol-version mismatch — fall through to the default message instead of being mislabeled.
+  if (/active model isn'?t compatible with/i.test(message)) {
+    return "The active model isn't compatible with this agent framework. Open Settings → Model to pick a compatible model or switch frameworks."
   }
 
   const detail = unwrapResumeErrorDetail(message)
@@ -379,14 +389,24 @@ const sendWorkspaceMessage = async (
     if (!appended) return undefined
 
     // Persisted sessions are marked running locally before async resume closes duplicate submits.
+    // A resume that lands on a freshly-adopted session (framework switch, or an unresumable restart)
+    // lost the agent's context, so replay the prior turns as a preamble on this first prompt.
+    let historyPreamble: string | undefined
+
     if (resumeCwd) {
       try {
-        await runtime.resumeSession(
+        const resumeResult = await runtime.resumeSession(
           targetSessionId,
           resumeCwd,
           sessionProjectName,
           currentSession?.permissionProfile ?? permissionProfile
         )
+
+        if (resumeResult?.contextReset && currentSession) {
+          // currentSession was captured before the new user message was appended, so this is the
+          // prior conversation only — the turn being sent is not duplicated into the preamble.
+          historyPreamble = buildHistoryPreamble(currentSession.messages)
+        }
       } catch (error) {
         useSessionStore.getState().failRun(targetSessionId, getResumeFailureMessage(error))
         return appended
@@ -411,7 +431,14 @@ const sendWorkspaceMessage = async (
 
     // The hook returns after local state is updated; event listeners handle the streamed result.
     void runtime
-      .sendPrompt(targetSessionId, content, promptAttachments, forcedSkillIds, referencedArtifacts)
+      .sendPrompt(
+        targetSessionId,
+        content,
+        promptAttachments,
+        forcedSkillIds,
+        referencedArtifacts,
+        historyPreamble
+      )
       .then((snapshot) => {
         if (!snapshot) {
           void failOrMarkDisconnected(targetSessionId, 'Agent run failed')
@@ -695,6 +722,7 @@ const useWorkspaceAgentRuntime = (): {
 
 export {
   createWorkspaceRuntimeEventProcessor,
+  getResumeFailureMessage,
   markRunningSessionsDisconnectedOnDrop,
   processVisibleWorkspaceRuntimeEvents,
   resumeInterruptedWorkspaceSession,

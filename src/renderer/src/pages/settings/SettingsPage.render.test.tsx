@@ -14,7 +14,20 @@ let root: Root
 const installApi = (): void => {
   ;(window as unknown as { api: unknown }).api = {
     settings: {
-      getSettings: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
+      getSettings: vi.fn().mockResolvedValue({
+        claude: {},
+        opencode: {},
+        providers: [],
+        agentFrameworkId: 'claude-code',
+        agentFrameworks: [{ id: 'claude-code', displayName: 'Claude Code', supportsSkills: true }]
+      }),
+      detectOpencode: vi.fn().mockResolvedValue({
+        claude: {},
+        opencode: {},
+        providers: [],
+        agentFrameworkId: 'claude-code',
+        agentFrameworks: [{ id: 'claude-code', displayName: 'Claude Code', supportsSkills: true }]
+      }),
       getPreflight: vi.fn().mockResolvedValue({ claudeReady: true, activeProviderReady: true }),
       isEncryptionAvailable: vi.fn().mockResolvedValue(true),
       isNpmAvailable: vi.fn().mockResolvedValue(true),
@@ -142,7 +155,9 @@ describe('SettingsPage layout', () => {
     // The Model panel content is present (Claude + Providers sections).
     expect(document.body.textContent).toContain('Claude')
     expect(document.body.textContent).toContain('Providers')
-    expect(document.body.querySelectorAll('[data-slot="settings-section"]')).toHaveLength(2)
+    expect(document.body.textContent).toContain('Agent framework')
+    // Agent framework + Claude + Providers.
+    expect(document.body.querySelectorAll('[data-slot="settings-section"]')).toHaveLength(3)
     expect(document.body.querySelector('[data-slot="settings-row"]')).not.toBeNull()
   })
 

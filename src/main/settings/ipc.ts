@@ -9,9 +9,11 @@ import type {
   PreviewSkillZipRequest,
   ScanRepoRequest,
   InstallClaudeRequest,
+  InstallOpencodeRequest,
   ClaudeInstallEvent,
   RefreshProviderModelsRequest,
   SetActiveProviderRequest,
+  SetAgentFrameworkRequest,
   AddCustomServerRequest,
   RemoveCustomServerRequest,
   SetCustomServerEnabledRequest,
@@ -26,6 +28,9 @@ import type {
   ValidateProviderRequest
 } from '../../shared/settings'
 import { createDefaultSettingsService, SettingsService } from './service'
+import { createLogger } from '../logger'
+
+const log = createLogger('settings-ipc')
 
 // IPC channel names for the settings/onboarding surface. Kept together so preload and main agree.
 // Carries both log lines and progress ticks (a `ClaudeInstallEvent` discriminated union).
@@ -64,6 +69,10 @@ const registerSettingsIpcHandlers = ({
   ipcMain.handle('settings:npm-available', () => service.isNpmAvailable())
   ipcMain.handle('settings:check-environment', () => service.checkEnvironment())
   ipcMain.handle('settings:detect-claude', () => service.detectClaude())
+  ipcMain.handle('settings:detect-opencode', () => service.detectOpencode())
+  ipcMain.handle('settings:install-opencode', (_event, request: InstallOpencodeRequest) =>
+    service.installOpencode(request, broadcastInstallEvent)
+  )
 
   ipcMain.handle('settings:install-claude', (_event, request: InstallClaudeRequest) =>
     service.installClaude(request, broadcastInstallEvent)
@@ -90,6 +99,19 @@ const registerSettingsIpcHandlers = ({
       const snapshot = await service.setActiveProvider(request.id, request.model)
 
       // Switching providers requires a fresh agent process so the new credentials take effect.
+      onActiveProviderChanged?.()
+
+      return snapshot
+    }
+  )
+  ipcMain.handle(
+    'settings:set-agent-framework',
+    async (_event, request: SetAgentFrameworkRequest) => {
+      log.info('set agent framework requested', { id: request.id })
+      const snapshot = await service.setAgentFramework(request.id)
+
+      // Switching frameworks needs a fresh agent process, exactly like a provider switch — the live
+      // process is a different backend binary, so the choice only takes effect on reconnect.
       onActiveProviderChanged?.()
 
       return snapshot

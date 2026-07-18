@@ -73,10 +73,12 @@ import type {
   DeleteProviderRequest,
   EnvironmentCheckResult,
   InstallClaudeRequest,
+  InstallOpencodeRequest,
   Preflight,
   RefreshProviderModelsRequest,
   RefreshProviderModelsResult,
   SetActiveProviderRequest,
+  SetAgentFrameworkRequest,
   SetSkillEnabledRequest,
   SettingsSnapshot,
   SkillDetailView,
@@ -167,10 +169,13 @@ interface OpenScienceAPI {
     isNpmAvailable(): Promise<boolean>
     checkEnvironment(): Promise<EnvironmentCheckResult>
     detectClaude(): Promise<ClaudeDetectResult>
+    detectOpencode(): Promise<SettingsSnapshot>
     installClaude(request: InstallClaudeRequest): Promise<ClaudeInstallResult>
+    installOpencode(request: InstallOpencodeRequest): Promise<ClaudeInstallResult>
     upsertProvider(request: UpsertProviderRequest): Promise<SettingsSnapshot>
     deleteProvider(request: DeleteProviderRequest): Promise<SettingsSnapshot>
     setActiveProvider(request: SetActiveProviderRequest): Promise<SettingsSnapshot>
+    setAgentFramework(request: SetAgentFrameworkRequest): Promise<SettingsSnapshot>
     validateProvider(request: ValidateProviderRequest): Promise<ValidateProviderResult>
     refreshProviderModels(
       request: RefreshProviderModelsRequest

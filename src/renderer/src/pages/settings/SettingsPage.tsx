@@ -18,8 +18,11 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings-store'
+import { AgentFrameworkSection } from './AgentFrameworkSection'
+import { ModelFrameworkCompatibilityAlert } from './ModelFrameworkCompatibilityAlert'
 import { ClaudeInstallCard } from './ClaudeInstallCard'
 import { ClaudeStatusCard } from './ClaudeStatusCard'
+import { OpencodeStatusCard } from './OpencodeStatusCard'
 import { GeneralPanel } from './GeneralPanel'
 import { StoragePanel } from './StoragePanel'
 import { SkillsPanel, type SkillsView } from './SkillsPanel'
@@ -54,6 +57,7 @@ const toFormValue = (provider: ProviderView): ProviderFormValue =>
     name: provider.name,
     baseUrl: provider.baseUrl ?? '',
     model: provider.model ?? '',
+    apiType: provider.apiType ?? 'anthropic',
     vendorId: provider.vendorId,
     region: provider.region
   })
@@ -67,6 +71,7 @@ const toUpsertRequest = (
   name: value.name,
   baseUrl: value.baseUrl,
   model: value.model,
+  apiType: value.apiType,
   vendorId: value.vendorId,
   region: value.region,
   key: value.key || undefined
@@ -130,6 +135,11 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   const providers = useSettingsStore((state) => state.providers)
   const activeProviderId = useSettingsStore((state) => state.activeProviderId)
   const isDetectingClaude = useSettingsStore((state) => state.isDetectingClaude)
+  const agentFrameworkId = useSettingsStore((state) => state.agentFrameworkId)
+  const opencode = useSettingsStore((state) => state.opencode)
+  const isDetectingOpencode = useSettingsStore((state) => state.isDetectingOpencode)
+  const detectOpencode = useSettingsStore((state) => state.detectOpencode)
+  const installOpencode = useSettingsStore((state) => state.installOpencode)
   const isInstalling = useSettingsStore((state) => state.isInstalling)
   const installLogs = useSettingsStore((state) => state.installLogs)
   const installProgress = useSettingsStore((state) => state.installProgress)
@@ -194,6 +204,19 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   useEffect(() => {
     if (pendingSkillId !== undefined) consumePendingSkill()
   }, [pendingSkillId, consumePendingSkill])
+
+  // Auto-detect opencode the first time its detection card is shown without a known path, so the card
+  // reflects reality without a manual re-detect. Guarded on path + in-flight to run at most once.
+  useEffect(() => {
+    if (
+      open &&
+      agentFrameworkId === 'opencode' &&
+      !opencode?.resolvedPath &&
+      !isDetectingOpencode
+    ) {
+      void detectOpencode()
+    }
+  }, [open, agentFrameworkId, opencode?.resolvedPath, isDetectingOpencode, detectOpencode])
 
   const currentLocation = history[historyIndex]
   const activePanel = currentLocation.panel
@@ -418,7 +441,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
           {/* Radix requires a Title/Description for a11y; the visible panel title lives in the header. */}
           <Dialog.Title className="sr-only">Settings</Dialog.Title>
           <Dialog.Description className="sr-only">
-            Manage your Claude installation and model providers.
+            Manage your agent runtime and model providers.
           </Dialog.Description>
 
           {/* Left navigation: grouped settings panels (Capabilities, Workspace). */}
@@ -643,26 +666,46 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                   </div>
                 ) : (
                   <div className="space-y-5 p-5">
-                    <SettingsSection title="Claude" aria-label="Claude">
-                      <div className="space-y-3">
-                        <ClaudeStatusCard
-                          claude={claude}
-                          claudeReady={preflight.claudeReady}
-                          isDetecting={isDetectingClaude}
-                          onDetect={() => void detectClaude()}
+                    <AgentFrameworkSection />
+
+                    <ModelFrameworkCompatibilityAlert />
+
+                    {agentFrameworkId === 'opencode' ? (
+                      <SettingsSection title="OpenCode" aria-label="OpenCode">
+                        <OpencodeStatusCard
+                          opencode={opencode}
+                          isDetecting={isDetectingOpencode}
+                          onDetect={() => void detectOpencode()}
+                          isInstalling={isInstalling}
+                          installLogs={installLogs}
+                          installProgress={installProgress}
+                          installError={installError}
+                          npmAvailable={npmAvailable}
+                          onInstall={(source) => void installOpencode(source)}
                         />
-                        {!preflight.claudeReady ? (
-                          <ClaudeInstallCard
-                            isInstalling={isInstalling}
-                            installLogs={installLogs}
-                            installProgress={installProgress}
-                            installError={installError}
-                            npmAvailable={npmAvailable}
-                            onInstall={(source) => void installClaude(source)}
+                      </SettingsSection>
+                    ) : (
+                      <SettingsSection title="Claude" aria-label="Claude">
+                        <div className="space-y-3">
+                          <ClaudeStatusCard
+                            claude={claude}
+                            claudeReady={preflight.claudeReady}
+                            isDetecting={isDetectingClaude}
+                            onDetect={() => void detectClaude()}
                           />
-                        ) : null}
-                      </div>
-                    </SettingsSection>
+                          {!preflight.claudeReady ? (
+                            <ClaudeInstallCard
+                              isInstalling={isInstalling}
+                              installLogs={installLogs}
+                              installProgress={installProgress}
+                              installError={installError}
+                              npmAvailable={npmAvailable}
+                              onInstall={(source) => void installClaude(source)}
+                            />
+                          ) : null}
+                        </div>
+                      </SettingsSection>
+                    )}
 
                     <SettingsSection
                       title="Providers"

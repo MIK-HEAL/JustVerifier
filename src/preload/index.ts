@@ -75,10 +75,12 @@ import type {
   DeleteProviderRequest,
   EnvironmentCheckResult,
   InstallClaudeRequest,
+  InstallOpencodeRequest,
   Preflight,
   RefreshProviderModelsRequest,
   RefreshProviderModelsResult,
   SetActiveProviderRequest,
+  SetAgentFrameworkRequest,
   SetSkillEnabledRequest,
   SettingsSnapshot,
   SkillDetailView,
@@ -184,10 +186,13 @@ type OpenScienceAPI = {
     isNpmAvailable: () => Promise<boolean>
     checkEnvironment: () => Promise<EnvironmentCheckResult>
     detectClaude: () => Promise<ClaudeDetectResult>
+    detectOpencode: () => Promise<SettingsSnapshot>
     installClaude: (request: InstallClaudeRequest) => Promise<ClaudeInstallResult>
+    installOpencode: (request: InstallOpencodeRequest) => Promise<ClaudeInstallResult>
     upsertProvider: (request: UpsertProviderRequest) => Promise<SettingsSnapshot>
     deleteProvider: (request: DeleteProviderRequest) => Promise<SettingsSnapshot>
     setActiveProvider: (request: SetActiveProviderRequest) => Promise<SettingsSnapshot>
+    setAgentFramework: (request: SetAgentFrameworkRequest) => Promise<SettingsSnapshot>
     validateProvider: (request: ValidateProviderRequest) => Promise<ValidateProviderResult>
     refreshProviderModels: (
       request: RefreshProviderModelsRequest
@@ -409,14 +414,20 @@ const api: OpenScienceAPI = {
     checkEnvironment: () =>
       ipcRenderer.invoke('settings:check-environment') as Promise<EnvironmentCheckResult>,
     detectClaude: () => ipcRenderer.invoke('settings:detect-claude') as Promise<ClaudeDetectResult>,
+    detectOpencode: () =>
+      ipcRenderer.invoke('settings:detect-opencode') as Promise<SettingsSnapshot>,
     installClaude: (request) =>
       ipcRenderer.invoke('settings:install-claude', request) as Promise<ClaudeInstallResult>,
+    installOpencode: (request) =>
+      ipcRenderer.invoke('settings:install-opencode', request) as Promise<ClaudeInstallResult>,
     upsertProvider: (request) =>
       ipcRenderer.invoke('settings:upsert-provider', request) as Promise<SettingsSnapshot>,
     deleteProvider: (request) =>
       ipcRenderer.invoke('settings:delete-provider', request) as Promise<SettingsSnapshot>,
     setActiveProvider: (request) =>
       ipcRenderer.invoke('settings:set-active-provider', request) as Promise<SettingsSnapshot>,
+    setAgentFramework: (request) =>
+      ipcRenderer.invoke('settings:set-agent-framework', request) as Promise<SettingsSnapshot>,
     validateProvider: (request) =>
       ipcRenderer.invoke('settings:validate-provider', request) as Promise<ValidateProviderResult>,
     refreshProviderModels: (request) =>

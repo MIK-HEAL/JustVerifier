@@ -7,6 +7,8 @@
 // that shifts over time — update the lists here as vendors publish new models. Only vendors with a
 // documented Anthropic-compatible endpoint belong here (e.g. OpenAI's native API does not qualify).
 
+import type { ProviderApiType } from './settings'
+
 export type OfficialVendorId =
   'anthropic' | 'deepseek' | 'zhipu' | 'minimax' | 'kimi' | 'kimiforcode'
 
@@ -17,6 +19,9 @@ export type VendorRegion = {
   id: string
   label: string
   baseUrl: string
+  // The region's OpenAI /v1/chat/completions base, when it differs from the Anthropic `baseUrl` and the
+  // vendor supports both endpoints. Falls back to the region's `baseUrl` when absent.
+  openaiBaseUrl?: string
   // Where the user creates/copies a key for this endpoint; falls back to the vendor-level one.
   apiKeyUrl?: string
   // Full URL of the vendor's model-list endpoint for this region; falls back to the vendor-level one.
@@ -27,11 +32,18 @@ export type OfficialVendor = {
   id: OfficialVendorId
   // Human-readable name shown in the provider-type picker and composer group headings.
   label: string
+  // Which chat API this vendor's endpoint speaks; drives per-framework availability. Absent ⇒
+  // 'anthropic' (every shipped vendor today exposes an Anthropic /v1/messages route).
+  apiType?: ProviderApiType
   // Anthropic-compatible model ids offered in the composer once a key is stored. First entry is the
   // default selection when the vendor is first added.
   models: string[]
   // Single-endpoint vendors set `baseUrl`; multi-region vendors set `regions` instead (never both).
+  // `baseUrl` is the Anthropic /v1/messages route; `openaiBaseUrl` is the vendor's separate OpenAI
+  // /v1/chat/completions root (they differ — e.g. DeepSeek serves Anthropic under `/anthropic` and
+  // OpenAI at the bare root). Set both only for a vendor whose apiType is 'both'.
   baseUrl?: string
+  openaiBaseUrl?: string
   regions?: VendorRegion[]
   // Page where the user obtains an API key. For multi-region vendors a per-region url takes priority.
   apiKeyUrl?: string
@@ -59,7 +71,12 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
   {
     id: 'deepseek',
     label: 'DeepSeek',
+    // DeepSeek exposes both routes: Anthropic /v1/messages under `/anthropic`, and the OpenAI-compatible
+    // /v1/chat/completions at the bare root. The same model ids work on both, so it's safe to prefer
+    // OpenAI where the framework supports it (e.g. OpenCode).
+    apiType: 'both',
     baseUrl: 'https://api.deepseek.com/anthropic',
+    openaiBaseUrl: 'https://api.deepseek.com',
     apiKeyUrl: 'https://platform.deepseek.com/api_keys',
     modelsListUrl: 'https://api.deepseek.com/v1/models',
     models: ['deepseek-v4-pro', 'deepseek-v4-pro[1m]', 'deepseek-v4-flash']
@@ -154,6 +171,23 @@ export const resolveVendorBaseUrl = (
   return region?.baseUrl
 }
 
+// Resolves a vendor's OpenAI /v1/chat/completions base, when it publishes one distinct from the
+// Anthropic route (only 'both' vendors do). Undefined otherwise, so callers fall back to `baseUrl`.
+export const resolveVendorOpenAiBaseUrl = (
+  id: OfficialVendorId,
+  regionId?: string
+): string | undefined => {
+  const vendor = VENDORS_BY_ID.get(id)
+
+  if (!vendor) return undefined
+  if (vendor.openaiBaseUrl) return vendor.openaiBaseUrl
+
+  const regions = vendor.regions ?? []
+  const region = regions.find((candidate) => candidate.id === regionId) ?? regions[0]
+
+  return region?.openaiBaseUrl
+}
+
 // Resolves where the user gets an API key for a vendor, preferring the selected region's console and
 // falling back to the vendor-level one. Returns undefined for an unknown vendor or when none is set.
 export const resolveVendorApiKeyUrl = (
@@ -199,6 +233,10 @@ export const resolveVendorModelsUrl = (
 // The default model for a freshly added vendor (first catalog entry).
 export const defaultVendorModel = (id: OfficialVendorId): string | undefined =>
   VENDORS_BY_ID.get(id)?.models[0]
+
+// The chat API a vendor speaks, defaulting to Anthropic /v1/messages when unset.
+export const resolveVendorApiType = (id: OfficialVendorId): ProviderApiType =>
+  VENDORS_BY_ID.get(id)?.apiType ?? 'anthropic'
 
 // Whether a vendor needs a region choice (more than one endpoint).
 export const vendorHasRegions = (id: OfficialVendorId): boolean =>

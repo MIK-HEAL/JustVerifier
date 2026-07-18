@@ -9,6 +9,7 @@ import {
 } from '../../stores/preview-workbench-store'
 import {
   createWorkspaceRuntimeEventProcessor,
+  getResumeFailureMessage,
   markRunningSessionsDisconnectedOnDrop,
   processVisibleWorkspaceRuntimeEvents,
   resumeInterruptedWorkspaceSession,
@@ -195,6 +196,32 @@ describe('workspace agent runtime event processing', () => {
       'artifact-event-1',
       'stop-event-1'
     ])
+  })
+})
+
+describe('resume failure classification', () => {
+  it('rewrites a genuine model↔framework incompatibility into the actionable settings message', () => {
+    // Verbatim error thrown by settings/service.ts when the active provider cannot drive the framework.
+    const message = getResumeFailureMessage(
+      new Error(
+        "The active model isn't compatible with Claude Code. Open Settings → Model to pick a compatible model or switch the agent framework."
+      )
+    )
+
+    expect(message).toBe(
+      "The active model isn't compatible with this agent framework. Open Settings → Model to pick a compatible model or switch frameworks."
+    )
+  })
+
+  it('does not mislabel an ACP protocol-version mismatch as a model incompatibility', () => {
+    // Different "not compatible with" phrase from the ACP handshake; must pass through unchanged.
+    const message = getResumeFailureMessage(
+      new Error('ACP protocol version is not compatible with this client')
+    )
+
+    expect(message).toBe(
+      'Agent session resume failed: ACP protocol version is not compatible with this client'
+    )
   })
 })
 
@@ -676,6 +703,42 @@ describe('workspace agent message sending', () => {
     expect(runtime.sendPrompt).not.toHaveBeenCalled()
   })
 
+  it('softens the model↔framework incompatibility message instead of an alarming resume failure', async () => {
+    const runtime = {
+      state: createSnapshot(),
+      createSession: vi.fn(),
+      resumeSession: vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "The active model isn't compatible with Claude Code. Open Settings → Model to pick a compatible model or switch the agent framework."
+          )
+        ),
+      sendPrompt: vi.fn()
+    }
+
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Previous prompt',
+      cwd: '/workspace/project'
+    })
+    useSessionStore.getState().finishRun('session-1')
+
+    await sendWorkspaceMessage(runtime, {
+      sessionId: 'session-1',
+      text: 'Continue restored conversation',
+      cwd: '/workspace/project'
+    })
+
+    // No "Agent session resume failed" prefix — the fix lives in settings, which now flags this early.
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'error',
+      error:
+        "The active model isn't compatible with this agent framework. Open Settings → Model to pick a compatible model or switch frameworks."
+    })
+    expect(runtime.sendPrompt).not.toHaveBeenCalled()
+  })
+
   it('reports a distinct message when the agent connection cannot be re-established', async () => {
     const runtime = {
       state: createSnapshot(),
@@ -865,6 +928,8 @@ describe('resuming an interrupted session on demand', () => {
       'Continue the analysis',
       [],
       undefined,
+      undefined,
+      // A same-framework interrupted resume does not reset context, so no history preamble is replayed.
       undefined
     )
 
@@ -875,6 +940,86 @@ describe('resuming an interrupted session on demand', () => {
     expect(userMessages).toHaveLength(1)
     expect(userMessages[0].content).toBe('Continue the analysis')
     expect(session.interrupted).toBeUndefined()
+  })
+
+  it('replays a history preamble when a resume resets agent context', async () => {
+    // A completed prior turn that should be replayed to the freshly-adopted agent.
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Plot the sales data',
+      cwd: '/workspace/project',
+      projectId: 'default-project'
+    })
+    useSessionStore.getState().appendAgentMessageChunk({
+      sessionId: 'session-1',
+      streamId: 'assistant-message-1',
+      eventId: 'event-1',
+      content: 'Done, saved chart.png'
+    })
+    useSessionStore.getState().finishRun('session-1')
+
+    const runtime = {
+      // Empty sessionIds forces the resume path for this existing session.
+      state: createSnapshot([]),
+      createSession: vi.fn(),
+      resumeSession: vi.fn().mockResolvedValue({
+        sessionId: 'session-1',
+        cwd: '/workspace/project',
+        contextReset: true
+      }),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['session-1']))
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      sessionId: 'session-1',
+      text: 'now add a trend line',
+      cwd: '/workspace/project',
+      projectId: 'default-project'
+    })
+    await flushRuntimeTasks()
+
+    expect(runtime.resumeSession).toHaveBeenCalledTimes(1)
+    const preamble = runtime.sendPrompt.mock.calls[0]?.[5]
+    expect(preamble).toContain('Plot the sales data')
+    expect(preamble).toContain('Done, saved chart.png')
+    // The preamble carries prior turns only; the turn being sent is not folded into it.
+    expect(preamble).not.toContain('now add a trend line')
+  })
+
+  it('does not replay a history preamble when the resume kept agent context', async () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Earlier prompt',
+      cwd: '/workspace/project',
+      projectId: 'default-project'
+    })
+    useSessionStore.getState().appendAgentMessageChunk({
+      sessionId: 'session-1',
+      streamId: 'assistant-message-1',
+      eventId: 'event-1',
+      content: 'Earlier answer'
+    })
+    useSessionStore.getState().finishRun('session-1')
+
+    const runtime = {
+      state: createSnapshot([]),
+      createSession: vi.fn(),
+      // No contextReset flag: the agent resumed its own session, so nothing needs replaying.
+      resumeSession: vi
+        .fn()
+        .mockResolvedValue({ sessionId: 'session-1', cwd: '/workspace/project' }),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['session-1']))
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      sessionId: 'session-1',
+      text: 'keep going',
+      cwd: '/workspace/project',
+      projectId: 'default-project'
+    })
+    await flushRuntimeTasks()
+
+    expect(runtime.sendPrompt.mock.calls[0]?.[5]).toBeUndefined()
   })
 
   it('reconnects without re-sending when the last turn was already answered', async () => {

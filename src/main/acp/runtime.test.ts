@@ -9,6 +9,8 @@ import { PassThrough, Readable, Writable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AcpRuntime } from './runtime'
+import { AgentMcpHttpHost } from './mcp-http-host'
+import { claudeCodeFramework, opencodeFramework } from '../agent-framework'
 import { ArtifactRepository } from '../artifacts/repository'
 import { UploadRepository } from '../uploads/repository'
 import {
@@ -16,6 +18,17 @@ import {
   clearMigrationPending,
   waitForDataRootWriters
 } from '../storage/migration-state'
+
+// Captures every info-level log so the permission-request audit line can be asserted; real file/console
+// logging is otherwise irrelevant to these tests.
+const { infoLogSpy } = vi.hoisted(() => ({ infoLogSpy: vi.fn() }))
+vi.mock('../logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../logger')>()
+  return {
+    ...actual,
+    createLogger: (scope: string) => ({ ...actual.createLogger(scope), info: infoLogSpy })
+  }
+})
 
 // Minimal child-process stand-in that exposes the streams the runtime expects.
 class FakeAgentProcess extends EventEmitter {
@@ -213,6 +226,79 @@ const getEnvValue = (mcpServer: unknown, name: string): string => {
   }
 
   return entry.value
+}
+
+// Starts a fake agent that fires one permission request per prompt so the runtime's audit line
+// (which carries isMcp) can be asserted black-box. `resume` selects the session/resume behavior:
+// 'ok' resolves resume (reattach), 'notFound' rejects with resourceNotFound so the runtime adopts a
+// fresh session under the same app id. session/new always returns `newSessionId`.
+const startPermissionProbeAgent = (
+  process: FakeAgentProcess,
+  options: {
+    newSessionId: string
+    toolCallId: string
+    toolTitle: string
+    resume?: 'ok' | 'notFound'
+  }
+): void => {
+  acp
+    .agent({ name: 'permission-probe-agent' })
+    .onRequest(acp.methods.agent.initialize, () => ({
+      protocolVersion: acp.PROTOCOL_VERSION,
+      agentCapabilities: {
+        loadSession: false,
+        sessionCapabilities: { close: {}, ...(options.resume ? { resume: {} } : {}) }
+      },
+      authMethods: []
+    }))
+    .onRequest(acp.methods.agent.session.new, () => ({ sessionId: options.newSessionId }))
+    .onRequest(acp.methods.agent.session.resume, (ctx) => {
+      if (options.resume === 'notFound') {
+        throw acp.RequestError.resourceNotFound(ctx.params.sessionId)
+      }
+
+      return {}
+    })
+    .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+      // opencode renames MCP tools <server>_<tool>; classification must come from the session's
+      // recorded MCP server names, so this exercises the sessionMcpServerNames map end to end.
+      await ctx.client.request(acp.methods.client.session.requestPermission, {
+        sessionId: ctx.params.sessionId,
+        toolCall: {
+          toolCallId: options.toolCallId,
+          title: options.toolTitle,
+          kind: 'other',
+          status: 'pending'
+        },
+        options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+      })
+
+      return { stopReason: 'end_turn' }
+    })
+    .onNotification(acp.methods.agent.session.cancel, () => undefined)
+    .onRequest(acp.methods.agent.session.close, () => ({}))
+    .connect(
+      acp.ndJsonStream(
+        Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
+        Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
+      )
+    )
+}
+
+// White-box view of the per-session MCP name map so cleanup paths (no black-box signal) can be
+// asserted directly.
+const mcpServerNamesMap = (runtime: AcpRuntime): Map<string, string[]> =>
+  (runtime as unknown as { sessionMcpServerNames: Map<string, string[]> }).sessionMcpServerNames
+
+// Finds the isMcp flag the runtime logged for a given permission request (identified by toolCallId).
+const auditedIsMcp = (toolCallId: string): boolean | undefined => {
+  const call = infoLogSpy.mock.calls.find(
+    ([message, data]) =>
+      message === 'permission request received' &&
+      (data as { toolCallId?: string }).toolCallId === toolCallId
+  )
+
+  return (call?.[1] as { isMcp?: boolean } | undefined)?.isMcp
 }
 
 afterEach(async () => {
@@ -657,6 +743,87 @@ describe('ACP runtime session management', () => {
     })
   })
 
+  it('gives opencode the stdio artifact MCP server + tool guidance (it accepts stdio like Claude)', async () => {
+    const root = await createTemporaryRoot()
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['oc-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      // opencode accepts stdio MCP over ACP (verified live), so it gets the same stdio config as Claude.
+      framework: opencodeFramework,
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js'
+      }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    await runtime.sendPrompt({ sessionId: session.sessionId, text: 'hello opencode' })
+
+    // The artifact server is delivered over stdio (command/args, not a url) and its tool guidance rides
+    // opencode's prompt prefix. No Claude _meta is sent (that stays framework-specific).
+    const servers = fakeAgent.newSessions[0].mcpServers as Array<{ command?: string; url?: string }>
+    expect(servers).toHaveLength(1)
+    expect(servers[0].command).toBeTruthy()
+    expect(servers[0].url).toBeUndefined()
+    expect(fakeAgent.newSessions[0]._meta).toBeUndefined()
+    expect(fakeAgent.prompts[0].text).toContain('hello opencode')
+    expect(fakeAgent.prompts[0].text).toContain('write_artifact_file')
+  })
+
+  it('serves artifact/notebook MCP over the http host for an http-only framework', async () => {
+    const root = await createTemporaryRoot()
+    const httpHost = new AgentMcpHttpHost()
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['oc-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      // A synthetic http-only framework keeps the http-host path covered now that opencode uses stdio;
+      // the AgentMcpHttpHost stays in the runtime for any future framework that rejects stdio MCP.
+      framework: { ...opencodeFramework, acceptsStdioMcp: false },
+      mcpHttpHost: httpHost,
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js'
+      },
+      notebook: {
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:1/notebook', token: 'nb' })
+      }
+    })
+
+    try {
+      await runtime.createSession({ cwd: '/workspace' })
+
+      const servers = fakeAgent.newSessions[0].mcpServers as Array<{
+        type?: string
+        name?: string
+        url?: string
+        headers?: Array<{ name: string; value: string }>
+      }>
+
+      // opencode gets http MCP configs (not stdio) pointing at the local host, with bearer auth.
+      expect(servers.map((server) => server.type)).toEqual(['http', 'http'])
+      expect(servers.map((server) => server.name)).toEqual(
+        expect.arrayContaining(['open-science-artifacts', 'open-science-notebook'])
+      )
+      const artifactServer = servers.find((server) => server.name === 'open-science-artifacts')
+      expect(artifactServer?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/artifact\//)
+      expect(artifactServer?.headers?.[0]).toMatchObject({ name: 'authorization' })
+    } finally {
+      await httpHost.close()
+    }
+  })
+
   it('allows prompts from different sessions to run concurrently', async () => {
     const process = new FakeAgentProcess()
     const promptCanStopBySession = new Map<string, ReturnType<typeof createDeferred>>()
@@ -1013,6 +1180,273 @@ describe('ACP runtime session management', () => {
     expect(runtime.getSnapshot().pendingPermissions).toEqual([])
   })
 
+  it('audits each permission request, classifying MCP origin without logging the tool title', async () => {
+    infoLogSpy.mockClear()
+    const process = new FakeAgentProcess()
+
+    acp
+      .agent({ name: 'permission-audit-agent' })
+      .onRequest(acp.methods.agent.initialize, () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: {
+          loadSession: false,
+          sessionCapabilities: {
+            close: {}
+          }
+        },
+        authMethods: []
+      }))
+      .onRequest(acp.methods.agent.session.new, () => ({ sessionId: 'remote-session-1' }))
+      .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+        // opencode renames the artifact MCP tool <server>_<tool>; classification must not rely on mcp__.
+        await ctx.client.request(acp.methods.client.session.requestPermission, {
+          sessionId: 'remote-session-1',
+          toolCall: {
+            toolCallId: 'tool-mcp',
+            title: 'open-science-artifacts_write_artifact_file',
+            kind: 'other',
+            status: 'pending'
+          },
+          options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        })
+        // A WebFetch title is the full URL (user data) and must never reach the audit log.
+        await ctx.client.request(acp.methods.client.session.requestPermission, {
+          sessionId: 'remote-session-1',
+          toolCall: {
+            toolCallId: 'tool-fetch',
+            title: 'https://example.com/secret?token=abc123',
+            kind: 'fetch',
+            status: 'pending'
+          },
+          options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        })
+
+        return { stopReason: 'end_turn' }
+      })
+      .connect(
+        acp.ndJsonStream(
+          Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
+          Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
+        )
+      )
+
+    // Wire the artifact MCP server so the session records its name (open-science-artifacts); MCP
+    // classification is derived per session from the servers the agent was actually given.
+    const root = await createTemporaryRoot()
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: new ArtifactRepository(root)
+      },
+      callbacks: {
+        onPermissionRequest: (request) => {
+          runtime.respondToPermission({ requestId: request.requestId, optionId: 'allow-once' })
+        }
+      }
+    })
+    const session = await runtime.createSession({ cwd: '/workspace' })
+
+    await runtime.sendPrompt({ sessionId: session.sessionId, text: 'trigger permission audit' })
+
+    const auditCalls = infoLogSpy.mock.calls.filter(
+      ([message]) => message === 'permission request received'
+    )
+    expect(auditCalls).toHaveLength(2)
+
+    const dataFor = (toolCallId: string): Record<string, unknown> =>
+      auditCalls.find(
+        ([, data]) => (data as { toolCallId?: string }).toolCallId === toolCallId
+      )?.[1] as Record<string, unknown>
+
+    // The opencode-named MCP tool is classified as MCP even though it lacks the mcp__ prefix.
+    expect(dataFor('tool-mcp').isMcp).toBe(true)
+    expect(dataFor('tool-fetch').isMcp).toBe(false)
+
+    // No audit payload may carry the raw tool title (MCP tool name or WebFetch URL are user/sensitive).
+    for (const [, data] of auditCalls) {
+      const serialized = JSON.stringify(data)
+      expect(serialized).not.toContain('example.com')
+      expect(serialized).not.toContain('write_artifact_file')
+    }
+  })
+
+  it('records MCP server names on resume so a resumed session audits its MCP tool calls as MCP', async () => {
+    infoLogSpy.mockClear()
+    const process = new FakeAgentProcess()
+    startPermissionProbeAgent(process, {
+      newSessionId: 'unused-new-session',
+      toolCallId: 'resumed-mcp',
+      toolTitle: 'open-science-artifacts_write_artifact_file',
+      resume: 'ok'
+    })
+    const root = await createTemporaryRoot()
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: new ArtifactRepository(root)
+      },
+      callbacks: {
+        onPermissionRequest: (request) => {
+          runtime.respondToPermission({ requestId: request.requestId, optionId: 'allow-once' })
+        }
+      }
+    })
+
+    // Resume (not create) records the artifact MCP server name for this session, so a later MCP tool
+    // call is classified isMcp even though it lacks the mcp__ prefix.
+    await runtime.resumeSession({ sessionId: 'resumed-session', cwd: '/workspace' })
+    await runtime.sendPrompt({ sessionId: 'resumed-session', text: 'continue resumed session' })
+
+    expect(auditedIsMcp('resumed-mcp')).toBe(true)
+    expect(mcpServerNamesMap(runtime).get('resumed-session')).toEqual(['open-science-artifacts'])
+  })
+
+  it('records MCP server names when adopting a fresh session after an unresumable resume', async () => {
+    infoLogSpy.mockClear()
+    const process = new FakeAgentProcess()
+    // Resume rejects with resourceNotFound, forcing the runtime to adopt a fresh agent session
+    // (adopted-session-1) under the app-facing id (switched-session).
+    startPermissionProbeAgent(process, {
+      newSessionId: 'adopted-session-1',
+      toolCallId: 'adopted-mcp',
+      toolTitle: 'open-science-artifacts_write_artifact_file',
+      resume: 'notFound'
+    })
+    const root = await createTemporaryRoot()
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: new ArtifactRepository(root)
+      },
+      callbacks: {
+        onPermissionRequest: (request) => {
+          runtime.respondToPermission({ requestId: request.requestId, optionId: 'allow-once' })
+        }
+      }
+    })
+
+    const resumed = await runtime.resumeSession({
+      sessionId: 'switched-session',
+      cwd: '/workspace'
+    })
+    expect(resumed.contextReset).toBe(true)
+
+    await runtime.sendPrompt({ sessionId: 'switched-session', text: 'keep going' })
+
+    // The adopted session recorded its MCP names under the app-facing id, so the relabeled permission
+    // request audits as MCP.
+    expect(auditedIsMcp('adopted-mcp')).toBe(true)
+    expect(mcpServerNamesMap(runtime).get('switched-session')).toEqual(['open-science-artifacts'])
+  })
+
+  it('registers a reviewer session MCP names for auditing and clears them on dispose', async () => {
+    infoLogSpy.mockClear()
+    const process = new FakeAgentProcess()
+    startPermissionProbeAgent(process, {
+      newSessionId: 'reviewer-session-1',
+      toolCallId: 'reviewer-mcp',
+      toolTitle: 'open-science-reviewer_submit_findings'
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process)
+    })
+
+    // The reviewer session records its MCP server name so its (auto-approved) tool calls still audit
+    // with the correct isMcp classification.
+    const { session } = await runtime.buildReviewerSession({
+      cwd: '/workspace',
+      mcpServers: [
+        {
+          type: 'http',
+          name: 'open-science-reviewer',
+          url: 'http://127.0.0.1:1/mcp',
+          headers: []
+        }
+      ]
+    })
+    expect(session.sessionId).toBe('reviewer-session-1')
+    expect(mcpServerNamesMap(runtime).has('reviewer-session-1')).toBe(true)
+
+    // Drive a tool-call permission request through the reviewer session (auto-approved by the runtime).
+    await session.prompt([{ type: 'text', text: 'review this turn' }])
+
+    expect(auditedIsMcp('reviewer-mcp')).toBe(true)
+
+    // Disposing the reviewer session unregisters its MCP names.
+    runtime.disposeReviewerSession(session)
+    expect(mcpServerNamesMap(runtime).has('reviewer-session-1')).toBe(false)
+  })
+
+  it('clears a session MCP server names when the session is deleted', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['remote-session-1'])
+    const root = await createTemporaryRoot()
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: new ArtifactRepository(root)
+      }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    expect(mcpServerNamesMap(runtime).get(session.sessionId)).toEqual(['open-science-artifacts'])
+
+    await runtime.deleteSession({ sessionId: session.sessionId })
+
+    expect(mcpServerNamesMap(runtime).has(session.sessionId)).toBe(false)
+  })
+
+  it('clears all MCP server names on disconnect', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['remote-session-1'])
+    const root = await createTemporaryRoot()
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: new ArtifactRepository(root)
+      }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    expect(mcpServerNamesMap(runtime).has(session.sessionId)).toBe(true)
+
+    await runtime.disconnect()
+
+    expect(mcpServerNamesMap(runtime).size).toBe(0)
+  })
+
   it('removes a session so later prompts cannot target it', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['remote-session-1'])
@@ -1155,6 +1589,8 @@ describe('ACP runtime session management', () => {
       cwd: '/workspace'
     })
     expect(resumed.sessionId).toBe('switched-session')
+    // Signals the caller that agent-side context was lost so it can replay a transcript preamble.
+    expect(resumed.contextReset).toBe(true)
 
     await runtime.sendPrompt({ sessionId: 'switched-session', text: 'keep going' })
 
@@ -1165,6 +1601,37 @@ describe('ACP runtime session management', () => {
         { sessionId: 'switched-session', text: 'reply for adopted-session-1' }
       ])
     )
+  })
+
+  it('prepends a history preamble to the agent content but not the user-facing message', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['adopted-session-1'], { resumeNotFound: true })
+    const messageEvents: Array<{ role?: string; text?: string }> = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      callbacks: {
+        onEvent: (event) => {
+          if (event.kind === 'message' && event.role === 'user') {
+            messageEvents.push({ role: event.role, text: event.text })
+          }
+        }
+      }
+    })
+
+    await runtime.resumeSession({ sessionId: 'switched-session', cwd: '/workspace' })
+    await runtime.sendPrompt({
+      sessionId: 'switched-session',
+      text: 'keep going',
+      historyPreamble: 'PRIOR CONTEXT: the user asked to plot data.'
+    })
+
+    // The agent sees the replayed context ahead of the user's text...
+    expect(fakeAgent.prompts[0]?.text).toContain('PRIOR CONTEXT: the user asked to plot data.')
+    expect(fakeAgent.prompts[0]?.text).toContain('keep going')
+    // ...but the conversation bubble records only what the user actually typed.
+    expect(messageEvents).toEqual([{ role: 'user', text: 'keep going' }])
   })
 
   it('adopts a fresh session when the agent returns a generic Internal error on resume', async () => {
@@ -1196,6 +1663,60 @@ describe('ACP runtime session management', () => {
         { sessionId: 'restarted-session', text: 'reply for adopted-session-1' }
       ])
     )
+  })
+
+  it('skips resume entirely for a session that last ran under a different framework', async () => {
+    // A session created under Claude, then continued after switching to opencode: resume can never
+    // succeed (each framework has its own session store), so the runtime must NOT send session/resume
+    // (which would make the agent log a scary internal error) and adopt a fresh session directly.
+    const claudeProcess = new FakeAgentProcess()
+    const claudeAgent = startFakeAgent(claudeProcess, ['claude-session-1'])
+    const opencodeProcess = new FakeAgentProcess()
+    const opencodeAgent = startFakeAgent(opencodeProcess, ['opencode-session-1'])
+
+    let connects = 0
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      // First connect resolves Claude, the second (after the switch) resolves opencode; each framework
+      // spawns its own fake process so their session stores stay distinct.
+      resolveBackend: async () => {
+        connects += 1
+
+        return {
+          framework:
+            connects === 1
+              ? { ...claudeCodeFramework, spawn: () => asAgentProcess(claudeProcess) }
+              : { ...opencodeFramework, spawn: () => asAgentProcess(opencodeProcess) },
+          executablePath: '/bin/agent',
+          env: {},
+          args: []
+        }
+      }
+    })
+
+    const created = await runtime.createSession({ cwd: '/workspace' })
+    expect(created.sessionId).toBe('claude-session-1')
+
+    // Switching frameworks disconnects; the next connect resolves opencode.
+    await runtime.disconnect(false)
+
+    const resumed = await runtime.resumeSession({
+      sessionId: 'claude-session-1',
+      cwd: '/workspace'
+    })
+
+    // Adopted onto opencode under the same app id, with context reset so soft-replay can run.
+    expect(resumed).toEqual({
+      sessionId: 'claude-session-1',
+      cwd: '/workspace',
+      contextReset: true
+    })
+    // The doomed resume was never sent to opencode; it built a fresh session instead.
+    expect(opencodeAgent.resumedSessions).toEqual([])
+    expect(opencodeAgent.newSessions).toHaveLength(1)
+    // And the original Claude agent was never asked to resume either.
+    expect(claudeAgent.resumedSessions).toEqual([])
   })
 
   it('defers a provider reconnect until an in-flight prompt finishes', async () => {

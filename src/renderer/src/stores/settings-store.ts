@@ -11,6 +11,10 @@ import type {
   EnvironmentCheckResult,
   ManagedClaudeRegistry,
   Preflight,
+  AgentFrameworkId,
+  AgentFrameworkView,
+  ChatApiEndpoint,
+  OpencodeInfo,
   ProviderType,
   ProviderView,
   RefreshProviderModelsResult,
@@ -49,6 +53,11 @@ type SettingsStoreData = {
   // Active model within the active provider; undefined means the provider's own default.
   activeModel: string | undefined
   providers: ProviderView[]
+  // Selected agent backend and the frameworks available to choose from.
+  agentFrameworkId: AgentFrameworkId
+  agentFrameworks: AgentFrameworkView[]
+  // Detected opencode executable, for the framework-aware detection card.
+  opencode: OpencodeInfo
   onboardingCompletedAt: number | undefined
   // Bundled skills with their enabled state, loaded lazily when the Skills panel opens.
   skills: SkillView[]
@@ -67,7 +76,17 @@ type SettingsStoreData = {
   environmentCheckError: string | undefined
   // Transient UI state for the wizard/settings page.
   isCheckingEnvironment: boolean
+  // Framework the in-flight environment check was issued for. Used ONLY for the React Strict Mode
+  // de-dup: a same-framework duplicate mount reuses the running pass instead of double-probing.
+  // Staleness/ownership is decided by envCheckGeneration, never by this field.
+  checkingFramework: AgentFrameworkId | undefined
+  // Monotonic token stamped by each checkEnvironment call. The success/catch/finally branches only
+  // mutate shared state when their captured generation is still current, so an older pass (even one
+  // for the same framework, as in a Claude -> OpenCode -> Claude ABA sequence) can never overwrite,
+  // fail, or clear the loading flags of a newer pass.
+  envCheckGeneration: number
   isDetectingClaude: boolean
+  isDetectingOpencode: boolean
   isInstalling: boolean
   installLogs: string[]
   // Latest progress tick driving the install progress bar; null when no install is active.
@@ -89,10 +108,14 @@ type SettingsStore = SettingsStoreData & {
   refreshPreflight: () => Promise<Preflight>
   checkEnvironment: () => Promise<EnvironmentCheckResult | undefined>
   detectClaude: () => Promise<ClaudeDetectResult>
+  // Detects the opencode executable and refreshes its status card.
+  detectOpencode: () => Promise<void>
   installClaude: (
     source: ClaudeInstallSource,
     managedRegistry?: ManagedClaudeRegistry
   ) => Promise<ClaudeInstallResult>
+  // App-managed OpenCode install; shares the install progress/log state with installClaude.
+  installOpencode: (source?: ClaudeInstallSource) => Promise<ClaudeInstallResult>
   clearInstallLogs: () => void
   openEnvironmentRepair: () => void
   closeEnvironmentRepair: () => void
@@ -109,6 +132,8 @@ type SettingsStore = SettingsStoreData & {
   // Activates a provider and, optionally, a specific model within it (composer model switch). An
   // omitted model lets main fall back to the provider's default.
   setActiveProvider: (providerId: string, model?: string) => Promise<void>
+  // Switches the agent backend (main reconnects so the next prompt uses it).
+  setAgentFramework: (id: AgentFrameworkId) => Promise<void>
   deleteProvider: (providerId: string) => Promise<void>
   openSettings: () => void
   closeSettings: () => void
@@ -168,6 +193,9 @@ type SettingsStore = SettingsStoreData & {
 
 const createInitialPreflight = (): Preflight => ({
   claudeReady: false,
+  opencodeReady: false,
+  agentFrameworkId: 'claude-code',
+  agentReady: false,
   activeProviderReady: false
 })
 
@@ -177,6 +205,9 @@ export const createInitialSettingsState = (): SettingsStoreData => ({
   activeProviderId: undefined,
   activeModel: undefined,
   providers: [],
+  agentFrameworkId: 'claude-code',
+  agentFrameworks: [],
+  opencode: {},
   onboardingCompletedAt: undefined,
   skills: [],
   connectors: [],
@@ -189,7 +220,10 @@ export const createInitialSettingsState = (): SettingsStoreData => ({
   environmentCheck: undefined,
   environmentCheckError: undefined,
   isCheckingEnvironment: false,
+  checkingFramework: undefined,
+  envCheckGeneration: 0,
   isDetectingClaude: false,
+  isDetectingOpencode: false,
   isInstalling: false,
   installLogs: [],
   installProgress: null,
@@ -205,8 +239,21 @@ const applySnapshot = (snapshot: SettingsSnapshot): Partial<SettingsStoreData> =
   activeProviderId: snapshot.activeProviderId,
   activeModel: snapshot.activeModel,
   providers: snapshot.providers,
+  agentFrameworkId: snapshot.agentFrameworkId,
+  agentFrameworks: snapshot.agentFrameworks,
+  opencode: snapshot.opencode,
   onboardingCompletedAt: snapshot.onboardingCompletedAt
 })
+
+// Stable fallback reference so the selector returns the same array identity across renders
+// (a fresh literal would make useSettingsStore re-render every tick and loop).
+const DEFAULT_FRAMEWORK_API_ENDPOINTS: ChatApiEndpoint[] = ['anthropic']
+
+// The chat endpoints the currently-selected agent framework can drive; a provider is only usable when
+// it shares one. Defaults to Anthropic /v1/messages before the framework list has loaded.
+export const selectFrameworkApiEndpoints = (state: SettingsStoreData): ChatApiEndpoint[] =>
+  state.agentFrameworks.find((framework) => framework.id === state.agentFrameworkId)
+    ?.supportedApiTypes ?? DEFAULT_FRAMEWORK_API_ENDPOINTS
 
 // A single selectable (provider, model) entry for the composer picker. `model` is '' for a provider
 // with no concrete model (a claude-default without an override), meaning "use the provider default".
@@ -286,11 +333,28 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   // their structured, non-secret result. Refresh settings/preflight afterwards because detection may
   // have discovered and persisted a Claude installation that appeared since the previous launch.
   checkEnvironment: async () => {
-    // React Strict Mode intentionally re-runs mount effects in development. The first invocation sets
-    // this flag synchronously, so later callers reuse the in-flight pass instead of probing twice.
-    if (get().isCheckingEnvironment) return get().environmentCheck
+    // React Strict Mode intentionally re-runs mount effects in development. Reuse the in-flight pass
+    // only when it targets the currently-selected framework: an auto-switch (e.g. Claude -> a detected
+    // OpenCode) changes the target mid-flight, and that call must issue its own probe rather than reuse
+    // the previous framework's, or Continue stays disabled on a result that no longer matches.
+    const framework = get().agentFrameworkId
+    if (get().isCheckingEnvironment && get().checkingFramework === framework) {
+      return get().environmentCheck
+    }
 
-    set({ isCheckingEnvironment: true, isDetectingClaude: true, environmentCheckError: undefined })
+    // Stamp a fresh generation; only the branch whose captured token is still current may mutate
+    // shared state. This defeats an ABA sequence (Claude -> OpenCode -> Claude) where an older pass
+    // shares the framework id of the newest one and would otherwise pass a framework-only staleness
+    // check.
+    const generation = get().envCheckGeneration + 1
+
+    set({
+      envCheckGeneration: generation,
+      isCheckingEnvironment: true,
+      checkingFramework: framework,
+      isDetectingClaude: true,
+      environmentCheckError: undefined
+    })
 
     try {
       const environmentCheck = await window.api.settings.checkEnvironment()
@@ -299,6 +363,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         window.api.settings.getPreflight(),
         window.api.settings.isNpmAvailable()
       ])
+
+      // Discard a stale result: a newer pass has stamped a later generation and now owns the visible
+      // state, so this older probe must not overwrite it (defensively also require the result to
+      // still match the selected framework).
+      if (
+        get().envCheckGeneration !== generation ||
+        environmentCheck.agentFrameworkId !== get().agentFrameworkId
+      ) {
+        return environmentCheck
+      }
 
       set({
         ...applySnapshot(snapshot),
@@ -309,13 +383,22 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
       return environmentCheck
     } catch (error) {
-      set({
-        environmentCheckError:
-          error instanceof Error ? error.message : 'Environment detection could not be completed.'
-      })
+      // A late failure from a superseded pass must not clobber a newer pass's successful result.
+      if (get().envCheckGeneration === generation) {
+        set({
+          environmentCheckError:
+            error instanceof Error ? error.message : 'Environment detection could not be completed.'
+        })
+      }
       return undefined
     } finally {
-      set({ isCheckingEnvironment: false, isDetectingClaude: false })
+      // Only clear the loading flags when this pass is still the current one; a newer pass may
+      // already be running and now owns them.
+      set((state) =>
+        state.envCheckGeneration === generation
+          ? { isCheckingEnvironment: false, checkingFramework: undefined, isDetectingClaude: false }
+          : {}
+      )
     }
   },
 
@@ -368,6 +451,36 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       set(applySnapshot(snapshot))
       await get().refreshPreflight()
 
+      set({ installError: result.ok ? undefined : (result.error ?? 'Install failed.') })
+
+      return result
+    } catch (error) {
+      set({ installError: error instanceof Error ? error.message : 'Install failed.' })
+      throw error
+    } finally {
+      unsubscribe()
+      set({ isInstalling: false, installProgress: null })
+    }
+  },
+
+  // App-managed OpenCode install, mirroring installClaude's shared progress/log handling.
+  installOpencode: async (source = 'managed') => {
+    set({ isInstalling: true, installLogs: [], installProgress: null, installError: undefined })
+
+    const unsubscribe = window.api.settings.onInstallLog((event) => {
+      if (event.kind === 'progress') {
+        set({ installProgress: event })
+      } else {
+        set((state) => ({ installLogs: [...state.installLogs, event.chunk] }))
+      }
+    })
+
+    try {
+      const result = await window.api.settings.installOpencode({ source })
+
+      // A successful install persisted opencode's path/version in main; reload so the card reflects it.
+      set(applySnapshot(await window.api.settings.getSettings()))
+      await get().refreshPreflight()
       set({ installError: result.ok ? undefined : (result.error ?? 'Install failed.') })
 
       return result
@@ -468,6 +581,36 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
     set(applySnapshot(snapshot))
     await get().refreshPreflight()
+  },
+
+  // Switches the agent backend; main reconnects so the choice applies on the next prompt. Surfaces
+  // failures (e.g. a stale preload bundle where the IPC is missing after a renderer-only hot reload)
+  // to the console instead of silently reverting the selector.
+  setAgentFramework: async (id) => {
+    try {
+      set(applySnapshot(await window.api.settings.setAgentFramework({ id })))
+      // Live-detect the newly-selected framework so a binary installed (or deleted) since the last
+      // check is reflected right away, then refresh the readiness gate the install prompt keys off.
+      if (id === 'opencode') {
+        await get().detectOpencode()
+      } else {
+        await get().detectClaude()
+      }
+      await get().refreshPreflight()
+    } catch (error) {
+      console.error('Failed to switch agent framework', error)
+    }
+  },
+
+  // Detects the opencode executable and refreshes its status card.
+  detectOpencode: async () => {
+    set({ isDetectingOpencode: true })
+
+    try {
+      set(applySnapshot(await window.api.settings.detectOpencode()))
+    } finally {
+      set({ isDetectingOpencode: false })
+    }
   },
 
   deleteProvider: async (providerId) => {
