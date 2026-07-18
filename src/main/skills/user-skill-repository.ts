@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 
 import { dump as dumpYaml } from 'js-yaml'
 
@@ -31,6 +31,16 @@ const USER_SOURCES: ReadonlyArray<Extract<SkillSource, 'imported' | 'personal'>>
 
 // Only lowercase slugs so a skill id maps 1:1 to a safe directory name.
 const SAFE_SLUG = /^[a-z0-9-]+$/
+
+// A transaction directory left by an in-progress replace (see writeImported): `.<slug>.import-<id>`
+// holds the staged new copy, `.<slug>.backup-<id>` the previous copy moved aside during the swap.
+// Both are hidden (leading dot) so they can never be a valid slug, and doRecoverImportedTransactions()
+// finalizes or rolls them back if a crash left them behind.
+const TRANSACTION_DIR = /^\.([a-z0-9-]+)\.(import|backup)-(.+)$/
+
+// A sortable transaction generation: a fixed-width millisecond timestamp (lexical order == time order)
+// plus a uuid for uniqueness. Recovery restores the newest backup when more than one exists for a slug.
+const nextGeneration = (): string => `${Date.now().toString().padStart(15, '0')}-${randomUUID()}`
 
 // Reserved id namespaces a user-authored skill may not claim: `os-` is the app's own materialized
 // prefix and `mcp-` is reserved for MCP-provided skills.
@@ -152,21 +162,119 @@ class UserSkillRepository {
     return join(this.sourceDir(source), slug)
   }
 
-  // Lists every personal + imported skill, skipping any dir whose SKILL.md is missing/unreadable.
+  // Lists the valid skill slugs under a source, ignoring hidden entries — in particular the
+  // `.import-`/`.backup-` transaction dirs, which must never be surfaced as slugs or skill ids.
+  private async listSlugs(source: (typeof USER_SOURCES)[number]): Promise<string[]> {
+    try {
+      return (await readdir(this.sourceDir(source))).filter((entry) => SAFE_SLUG.test(entry))
+    } catch {
+      return []
+    }
+  }
+
+  // Serializes transaction recovery and the writeImported swap so neither observes the other's
+  // intermediate on-disk state, and lets every public operation trigger a fresh recovery pass.
+  private lock: Promise<unknown> = Promise.resolve()
+  private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(fn, fn)
+    // Chain the next waiter on completion regardless of outcome, so one failure can't wedge the lock.
+    this.lock = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  // Finalizes any imported-skill replace that a crash interrupted, so the swap is failure-atomic across
+  // process restarts (a plain two-step rename leaves a window with no live dir). Called at the start of
+  // every public operation, INSIDE that operation's runExclusive critical section — not memoized — so a
+  // backup left by a failed rollback, or a transient recovery error, is retried on the next operation.
+  // For each slug: if a `.backup-` exists and the live dir is gone, the newest backup is restored (the
+  // interrupted replace is rolled back, and a failed restore rejects the operation) and any older
+  // backups discarded; a backup whose live dir is present, and every staged `.import-` dir, are dropped.
+  private async doRecoverImportedTransactions(): Promise<void> {
+    const dir = this.sourceDir('imported')
+    let entries: string[]
+    try {
+      entries = await readdir(dir)
+    } catch (error) {
+      // A missing dir just means nothing to recover. Any other error (permission, I/O) must block the
+      // operation rather than be swallowed — proceeding could act on an un-recovered/inconsistent state.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+
+    const backupsBySlug = new Map<string, { entry: string; generation: string }[]>()
+    const stagings: string[] = []
+    for (const entry of entries) {
+      const match = TRANSACTION_DIR.exec(entry)
+      if (!match) continue
+      if (match[2] === 'backup') {
+        const list = backupsBySlug.get(match[1]) ?? []
+        list.push({ entry, generation: match[3] })
+        backupsBySlug.set(match[1], list)
+      } else {
+        stagings.push(entry)
+      }
+    }
+
+    for (const [slug, backups] of backupsBySlug) {
+      const live = join(dir, slug)
+      const liveExists = await stat(live).then(
+        () => true,
+        () => false
+      )
+      // Newest generation first, so if we must restore we pick the most recent previous copy.
+      backups.sort((a, b) => b.generation.localeCompare(a.generation))
+      for (let index = 0; index < backups.length; index += 1) {
+        const path = join(dir, backups[index].entry)
+        if (index === 0 && !liveExists) {
+          // The live dir is gone and this backup is the only copy — a failed restore would lose the
+          // skill, so reject the whole operation rather than logging and letting the caller proceed on
+          // a missing skill (which a later recovery could otherwise "resurrect").
+          try {
+            await rename(path, live)
+          } catch (error) {
+            throw new Error(
+              `Failed to recover interrupted skill import for "${slug}" from backup ${backups[index].entry}: ${String(error)}`
+            )
+          }
+          log.warn('recovered interrupted skill import from backup', { slug })
+        } else {
+          // Superseded/leftover backup: best-effort cleanup, safe to ignore on failure.
+          await rm(path, { recursive: true, force: true }).catch((error) =>
+            log.warn('failed to remove leftover skill backup', {
+              entry: backups[index].entry,
+              error
+            })
+          )
+        }
+      }
+    }
+
+    // Discard any staged (uncommitted) copies left behind.
+    for (const entry of stagings) {
+      await rm(join(dir, entry), { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  // Lists every personal + imported skill, skipping any dir whose SKILL.md is missing/unreadable. The
+  // whole read runs under the lock, after recovery, so it can't observe a live dir mid-swap (a rename
+  // to/from a backup) and drop or duplicate an entry.
   async list(): Promise<BundledSkill[]> {
+    return this.runExclusive(async () => {
+      await this.doRecoverImportedTransactions()
+      return this.listSkillsInternal()
+    })
+  }
+
+  // The listing itself, without acquiring the lock or running recovery — call only from within a
+  // critical section that has already recovered (avoids re-entrant locking / deadlock).
+  private async listSkillsInternal(): Promise<BundledSkill[]> {
     const skills: BundledSkill[] = []
 
     for (const source of USER_SOURCES) {
-      const dir = this.sourceDir(source)
-      let slugs: string[] = []
-      try {
-        slugs = await readdir(dir)
-      } catch {
-        continue
-      }
-
-      for (const slug of slugs) {
-        if (!SAFE_SLUG.test(slug)) continue
+      for (const slug of await this.listSlugs(source)) {
         const skillDir = this.skillDir(source, slug)
 
         try {
@@ -193,12 +301,16 @@ class UserSkillRepository {
     return skills
   }
 
-  // Returns one user skill's SKILL.md body (frontmatter stripped).
+  // Returns one user skill's SKILL.md body (frontmatter stripped). Recovery + read run under the lock
+  // so a concurrent replace can't rename the live dir out from under the read (transient ENOENT).
   async body(id: string): Promise<string> {
     const parsed = parseUserSkillId(id)
     if (!parsed) throw new Error(`Not a user skill id: ${id}`)
 
-    return (await readSkillFile(this.skillDir(parsed.source, parsed.slug))).body
+    return this.runExclusive(async () => {
+      await this.doRecoverImportedTransactions()
+      return (await readSkillFile(this.skillDir(parsed.source, parsed.slug))).body
+    })
   }
 
   // Creates a personal skill, returning its new id. With an explicit `requestedSlug`, that slug is
@@ -236,7 +348,12 @@ class UserSkillRepository {
     const parsed = parseUserSkillId(id)
     if (!parsed) throw new Error(`Not a user skill id: ${id}`)
 
-    await rm(this.skillDir(parsed.source, parsed.slug), { recursive: true, force: true })
+    return this.runExclusive(async () => {
+      // Recover first, so a skill left only in a crash backup is restored to its live dir and then
+      // actually removed here — otherwise a later recovery would "resurrect" the deleted skill.
+      await this.doRecoverImportedTransactions()
+      await rm(this.skillDir(parsed.source, parsed.slug), { recursive: true, force: true })
+    })
   }
 
   // Imports a single skill directory from a public GitHub URL, deduplicating against prior imports of
@@ -249,37 +366,38 @@ class UserSkillRepository {
     const fetcher = fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined)
     if (!fetcher) throw new Error('No fetch implementation available.')
 
+    // Fetch over the network OUTSIDE the lock (it's slow); everything that touches disk — recovery,
+    // dedup, slug allocation, and the swap — runs in one critical section so two concurrent imports
+    // can't both claim the same slug and clobber each other.
     const files = await fetchSkillFiles(location, fetcher)
     const signature = signatureOf(files)
     const base = toSlug(location.path.split('/').filter(Boolean).pop() ?? location.repo) || 'skill'
 
-    // If a prior import from the exact same URL exists, either skip (unchanged) or refresh (changed).
-    const existingSlug = await this.findImportedSlugByUrl(url)
-    if (existingSlug) {
-      const existing = await this.readSource(existingSlug)
-      if (existing?.signature === signature) {
-        return { status: 'unchanged', id: `imported-${existingSlug}` }
-      }
-      await this.writeImported(existingSlug, files, url, signature)
-      return { status: 'updated', id: `imported-${existingSlug}` }
-    }
+    return this.runExclusive(async () => {
+      await this.doRecoverImportedTransactions()
 
-    // A brand-new source; take a free slug (a same-name skill from a different repo gets a suffix).
-    const slug = await this.uniqueSlug('imported', base)
-    await this.writeImported(slug, files, url, signature)
-    return { status: 'imported', id: `imported-${slug}` }
+      // If a prior import from the exact same URL exists, either skip (unchanged) or refresh (changed).
+      const existingSlug = await this.findImportedSlugByUrl(url)
+      if (existingSlug) {
+        const existing = await this.readSource(existingSlug)
+        if (existing?.signature === signature) {
+          return { status: 'unchanged', id: `imported-${existingSlug}` }
+        }
+        await this.writeImported(existingSlug, files, url, signature)
+        return { status: 'updated', id: `imported-${existingSlug}` }
+      }
+
+      // A brand-new source; take a free slug (a same-name skill from a different repo gets a suffix).
+      const slug = await this.uniqueSlug('imported', base)
+      await this.writeImported(slug, files, url, signature)
+      return { status: 'imported', id: `imported-${slug}` }
+    })
   }
 
-  // Finds an already-imported skill whose recorded source URL matches, for dedup.
+  // Finds an already-imported skill whose recorded source URL matches, for dedup. Only real slugs are
+  // scanned, so a hidden transaction dir can never be returned as a (bogus) slug.
   private async findImportedSlugByUrl(url: string): Promise<string | undefined> {
-    let slugs: string[] = []
-    try {
-      slugs = await readdir(this.sourceDir('imported'))
-    } catch {
-      return undefined
-    }
-
-    for (const slug of slugs) {
+    for (const slug of await this.listSlugs('imported')) {
       const source = await this.readSource(slug)
       if (source?.url === url) return slug
     }
@@ -294,29 +412,35 @@ class UserSkillRepository {
     const roots = findSkillRoots(extractZip(zip))
     if (roots.length === 0) throw new Error('The bundle must contain a SKILL.md.')
 
-    const previews: SkillBundlePreview[] = []
-    for (const root of roots) {
-      const skillMd = root.files.find((file) => file.relativePath.toLowerCase() === 'skill.md')!
-      const { fields } = parseFrontmatter(skillMd.content.toString('utf8'))
-      const name = fields.name?.trim()
-      if (!name) throw new Error("The bundle's SKILL.md needs a name in its frontmatter.")
+    // Recovery + all dedup reads run under the lock so the alreadyImported/replaceable computation
+    // reflects a consistent, fully-recovered view of the imported dir.
+    return this.runExclusive(async () => {
+      await this.doRecoverImportedTransactions()
 
-      const alreadyImported = Boolean(
-        await this.findImportedSlugBySignature(signatureOf(root.files))
-      )
-      const replaceableId = alreadyImported ? undefined : await this.replaceableImportedId(name)
+      const previews: SkillBundlePreview[] = []
+      for (const root of roots) {
+        const skillMd = root.files.find((file) => file.relativePath.toLowerCase() === 'skill.md')!
+        const { fields } = parseFrontmatter(skillMd.content.toString('utf8'))
+        const name = fields.name?.trim()
+        if (!name) throw new Error("The bundle's SKILL.md needs a name in its frontmatter.")
 
-      previews.push({
-        name,
-        description: fields.description ?? '',
-        files: root.files.map((file) => file.relativePath).sort(),
-        alreadyImported,
-        replaceableId,
-        subPath: root.subPath
-      })
-    }
+        const alreadyImported = Boolean(
+          await this.findImportedSlugBySignature(signatureOf(root.files))
+        )
+        const replaceableId = alreadyImported ? undefined : await this.replaceableImportedId(name)
 
-    return previews
+        previews.push({
+          name,
+          description: fields.description ?? '',
+          files: root.files.map((file) => file.relativePath).sort(),
+          alreadyImported,
+          replaceableId,
+          subPath: root.subPath
+        })
+      }
+
+      return previews
+    })
   }
 
   // The id of the single imported skill sharing this display name, or undefined when there is none or
@@ -324,7 +448,9 @@ class UserSkillRepository {
   // personal/featured skill that happens to share a name.
   private async replaceableImportedId(name: string): Promise<string | undefined> {
     const target = name.trim().toLowerCase()
-    const matches = (await this.list()).filter(
+    // Non-locking listing: this is only ever called from within a critical section that has already
+    // recovered, so it must not re-acquire the lock (which would deadlock).
+    const matches = (await this.listSkillsInternal()).filter(
       (skill) => skill.source === 'imported' && skill.name.trim().toLowerCase() === target
     )
     return matches.length === 1 ? matches[0].id : undefined
@@ -360,41 +486,40 @@ class UserSkillRepository {
     const skillMd = files.find((file) => file.relativePath.toLowerCase() === 'skill.md')!
     const signature = signatureOf(files)
 
-    if (options.replaceId !== undefined) {
-      const parsed = parseUserSkillId(options.replaceId)
-      if (
-        !parsed ||
-        parsed.source !== 'imported' ||
-        !(await this.slugTaken('imported', parsed.slug))
-      ) {
-        throw new Error(`Not an imported skill to replace: ${options.replaceId}`)
+    // Recovery, dedup, slug allocation and the swap share one critical section (see importFromGitHub).
+    return this.runExclusive(async () => {
+      await this.doRecoverImportedTransactions()
+
+      if (options.replaceId !== undefined) {
+        const parsed = parseUserSkillId(options.replaceId)
+        if (
+          !parsed ||
+          parsed.source !== 'imported' ||
+          !(await this.slugTaken('imported', parsed.slug))
+        ) {
+          throw new Error(`Not an imported skill to replace: ${options.replaceId}`)
+        }
+        await this.writeImported(parsed.slug, files, '', signature)
+        return { status: 'updated', id: `imported-${parsed.slug}` }
       }
-      await this.writeImported(parsed.slug, files, '', signature)
-      return { status: 'updated', id: `imported-${parsed.slug}` }
-    }
 
-    const existingSlug = await this.findImportedSlugBySignature(signature)
-    if (existingSlug) {
-      return { status: 'unchanged', id: `imported-${existingSlug}` }
-    }
+      const existingSlug = await this.findImportedSlugBySignature(signature)
+      if (existingSlug) {
+        return { status: 'unchanged', id: `imported-${existingSlug}` }
+      }
 
-    const name = parseFrontmatter(skillMd.content.toString('utf8')).fields.name?.trim()
-    const base = toSlug(name ?? 'skill') || 'skill'
-    const slug = await this.uniqueSlug('imported', base)
-    await this.writeImported(slug, files, '', signature)
-    return { status: 'imported', id: `imported-${slug}` }
+      // CRLF-aware name extraction (from #181) inside #170's operation-level critical section.
+      const name = parseFrontmatter(skillMd.content.toString('utf8')).fields.name?.trim()
+      const base = toSlug(name ?? 'skill') || 'skill'
+      const slug = await this.uniqueSlug('imported', base)
+      await this.writeImported(slug, files, '', signature)
+      return { status: 'imported', id: `imported-${slug}` }
+    })
   }
 
   // Finds an imported skill whose recorded content signature matches, for zip dedup.
   private async findImportedSlugBySignature(signature: string): Promise<string | undefined> {
-    let slugs: string[] = []
-    try {
-      slugs = await readdir(this.sourceDir('imported'))
-    } catch {
-      return undefined
-    }
-
-    for (const slug of slugs) {
+    for (const slug of await this.listSlugs('imported')) {
       const source = await this.readSource(slug)
       if (source?.signature === signature) return slug
     }
@@ -412,9 +537,13 @@ class UserSkillRepository {
     const fetcher = fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined)
     if (!fetcher) throw new Error('No fetch implementation available.')
 
+    // Scan over the network outside the lock; build the imported index under the lock, after recovery.
     const [found, index] = await Promise.all([
       scanRepoForSkills(repo, fetcher),
-      this.importedIndex()
+      this.runExclusive(async () => {
+        await this.doRecoverImportedTransactions()
+        return this.importedIndex()
+      })
     ])
 
     // Mark a candidate as already imported when its exact source URL matches, or when its name matches
@@ -430,14 +559,10 @@ class UserSkillRepository {
   private async importedIndex(): Promise<{ urls: Set<string>; slugs: Set<string> }> {
     const urls = new Set<string>()
     const slugs = new Set<string>()
-    let dirs: string[] = []
-    try {
-      dirs = await readdir(this.sourceDir('imported'))
-    } catch {
-      return { urls, slugs }
-    }
 
-    for (const slug of dirs) {
+    // listSlugs ignores hidden entries, so a transaction dir's .source.json is never read as an
+    // already-imported source even if recovery couldn't clean it up.
+    for (const slug of await this.listSlugs('imported')) {
       slugs.add(slug)
       const source = await this.readSource(slug)
       if (source?.url) urls.add(source.url)
@@ -465,26 +590,113 @@ class UserSkillRepository {
     signature: string
   ): Promise<void> {
     const dir = this.skillDir('imported', slug)
-    await rm(dir, { recursive: true, force: true })
+    const root = resolve(dir)
 
+    // Validate the whole file set against the FINAL directory before touching disk. Every target must
+    // stay inside the skill dir, none may BE the dir itself (an empty/`.` path), none may collide with
+    // the internal source manifest, no two may be exact duplicates, and none may be a path-prefix of
+    // another (a file `a` and a dir `a/b` can't both exist). A bundle failing any of these is rejected.
+    const manifestTarget = resolve(dir, SOURCE_MANIFEST)
+    const seen = new Set<string>()
     for (const file of files) {
-      const target = join(dir, file.relativePath)
-      await mkdir(dirname(target), { recursive: true })
-      await writeFile(target, file.content)
+      const target = resolve(dir, file.relativePath)
+      if (target === root || !target.startsWith(root + sep)) {
+        throw new Error(`Refusing to write skill file outside its directory: ${file.relativePath}`)
+      }
+      if (target === manifestTarget) {
+        throw new Error(`Skill import may not include the reserved file ${SOURCE_MANIFEST}.`)
+      }
+      if (seen.has(target)) {
+        throw new Error(`Duplicate file path in skill import: ${file.relativePath}`)
+      }
+      seen.add(target)
+    }
+    for (const a of seen) {
+      for (const b of seen) {
+        if (a !== b && b.startsWith(a + sep)) {
+          throw new Error('Conflicting file and directory at the same path in skill import.')
+        }
+      }
     }
 
-    await writeFile(join(dir, SOURCE_MANIFEST), JSON.stringify({ url, signature }, null, 2), 'utf8')
+    // Stage the new copy in a sibling dir, then swap it in with a backup so the operation is atomic on
+    // failure. Files are written with the `wx` flag so a filesystem-equivalent collision (e.g. SKILL.md
+    // vs skill.md on a case-insensitive volume) fails loudly in staging rather than silently
+    // overwriting. Swap order: move the old dir to a backup, move staging into place, then drop the
+    // backup — so if the final rename throws (or the process dies) the previous skill is still on disk
+    // and is rolled back, never lost.
+    const parent = dirname(dir)
+    const stem = basename(dir)
+    const generation = nextGeneration()
+    const staging = join(parent, `.${stem}.import-${generation}`)
+    const backup = join(parent, `.${stem}.backup-${generation}`)
+    // Build the whole new copy in staging first; any failure here discards staging and never touches
+    // the live skill.
+    try {
+      await mkdir(staging, { recursive: true })
+      for (const file of files) {
+        const target = join(staging, file.relativePath)
+        await mkdir(dirname(target), { recursive: true })
+        try {
+          await writeFile(target, file.content, { flag: 'wx' })
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            throw new Error(
+              `Conflicting file paths in skill import (collision at ${file.relativePath}).`
+            )
+          }
+          throw error
+        }
+      }
+      await writeFile(join(staging, SOURCE_MANIFEST), JSON.stringify({ url, signature }, null, 2), {
+        flag: 'wx'
+      })
+    } catch (buildError) {
+      await rm(staging, { recursive: true, force: true }).catch(() => {})
+      throw buildError
+    }
+
+    // Swap: move the old copy aside to the backup, move staging into place, then drop the backup. This
+    // runs inside the caller's operation-level critical section (recovery + dedup + slug + swap share
+    // one runExclusive), so it must NOT re-acquire the lock here — that would deadlock. If a crash
+    // lands between the two renames, recovery restores the backup on the next operation.
+    try {
+      const hadExisting = await stat(dir).then(
+        () => true,
+        () => false
+      )
+      if (hadExisting) await rename(dir, backup) // may throw; live dir untouched, staging cleaned below
+
+      try {
+        await rename(staging, dir)
+      } catch (swapError) {
+        if (hadExisting) {
+          try {
+            await rename(backup, dir)
+          } catch (rollbackError) {
+            // Rollback failed too: keep the backup on disk (recovery restores it next run) and
+            // surface both errors rather than swallowing them.
+            throw new Error(
+              `Skill replace failed to swap and could not roll back; the previous copy is preserved at ${basename(backup)} and will be restored on the next operation. swap error: ${String(swapError)}; rollback error: ${String(rollbackError)}`
+            )
+          }
+        }
+        throw swapError
+      }
+
+      // New copy is in place; drop the backup last so nothing is deleted until the swap succeeded. A
+      // leftover backup (rm failure) is harmless — recovery removes it once the live dir is present.
+      if (hadExisting) await rm(backup, { recursive: true, force: true }).catch(() => {})
+    } catch (error) {
+      // Any swap failure leaves staging behind; discard it (the backup, if any, is intentionally kept).
+      await rm(staging, { recursive: true, force: true }).catch(() => {})
+      throw error
+    }
   }
 
   // Finds a slug not yet taken under the source, appending -2, -3, ... on collision.
   private async uniqueSlug(source: (typeof USER_SOURCES)[number], base: string): Promise<string> {
-    let slugs: string[] = []
-    try {
-      slugs = await readdir(this.sourceDir(source))
-    } catch {
-      slugs = []
-    }
-    const taken = new Set(slugs)
+    const taken = new Set(await this.listSlugs(source))
 
     if (!taken.has(base)) return base
     for (let index = 2; ; index += 1) {
@@ -495,12 +707,7 @@ class UserSkillRepository {
 
   // Whether a slug's directory already exists under the source.
   private async slugTaken(source: (typeof USER_SOURCES)[number], slug: string): Promise<boolean> {
-    try {
-      const slugs = await readdir(this.sourceDir(source))
-      return slugs.includes(slug)
-    } catch {
-      return false
-    }
+    return (await this.listSlugs(source)).includes(slug)
   }
 
   // Writes a SKILL.md with a minimal frontmatter block (name/description) followed by the body.

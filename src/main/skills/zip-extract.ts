@@ -19,6 +19,10 @@ export type ExtractedZipFile = { path: string; content: Buffer }
 // Rejects paths that would escape the extraction root (zip-slip) or aren't real bundle files.
 const isUnsafePath = (path: string): boolean => {
   if (path.length === 0) return true
+  // ZIP entry names are required to use forward slashes. A backslash is never legitimate and is a
+  // known zip-slip vector on Windows (where `\` is a real separator), so reject the raw name rather
+  // than normalizing it — normalizing would also silently collapse `a\b` and `a/b` onto one target.
+  if (path.includes('\\')) return true
   // Absolute paths (posix or a Windows drive letter) must never be trusted.
   if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return true
   // Any `..` segment could climb out of the target directory.

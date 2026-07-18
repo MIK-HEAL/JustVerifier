@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateRawSync } from 'node:zlib'
@@ -594,6 +594,417 @@ describe('UserSkillRepository', () => {
     const updated = await repo.importFromGitHub(SKILL_URL, fakeFetch(changed))
     expect(updated).toEqual({ status: 'updated', id: 'imported-foo' })
     expect((await repo.list())[0].description).toBe('Now updated.')
+  })
+
+  it('rejects an import whose file path escapes the skill dir before any file is written', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+
+    // A malicious GitHub response: a second file whose path climbs out of the skill directory once
+    // the root prefix is stripped (`pack/foo/../../../evil` -> `../../../evil`).
+    const escaping: FetchLike = async (url: string) => {
+      if (url.includes('/contents/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              type: 'file',
+              name: 'SKILL.md',
+              path: 'pack/foo/SKILL.md',
+              download_url: 'https://raw/s'
+            },
+            {
+              type: 'file',
+              name: 'evil',
+              path: 'pack/foo/../../../evil',
+              download_url: 'https://raw/e'
+            }
+          ],
+          arrayBuffer: async () => new ArrayBuffer(0)
+        }
+      }
+      const bytes = new TextEncoder().encode('---\nname: Foo\n---\nx')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () =>
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      }
+    }
+
+    await expect(repo.importFromGitHub(SKILL_URL, escaping)).rejects.toThrow(
+      /outside its directory/
+    )
+    // The gate runs before any disk write, so no partial skill is left behind.
+    expect(await repo.list()).toEqual([])
+  })
+
+  it('leaves the existing skill intact when a replace import fails the containment gate', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+
+    const good = ['---', 'name: Foo', 'description: original.', '---', 'original body'].join('\n')
+    const first = await repo.importFromGitHub(SKILL_URL, fakeFetch(good))
+    expect(first.status).toBe('imported')
+
+    // Same URL, changed content (so it takes the in-place replace path that deletes first), but now
+    // carrying an escaping file. The destructive rm must not run.
+    const badReplace: FetchLike = async (url: string) => {
+      if (url.includes('/contents/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              type: 'file',
+              name: 'SKILL.md',
+              path: 'pack/foo/SKILL.md',
+              download_url: 'https://raw/s2'
+            },
+            {
+              type: 'file',
+              name: 'evil',
+              path: 'pack/foo/../../../evil',
+              download_url: 'https://raw/e2'
+            }
+          ],
+          arrayBuffer: async () => new ArrayBuffer(0)
+        }
+      }
+      const bytes = new TextEncoder().encode('changed')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () =>
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      }
+    }
+
+    await expect(repo.importFromGitHub(SKILL_URL, badReplace)).rejects.toThrow(
+      /outside its directory/
+    )
+    // The original import survived the failed replace.
+    expect(await repo.body(first.id)).toContain('original body')
+  })
+
+  it('rejects an ancestor/descendant path conflict, leaving the prior skill intact', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+
+    const good = ['---', 'name: Foo', 'description: original.', '---', 'original body'].join('\n')
+    const first = await repo.importFromGitHub(SKILL_URL, fakeFetch(good))
+    expect(first.status).toBe('imported')
+
+    // `a` (a file) and `a/b` (needs `a` to be a directory) can't both exist. Before the staging fix
+    // this failed mid-write and left the old body half-overwritten; now it must be rejected up front.
+    const conflicting: FetchLike = async (url: string) => {
+      if (url.includes('/contents/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              type: 'file',
+              name: 'SKILL.md',
+              path: 'pack/foo/SKILL.md',
+              download_url: 'https://raw/s'
+            },
+            { type: 'file', name: 'a', path: 'pack/foo/a', download_url: 'https://raw/a' },
+            { type: 'file', name: 'b', path: 'pack/foo/a/b', download_url: 'https://raw/ab' }
+          ],
+          arrayBuffer: async () => new ArrayBuffer(0)
+        }
+      }
+      const bytes = new TextEncoder().encode('changed')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () =>
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      }
+    }
+
+    await expect(repo.importFromGitHub(SKILL_URL, conflicting)).rejects.toThrow(
+      /Conflicting file and directory/
+    )
+    expect(await repo.body(first.id)).toContain('original body')
+  })
+
+  it('rejects an import that contains duplicate file paths', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+
+    const duplicate: FetchLike = async (url: string) => {
+      if (url.includes('/contents/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              type: 'file',
+              name: 'SKILL.md',
+              path: 'pack/foo/SKILL.md',
+              download_url: 'https://raw/s'
+            },
+            { type: 'file', name: 'dup', path: 'pack/foo/dup.txt', download_url: 'https://raw/d1' },
+            { type: 'file', name: 'dup', path: 'pack/foo/dup.txt', download_url: 'https://raw/d2' }
+          ],
+          arrayBuffer: async () => new ArrayBuffer(0)
+        }
+      }
+      const bytes = new TextEncoder().encode('x')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () =>
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      }
+    }
+
+    await expect(repo.importFromGitHub(SKILL_URL, duplicate)).rejects.toThrow(/Duplicate file path/)
+    expect(await repo.list()).toEqual([])
+  })
+
+  it('rejects an import that includes the reserved .source.json manifest path', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+
+    const withManifest: FetchLike = async (url: string) => {
+      if (url.includes('/contents/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              type: 'file',
+              name: 'SKILL.md',
+              path: 'pack/foo/SKILL.md',
+              download_url: 'https://raw/s'
+            },
+            {
+              type: 'file',
+              name: '.source.json',
+              path: 'pack/foo/.source.json',
+              download_url: 'https://raw/m'
+            }
+          ],
+          arrayBuffer: async () => new ArrayBuffer(0)
+        }
+      }
+      const bytes = new TextEncoder().encode('{}')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () =>
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      }
+    }
+
+    await expect(repo.importFromGitHub(SKILL_URL, withManifest)).rejects.toThrow(/reserved/)
+    expect(await repo.list()).toEqual([])
+  })
+
+  it('rejects a filesystem-equivalent path collision on case-insensitive volumes', async () => {
+    const storage = await makeStorage()
+
+    // Only meaningful where the filesystem folds case (macOS/Windows default). On a case-sensitive
+    // volume SKILL.md and skill.md are distinct files and coexist, so there is nothing to reject.
+    const probe = join(storage, 'CaseProbe')
+    await writeFile(probe, 'x')
+    const caseInsensitive = await stat(join(storage, 'caseprobe')).then(
+      () => true,
+      () => false
+    )
+    await rm(probe, { force: true })
+    if (!caseInsensitive) return
+
+    const repo = new UserSkillRepository(storage)
+    const collide: FetchLike = async (url: string) => {
+      if (url.includes('/contents/')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              type: 'file',
+              name: 'SKILL.md',
+              path: 'pack/foo/SKILL.md',
+              download_url: 'https://raw/s'
+            },
+            {
+              type: 'file',
+              name: 'skill.md',
+              path: 'pack/foo/skill.md',
+              download_url: 'https://raw/s2'
+            }
+          ],
+          arrayBuffer: async () => new ArrayBuffer(0)
+        }
+      }
+      const bytes = new TextEncoder().encode('---\nname: Foo\n---\nbody')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () =>
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      }
+    }
+
+    await expect(repo.importFromGitHub(SKILL_URL, collide)).rejects.toThrow(
+      /[Cc]ollision|Conflicting/
+    )
+    expect(await repo.list()).toEqual([])
+  })
+
+  it('recovers the previous skill after a crash between the two swap renames', async () => {
+    const root = await makeStorage()
+    const repo = new UserSkillRepository(root)
+    const first = await repo.importFromGitHub(SKILL_URL, fakeFetch('---\nname: Foo\n---\nold body'))
+    expect(first.id).toBe('imported-foo')
+
+    // Reproduce the durable on-disk state if the process died after `rename(live, backup)` and before
+    // `rename(staging, live)`: the live dir is gone and only a hidden backup remains.
+    const importedDir = join(root, 'skills', 'imported')
+    await rename(join(importedDir, 'foo'), join(importedDir, '.foo.backup-simulated-crash'))
+
+    // A fresh instance (simulating a restart) must restore the previous skill on its first use.
+    const restarted = new UserSkillRepository(root)
+    expect(await restarted.body(first.id)).toContain('old body')
+    expect((await restarted.list()).map((skill) => skill.id)).toEqual(['imported-foo'])
+  })
+
+  it('ignores a leftover backup dir when the live skill is present (no bogus ids)', async () => {
+    const root = await makeStorage()
+    const repo = new UserSkillRepository(root)
+    await repo.importFromGitHub(SKILL_URL, fakeFetch('---\nname: Foo\n---\nbody'))
+
+    // A stray backup left next to a healthy live dir (e.g. a crash after the swap, before cleanup).
+    const importedDir = join(root, 'skills', 'imported')
+    await mkdir(join(importedDir, '.foo.backup-stale'), { recursive: true })
+    await writeFile(join(importedDir, '.foo.backup-stale', 'SKILL.md'), '---\nname: Foo\n---\nx')
+
+    // list() recovers (removes) the leftover and never surfaces it as a skill id.
+    const listed = await new UserSkillRepository(root).list()
+    expect(listed.map((skill) => skill.id)).toEqual(['imported-foo'])
+  })
+
+  it('does not resurrect a crashed imported skill after the user deletes it', async () => {
+    const root = await makeStorage()
+    const repo = new UserSkillRepository(root)
+    const first = await repo.importFromGitHub(SKILL_URL, fakeFetch('---\nname: Foo\n---\nold body'))
+
+    // Crash state: live dir gone, only a hidden backup remains.
+    const importedDir = join(root, 'skills', 'imported')
+    await rename(join(importedDir, 'foo'), join(importedDir, '.foo.backup-simulated-crash'))
+
+    // delete() must recover-then-remove, so a later list() can't resurrect the deleted skill.
+    const restarted = new UserSkillRepository(root)
+    await restarted.delete(first.id)
+    expect(await restarted.list()).toEqual([])
+    expect(await new UserSkillRepository(root).list()).toEqual([])
+  })
+
+  it('discards a stale staged (.import-) dir on the next operation', async () => {
+    const root = await makeStorage()
+    const importedDir = join(root, 'skills', 'imported')
+    await mkdir(join(importedDir, '.foo.import-stale'), { recursive: true })
+    await writeFile(join(importedDir, '.foo.import-stale', 'SKILL.md'), '---\nname: Foo\n---\nx')
+
+    const listed = await new UserSkillRepository(root).list()
+    expect(listed).toEqual([])
+    // The uncommitted staging dir was cleaned up, not left lingering.
+    expect(await readdir(importedDir)).toEqual([])
+  })
+
+  it('serializes concurrent fresh imports so they get distinct slugs (no clobber)', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+    // Two different source URLs whose folder name slugifies to the same base ("foo"). Run at once:
+    // slug allocation + swap share one critical section, so the second is suffixed rather than
+    // overwriting the first (which would leave both reporting imported-foo).
+    const [a, b] = await Promise.all([
+      repo.importFromGitHub(
+        'https://github.com/acme/one/tree/main/pack/foo',
+        fakeFetch('---\nname: Foo\n---\nfrom one')
+      ),
+      repo.importFromGitHub(
+        'https://github.com/acme/two/tree/main/pack/foo',
+        fakeFetch('---\nname: Foo\n---\nfrom two')
+      )
+    ])
+
+    expect([a.id, b.id].sort()).toEqual(['imported-foo', 'imported-foo-2'])
+    expect((await repo.list()).map((skill) => skill.id).sort()).toEqual([
+      'imported-foo',
+      'imported-foo-2'
+    ])
+  })
+
+  it('restores the newest backup when several exist for one slug', async () => {
+    const root = await makeStorage()
+    const importedDir = join(root, 'skills', 'imported')
+    // Two backups for "foo" with different (sortable) generations; the live dir is gone.
+    await mkdir(join(importedDir, '.foo.backup-000000000000001-old'), { recursive: true })
+    await writeFile(
+      join(importedDir, '.foo.backup-000000000000001-old', 'SKILL.md'),
+      '---\nname: Foo\n---\nolder generation'
+    )
+    await mkdir(join(importedDir, '.foo.backup-000000000000002-new'), { recursive: true })
+    await writeFile(
+      join(importedDir, '.foo.backup-000000000000002-new', 'SKILL.md'),
+      '---\nname: Foo\n---\nnewer generation'
+    )
+
+    // Recovery restores the newest generation and discards the older; only the live dir remains.
+    const repo = new UserSkillRepository(root)
+    expect(await repo.body('imported-foo')).toContain('newer generation')
+    expect((await readdir(importedDir)).sort()).toEqual(['foo'])
+  })
+
+  it('recovers a legacy-format transaction dir (no generation timestamp)', async () => {
+    const root = await makeStorage()
+    const importedDir = join(root, 'skills', 'imported')
+    // A backup written before the sortable-generation change (name has no timestamp prefix).
+    await mkdir(join(importedDir, '.foo.backup-legacyuuid'), { recursive: true })
+    await writeFile(
+      join(importedDir, '.foo.backup-legacyuuid', 'SKILL.md'),
+      '---\nname: Foo\n---\nlegacy body'
+    )
+
+    expect(await new UserSkillRepository(root).body('imported-foo')).toContain('legacy body')
+  })
+
+  it('recovers within the same instance after a rollback leaves a backup (not memoized once)', async () => {
+    const root = await makeStorage()
+    const repo = new UserSkillRepository(root)
+    const first = await repo.importFromGitHub(SKILL_URL, fakeFetch('---\nname: Foo\n---\nold body'))
+    // First op already ran a recovery pass; prove a later crash state is still recovered by the SAME
+    // instance (recovery is not cached after the first call).
+    await repo.list()
+
+    const importedDir = join(root, 'skills', 'imported')
+    await rename(join(importedDir, 'foo'), join(importedDir, '.foo.backup-late-crash'))
+
+    expect(await repo.body(first.id)).toContain('old body')
+  })
+
+  it('runs recovery before previewZip so dedup state is not stale after a crash', async () => {
+    const root = await makeStorage()
+    const repo = new UserSkillRepository(root)
+    const zip = buildZip([
+      { path: 'foo/SKILL.md', content: Buffer.from('---\nname: Foo\n---\nbody') }
+    ])
+    const { id } = await repo.importFromZip(zip)
+    const slug = id.replace(/^imported-/, '')
+
+    // Crash: the imported skill survives only as a hidden backup.
+    const importedDir = join(root, 'skills', 'imported')
+    await rename(join(importedDir, slug), join(importedDir, `.${slug}.backup-crash`))
+
+    // previewZip must recover first, so the same bundle is correctly seen as already imported.
+    const restarted = new UserSkillRepository(root)
+    expect((await restarted.previewZip(zip))[0].alreadyImported).toBe(true)
   })
 
   it('marks scanned candidates already imported by URL or by same name', async () => {
