@@ -1,24 +1,50 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Hoisted so the electron mock and the test body share the same shell.openExternal spy.
-const { openExternalMock } = vi.hoisted(() => ({ openExternalMock: vi.fn() }))
+import {
+  CLOSE_ACTIVE_PANE_CHANNEL,
+  CLOSE_ACTIVE_PANE_READY_CHANNEL,
+  CLOSE_ACTIVE_PANE_UNREADY_CHANNEL,
+  type KeyChordInput
+} from '../shared/window-controls'
+
+// Hoisted so the electron mock and the test body share the same spies.
+const { openExternalMock, ipcMainOnMock, ipcMainRemoveListenerMock } = vi.hoisted(() => ({
+  openExternalMock: vi.fn(),
+  ipcMainOnMock: vi.fn(),
+  ipcMainRemoveListenerMock: vi.fn()
+}))
 
 // Captured window-open handler so tests can drive it directly, mirroring how Electron invokes it on a
 // target="_blank" click or window.open() from the main app frame.
 type WindowOpenDetails = { url: string; referrer: { url: string } }
 let windowOpenHandler: ((details: WindowOpenDetails) => unknown) | undefined
 
+// The most recently constructed window and its captured webContents handlers, so tests can drive the
+// before-input-event / did-start-loading listeners the way Electron would.
+type WebContentsHandler = (...args: unknown[]) => void
+let currentWindow: FakeBrowserWindow | undefined
+
 class FakeBrowserWindow {
+  closeMock = vi.fn()
+  sendMock = vi.fn()
+  webContentsHandlers = new Map<string, WebContentsHandler>()
   webContents = {
     setWindowOpenHandler: (handler: (details: WindowOpenDetails) => unknown): void => {
       windowOpenHandler = handler
     },
-    on: vi.fn(),
+    on: (event: string, handler: WebContentsHandler): void => {
+      this.webContentsHandlers.set(event, handler)
+    },
+    send: (...args: unknown[]): void => this.sendMock(...args),
     getURL: (): string => 'file:///app/index.html'
   }
 
   on(): this {
     return this
+  }
+
+  close(): void {
+    this.closeMock()
   }
 
   loadURL(): Promise<void> {
@@ -35,9 +61,11 @@ vi.mock('electron', () => ({
   app: { isPackaged: true },
   BrowserWindow: class {
     constructor() {
-      return new FakeBrowserWindow() as unknown as object
+      currentWindow = new FakeBrowserWindow()
+      return currentWindow as unknown as object
     }
   },
+  ipcMain: { on: ipcMainOnMock, removeListener: ipcMainRemoveListenerMock },
   shell: { openExternal: openExternalMock }
 }))
 
@@ -46,6 +74,19 @@ vi.mock('@electron-toolkit/utils', () => ({ is: { dev: false } }))
 vi.mock('../../resources/icon.png?asset', () => ({ default: 'icon-path' }))
 
 const { createMainWindow } = await import('./windows')
+
+// A keyDown close chord for the host platform: Cmd+W on macOS, Ctrl+W elsewhere. Built off
+// process.platform so the interception test passes on every CI runner (windows, linux, macOS).
+const closeChord = (overrides: Partial<KeyChordInput> = {}): KeyChordInput => ({
+  type: 'keyDown',
+  key: 'w',
+  control: process.platform !== 'darwin',
+  meta: process.platform === 'darwin',
+  alt: false,
+  shift: false,
+  isAutoRepeat: false,
+  ...overrides
+})
 
 describe('window navigation policy', () => {
   it('allows only explicit external URL protocols', async () => {
@@ -121,5 +162,188 @@ describe('window-open external handler', () => {
     windowOpenHandler!({ url: 'javascript:alert(1)', referrer: { url: '' } })
 
     expect(openExternalMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('close chord interception', () => {
+  beforeEach(() => {
+    currentWindow = undefined
+    ipcMainOnMock.mockReset()
+    ipcMainRemoveListenerMock.mockReset()
+  })
+
+  // Fires an ipcMain handshake signal that main registered via ipcMain.on, spoofing the sender as this
+  // window's webContents so the readiness flag flips for it.
+  const fireHandshake = (window: FakeBrowserWindow, channel: string): void => {
+    const handler = ipcMainOnMock.mock.calls.find(([registered]) => registered === channel)?.[1] as
+      ((event: { sender: unknown }) => void) | undefined
+    expect(handler).toBeDefined()
+    handler!({ sender: window.webContents })
+  }
+
+  const signalRendererReady = (window: FakeBrowserWindow): void =>
+    fireHandshake(window, CLOSE_ACTIVE_PANE_READY_CHANNEL)
+
+  const signalRendererGone = (window: FakeBrowserWindow): void =>
+    fireHandshake(window, CLOSE_ACTIVE_PANE_UNREADY_CHANNEL)
+
+  // Drives one of the captured webContents lifecycle handlers (render-process-gone, unresponsive, ...).
+  const fireWebContentsEvent = (
+    window: FakeBrowserWindow,
+    event: string,
+    ...args: unknown[]
+  ): void => {
+    const handler = window.webContentsHandlers.get(event)
+    expect(handler).toBeDefined()
+    handler!(...args)
+  }
+
+  // A top-level document swap (reload or new URL): main frame, real document change.
+  const mainFrameNavigation = { isMainFrame: true, isSameDocument: false }
+
+  const fireInput = (window: FakeBrowserWindow, input: KeyChordInput): (() => void) => {
+    const preventDefault = vi.fn()
+    const handler = window.webContentsHandlers.get('before-input-event')
+    expect(handler).toBeDefined()
+    handler!({ preventDefault }, input)
+    return preventDefault
+  }
+
+  it('closes the window directly when the chord fires before the renderer is ready', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    const preventDefault = fireInput(window, closeChord())
+
+    // Default Close is suppressed and the window closes directly, so the chord is never a no-op.
+    expect(preventDefault).toHaveBeenCalled()
+    expect(window.closeMock).toHaveBeenCalledTimes(1)
+    expect(window.sendMock).not.toHaveBeenCalled()
+  })
+
+  it('forwards the chord to the renderer once its listener is ready', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    signalRendererReady(window)
+    const preventDefault = fireInput(window, closeChord())
+
+    expect(preventDefault).toHaveBeenCalled()
+    expect(window.sendMock).toHaveBeenCalledWith(CLOSE_ACTIVE_PANE_CHANNEL)
+    expect(window.closeMock).not.toHaveBeenCalled()
+  })
+
+  it('re-arms the direct-close fallback after a top-level navigation clears renderer readiness', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    signalRendererReady(window)
+    // A top-level reload navigates the main frame before the fresh document re-subscribes.
+    fireWebContentsEvent(window, 'did-start-navigation', mainFrameNavigation)
+
+    fireInput(window, closeChord())
+
+    expect(window.closeMock).toHaveBeenCalledTimes(1)
+    expect(window.sendMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps forwarding when a subframe or same-document navigation fires', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    signalRendererReady(window)
+    // A dynamic preview iframe load (subframe) and a hash / pushState change (same document) both
+    // navigate the WebContents without remounting the hook, so readiness must survive them.
+    fireWebContentsEvent(window, 'did-start-navigation', {
+      isMainFrame: false,
+      isSameDocument: false
+    })
+    fireWebContentsEvent(window, 'did-start-navigation', {
+      isMainFrame: true,
+      isSameDocument: true
+    })
+
+    fireInput(window, closeChord())
+
+    expect(window.sendMock).toHaveBeenCalledWith(CLOSE_ACTIVE_PANE_CHANNEL)
+    expect(window.closeMock).not.toHaveBeenCalled()
+  })
+
+  it('re-arms the direct-close fallback when the renderer tears its listener down', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    signalRendererReady(window)
+    // The hook unmounted, so its listener is gone even though the document did not reload.
+    signalRendererGone(window)
+
+    fireInput(window, closeChord())
+
+    expect(window.closeMock).toHaveBeenCalledTimes(1)
+    expect(window.sendMock).not.toHaveBeenCalled()
+  })
+
+  it('re-arms the direct-close fallback after the render process is gone', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    signalRendererReady(window)
+    // The renderer crashed; its listener died with the process until a fresh one re-handshakes.
+    fireWebContentsEvent(window, 'render-process-gone')
+
+    fireInput(window, closeChord())
+
+    expect(window.closeMock).toHaveBeenCalledTimes(1)
+    expect(window.sendMock).not.toHaveBeenCalled()
+  })
+
+  it('closes directly while the renderer is unresponsive, then forwards again once responsive', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    signalRendererReady(window)
+    fireWebContentsEvent(window, 'unresponsive')
+
+    // A hung renderer would never process the forwarded chord, so main closes directly instead.
+    fireInput(window, closeChord())
+    expect(window.closeMock).toHaveBeenCalledTimes(1)
+    expect(window.sendMock).not.toHaveBeenCalled()
+
+    // Recovery restores forwarding without requiring the renderer to re-handshake.
+    fireWebContentsEvent(window, 'responsive')
+    fireInput(window, closeChord())
+    expect(window.sendMock).toHaveBeenCalledWith(CLOSE_ACTIVE_PANE_CHANNEL)
+    expect(window.closeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards again after unresponsive -> crash -> reload -> ready, with no responsive event', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    signalRendererReady(window)
+    // The renderer hangs, then its process dies, then a fresh one loads and re-handshakes. A brand-new
+    // process never emits 'responsive' (that is a same-process recovery signal), so READY alone must
+    // clear the stale unresponsive state or the chord stays a direct close forever.
+    fireWebContentsEvent(window, 'unresponsive')
+    fireWebContentsEvent(window, 'render-process-gone')
+    fireWebContentsEvent(window, 'did-start-navigation', mainFrameNavigation)
+    signalRendererReady(window)
+
+    fireInput(window, closeChord())
+
+    expect(window.sendMock).toHaveBeenCalledWith(CLOSE_ACTIVE_PANE_CHANNEL)
+    expect(window.closeMock).not.toHaveBeenCalled()
+  })
+
+  it('ignores keys that are not the close chord', () => {
+    createMainWindow()
+    const window = currentWindow!
+    signalRendererReady(window)
+
+    const preventDefault = fireInput(window, closeChord({ key: 'q' }))
+
+    expect(preventDefault).not.toHaveBeenCalled()
+    expect(window.sendMock).not.toHaveBeenCalled()
+    expect(window.closeMock).not.toHaveBeenCalled()
   })
 })
