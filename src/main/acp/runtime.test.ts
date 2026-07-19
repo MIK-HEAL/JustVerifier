@@ -12,6 +12,7 @@ import { AcpRuntime } from './runtime'
 import { AgentMcpHttpHost } from './mcp-http-host'
 import { claudeCodeFramework, opencodeFramework } from '../agent-framework'
 import { ArtifactRepository } from '../artifacts/repository'
+import type { UploadedAttachment } from '../../shared/uploads'
 import { UploadRepository } from '../uploads/repository'
 import {
   beginMigration,
@@ -772,6 +773,214 @@ describe('ACP runtime session management', () => {
     await expect(
       readFile(join(root, 'uploads', 'default-project', 'remote-session-1', 'notes.txt'), 'utf8')
     ).resolves.toBe('hello from upload')
+  })
+
+  it('degrades images to file links once a session exceeds its cumulative inline budget', async () => {
+    const root = await createTemporaryRoot()
+    const uploadRepository = new UploadRepository(root)
+    const process = new FakeAgentProcess()
+    const receivedPrompts: ContentBlock[][] = []
+    startFakeAgent(process, ['remote-session-1'], {
+      onPrompt: ({ prompt }) => {
+        receivedPrompts.push(prompt)
+      }
+    })
+    // A tiny budget makes small fixtures cross the cliff: the first image inlines, the next degrades
+    // because the conversation's replayed history already holds the first image's bytes.
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      uploads: { repository: uploadRepository },
+      inlineImageBudgetBytes: 15
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+
+    const stageImage = (name: string): Promise<UploadedAttachment[]> =>
+      uploadRepository.stageFiles({
+        files: [
+          { name, mimeType: 'image/png', content: Buffer.from('png-bytes').toString('base64') }
+        ]
+      })
+
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'first image',
+      attachments: await stageImage('first.png')
+    })
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'second image',
+      attachments: await stageImage('second.png')
+    })
+
+    expect(receivedPrompts).toHaveLength(2)
+    // First turn: within budget, so the pixels are inlined as base64.
+    expect(receivedPrompts[0][1]).toMatchObject({
+      type: 'image',
+      mimeType: 'image/png',
+      data: Buffer.from('png-bytes').toString('base64')
+    })
+    // Second turn: the accumulated total would overflow, so the image degrades to a file reference
+    // instead of base64 — keeping the request under the ceiling so compaction stays viable.
+    expect(receivedPrompts[1][1]).toMatchObject({
+      type: 'resource_link',
+      name: 'second.png',
+      title: 'second.png',
+      mimeType: 'image/png',
+      uri: expect.stringContaining('second.png')
+    })
+    // The raw image bytes must not be inlined anywhere in the degraded turn.
+    expect(JSON.stringify(receivedPrompts[1])).not.toContain(
+      Buffer.from('png-bytes').toString('base64')
+    )
+  })
+
+  it('adopts a fresh agent session under the same app id on a context reset', async () => {
+    const process = new FakeAgentProcess()
+    const receivedPrompts: ContentBlock[][] = []
+    // A second agent session id is available for the fresh adoption that the reset performs.
+    startFakeAgent(process, ['remote-session-1', 'remote-session-2'], {
+      onPrompt: ({ prompt }) => {
+        receivedPrompts.push(prompt)
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process)
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    const reset = await runtime.resetSessionContext({
+      sessionId: session.sessionId,
+      cwd: '/workspace'
+    })
+
+    // The app-facing id stays attached (a brand-new agent session now backs it), and the caller is told
+    // to replay a transcript because the agent-side context was dropped.
+    expect(reset.contextReset).toBe(true)
+    expect(reset.sessionId).toBe(session.sessionId)
+    expect(runtime.getSnapshot().sessionIds).toContain(session.sessionId)
+
+    // The fresh session still accepts prompts, so the conversation continues after the reset.
+    await runtime.sendPrompt({ sessionId: session.sessionId, text: 'continue after compaction' })
+    expect(receivedPrompts.at(-1)).toBeDefined()
+  })
+
+  it('releases the in-flight prompt lock on reset so the recovery resend is not rejected', async () => {
+    const process = new FakeAgentProcess()
+    // Only the first prompt is gated so it stays in-flight — the overflow-recovery reset happens while it
+    // is still "running", exactly as in production before the failing prompt's finally clears the lock.
+    // Disposing that session rejects the gated prompt, so its promise is caught up front.
+    const promptGate = createDeferred()
+    let firstPrompt = true
+    startFakeAgent(process, ['remote-session-1', 'remote-session-2'], {
+      onPrompt: () => {
+        if (firstPrompt) {
+          firstPrompt = false
+          return promptGate.promise
+        }
+        return Promise.resolve()
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process)
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    const inflight = runtime
+      .sendPrompt({ sessionId: session.sessionId, text: 'oversized turn' })
+      .catch(() => undefined)
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot().promptInFlightSessionIds).toContain(session.sessionId)
+    )
+
+    await runtime.resetSessionContext({ sessionId: session.sessionId, cwd: '/workspace' })
+
+    // The lock the torn-down turn held is released immediately by the reset.
+    expect(runtime.getSnapshot().promptInFlightSessionIds).not.toContain(session.sessionId)
+
+    // Once the disposed turn has settled, a resend into the same app id succeeds instead of throwing
+    // "An ACP prompt is already running for this session".
+    promptGate.resolve()
+    await inflight
+    await expect(
+      runtime.sendPrompt({ sessionId: session.sessionId, text: 'replayed turn' })
+    ).resolves.toBeDefined()
+  })
+
+  it('does not let a superseded turn finally clear the replay turn in-flight lock', async () => {
+    const root = await createTemporaryRoot()
+    const artifactRepository = new ArtifactRepository(root)
+    // Hold the abandoned turn's finally open (at emitArtifactRunEvent) until the replay turn has claimed
+    // the lock, reproducing production timing where the renderer resends immediately after the reset.
+    const listGate = createDeferred()
+    vi.spyOn(artifactRepository, 'listPendingRunFiles').mockImplementation(async () => {
+      await listGate.promise
+      return []
+    })
+
+    const process = new FakeAgentProcess()
+    // Both prompts stay in-flight so their locks are held; the first is abandoned by the reset.
+    const gateA = createDeferred()
+    const gateB = createDeferred()
+    let firstPrompt = true
+    startFakeAgent(process, ['remote-session-1', 'remote-session-2'], {
+      onPrompt: () => {
+        if (firstPrompt) {
+          firstPrompt = false
+          return gateA.promise
+        }
+        return gateB.promise
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: artifactRepository
+      }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    // The lock is claimed synchronously at turn start, so no polling is needed to observe it.
+    const failedTurn = runtime
+      .sendPrompt({ sessionId: session.sessionId, text: 'oversized turn' })
+      .catch(() => undefined)
+    expect(runtime.getSnapshot().promptInFlightSessionIds).toContain(session.sessionId)
+
+    // Reset abandons the failed turn (its finally now blocks on the gated listPendingRunFiles — before it
+    // reaches its own lock cleanup) and frees the lock so the replay can start.
+    await runtime.resetSessionContext({ sessionId: session.sessionId, cwd: '/workspace' })
+    expect(runtime.getSnapshot().promptInFlightSessionIds).not.toContain(session.sessionId)
+
+    // The replay turn re-claims the lock for the same app session id while the abandoned turn's finally is
+    // still parked in listPendingRunFiles.
+    const replayTurn = runtime
+      .sendPrompt({ sessionId: session.sessionId, text: 'replayed turn' })
+      .catch(() => undefined)
+    expect(runtime.getSnapshot().promptInFlightSessionIds).toContain(session.sessionId)
+
+    // Let the abandoned turn's finally run to completion — its generation token is now stale, so it must
+    // not delete the replay turn's lock. This is the assertion that fails without the guard.
+    listGate.resolve()
+    await failedTurn
+    expect(runtime.getSnapshot().promptInFlightSessionIds).toContain(session.sessionId)
+
+    // Teardown: release both prompt gates so the fake agent can drain (the abandoned turn's server-side
+    // handler is still parked on its gate, which otherwise blocks the replay from completing).
+    gateA.resolve()
+    gateB.resolve()
+    await replayTurn
   })
 
   it('sends PDFs as extracted text, never as an inlined base64 file', async () => {

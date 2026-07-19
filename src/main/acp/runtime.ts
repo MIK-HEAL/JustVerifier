@@ -78,7 +78,13 @@ import { opencodeStorageDir } from '../agent-framework/opencode'
 import type { UploadRepository } from '../uploads/repository'
 import type { UploadedAttachment } from '../../shared/uploads'
 import type { ArtifactFile, ArtifactReference } from '../../shared/artifacts'
-import { buildImageContentData, extractPdfText } from '../uploads/attachment-media'
+import { isMediaOverflowError } from '../../shared/media-overflow'
+import {
+  buildImageContentData,
+  canInlineImageInSession,
+  extractPdfText,
+  MAX_SESSION_INLINE_IMAGE_BYTES
+} from '../uploads/attachment-media'
 
 type AcpRuntimeCallbacks = {
   onStateChanged?: (state: AcpStateSnapshot) => void
@@ -110,6 +116,9 @@ type AcpRuntimeOptions = {
   resumeTimeoutMs?: number
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (handle: ReturnType<typeof setTimeout>) => void
+  // Per-session cumulative inlined-image budget in base64 bytes. Defaults to MAX_SESSION_INLINE_IMAGE_BYTES;
+  // injectable so tests can drive the degrade-to-file path with small fixtures.
+  inlineImageBudgetBytes?: number
 }
 
 // Turn-scoped skill force-load hooks, wired from the settings service. Optional so tests that construct
@@ -245,6 +254,11 @@ class AcpRuntime {
   private supportsSessionResume = false
   private readonly sessions = new Map<string, ActiveSession>()
   private readonly sessionCwds = new Map<string, string>()
+  // Running total of base64 image bytes this session has inlined. The agent replays full history each
+  // turn, so this accumulates; once it nears the request ceiling further images degrade to file links
+  // (see canInlineImageInSession) so a long conversation can never overflow the request or break
+  // compaction with `media_unstrippable`. Cleared on session delete and on disconnect.
+  private readonly sessionInlineImageBytes = new Map<string, number>()
   // Per-session names of the MCP servers the agent was actually given (from createMcpServers), so
   // MCP-originated tool calls can be recognized across frameworks (Claude's mcp__<server>__<tool> vs
   // opencode's <server>_<tool>) and never conservatively auto-approved. Derived per session rather
@@ -265,6 +279,11 @@ class AcpRuntime {
   // and skip a doomed resume. Cleaned per-session on delete.
   private readonly sessionFrameworks = new Map<string, string>()
   private readonly promptInFlightSessionIds = new Set<string>()
+  // Monotonic per-turn token and the token of the turn that currently owns each app session id. When an
+  // overflow-recovery replay reuses a session id, its start bumps the token; the abandoned turn's finally
+  // then sees a newer owner and leaves the replay's shared state (lock, artifact run) untouched.
+  private promptTurnSequence = 0
+  private readonly currentPromptTurnBySession = new Map<string, number>()
   private readonly permissionProfiles = new Map<string, SessionPermissionProfileState>()
   // A provider change requested while a prompt was running, applied when the session next goes idle.
   private pendingProviderReconnect = false
@@ -282,6 +301,7 @@ class AcpRuntime {
   private pendingSessionModel: string | undefined
   // Bounded resume network timeout + injectable timers (defaults to real setTimeout/clearTimeout).
   private readonly resumeTimeoutMs: number
+  private readonly inlineImageBudgetBytes: number
   private readonly setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void
   private readonly artifactOptions: AcpRuntimeArtifactOptions | undefined
@@ -309,6 +329,7 @@ class AcpRuntime {
     this.framework = options.framework ?? claudeCodeFramework
     this.mcpHttpHost = options.mcpHttpHost
     this.resumeTimeoutMs = options.resumeTimeoutMs ?? 30_000
+    this.inlineImageBudgetBytes = options.inlineImageBudgetBytes ?? MAX_SESSION_INLINE_IMAGE_BYTES
     this.setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle))
     this.artifactOptions = options.artifacts
@@ -675,6 +696,38 @@ class AcpRuntime {
     return this.resumeSessionWithTimeout(request, sessionCwd, projectName)
   }
 
+  // Forcibly drops the agent-side context for a session whose accumulated history can no longer be sent
+  // — chiefly when inlined media pushed the request past the provider's size limit and the backend's own
+  // compaction fails with `media_unstrippable`. Disposes the current agent session and adopts a brand-new
+  // one under the SAME app id, resetting the per-session inline-image budget so a replayed text-only
+  // transcript starts clean. Returns contextReset so the caller replays a bounded transcript into the
+  // next prompt (the app-level equivalent of compaction, which — unlike the backend's — drops all media).
+  async resetSessionContext(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse> {
+    const sessionCwd = resolve(request.cwd || this.cwd || this.options.defaultCwd)
+    const projectName = this.normalizeProjectName(request.projectName)
+    const connection = await this.ensureConnected(sessionCwd)
+
+    // Tear down the currently attached agent session (if any) before adopting a replacement, dropping
+    // its reverse routing so late events from the old agent session can no longer target this app id.
+    const attached = this.sessions.get(request.sessionId)
+
+    if (attached) {
+      attached.dispose()
+      this.agentToAppSessionId.delete(attached.sessionId)
+      this.sessions.delete(request.sessionId)
+    }
+
+    // The fresh agent session holds no history, so the accumulated media is gone; start its budget clean.
+    this.sessionInlineImageBytes.delete(request.sessionId)
+
+    // Release the failed turn's in-flight lock now. Its own `finally` clears it too, but that runs only
+    // after async artifact cleanup, so the recovery resend that follows this reset would otherwise race
+    // it and be rejected with "An ACP prompt is already running for this session".
+    this.promptInFlightSessionIds.delete(request.sessionId)
+
+    return this.adoptFreshSession(connection, request, sessionCwd, projectName)
+  }
+
   // Races the network-bound resume against a timeout so a stalled agent handshake cannot hang Resume
   // forever. On timeout the half-open connection is torn down so the next Resume reconnects cleanly.
   private async resumeSessionWithTimeout(
@@ -998,6 +1051,8 @@ class AcpRuntime {
 
     this.sessions.clear()
     this.sessionCwds.clear()
+    this.sessionInlineImageBytes.clear()
+    this.currentPromptTurnBySession.clear()
     this.sessionMcpServerNames.clear()
     this.sessionProjectNames.clear()
     this.permissionProfiles.clear()
@@ -1145,7 +1200,11 @@ class AcpRuntime {
     }
 
     this.currentSessionId = request.sessionId
+    // Claim ownership of this session's shared turn state so a superseded turn's later finally can tell it
+    // no longer owns the lock/artifact run (see the guarded cleanup in this turn's finally).
+    const promptTurn = ++this.promptTurnSequence
     this.promptInFlightSessionIds.add(request.sessionId)
+    this.currentPromptTurnBySession.set(request.sessionId, promptTurn)
     this.emitState()
     log.info('prompt start', {
       sessionId: request.sessionId,
@@ -1222,12 +1281,20 @@ class AcpRuntime {
       }
     } catch (error) {
       log.error('prompt failed', { sessionId: request.sessionId, error })
+      const text = describePromptError(error, { model: this.pendingSessionModel })
+      // Tag a request-size overflow as recoverable so the renderer compacts-and-retries (reset context +
+      // replay a text transcript) instead of dead-ending; the error still throws to drive that recovery.
+      const recoverable =
+        isMediaOverflowError(text) || isMediaOverflowError(errorMessage(error))
+          ? 'context-overflow'
+          : undefined
       this.pushEvent({
         kind: 'error',
         level: 'error',
+        recoverable,
         sessionId: request.sessionId,
         title: 'Prompt failed',
-        text: describePromptError(error, { model: this.pendingSessionModel })
+        text
       })
       throw error
     } finally {
@@ -1254,8 +1321,18 @@ class AcpRuntime {
           text: errorMessage(error)
         })
       }
-      this.activeArtifactRun = undefined
-      this.promptInFlightSessionIds.delete(request.sessionId)
+      // Only clear shared turn state if a newer turn hasn't taken over this app session id. An
+      // overflow-recovery replay reuses the id: after resetSessionContext releases this (failed) turn's
+      // lock and the renderer starts the replay, this stale finally must not delete the replay's in-flight
+      // lock (which would reopen same-session sends and misreport prompt-in-flight) or clear its active
+      // artifact run. Identity/token comparisons scope each clear to the turn that still owns the state.
+      if (this.activeArtifactRun?.run === artifactRun) {
+        this.activeArtifactRun = undefined
+      }
+      if (this.currentPromptTurnBySession.get(request.sessionId) === promptTurn) {
+        this.currentPromptTurnBySession.delete(request.sessionId)
+        this.promptInFlightSessionIds.delete(request.sessionId)
+      }
       this.emitState()
       // A disabled skill forced for this turn is restored now: clear the force set, then schedule a
       // reconnect so the NEXT prompt respawns with the normal enabled set. Ordering matters — the clear
@@ -1322,6 +1399,8 @@ class AcpRuntime {
     this.unregisterHttpMcpSession(request.sessionId)
     this.sessions.delete(request.sessionId)
     this.sessionCwds.delete(request.sessionId)
+    this.sessionInlineImageBytes.delete(request.sessionId)
+    this.currentPromptTurnBySession.delete(request.sessionId)
     this.sessionMcpServerNames.delete(request.sessionId)
     this.sessionProjectNames.delete(request.sessionId)
     this.sessionFrameworks.delete(request.sessionId)
@@ -1400,13 +1479,13 @@ class AcpRuntime {
 
       // Keep the user's text first, then append files in the same order they were added.
       for (const attachment of finalizedAttachments) {
-        contentBlocks.push(await this.createAttachmentContentBlock(attachment))
+        contentBlocks.push(await this.createAttachmentContentBlock(sessionId, attachment))
       }
     }
 
     // `@`-mentioned artifacts reuse the same per-type block builder as uploads, in mention order.
     for (const reference of referencedArtifacts) {
-      contentBlocks.push(await this.createReferencedArtifactContentBlock(reference))
+      contentBlocks.push(await this.createReferencedArtifactContentBlock(sessionId, reference))
     }
 
     return contentBlocks
@@ -1414,6 +1493,7 @@ class AcpRuntime {
 
   // Converts one managed upload into the richest ACP content block that is safe for its type.
   private async createAttachmentContentBlock(
+    sessionId: string,
     attachment: UploadedAttachment
   ): Promise<ContentBlock> {
     if (!this.uploadRepository) throw new Error('Upload storage is not configured.')
@@ -1421,6 +1501,7 @@ class AcpRuntime {
     const filePath = await this.uploadRepository.resolveManagedUploadPath({ path: attachment.path })
 
     return this.buildFileContentBlock({
+      sessionId,
       absolutePath: filePath,
       uri: pathToFileURL(filePath).href,
       name: attachment.originalName || attachment.name,
@@ -1431,12 +1512,14 @@ class AcpRuntime {
 
   // Converts one `@`-mentioned artifact into the same content block an equivalent upload produces.
   private async createReferencedArtifactContentBlock(
+    sessionId: string,
     reference: ArtifactReference
   ): Promise<ContentBlock> {
     const filePath = await this.resolveReferencedArtifactPath(reference)
     const { size } = await stat(filePath)
 
     return this.buildFileContentBlock({
+      sessionId,
       absolutePath: filePath,
       uri: pathToFileURL(filePath).href,
       name: reference.name,
@@ -1459,13 +1542,14 @@ class AcpRuntime {
   // Builds the richest ACP content block that is safe for a resolved file, shared by uploads and
   // `@`-mentioned artifacts so both reach the agent through identical per-type logic.
   private async buildFileContentBlock(descriptor: {
+    sessionId: string
     absolutePath: string
     uri: string
     name: string
     mimeType?: string
     size: number
   }): Promise<ContentBlock> {
-    const { absolutePath, uri, name, mimeType, size } = descriptor
+    const { sessionId, absolutePath, uri, name, mimeType, size } = descriptor
 
     // Images are embedded as base64 so vision-capable agents receive the actual pixels.
     // Large images are downscaled/re-encoded first so one file cannot overflow the request.
@@ -1475,6 +1559,18 @@ class AcpRuntime {
         mimeType,
         size
       )
+
+      // Inlined images accumulate over a conversation's replayed history. Once this session's running
+      // total nears the request ceiling, degrade further images to a file reference (like large binary
+      // uploads) instead of base64, so the conversation never overflows the request or breaks
+      // compaction with `media_unstrippable`. The file stays reachable to the agent via its uri.
+      const alreadyInlined = this.sessionInlineImageBytes.get(sessionId) ?? 0
+
+      if (!canInlineImageInSession(alreadyInlined, data.length, this.inlineImageBudgetBytes)) {
+        return { type: 'resource_link', uri, name, title: name, mimeType, size }
+      }
+
+      this.sessionInlineImageBytes.set(sessionId, alreadyInlined + data.length)
 
       return { type: 'image', data, mimeType: outMimeType, uri }
     }
@@ -2214,6 +2310,8 @@ class AcpRuntime {
     this.permissionBroker.cancelAll()
     this.sessions.clear()
     this.sessionCwds.clear()
+    this.sessionInlineImageBytes.clear()
+    this.currentPromptTurnBySession.clear()
     this.sessionMcpServerNames.clear()
     this.sessionProjectNames.clear()
     this.artifactSessionIds.clear()
@@ -2243,6 +2341,7 @@ class AcpRuntime {
       timestamp: event.timestamp ?? Date.now(),
       level: event.level ?? 'info',
       kind: event.kind,
+      recoverable: event.recoverable,
       sessionId: event.sessionId,
       messageId: event.messageId,
       role: event.role,
