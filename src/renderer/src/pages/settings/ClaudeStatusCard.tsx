@@ -1,10 +1,11 @@
-import { CheckCircle2, RefreshCw, Trash2, XCircle } from 'lucide-react'
+import { CheckCircle2, RefreshCw, XCircle } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import type { ClaudeInfo } from '../../../../shared/settings'
+import { RuntimeUninstallControl } from './RuntimeUninstallControl'
 
 type ClaudeStatusCardProps = {
   claude: ClaudeInfo
@@ -20,9 +21,12 @@ type ClaudeStatusCardProps = {
   // Locks selection (e.g. while an install/uninstall is in flight) so the backend can't be switched
   // mid-operation.
   selectDisabled?: boolean
-  // Uninstall is offered only for the app-managed install (a binary the app owns in its data dir).
-  // Omitting onUninstall (as onboarding does) hides the action entirely. Disabled while this is the
-  // active runtime — the user must switch to the other framework first.
+  // Whether an install is running (global, either framework); locks the Uninstall button mid-operation.
+  isInstalling?: boolean
+  // The Uninstall button always shows for a detected runtime (omitting onUninstall, as onboarding does,
+  // hides it entirely). `managed` gates whether it's actionable: only an app-managed binary (one the app
+  // owns in its data dir) can be removed in-app. A non-managed (PATH/npm) install shows a greyed button
+  // with a `?` explaining manual removal; the active runtime is greyed with a "switch first" `?`.
   managed?: boolean
   isUninstalling?: boolean
   onUninstall?: () => void
@@ -42,6 +46,7 @@ const ClaudeStatusCard = ({
   selectDisabled = false,
   managed = false,
   isUninstalling = false,
+  isInstalling = false,
   onUninstall
 }: ClaudeStatusCardProps): React.JSX.Element => {
   // Only an installed runtime can be chosen as the active framework — switching to an uninstalled one
@@ -99,20 +104,17 @@ const ClaudeStatusCard = ({
             <div className="flex items-center gap-2">{heading}</div>
           )}
           <div className="flex items-center gap-2">
-            {managed && onUninstall && claude.resolvedPath ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                onClick={onUninstall}
-                disabled={active || isUninstalling || isDetecting}
-                title={
-                  active ? 'Switch to the other framework before uninstalling Claude' : undefined
-                }
-              >
-                <Trash2 aria-hidden="true" />
-                Uninstall
-              </Button>
+            {onUninstall && claude.resolvedPath ? (
+              <RuntimeUninstallControl
+                label="Claude"
+                uninstallCommand="npm uninstall -g @anthropic-ai/claude-code"
+                managed={managed}
+                active={active}
+                isUninstalling={isUninstalling}
+                isDetecting={isDetecting}
+                isInstalling={isInstalling}
+                onUninstall={onUninstall}
+              />
             ) : null}
             <Button
               type="button"
