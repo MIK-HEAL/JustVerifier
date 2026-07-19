@@ -16,7 +16,9 @@ const buildDevWebCommand = (argv, env) => {
     nextEnv.OPEN_SCIENCE_WEB_PORT = DEFAULT_WEB_PORT
   }
   const args = ['electron-vite', 'dev']
-  if (headless) args.push('--', '--headless')
+  // Pass a namespaced flag to Electron: Chromium consumes a literal `--headless` and renders native
+  // menus (like the tray context menu) invisibly on Windows (electron/electron#48982).
+  if (headless) args.push('--', '--open-science-headless')
   return { command: 'npx', args, env: nextEnv }
 }
 

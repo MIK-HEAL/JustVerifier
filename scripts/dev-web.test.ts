@@ -15,9 +15,9 @@ describe('buildDevWebCommand', () => {
     expect(env.OPEN_SCIENCE_WEB_PORT).toBe('44200')
   })
 
-  it('forwards --headless through electron-vite', () => {
+  it('forwards --headless to Electron as the namespaced --open-science-headless flag', () => {
     const { args } = buildDevWebCommand(['node', 'dev-web.cjs', '--headless'], {})
-    expect(args).toEqual(['electron-vite', 'dev', '--', '--headless'])
+    expect(args).toEqual(['electron-vite', 'dev', '--', '--open-science-headless'])
   })
 
   it('does not add a passthrough separator without --headless', () => {

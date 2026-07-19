@@ -40,6 +40,7 @@ type WebServerOptions = {
   token: string
   staticRoot: string
   rpc: RpcCapture
+  onShutdownRequest?: () => void
   bootstrap: {
     appName: string
     appVersion: string
@@ -199,6 +200,16 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
 
       if (url.pathname === '/api/bootstrap' && request.method === 'GET') {
         json(response, 200, { ...options.bootstrap, rpcChannels: options.rpc.channels() })
+        return
+      }
+
+      if (url.pathname === '/api/shutdown' && request.method === 'POST') {
+        if (!options.onShutdownRequest) {
+          json(response, 404, { ok: false, error: 'Shutdown is not available.' })
+          return
+        }
+        json(response, 202, { ok: true })
+        setImmediate(options.onShutdownRequest)
         return
       }
 
