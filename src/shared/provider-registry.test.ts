@@ -5,6 +5,7 @@ import {
   defaultVendorModel,
   getOfficialVendor,
   isOfficialVendorId,
+  isVendorModelMultimodal,
   resolveVendorApiEndpoints,
   resolveVendorApiKeyUrl,
   resolveVendorBaseUrl,
@@ -114,5 +115,88 @@ describe('provider registry', () => {
     expect(defaultVendorModel('unknown')).toBeUndefined()
     // @ts-expect-error deliberately passing an unknown id
     expect(resolveVendorApiKeyUrl('unknown')).toBeUndefined()
+  })
+
+  describe('isVendorModelMultimodal', () => {
+    it('returns true for OpenAI GPT-5 models', () => {
+      expect(isVendorModelMultimodal('openai', 'gpt-5.6-sol')).toBe(true)
+      expect(isVendorModelMultimodal('openai', 'gpt-5.5')).toBe(true)
+      expect(isVendorModelMultimodal('openai', 'gpt-5.4-mini')).toBe(true)
+    })
+
+    it('returns true for all Anthropic Claude models', () => {
+      expect(isVendorModelMultimodal('anthropic', 'claude-opus-4-8')).toBe(true)
+      expect(isVendorModelMultimodal('anthropic', 'claude-sonnet-5')).toBe(true)
+      expect(isVendorModelMultimodal('anthropic', 'claude-haiku-4-5-20251001')).toBe(true)
+      expect(isVendorModelMultimodal('anthropic', 'claude-opus-4-8[1m]')).toBe(true)
+    })
+
+    it('treats Anthropic/OpenAI as vision-capable for live-fetched ids not in the bundled catalog', () => {
+      // allMultimodal vendors must cover models the live model-list refresh surfaces, not just the
+      // shipped ids — otherwise a refreshed Claude/GPT model would wrongly be flagged text-only.
+      expect(isVendorModelMultimodal('anthropic', 'claude-opus-5-future')).toBe(true)
+      expect(isVendorModelMultimodal('openai', 'gpt-6-turbo')).toBe(true)
+    })
+
+    it('returns false for DeepSeek models (no vision support)', () => {
+      expect(isVendorModelMultimodal('deepseek', 'deepseek-v4-pro')).toBe(false)
+      expect(isVendorModelMultimodal('deepseek', 'deepseek-v4-flash')).toBe(false)
+    })
+
+    it('matches Zhipu vision variants by pattern, including future `Nv` ids', () => {
+      expect(isVendorModelMultimodal('zhipu', 'glm-5v-turbo')).toBe(true)
+      // The pattern generalizes to future vision variants the live refresh may surface.
+      expect(isVendorModelMultimodal('zhipu', 'glm-6v')).toBe(true)
+      expect(isVendorModelMultimodal('zhipu', 'glm-5.2')).toBe(false)
+      expect(isVendorModelMultimodal('zhipu', 'glm-5.1')).toBe(false)
+      expect(isVendorModelMultimodal('zhipu', 'glm-5-turbo')).toBe(false)
+    })
+
+    it('returns false for MiniMax models (no vision support)', () => {
+      expect(isVendorModelMultimodal('minimax', 'MiniMax-M3')).toBe(false)
+      expect(isVendorModelMultimodal('minimax', 'MiniMax-M2.7')).toBe(false)
+    })
+
+    it('returns true only for Kimi k3 model', () => {
+      expect(isVendorModelMultimodal('kimi', 'kimi-k3')).toBe(true)
+      expect(isVendorModelMultimodal('kimi', 'kimi-k2.7-code')).toBe(false)
+      expect(isVendorModelMultimodal('kimi', 'kimi-k2.6')).toBe(false)
+    })
+
+    it('returns true only for KimiForCode k3 model', () => {
+      expect(isVendorModelMultimodal('kimiforcode', 'kimi-k3')).toBe(true)
+      expect(isVendorModelMultimodal('kimiforcode', 'kimi-for-coding')).toBe(false)
+      expect(isVendorModelMultimodal('kimiforcode', 'kimi-for-coding-highspeed')).toBe(false)
+    })
+
+    it('returns false for Xiaomi MIMO models (no vision support)', () => {
+      expect(isVendorModelMultimodal('xiaomimimo', 'mimo-v2.5-pro')).toBe(false)
+      expect(isVendorModelMultimodal('xiaomimimo', 'mimo-v2.5')).toBe(false)
+    })
+
+    it('returns true for OpenRouter vision-capable models', () => {
+      expect(isVendorModelMultimodal('openrouter', 'anthropic/claude-opus-4.8')).toBe(true)
+      expect(isVendorModelMultimodal('openrouter', 'openai/gpt-5.5')).toBe(true)
+      expect(isVendorModelMultimodal('openrouter', 'google/gemini-3.5-flash')).toBe(true)
+      expect(isVendorModelMultimodal('openrouter', 'moonshotai/kimi-k3')).toBe(true)
+    })
+
+    it('returns false for OpenRouter text-only models', () => {
+      expect(isVendorModelMultimodal('openrouter', 'openai/gpt-5.3-codex')).toBe(false)
+      expect(isVendorModelMultimodal('openrouter', 'deepseek/deepseek-v4-pro')).toBe(false)
+      expect(isVendorModelMultimodal('openrouter', 'z-ai/glm-5.2')).toBe(false)
+    })
+
+    it('returns false for undefined or empty model id', () => {
+      expect(isVendorModelMultimodal('anthropic', undefined)).toBe(false)
+      expect(isVendorModelMultimodal('openai', '')).toBe(false)
+    })
+
+    it('returns false for an unknown model id on an explicit-list vendor', () => {
+      // OpenRouter uses an explicit list (no blanket rule), so an unlisted id stays text-only.
+      expect(isVendorModelMultimodal('openrouter', 'somevendor/unknown-model')).toBe(false)
+      // Kimi's list is k3-only; an unknown id is not vision-capable.
+      expect(isVendorModelMultimodal('kimi', 'kimi-k9-imaginary')).toBe(false)
+    })
   })
 })
