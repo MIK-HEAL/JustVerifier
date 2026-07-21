@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import {
   BASH_EXECUTE_DOC,
+  buildShellExecuteDoc,
   MANAGE_ENVIRONMENTS_DOC,
   MANAGE_PACKAGES_DOC,
   NOTEBOOK_MCP_OUTPUT_FIELD_LIMIT,
@@ -239,6 +240,21 @@ describe('bash_execute tool', () => {
     expect(tool?.description.toLowerCase()).toContain('stateless')
     expect(tool?.description).toContain('fresh process')
     expect(tool?.description.toLowerCase()).toContain('persist')
+  })
+
+  it('documents the actual Windows PowerShell dialect and keeps generated notebook files out of shell copies', () => {
+    const windowsDoc = buildShellExecuteDoc('win32')
+
+    expect(windowsDoc).toContain('Windows PowerShell')
+    expect(windowsDoc).not.toContain('`sh -c`')
+    expect(windowsDoc).toContain('$env:OPEN_SCIENCE_HANDOFF_DIR')
+    expect(windowsDoc).toContain('Windows PowerShell 5.1')
+    expect(windowsDoc).toContain('`&&` is unavailable')
+    expect(windowsDoc).toContain('cmdlet failure')
+    expect(windowsDoc).toContain('unhandled cmdlet failure')
+    expect(windowsDoc).toContain('native programs must emit UTF-8')
+    expect(windowsDoc).toContain('write_artifact_file')
+    expect(windowsDoc).toContain('Do NOT copy a generated notebook output into the workspace')
   })
 
   it('forwards bash_execute input to the executeShell RPC method', async () => {
