@@ -22,15 +22,24 @@ export type CloseConfirmDeps = {
   isRendererAvailable: () => boolean
   // Subscribe to render-process-gone for the confirm window; returns an unsubscribe.
   onRenderGone: (cb: () => void) => () => void
+  // Subscribe to the confirm window's paired 'unresponsive'/'responsive' events; returns an
+  // unsubscribe. Lets the coordinator fall back only on a SUSTAINED hang (renderer alive but wedged,
+  // so render-process-gone never fires), never on a slow-but-alive renderer. Optional: absent in
+  // tests that don't exercise the hang path.
+  onRendererUnresponsive?: (cbs: { onHang: () => void; onRecover: () => void }) => () => void
   // Native fallback when the renderer can't answer (dead/hung, or no window at all). May reject;
   // the coordinator wraps it so a rejection never leaves the confirm unsettled.
   nativeFallback: (variant: CloseConfirmVariant) => Promise<CloseConfirmChoice>
   newRequestId: () => string
   // Grace period for the modal-mounted ack before falling back. Defaults to 500ms.
   ackTimeoutMs?: number
+  // Grace period after an ACKed modal goes 'unresponsive' before falling back. Defaults to 10s so a
+  // brief hang the renderer recovers from doesn't yank the modal out from under the user.
+  hangGraceMs?: number
 }
 
 const DEFAULT_ACK_TIMEOUT_MS = 500
+const DEFAULT_HANG_GRACE_MS = 10_000
 
 // Coordinates a close/quit confirmation. Main computes `sessions`, so the quit variant with an empty
 // list resolves without any IPC; otherwise the renderer renders the modal and replies the choice,
@@ -42,6 +51,7 @@ export const createCloseConfirm = (
   sessions: ActiveSessionInfo[]
 ) => Promise<CloseConfirmChoice>) => {
   const ackTimeoutMs = deps.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS
+  const hangGraceMs = deps.hangGraceMs ?? DEFAULT_HANG_GRACE_MS
 
   return (variant, sessions) => {
     if (variant === 'quit' && sessions.length === 0) return Promise.resolve('quit')
@@ -60,20 +70,29 @@ export const createCloseConfirm = (
       let settled = false
       let acked = false
       let fallbackStarted = false
+      let hangTimer: ReturnType<typeof setTimeout> | undefined
 
       const finish = (choice: CloseConfirmChoice): void => {
         if (settled) return
         settled = true
         clearTimeout(ackTimer)
+        clearTimeout(hangTimer)
         offResponse()
         offGone()
+        offHang?.()
         resolve(choice)
       }
 
+      // Known limitation (cosmetic): when a fallback settles the confirm, a modal the renderer had
+      // already shown (ack path) stays on screen. A late click on it is dropped — the response
+      // listener is removed and `settled` guards it — so it merely closes locally with no effect.
+      // Fully dismissing it would need a main->renderer dismiss message; not worth the protocol
+      // surface for a rare hang/timeout case.
       const startFallback = (): void => {
         if (fallbackStarted) return
         fallbackStarted = true
         clearTimeout(ackTimer)
+        clearTimeout(hangTimer)
         void safeFallback().then(finish)
       }
 
@@ -88,6 +107,19 @@ export const createCloseConfirm = (
       })
 
       const offGone = deps.onRenderGone(startFallback)
+
+      // A sustained hang AFTER ack: the pre-ack window is already covered by ackTimer, and the modal
+      // legitimately waits on the user, so only arm the grace timer once the renderer actually reports
+      // 'unresponsive'; a paired 'responsive' cancels it. This chain is deliberately separate from
+      // onRenderGone: a crash/reload never emits 'responsive' (recovery is same-process only), so a
+      // reloaded renderer is covered by render-process-gone -> startFallback, not by this timer.
+      const offHang = deps.onRendererUnresponsive?.({
+        onHang: () => {
+          if (!acked || settled) return
+          hangTimer = setTimeout(startFallback, hangGraceMs)
+        },
+        onRecover: () => clearTimeout(hangTimer)
+      })
 
       const ackTimer = setTimeout(() => {
         if (!acked) startFallback()
@@ -167,6 +199,16 @@ export const createElectronCloseConfirm = (
       if (!window) return () => undefined
       window.webContents.on('render-process-gone', cb)
       return () => window.webContents.off('render-process-gone', cb)
+    },
+    onRendererUnresponsive: ({ onHang, onRecover }) => {
+      const window = getWindow()
+      if (!window) return () => undefined
+      window.webContents.on('unresponsive', onHang)
+      window.webContents.on('responsive', onRecover)
+      return () => {
+        window.webContents.off('unresponsive', onHang)
+        window.webContents.off('responsive', onRecover)
+      }
     },
     nativeFallback: (variant) => nativeFallback(getWindow, variant),
     newRequestId: () => randomUUID()
