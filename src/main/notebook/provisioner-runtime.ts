@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { promisify } from 'node:util'
@@ -32,29 +32,90 @@ export const runMicromamba = (
   signal?: AbortSignal,
   // Invoked with the spawned child's PID so the caller can journal it — crash recovery then kills a
   // surviving orphan (a micromamba the dead parent left running) before reconciling its target prefix.
-  onChild?: (pid: number) => void
+  onChild?: (pid: number) => void,
+  timeoutMs = 600_000
 ): Promise<void> =>
-  // Raw execFile (not promisified) so we can read the ChildProcess's pid up front; execFile's `signal`
-  // still kills the child on abort (user cancel), surfacing as ABORT_ERR.
   new Promise<void>((resolve, reject) => {
-    const child = execFile(
-      argv[0],
-      argv.slice(1),
-      { timeout: 600_000, windowsHide: true, env: withEnv(env), signal },
-      (error) => {
-        if (!error) {
-          resolve()
-          return
-        }
-        if ((error as { name?: string }).name === 'AbortError') {
-          reject(new Error('Runtime setup cancelled.'))
-          return
-        }
-        const stderr = (error as { stderr?: string }).stderr ?? ''
-        reject(new Error(`micromamba failed (${argv.join(' ')}): ${stderr.slice(0, 400)}`))
-      }
-    )
+    if (signal?.aborted) {
+      reject(new Error('Runtime setup cancelled.'))
+      return
+    }
+
+    const child = spawn(argv[0], argv.slice(1), {
+      windowsHide: true,
+      // `runMicromamba` receives the complete app-owned environment. Do not merge process.env back
+      // in here: that would reintroduce inherited CONDA_*/MAMBA_* values removed by micromambaSpawnEnv.
+      env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
     if (child.pid !== undefined) onChild?.(child.pid)
+
+    const maxTail = 16 * 1024
+    let stdout = ''
+    let stderr = ''
+    let timedOut = false
+    let cancelled = false
+    let settled = false
+    const appendTail = (current: string, chunk: unknown): string =>
+      `${current}${String(chunk)}`.slice(-maxTail)
+    child.stdout.on('data', (chunk) => {
+      stdout = appendTail(stdout, chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr = appendTail(stderr, chunk)
+    })
+
+    const timeout = setTimeout(() => {
+      timedOut = true
+      child.kill()
+    }, timeoutMs)
+    const onAbort = (): void => {
+      cancelled = true
+      child.kill()
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    const cleanup = (): void => {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const output = (): string =>
+      [stdout && `stdout tail:\n${stdout}`, stderr && `stderr tail:\n${stderr}`]
+        .filter(Boolean)
+        .join('\n')
+
+    child.once('error', (error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(new Error(`micromamba failed to start (${argv.join(' ')}): ${error.message}`))
+    })
+    child.once('close', (code, closeSignal) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (cancelled || signal?.aborted) {
+        reject(new Error('Runtime setup cancelled.'))
+        return
+      }
+      const tails = output()
+      if (timedOut) {
+        reject(
+          new Error(
+            `micromamba timed out after ${timeoutMs}ms (${argv.join(' ')})${tails ? `:\n${tails}` : ''}`
+          )
+        )
+        return
+      }
+      if (code === 0) {
+        resolve()
+        return
+      }
+      const status = code === null ? `signal ${closeSignal ?? 'unknown'}` : `exit ${code}`
+      reject(
+        new Error(`micromamba failed (${status}; ${argv.join(' ')})${tails ? `:\n${tails}` : ''}`)
+      )
+    })
   })
 
 // Runs a micromamba argv and returns its stdout (for `list --explicit --md5` when exporting an env's

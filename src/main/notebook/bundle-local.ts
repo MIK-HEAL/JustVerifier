@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import {
   packId,
+  PACK_PATH_BUDGET_FILE,
   parseManifest,
+  pathBudgetForPack,
   resolvePack,
   SUPPORTED_SCHEMA,
   verifyPackChecksum
@@ -95,7 +97,12 @@ export const createLocalBundleAdapter =
           })
         })
         if (entries.length === 0) return undefined
-        return { lockPath }
+        const pathBudget = pathBudgetForPack(entry)
+        if (manifest.subdir === 'win-64' && !pathBudget) return undefined
+        if (pathBudget) {
+          writeFileSync(join(packDir, PACK_PATH_BUDGET_FILE), `${JSON.stringify(pathBudget)}\n`)
+        }
+        return { lockPath, pathBudget }
       } catch {
         // A malformed or stale local bundle is not authoritative. Let the next adapter (CDN) try
         // the same pack instead of turning a local residue into the final provisioning error.

@@ -167,7 +167,11 @@ describe('createLocalBundleAdapter', () => {
     const bundle = (await adapter(PY_SPEC, 1, () => {})) as FetchedBundle
 
     expect(bundle.lockPath).toBe(join(stalePackDir, `${packName}.lock`))
-    expect(await readdir(stalePackDir)).toEqual(['numpy-2.conda', 'python-3.12.lock'])
+    expect(await readdir(stalePackDir)).toEqual([
+      'numpy-2.conda',
+      'path-budget.json',
+      'python-3.12.lock'
+    ])
   })
 
   it('rejects the legacy flat-lock/shared-pkgs bundle shape', async () => {

@@ -37,7 +37,42 @@ describe('runMicromamba', () => {
 
   it('rejects with a stderr summary on non-zero exit', async () => {
     await expect(
-      runMicromamba([process.execPath, '-e', 'process.stderr.write("boom"); process.exit(3)'])
-    ).rejects.toThrow(/boom/)
+      runMicromamba(
+        [
+          process.execPath,
+          '-e',
+          'process.stdout.write(process.env.MM_STDOUT); process.stderr.write(process.env.MM_STDERR); process.exit(3)'
+        ],
+        { MM_STDOUT: 'stdout-only-token', MM_STDERR: 'stderr-only-token' }
+      )
+    ).rejects.toThrow(/exit 3[^]*stdout-only-token[^]*stderr-only-token/)
+  })
+
+  it('distinguishes timeout from an ordinary non-zero exit and keeps output tails', async () => {
+    await expect(
+      runMicromamba(
+        [
+          process.execPath,
+          '-e',
+          'process.stderr.write(process.env.MM_TIMEOUT_TOKEN); setInterval(() => {}, 1000)'
+        ],
+        { MM_TIMEOUT_TOKEN: 'timeout-stderr-token' },
+        undefined,
+        undefined,
+        200
+      )
+    ).rejects.toThrow(/timed out[^]*timeout-stderr-token/i)
+  })
+
+  it('distinguishes user cancellation from timeout and non-zero exit', async () => {
+    const abort = new AbortController()
+    const running = runMicromamba(
+      [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      undefined,
+      abort.signal
+    )
+    abort.abort()
+
+    await expect(running).rejects.toThrow(/^Runtime setup cancelled\.$/)
   })
 })

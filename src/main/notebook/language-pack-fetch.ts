@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdtemp, mkdir, readFile, rename, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { Transform } from 'node:stream'
@@ -10,9 +10,11 @@ import { pipeline } from 'node:stream/promises'
 import {
   manifestUrl,
   packId,
+  PACK_PATH_BUDGET_FILE,
   packArchiveFile,
   packUrl,
   parseManifest,
+  pathBudgetForPack,
   resolvePack,
   SUPPORTED_SCHEMA,
   verifyPackChecksum,
@@ -269,6 +271,15 @@ export const createFetchBundleAdapter =
       if (entries.length === 0) return undefined
 
       const subdir = deps.subdir ?? runtimeSubdir()
+      const pathBudget = pathBudgetForPack(fetched.entry)
+      if (subdir === 'win-64' && !pathBudget) return undefined
+      if (pathBudget) {
+        await writeFile(
+          join(unpackedDir, PACK_PATH_BUDGET_FILE),
+          `${JSON.stringify(pathBudget)}\n`,
+          'utf8'
+        )
+      }
       const finalDir = runtimePackDir(root, version, subdir, fetched.id)
       await mkdir(join(finalDir, '..'), { recursive: true })
       try {
@@ -281,7 +292,14 @@ export const createFetchBundleAdapter =
         try {
           await readFile(join(finalDir, `${fetched.id}.lock`), 'utf8')
           // A prior verified immutable fetch won the race; its lock is the same content version.
-          return { lockPath: join(finalDir, `${fetched.id}.lock`) }
+          if (pathBudget) {
+            await writeFile(
+              join(finalDir, PACK_PATH_BUDGET_FILE),
+              `${JSON.stringify(pathBudget)}\n`,
+              'utf8'
+            )
+          }
+          return { lockPath: join(finalDir, `${fetched.id}.lock`), pathBudget }
         } catch {
           // Only remove a directory that is demonstrably not a complete pack, then retry the
           // rename. This handles a process interrupted before its final commit.
@@ -289,7 +307,7 @@ export const createFetchBundleAdapter =
           await rename(unpackedDir, finalDir)
         }
       }
-      return { lockPath: join(finalDir, `${fetched.id}.lock`) }
+      return { lockPath: join(finalDir, `${fetched.id}.lock`), pathBudget }
     } catch (error) {
       const message = `Managed runtime pack unavailable: ${error instanceof Error ? error.message : String(error)}`
       onProgress({

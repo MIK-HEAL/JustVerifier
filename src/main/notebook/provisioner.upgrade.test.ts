@@ -61,7 +61,7 @@ describe('upgradeIfNeeded', () => {
       baseDeps(root, { runArgv: async (a) => void argvs.push(a) })
     ).upgradeIfNeeded(() => {})
     // Additive install from the exact offline lock, not an online package solve.
-    expect(argvs[0][1]).toBe('install')
+    expect(argvs[0][2]).toBe('install')
     expect(argvs[0]).toContain(envPrefix(root, DEFAULT_PY_ENV))
     expect(argvs[0]).toContain('--offline')
     expect(argvs[0]).toContain(join(root, `${DEFAULT_PY_ENV}.lock`))
@@ -116,7 +116,7 @@ describe('upgradeIfNeeded', () => {
     ).upgradeIfNeeded(() => {})
 
     const rArgv = argvs.find((argv) => argv.includes(rPrefix))
-    expect(rArgv?.[1]).toBe('create')
+    expect(rArgv?.[2]).toBe('create')
     expect(existsSync(join(rPrefix, 'stale-file'))).toBe(false)
     expect(readRReadyMarker(root)?.defaultEnvVersion).toBe(DEFAULT_ENV_VERSION)
   })

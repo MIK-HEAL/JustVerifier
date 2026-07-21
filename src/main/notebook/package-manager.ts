@@ -5,8 +5,20 @@ import { join } from 'node:path'
 
 import { PROD_SESSION_DIR_NAME } from '../session-persistence/repository'
 import type { NotebookLanguage } from '../../shared/notebook'
-import { caBundleEnv, installArgv, resolveMicromamba } from './micromamba'
-import { withSharedCacheLock } from './pkgs-cache-lock'
+import {
+  caBundleEnv,
+  installArgv,
+  micromambaSpawnEnv,
+  resolveMicromamba,
+  type MicromambaSpawnEnvDeps
+} from './micromamba'
+import {
+  DEFAULT_MAX_CACHE_RELATIVE_PATH,
+  selectMicromambaCache,
+  type MicromambaCache
+} from './micromamba-cache'
+import { recoverWindowsMaxPathPackage } from './micromamba-cache-recovery'
+import { withExclusiveCacheLock, withSharedCacheLock } from './pkgs-cache-lock'
 import {
   DEFAULT_PY_ENV,
   DEFAULT_R_ENV,
@@ -76,6 +88,7 @@ export type InstallDeps = {
   // PEM CA bundle path (enterprise TLS proxy); exported into every install subprocess's env so
   // conda/pip/R HTTPS verification trusts it.
   caBundle?: string
+  micromambaEnv?: MicromambaSpawnEnvDeps
   // Injected for tests to check a named env's interpreter without touching real disk.
   pathExists?: (path: string) => boolean
   // Set for an EXTERNAL (BYO) runtime: install with THIS interpreter's own pip (`<command> [args] -m
@@ -216,8 +229,69 @@ export async function installPackages(
   // cache EXCLUSIVE and removes incomplete extractions) could delete a package dir mid-install. pip and
   // CRAN write only into the env prefix, so they use `run` directly, unlocked. Keyed by `root` — the
   // same key materialize/create/upgrade use — so every cache writer serializes against repair.
-  const runConda: InstallSpawn = (command, args) =>
-    withSharedCacheLock(root, () => run(command, args))
+  let condaContext: { cache: MicromambaCache; env: NodeJS.ProcessEnv } | undefined
+  const resolveCondaContext = (): { cache: MicromambaCache; env: NodeJS.ProcessEnv } => {
+    if (condaContext) return condaContext
+    const cache = deps.micromambaEnv?.selectCache
+      ? deps.micromambaEnv.selectCache(root, DEFAULT_MAX_CACHE_RELATIVE_PATH)
+      : selectMicromambaCache(root, DEFAULT_MAX_CACHE_RELATIVE_PATH, deps.micromambaEnv)
+    const env = micromambaSpawnEnv(
+      root,
+      deps.caBundle,
+      { ...deps.micromambaEnv, selectCache: () => cache },
+      DEFAULT_MAX_CACHE_RELATIVE_PATH
+    )
+    condaContext = { cache, env }
+    return condaContext
+  }
+  const runConda: InstallSpawn = async (command, args) => {
+    const context = resolveCondaContext()
+    const result = await withSharedCacheLock(context.cache.lockKey, () =>
+      baseSpawn(command, args, context.env, deps.onChild)
+    )
+    if (result.code === 0) return result
+    const evidence = `${result.stdout}\n${result.stderr}`
+    let recovered = false
+    let cleanupError: unknown
+    try {
+      recovered = await withExclusiveCacheLock(context.cache.lockKey, () =>
+        Promise.resolve(
+          recoverWindowsMaxPathPackage(
+            new Error(evidence),
+            [join(root, 'pkgs'), context.cache.path],
+            {
+              platform: deps.micromambaEnv?.platform,
+              maxCacheRelativePath: DEFAULT_MAX_CACHE_RELATIVE_PATH
+            }
+          )
+        )
+      )
+    } catch (error) {
+      cleanupError = error
+    }
+    if (cleanupError) {
+      return {
+        ...result,
+        stderr:
+          `${result.stderr}\nCache cleanup failure:\n` +
+          `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+      }
+    }
+    if (!recovered) return result
+    const retry = await withSharedCacheLock(context.cache.lockKey, () =>
+      baseSpawn(command, args, context.env, deps.onChild)
+    )
+    if (retry.code === 0) return retry
+    return {
+      ...retry,
+      stdout:
+        `Original failure before MAX_PATH recovery (stdout):\n${result.stdout}\n` +
+        `Retry failure after MAX_PATH recovery (stdout):\n${retry.stdout}`,
+      stderr:
+        `Original failure before MAX_PATH recovery (stderr):\n${result.stderr}\n` +
+        `Retry failure after MAX_PATH recovery (stderr):\n${retry.stderr}`
+    }
+  }
 
   // External (BYO) runtime: install with the selected interpreter's OWN pip — never the bundled
   // micromamba against a foreign env, and never the app-managed prefix. Handled FIRST (above the
@@ -375,6 +449,7 @@ export async function installPackages(
 // installArgv's shape (micromamba.ts is out of scope, so the argv is built inline here).
 const removeArgv = (mm: string, root: string, prefix: string, pkgs: string[]): string[] => [
   mm,
+  '--no-rc',
   'remove',
   '--root-prefix',
   root,

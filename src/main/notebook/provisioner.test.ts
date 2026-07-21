@@ -29,6 +29,7 @@ import {
 } from './provisioner'
 import { envsLockDir } from './runtime-relocation'
 import { withExclusiveCacheLock } from './pkgs-cache-lock'
+import { selectMicromambaCache } from './micromamba-cache'
 import {
   operationJournalPath,
   RuntimeOperationJournal,
@@ -125,6 +126,25 @@ describe('DefaultRuntimeProvisioner.provisionPython', () => {
     expect(argvs[0]).toContain(lockPath)
   })
 
+  it('enforces fetched pack cache and environment budgets before micromamba runs', async () => {
+    const root = makeRoot()
+    const runArgv = vi.fn(async () => undefined)
+    const provisioner = new DefaultRuntimeProvisioner(
+      makeDeps(root, {
+        platform: 'win32',
+        cache: { path: 'C:\\osp-cache', lockKey: 'c:\\osp-cache' },
+        fetchBundle: async (): Promise<FetchedBundle> => ({
+          lockPath: join(root, 'python.lock'),
+          pathBudget: { maxCacheRelativePath: 300, maxEnvRelativePath: 10 }
+        }),
+        runArgv
+      })
+    )
+
+    await expect(provisioner.provisionPython(() => {})).rejects.toThrow(/path budget/i)
+    expect(runArgv).not.toHaveBeenCalled()
+  })
+
   it('cancel() aborts an in-flight create via the signal threaded into runArgv', async () => {
     const root = makeRoot()
     let seenSignal: AbortSignal | undefined
@@ -216,12 +236,12 @@ describe('DefaultRuntimeProvisioner.provisionPython', () => {
     const cache = pkgsCache(root)
     const prefix = envPrefix(root, DEFAULT_PY_ENV)
     const bin = pythonBin(prefix)
-    // A COMPLETE extracted package (has info/index.json) — another env depends on it; must survive.
+    // A COMPLETE extracted package has micromamba's repodata marker — another env depends on it; must survive.
     mkdirSync(join(cache, 'good-pkg', 'info'), { recursive: true })
-    writeFileSync(join(cache, 'good-pkg', 'info', 'index.json'), '{}')
+    writeFileSync(join(cache, 'good-pkg', 'info', 'repodata_record.json'), '{}')
     // A downloaded TARBALL — offline-rebuild material for other envs; must survive.
     writeFileSync(join(cache, 'numpy-1.26.conda'), 'tarball')
-    // An INCOMPLETE extraction (no info/index.json) — the corrupt one; must be removed.
+    // An INCOMPLETE extraction (no repodata_record.json) — the corrupt one; must be removed.
     mkdirSync(join(cache, 'bad-pkg'), { recursive: true })
     writeFileSync(join(cache, 'bad-pkg', 'partial'), 'x')
 
@@ -241,14 +261,15 @@ describe('DefaultRuntimeProvisioner.provisionPython', () => {
 
     expect(creates).toBe(2)
     expect(existsSync(join(cache, 'bad-pkg'))).toBe(false) // incomplete extract removed
-    expect(existsSync(join(cache, 'good-pkg', 'info', 'index.json'))).toBe(true) // complete kept
+    expect(existsSync(join(cache, 'good-pkg', 'info', 'repodata_record.json'))).toBe(true) // complete kept
     expect(existsSync(join(cache, 'numpy-1.26.conda'))).toBe(true) // tarball kept
   })
 
   it('does not repair or retry on a non-cache create error (surfaces it once)', async () => {
     const root = makeRoot()
     const fetchBundle = vi.fn(async (): Promise<FetchedBundle> => ({
-      lockPath: join(root, 'p.lock')
+      lockPath: join(root, 'p.lock'),
+      pathBudget: { maxCacheRelativePath: 1, maxEnvRelativePath: 1 }
     }))
     const runArgv = vi.fn(async () => {
       throw new Error('CondaHTTPError: connection failed') // not a corrupt-cache signature
@@ -279,6 +300,81 @@ describe('DefaultRuntimeProvisioner.provisionPython', () => {
     )
 
     await expect(provisioner.provisionPython(() => {})).rejects.toThrow(/extracting package/)
+  })
+
+  it('recovers an existing Windows MAX_PATH cache leaf once, then retries without reseeding', async () => {
+    const root = makeRoot()
+    const cache = pkgsCache(root)
+    const leaf = 'libstdcxx-devel_win-64-15.2.0-h0a72980_119'
+    const packageDir = join(cache, 'https', 'conda.anaconda.org', 'conda-forge', 'noarch', leaf)
+    mkdirSync(packageDir, { recursive: true })
+    const missing = join(packageDir, 'Library', 'x'.repeat(280))
+    let creates = 0
+    const fetchBundle = vi.fn(async (): Promise<FetchedBundle> => ({
+      lockPath: join(root, 'p.lock'),
+      pathBudget: { maxCacheRelativePath: 1, maxEnvRelativePath: 1 }
+    }))
+    const runArgv = vi.fn(async () => {
+      creates += 1
+      if (creates === 1) {
+        throw new Error(
+          `Invalid package cache, file '${missing}' is missing\n` +
+            `Cannot find a valid extracted directory cache for '${leaf}.conda'\n` +
+            'critical Package cache error.'
+        )
+      }
+      const bin = pythonBin(envPrefix(root, DEFAULT_PY_ENV))
+      mkdirSync(join(bin, '..'), { recursive: true })
+      writeFileSync(bin, 'ok')
+    })
+    const provisioner = new DefaultRuntimeProvisioner(
+      makeDeps(root, {
+        platform: 'win32',
+        cache: { path: cache, lockKey: cache },
+        fetchBundle,
+        runArgv
+      })
+    )
+
+    await provisioner.provisionPython(() => {})
+
+    expect(creates).toBe(2)
+    expect(fetchBundle).toHaveBeenCalledOnce()
+    expect(existsSync(packageDir)).toBe(false)
+  })
+
+  it('preserves original and retry diagnostics when bounded MAX_PATH recovery fails', async () => {
+    const root = makeRoot()
+    const cache = pkgsCache(root)
+    const leaf = 'broken-package-1.0-0'
+    const packageDir = join(cache, 'https', 'host', 'channel', 'noarch', leaf)
+    mkdirSync(packageDir, { recursive: true })
+    const missing = join(packageDir, 'Library', 'x'.repeat(280))
+    let creates = 0
+    const provisioner = new DefaultRuntimeProvisioner(
+      makeDeps(root, {
+        platform: 'win32',
+        cache: { path: cache, lockKey: cache },
+        fetchBundle: async (): Promise<FetchedBundle> => ({
+          lockPath: join(root, 'p.lock'),
+          pathBudget: { maxCacheRelativePath: 1, maxEnvRelativePath: 1 }
+        }),
+        runArgv: async () => {
+          creates += 1
+          if (creates === 1) {
+            throw new Error(
+              `Invalid package cache, file '${missing}' is missing for '${leaf}.conda'; Package cache error`
+            )
+          }
+          throw new Error('retry failed due to a different disk error')
+        }
+      })
+    )
+
+    await expect(provisioner.provisionPython(() => {})).rejects.toThrow(
+      /Original failure:[^]*Invalid package cache[^]*Retry failure:[^]*different disk error/
+    )
+    expect(creates).toBe(2)
   })
 
   it('wires the spawned micromamba child pid into the materialize journal, then clears it on completion', async () => {
@@ -381,7 +477,7 @@ describe('DefaultRuntimeProvisioner.provisionR', () => {
     await new DefaultRuntimeProvisioner(deps).provisionR(() => {})
 
     expect(argvs).toHaveLength(1)
-    expect(argvs[0][1]).toBe('create')
+    expect(argvs[0][2]).toBe('create')
     expect(readRReadyMarker(root)?.defaultEnvVersion).toBe(DEFAULT_ENV_VERSION)
   })
 })
@@ -500,7 +596,7 @@ describe('DefaultRuntimeProvisioner.createNamedEnvironment', () => {
 
     // Kick off the create, then immediately request the cache EXCLUSIVE on the same root.
     const create = provisioner.createNamedEnvironment('my-analysis', 'python', ['numpy'])
-    const exclusive = withExclusiveCacheLock(root, async () => {
+    const exclusive = withExclusiveCacheLock(selectMicromambaCache(root).lockKey, async () => {
       order.push('repair')
     })
     await Promise.all([create, exclusive])
@@ -542,7 +638,7 @@ describe('DefaultRuntimeProvisioner.upgradeIfNeeded (shared pkgs cache lock)', (
     // Start the upgrade, wait until its install holds the shared lock, then request the cache EXCLUSIVE.
     const upgrade = new DefaultRuntimeProvisioner(deps).upgradeIfNeeded(() => {})
     await held
-    const exclusive = withExclusiveCacheLock(root, async () => {
+    const exclusive = withExclusiveCacheLock(selectMicromambaCache(root).lockKey, async () => {
       order.push('repair')
     })
     await Promise.all([upgrade, exclusive])
@@ -758,7 +854,7 @@ describe('DefaultRuntimeProvisioner.restoreRelocatedEnvs', () => {
 
     // Kick off the restore, then immediately request the cache EXCLUSIVE on the same root.
     const restore = new DefaultRuntimeProvisioner(deps).restoreRelocatedEnvs(() => {})
-    const exclusive = withExclusiveCacheLock(root, async () => {
+    const exclusive = withExclusiveCacheLock(selectMicromambaCache(root).lockKey, async () => {
       order.push('repair')
     })
     await Promise.all([restore, exclusive])
