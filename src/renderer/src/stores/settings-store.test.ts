@@ -6,6 +6,7 @@ import type {
   ValidateProviderResult,
   ConnectorView
 } from '../../../shared/settings'
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../../shared/settings'
 import {
   createInitialSettingsState,
   selectProviderModelOptions,
@@ -28,6 +29,8 @@ type SettingsApi = {
   setAgentFramework: ReturnType<typeof vi.fn>
   upsertProvider: ReturnType<typeof vi.fn>
   validateProvider: ReturnType<typeof vi.fn>
+  cancelCodexLogin: ReturnType<typeof vi.fn>
+  logoutIsolatedCodex: ReturnType<typeof vi.fn>
   refreshProviderModels: ReturnType<typeof vi.fn>
   setActiveProvider: ReturnType<typeof vi.fn>
   deleteProvider: ReturnType<typeof vi.fn>
@@ -124,6 +127,8 @@ beforeEach(() => {
     }),
     upsertProvider: vi.fn(),
     validateProvider: vi.fn(),
+    cancelCodexLogin: vi.fn().mockResolvedValue(undefined),
+    logoutIsolatedCodex: vi.fn().mockResolvedValue(snapshot([])),
     refreshProviderModels: vi.fn(),
     setActiveProvider: vi.fn().mockImplementation((request: { id: string }) => {
       callLog.push(`setActive:${request.id}`)
@@ -252,6 +257,28 @@ describe('settings store: persistProvider', () => {
     // Persisting does not run the connection test — the Settings page tests in the background.
     expect(api.validateProvider).not.toHaveBeenCalled()
     expect(useSettingsStore.getState().providers).toHaveLength(1)
+  })
+
+  it('returns the fixed Codex provider id when the built-in already exists', async () => {
+    const builtIn = {
+      ...providerView(CODEX_SUBSCRIPTION_PROVIDER_ID),
+      type: 'codex-shared' as const,
+      name: 'Codex subscription',
+      model: undefined,
+      models: [],
+      hasKey: false
+    }
+    useSettingsStore.setState({ providers: [builtIn] })
+    api.upsertProvider.mockResolvedValue(snapshot([builtIn]))
+
+    await expect(
+      useSettingsStore.getState().persistProvider({
+        id: 'ordinary-provider-being-edited',
+        type: 'codex-shared',
+        name: 'ignored',
+        apiEndpoints: ['responses']
+      })
+    ).resolves.toBe(CODEX_SUBSCRIPTION_PROVIDER_ID)
   })
 })
 

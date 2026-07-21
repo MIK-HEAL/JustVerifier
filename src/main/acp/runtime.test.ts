@@ -1,5 +1,5 @@
 import * as acp from '@agentclientprotocol/sdk'
-import type { ContentBlock, SessionModeState } from '@agentclientprotocol/sdk'
+import type { ContentBlock, SessionConfigOption, SessionModeState } from '@agentclientprotocol/sdk'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -101,6 +101,8 @@ const startFakeAgent = (
   options: {
     supportsResume?: boolean
     modes?: SessionModeState
+    configOptions?: SessionConfigOption[]
+    rejectSetConfigOption?: boolean
     // When true, the resume handler rejects with the ACP "Resource not found" (-32002) — the signal a
     // replaced agent (e.g. after a provider switch) gives for a session id it does not hold.
     resumeNotFound?: boolean
@@ -175,7 +177,11 @@ const startFakeAgent = (
       const sessionId = sessionIds[sessionIndex]
       sessionIndex += 1
 
-      return { sessionId, modes: options.modes }
+      return {
+        sessionId,
+        modes: options.modes,
+        ...(options.configOptions ? { configOptions: options.configOptions } : {})
+      }
     })
     .onRequest(acp.methods.agent.session.resume, (ctx) => {
       if (options.resumeNotFound) {
@@ -200,6 +206,10 @@ const startFakeAgent = (
       modeChanges.push({ sessionId: ctx.params.sessionId, modeId: ctx.params.modeId })
       actions.push(`mode:${ctx.params.modeId}`)
       return {}
+    })
+    .onRequest(acp.methods.agent.session.setConfigOption, () => {
+      if (options.rejectSetConfigOption) throw acp.RequestError.internalError()
+      return { configOptions: options.configOptions ?? [] }
     })
     .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
       // Flatten text blocks because these tests only exercise plain prompts.
@@ -434,6 +444,70 @@ describe('ACP runtime migration write-gate', () => {
         headers: { authorization: 'Bearer local-token' }
       }
     ])
+  })
+
+  it('rejects session creation when a required subscription model is unavailable', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['subscription-session'], {
+      modes: {
+        currentModeId: 'agent',
+        availableModes: ['read-only', 'agent', 'agent-full-access'].map((id) => ({ id, name: id }))
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/codex-acp',
+        env: {},
+        sessionModel: 'gpt-subscription',
+        sessionModelRequired: true
+      }),
+      framework: codexFramework
+    })
+
+    await expect(runtime.createSession({ cwd: '/workspace' })).rejects.toThrow(
+      'The selected model "gpt-subscription" is not available for this Codex account.'
+    )
+  })
+
+  it('rejects session creation when a required subscription model cannot be applied', async () => {
+    const process = new FakeAgentProcess()
+    const configOptions = [
+      {
+        type: 'select',
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        currentValue: 'gpt-default',
+        options: [{ value: 'gpt-subscription', name: 'GPT Subscription' }]
+      } as SessionConfigOption
+    ]
+    startFakeAgent(process, ['subscription-session'], {
+      modes: {
+        currentModeId: 'agent',
+        availableModes: ['read-only', 'agent', 'agent-full-access'].map((id) => ({ id, name: id }))
+      },
+      configOptions,
+      rejectSetConfigOption: true
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/codex-acp',
+        env: {},
+        sessionModel: 'gpt-subscription',
+        sessionModelRequired: true
+      }),
+      framework: codexFramework
+    })
+
+    await expect(runtime.createSession({ cwd: '/workspace' })).rejects.toThrow(
+      'The selected model "gpt-subscription" could not be applied'
+    )
   })
 
   it('rejects sendPrompt while a data-root migration is pending, then resumes once cleared', async () => {
@@ -3068,6 +3142,68 @@ describe('ACP runtime session management', () => {
     expect(opencodeAgent.newSessions).toHaveLength(1)
     // And the original Claude agent was never asked to resume either.
     expect(claudeAgent.resumedSessions).toEqual([])
+  })
+
+  it('skips resume when the same framework switches to a different provider backend', async () => {
+    // Codex shared-profile and isolated-login providers use separate CODEX_HOME session stores even
+    // though both run through the same Codex framework. Sending one store's session id to the other
+    // produces the generic "Internal error" reported by codex-acp, so treat the backend identity as
+    // part of resumability and adopt a fresh agent session directly.
+    const sharedProcess = new FakeAgentProcess()
+    const codexModes = createModes(['read-only', 'agent', 'agent-full-access'], 'agent')
+    const sharedAgent = startFakeAgent(sharedProcess, ['shared-session-1'], { modes: codexModes })
+    const isolatedProcess = new FakeAgentProcess()
+    const isolatedAgent = startFakeAgent(isolatedProcess, ['isolated-session-1'], {
+      modes: codexModes
+    })
+
+    let connects = 0
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: async () => {
+        connects += 1
+
+        return {
+          framework: {
+            ...codexFramework,
+            spawn: () => asAgentProcess(connects === 1 ? sharedProcess : isolatedProcess)
+          },
+          backendId: connects === 1 ? 'codex:codex-shared' : 'codex:codex-isolated',
+          executablePath: '/bin/codex-acp',
+          env: {},
+          args: []
+        }
+      }
+    })
+
+    const created = await runtime.createSession({ cwd: '/workspace' })
+    expect(created).toEqual({
+      sessionId: 'shared-session-1',
+      cwd: resolve('/workspace'),
+      frameworkId: 'codex',
+      backendId: 'codex:codex-shared'
+    })
+
+    await runtime.disconnect(false)
+
+    const resumed = await runtime.resumeSession({
+      sessionId: 'shared-session-1',
+      cwd: '/workspace',
+      previousFrameworkId: 'codex',
+      previousBackendId: created.backendId
+    })
+
+    expect(resumed).toEqual({
+      sessionId: 'shared-session-1',
+      cwd: resolve('/workspace'),
+      frameworkId: 'codex',
+      backendId: 'codex:codex-isolated',
+      contextReset: true
+    })
+    expect(isolatedAgent.resumedSessions).toEqual([])
+    expect(isolatedAgent.newSessions).toHaveLength(1)
+    expect(sharedAgent.resumedSessions).toEqual([])
   })
 
   it('defers a provider reconnect until an in-flight prompt finishes', async () => {

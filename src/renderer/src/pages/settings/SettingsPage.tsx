@@ -15,10 +15,11 @@ import {
 import { Dialog } from 'radix-ui'
 import { useEffect, useState } from 'react'
 
-import type {
-  AgentFrameworkId,
-  ProviderView,
-  UpsertProviderRequest
+import {
+  isCodexSubscriptionProvider,
+  type AgentFrameworkId,
+  type ProviderView,
+  type UpsertProviderRequest
 } from '../../../../shared/settings'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -184,6 +185,8 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   const persistProvider = useSettingsStore((state) => state.persistProvider)
   const deleteProvider = useSettingsStore((state) => state.deleteProvider)
   const validateProvider = useSettingsStore((state) => state.validateProvider)
+  const cancelCodexLogin = useSettingsStore((state) => state.cancelCodexLogin)
+  const logoutIsolatedCodex = useSettingsStore((state) => state.logoutIsolatedCodex)
   const refreshProviderModels = useSettingsStore((state) => state.refreshProviderModels)
   const pendingSkillId = useSettingsStore((state) => state.pendingSkillId)
   const consumePendingSkill = useSettingsStore((state) => state.consumePendingSkill)
@@ -213,6 +216,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   const [statusMessage, setStatusMessage] = useState<string | undefined>(undefined)
   const [statusOk, setStatusOk] = useState(false)
   const [busyProviderId, setBusyProviderId] = useState<string | undefined>(undefined)
+  const [providerTestError, setProviderTestError] = useState<string | undefined>(undefined)
 
   // Refresh settings whenever the dialog opens so external changes are reflected.
   useEffect(() => {
@@ -468,6 +472,9 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   }
 
   const activeFramework = agentFrameworks.find((framework) => framework.id === agentFrameworkId)
+  const visibleProviders = providers.filter(
+    (provider) => agentFrameworkId === 'codex' || !isCodexSubscriptionProvider(provider.type)
+  )
   const pendingSwitchName = agentFrameworks.find(
     (framework) => framework.id === pendingSwitch
   )?.displayName
@@ -518,11 +525,16 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
 
   const handleTest = async (provider: ProviderView): Promise<void> => {
     setBusyProviderId(provider.id)
+    setProviderTestError(undefined)
 
     try {
       // The pass/fail result is reflected on the provider's card (green check or warning), not as a
       // separate status line.
       await validateProvider({ providerId: provider.id })
+    } catch (error) {
+      setProviderTestError(
+        error instanceof Error ? error.message : 'Could not test the provider connection.'
+      )
     } finally {
       setBusyProviderId(undefined)
     }
@@ -758,6 +770,9 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                       isRefreshingModels={isRefreshingModels}
                       disabled={isSaving}
                       encryptionAvailable={encryptionAvailable}
+                      showCodexSubscriptions={
+                        agentFrameworkId === 'codex' && editingProvider === undefined
+                      }
                     />
                     {statusMessage ? (
                       <p
@@ -877,20 +892,27 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                         </Button>
                       }
                     >
-                      {providers.length > 0 ? (
+                      {visibleProviders.length > 0 ? (
                         <SettingsRow label="Active model" className="border-b border-border pt-0">
                           <ActiveModelSelect />
                         </SettingsRow>
                       ) : null}
 
                       <ProviderList
-                        providers={providers}
+                        providers={visibleProviders}
                         activeProviderId={activeProviderId}
                         busyProviderId={busyProviderId}
                         onEdit={openEdit}
                         onDelete={(provider) => void deleteProvider(provider.id)}
                         onTest={(provider) => void handleTest(provider)}
+                        onCancelCodexLogin={() => void cancelCodexLogin()}
+                        onLogoutIsolatedCodex={() => void logoutIsolatedCodex()}
                       />
+                      {providerTestError ? (
+                        <p className="text-sm text-destructive" role="alert">
+                          {providerTestError}
+                        </p>
+                      ) : null}
                     </SettingsSection>
                   </div>
                 )}

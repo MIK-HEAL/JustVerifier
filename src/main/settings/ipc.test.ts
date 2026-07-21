@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/settings'
 import type { SettingsService } from './service'
 
 // Capture every ipcMain.handle registration so handlers can be invoked directly in the test.
@@ -37,6 +38,8 @@ type FakeSettingsService = Record<
   | 'deleteProvider'
   | 'setActiveProvider'
   | 'validateProvider'
+  | 'cancelCodexLogin'
+  | 'logoutIsolatedCodex'
   | 'markOnboardingComplete'
   | 'listSkills'
   | 'getSkillDetail'
@@ -79,6 +82,10 @@ const createFakeService = (): FakeSettingsService => ({
   deleteProvider: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
   setActiveProvider: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
   validateProvider: vi.fn().mockResolvedValue({ ok: true, category: 'ok' }),
+  cancelCodexLogin: vi.fn(),
+  logoutIsolatedCodex: vi
+    .fn()
+    .mockResolvedValue({ claude: {}, providers: [], activeProviderId: undefined }),
   markOnboardingComplete: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
   listSkills: vi.fn().mockResolvedValue([]),
   getSkillDetail: vi.fn().mockResolvedValue({
@@ -121,6 +128,8 @@ describe('settings IPC handlers', () => {
       'settings:delete-provider',
       'settings:set-active-provider',
       'settings:validate-provider',
+      'settings:cancel-codex-login',
+      'settings:logout-isolated-codex',
       'settings:mark-onboarding-complete'
     ]) {
       expect(handlers.has(channel)).toBe(true)
@@ -140,6 +149,31 @@ describe('settings IPC handlers', () => {
 
     await invoke('settings:validate-provider', { providerId: 'p1' })
     expect(service.validateProvider).toHaveBeenCalledWith({ providerId: 'p1' })
+
+    await invoke('settings:cancel-codex-login')
+    expect(service.cancelCodexLogin).toHaveBeenCalledOnce()
+
+    await invoke('settings:logout-isolated-codex')
+    expect(service.logoutIsolatedCodex).toHaveBeenCalledOnce()
+  })
+
+  it('reconnects the active Codex subscription after isolated logout', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    service.logoutIsolatedCodex.mockResolvedValue({
+      claude: {},
+      providers: [],
+      activeProviderId: CODEX_SUBSCRIPTION_PROVIDER_ID
+    })
+    const onActiveProviderChanged = vi.fn()
+    registerSettingsIpcHandlers({
+      service: asService(service),
+      onActiveProviderChanged
+    })
+
+    await invoke('settings:logout-isolated-codex')
+
+    expect(onActiveProviderChanged).toHaveBeenCalledOnce()
   })
 
   it('routes mark-onboarding-complete to the service', async () => {
