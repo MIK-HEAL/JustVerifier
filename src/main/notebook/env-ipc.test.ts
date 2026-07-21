@@ -6,9 +6,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Capture ipcMain.handle registrations so registerNotebookEnvIpcHandlers can be exercised headless.
 const registered = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+const sentProgress: ProvisionProgress[] = []
 vi.mock('electron', () => ({
   ipcMain: { handle: (channel: string, handler: never) => registered.set(channel, handler) },
-  BrowserWindow: { getAllWindows: () => [] }
+  BrowserWindow: {
+    getAllWindows: () => [
+      {
+        isDestroyed: () => false,
+        webContents: {
+          send: (_channel: string, progress: ProvisionProgress) => sentProgress.push(progress)
+        }
+      }
+    ]
+  }
 }))
 
 import type { ProvisionProgress, RuntimeProvisioner } from './provisioner'
@@ -186,9 +196,15 @@ describe('createNotebookEnvHandlers', () => {
   })
 })
 
-describe('registerNotebookEnvIpcHandlers (no provisioner)', () => {
-  beforeEach(() => registered.clear())
-  afterEach(() => registered.clear())
+describe('registerNotebookEnvIpcHandlers', () => {
+  beforeEach(() => {
+    registered.clear()
+    sentProgress.length = 0
+  })
+  afterEach(() => {
+    registered.clear()
+    sentProgress.length = 0
+  })
 
   it('still registers every channel when the provisioner could not be built', () => {
     registerNotebookEnvIpcHandlers(undefined, '/tmp/nope')
@@ -210,6 +226,26 @@ describe('registerNotebookEnvIpcHandlers (no provisioner)', () => {
     await expect(registered.get('notebook-env:repair')?.({}, 'python')).rejects.toThrow(
       /micromamba/i
     )
+  })
+
+  it('broadcasts the requested language scope for UI provision and repair', async () => {
+    const provisioner = fakeProvisioner({
+      provisionR: vi.fn().mockImplementation(async (report: (p: ProvisionProgress) => void) => {
+        report({ phase: 'fetch-r', message: 'Downloading R', progress: 0.4 })
+      }),
+      repair: vi.fn().mockImplementation(async (_lang, report) => {
+        report({ phase: 'repair', message: 'Repairing Python', progress: 0.2 })
+      })
+    })
+    registerNotebookEnvIpcHandlers(provisioner, '/tmp/nope')
+
+    await registered.get('notebook-env:provision')?.({}, 'r')
+    await registered.get('notebook-env:repair')?.({}, 'python')
+
+    expect(sentProgress).toEqual([
+      { phase: 'fetch-r', message: 'Downloading R', progress: 0.4, scope: 'r' },
+      { phase: 'repair', message: 'Repairing Python', progress: 0.2, scope: 'python' }
+    ])
   })
 })
 

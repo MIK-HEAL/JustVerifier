@@ -186,10 +186,12 @@ export const registerNotebookEnvIpcHandlers = (
     : createUnavailableHandlers()
   ipcMain.handle('notebook-env:status', () => handlers.status())
   ipcMain.handle('notebook-env:provision', (_event, lang: NotebookLanguage) =>
-    handlers.provision(lang, broadcastNotebookEnvProgress)
+    handlers.provision(lang, (progress) =>
+      broadcastNotebookEnvProgress({ ...progress, scope: lang })
+    )
   )
   ipcMain.handle('notebook-env:repair', (_event, lang: NotebookLanguage) =>
-    handlers.repair(lang, broadcastNotebookEnvProgress)
+    handlers.repair(lang, (progress) => broadcastNotebookEnvProgress({ ...progress, scope: lang }))
   )
   // Synchronous best-effort abort of an in-flight provision; returns immediately (the aborted run
   // settles on its own and broadcasts its terminal progress).

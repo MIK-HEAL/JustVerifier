@@ -69,7 +69,12 @@ import type {
   RuntimeUsage
 } from '../../shared/notebook-runtime'
 import { isEnvEnabled } from '../../shared/notebook-runtime'
-import { discoverInterpreters, defaultDiscoveryDeps, rscriptFor } from './environment-discovery'
+import {
+  discoverInterpreters,
+  defaultDiscoveryDeps,
+  rscriptFor,
+  windowsCondaPrefixForR
+} from './environment-discovery'
 import { operationJournalPath, RuntimeOperationJournal } from './operation-journal'
 import { reconcileInterruptedOperations, defaultOperationChildLiveness } from './operation-recovery'
 import { getAppClaudeConfigDir } from '../settings/provider-env'
@@ -121,6 +126,14 @@ const namedEnvProvenance = (name: string): EnvProvenance =>
     ? 'app-managed'
     : 'agent-created'
 
+type ResolvedInterpreter = {
+  command: string
+  args?: string[]
+  // Set only for an external Windows conda R. The prefix belongs to that interpreter and lets the
+  // executor activate its DLL search path without ever substituting the app-managed R prefix.
+  condaPrefix?: string
+}
+
 type NotebookExecutionRequest = {
   code: string
   cwd: string
@@ -139,7 +152,7 @@ type NotebookExecutionRequest = {
   // — this is the seam that removes the executor's hard-binding to the app conda prefix (foundation:
   // "avoid deep binding"). Absent -> the executor falls back to the env's own managed interpreter
   // (behavior unchanged). `args` are prepended before the loop script (e.g. a launcher's flags).
-  resolvedInterpreter?: { command: string; args?: string[] }
+  resolvedInterpreter?: ResolvedInterpreter
   // Selects the control-plane REPL kernel instead of the language-derived data kernel. Only the
   // control path sets this; data cells leave it unset and route by `language`.
   kind?: 'repl'
@@ -259,6 +272,9 @@ type NotebookRuntimeServiceOptions = {
   // Locale used to pick the default region mirror when nothing is configured (see shared/mirror.ts).
   // Defaults to a non-CN locale so an omitted value never silently forces a CN mirror.
   locale?: string
+  // Platform seam for path-layout decisions. Production uses process.platform; tests can verify that
+  // a Windows-shaped string alone never activates Windows conda behavior on another platform.
+  platform?: NodeJS.Platform
   // Latency-probe deps for the fastest-mirror auto-selection, injectable so tests stay hermetic (the
   // real probe does live HEAD requests). Undefined in production → effectiveMirrorAsync's real probe.
   mirrorProbe?: ProbeDeps
@@ -278,7 +294,7 @@ type NotebookRuntimeServiceOptions = {
 // for an EXTERNAL binding (run the user's own interpreter directly); an app-managed binding leaves it
 // undefined so the executor keeps its managed-prefix lookup and ensureDefaultEnvReady provisions the env.
 type InternalRuntimeBinding = NotebookRuntimeBinding & {
-  resolvedInterpreter?: { command: string; args?: string[] }
+  resolvedInterpreter?: ResolvedInterpreter
   // The conda env NAME a MANAGED binding runs in (default-python / an agent-created named env like
   // "my-analysis"), so a run resolves its env + process key + Windows conda activation from the binding
   // rather than a per-call environment argument. Undefined for an EXTERNAL binding (runs a raw
@@ -716,7 +732,8 @@ class NotebookRuntimeService {
   private async ensureDefaultEnvReady(
     language: NotebookLanguage,
     env: string,
-    runtimeRootDir: string
+    runtimeRootDir: string,
+    sessionId: string
   ): Promise<void> {
     const provisioner = this.defaultEnvProvisioner
     if (!provisioner) return
@@ -731,12 +748,14 @@ class NotebookRuntimeService {
         ? rReady(runtimeRootDir, DEFAULT_ENV_VERSION)
         : pythonReady(runtimeRootDir, DEFAULT_ENV_VERSION)
     if (ready) return
+    const reportProgress = (progress: ProvisionProgress): void =>
+      this.defaultEnvProgress({ ...progress, scope: language, sessionId })
     try {
-      if (language === 'r') await provisioner.provisionR(this.defaultEnvProgress)
-      else await provisioner.provisionPython(this.defaultEnvProgress)
+      if (language === 'r') await provisioner.provisionR(reportProgress)
+      else await provisioner.provisionPython(reportProgress)
     } catch (error) {
       const message = `Could not prepare ${env}: ${error instanceof Error ? error.message : String(error)}`
-      this.defaultEnvProgress({ phase: 'error', message, progress: 0 })
+      reportProgress({ phase: 'error', message, progress: 0 })
       throw new Error(message, { cause: error })
     }
   }
@@ -786,6 +805,10 @@ class NotebookRuntimeService {
     // resolves it by env NAME (managed-prefix lookup + conda activation). Only the USER'S OWN
     // interpreter is 'external' — run its binary directly.
     const source = env.provenance === 'user-own' ? 'external' : 'managed'
+    const externalRCondaPrefix =
+      source === 'external' && env.language === 'r'
+        ? windowsCondaPrefixForR(env.interpreterPath, this.options.platform ?? process.platform)
+        : undefined
     return {
       language: env.language,
       runtimeId: env.envId,
@@ -801,7 +824,8 @@ class NotebookRuntimeService {
       resolvedInterpreter:
         source === 'external'
           ? {
-              command: env.language === 'r' ? rscriptFor(env.interpreterPath) : env.interpreterPath
+              command: env.language === 'r' ? rscriptFor(env.interpreterPath) : env.interpreterPath,
+              ...(externalRCondaPrefix ? { condaPrefix: externalRCondaPrefix } : {})
             }
           : undefined,
       envName:
@@ -1254,7 +1278,7 @@ class NotebookRuntimeService {
     // managed-prefix lookup for `env` (resolved above from the binding). An EXTERNAL binding runs the
     // user's own interpreter directly. No binding -> the app-managed default. There is no implicit
     // external default and no per-call env override anymore.
-    let resolvedInterpreter: { command: string; args?: string[] } | undefined
+    let resolvedInterpreter: ResolvedInterpreter | undefined
     // Deferred so a first-use overlay-build failure (bad base interpreter, ensurepip failure, an
     // interpreter moved after selection) is normalized into a FAILED run record with a traceback below,
     // exactly like an executor spawn/crash — rather than throwing raw out of the run path and leaving no
@@ -1303,7 +1327,7 @@ class NotebookRuntimeService {
               'list_notebook_runtimes then notebook_bind_runtime, before running cells.'
           )
         }
-        await this.ensureDefaultEnvReady(cell.language, env, session.runtimeRoot)
+        await this.ensureDefaultEnvReady(cell.language, env, session.runtimeRoot, session.sessionId)
       } catch (error) {
         interpreterResolveError = error
       }

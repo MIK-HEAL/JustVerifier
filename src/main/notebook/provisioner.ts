@@ -12,12 +12,26 @@ import type {
 } from '../../shared/notebook-env'
 import { chainFetchBundle, createLocalBundleAdapter, resolveBundleDir } from './bundle-local'
 import { createFetchBundleAdapter } from './language-pack-fetch'
-import { withExclusiveCacheLock, withSharedCacheLock } from './pkgs-cache-lock'
+import { DEFAULT_MAX_ENV_RELATIVE_PATH, type PackPathBudget } from './bundle-manifest'
+import { withExclusiveCacheLocks, withSharedCacheLocks } from './pkgs-cache-lock'
+import {
+  recoverWindowsMaxPathPackage,
+  removeOverBudgetUrlPackages,
+  removeIncompleteExtractedPackages
+} from './micromamba-cache-recovery'
+import {
+  DEFAULT_MAX_CACHE_RELATIVE_PATH,
+  micromambaCacheLockKey,
+  WINDOWS_MAX_USABLE_PATH,
+  selectMicromambaCache,
+  type MicromambaCache
+} from './micromamba-cache'
 import {
   caBundleEnv,
   createFromLockArgv,
   createFromPackagesArgv,
   installFromLockArgv,
+  micromambaSpawnEnv,
   resolveMicromamba,
   type MicromambaDeps
 } from './micromamba'
@@ -48,7 +62,7 @@ import {
 export type { ProvisionProgress, ProvisionStatus }
 
 // A resolved bundle on disk: the local @EXPLICIT lock whose tarballs are already in the pkgs cache.
-export type FetchedBundle = { lockPath: string }
+export type FetchedBundle = { lockPath: string; pathBudget?: PackPathBudget }
 
 // One default environment specification (A-internal). `version` is the curated interpreter version
 // (e.g. "3.12" / "4.4") — it identifies the staged offline pack via packId(language, version) (see
@@ -112,12 +126,20 @@ export type ProvisionerDeps = {
   ) => Promise<FetchedBundle | undefined>
   // Runs a micromamba argv; rejects on non-zero exit. An aborted signal kills the child. onChild
   // receives the spawned child's PID so the caller can journal it for crash-recovery supervision.
-  runArgv: (argv: string[], signal?: AbortSignal, onChild?: (pid: number) => void) => Promise<void>
+  runArgv: (
+    argv: string[],
+    signal?: AbortSignal,
+    onChild?: (pid: number) => void,
+    cache?: MicromambaCache,
+    maxCacheRelativePath?: number
+  ) => Promise<void>
   // Verifies `<bin> --version`; rejects otherwise.
-  verify: (bin: string) => Promise<void>
+  verify: (bin: string, prefix: string) => Promise<void>
   // Clock injection for the ready-marker timestamp.
   now?: () => string
   bundleSource?: RuntimeBundleSource
+  cache?: MicromambaCache
+  platform?: NodeJS.Platform
 }
 
 const defaultNow = (): string => Date.now().toString()
@@ -138,8 +160,105 @@ export interface RuntimeProvisioner {
 
 export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
   private provisioning = false
+  private legacyCacheCleanupComplete = false
 
   constructor(private readonly deps: ProvisionerDeps) {}
+
+  private get cache(): MicromambaCache {
+    return this.deps.cache ?? selectMicromambaCache(this.deps.root)
+  }
+
+  private cacheRoots(cache: MicromambaCache): string[] {
+    return [...new Set([pkgsCache(this.deps.root), cache.path])]
+  }
+
+  private cacheLockKeys(cache: MicromambaCache): string[] {
+    return [
+      cache.lockKey,
+      micromambaCacheLockKey(pkgsCache(this.deps.root), { platform: this.deps.platform })
+    ]
+  }
+
+  private cacheForBundle(
+    spec: EnvSpec,
+    bundle: FetchedBundle
+  ): { cache: MicromambaCache; budget: PackPathBudget } {
+    const platform = this.deps.platform ?? process.platform
+    const budget =
+      bundle.pathBudget ??
+      (platform === 'win32'
+        ? {
+            maxCacheRelativePath: DEFAULT_MAX_CACHE_RELATIVE_PATH,
+            maxEnvRelativePath: DEFAULT_MAX_ENV_RELATIVE_PATH
+          }
+        : undefined)
+    if (!budget)
+      return { cache: this.cache, budget: { maxCacheRelativePath: 0, maxEnvRelativePath: 0 } }
+    if (platform !== 'win32') return { cache: this.cache, budget }
+
+    const cache =
+      this.deps.cache ?? selectMicromambaCache(this.deps.root, budget.maxCacheRelativePath)
+    const prefix = envPrefix(this.deps.root, spec.name)
+    if (
+      cache.path.length + budget.maxCacheRelativePath > WINDOWS_MAX_USABLE_PATH ||
+      prefix.length + budget.maxEnvRelativePath > WINDOWS_MAX_USABLE_PATH
+    ) {
+      throw new Error(
+        `Managed ${spec.language} ${spec.version} pack exceeds the Windows path budget for ` +
+          `${spec.name}; choose a shorter data-root path.`
+      )
+    }
+    return { cache, budget }
+  }
+
+  private async runWithMaxPathRecovery(
+    run: () => Promise<void>,
+    onRecovery?: () => void,
+    cache: MicromambaCache = this.cache
+  ): Promise<void> {
+    try {
+      await run()
+    } catch (original) {
+      if (this.abort?.signal.aborted) throw original
+      const recovered = await withExclusiveCacheLocks(this.cacheLockKeys(cache), () =>
+        Promise.resolve(
+          recoverWindowsMaxPathPackage(original, this.cacheRoots(cache), {
+            platform: this.deps.platform
+          })
+        )
+      )
+      if (!recovered) throw original
+      onRecovery?.()
+      try {
+        await run()
+      } catch (retry) {
+        throw new MaxPathRetryError(original, retry)
+      }
+    }
+  }
+
+  private async cleanLegacyWindowsUrlCache(
+    cache: MicromambaCache,
+    onProgress: (p: ProvisionProgress) => void
+  ): Promise<void> {
+    if (this.legacyCacheCleanupComplete || (this.deps.platform ?? process.platform) !== 'win32')
+      return
+    const removed = await withExclusiveCacheLocks(this.cacheLockKeys(cache), () =>
+      Promise.resolve(
+        removeOverBudgetUrlPackages(pkgsCache(this.deps.root), {
+          platform: this.deps.platform
+        })
+      )
+    )
+    this.legacyCacheCleanupComplete = true
+    if (removed) {
+      onProgress({
+        phase: 'upgrade',
+        message: 'Removed a legacy package blocked by the Windows path limit.',
+        progress: 0.05
+      })
+    }
+  }
 
   // Set for the duration of a provision/upgrade/repair so cancel() can abort the in-flight download
   // (fetch signal) and micromamba create (execFile signal). Cleared in each op's finally.
@@ -270,7 +389,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
             : undefined
         if (existingBin) {
           try {
-            await this.deps.verify(existingBin)
+            await this.deps.verify(existingBin, prefix)
             if (name === DEFAULT_PY_ENV) restoredPython = true
             if (name === DEFAULT_R_ENV) restoredR = true
             rmSync(join(dir, file), { force: true })
@@ -283,13 +402,22 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
         try {
           // Shared pkgs cache lock: this rebuild-from-lock extracts into the shared cache, so a
           // concurrent corrupt-cache repair (cache-exclusive) can't delete an incomplete extraction.
-          await withSharedCacheLock(this.deps.root, () =>
-            this.deps.runArgv(
-              createFromLockArgv(this.deps.mm, this.deps.root, prefix, join(dir, file))
-            )
+          await this.runWithMaxPathRecovery(
+            () =>
+              withSharedCacheLocks(this.cacheLockKeys(this.cache), () =>
+                this.deps.runArgv(
+                  createFromLockArgv(this.deps.mm, this.deps.root, prefix, join(dir, file)),
+                  undefined,
+                  undefined,
+                  this.cache,
+                  DEFAULT_MAX_CACHE_RELATIVE_PATH
+                )
+              ),
+            undefined,
+            this.cache
           )
           const bin = existsSync(pythonBin(prefix)) ? pythonBin(prefix) : rBin(prefix)
-          await this.deps.verify(bin)
+          await this.deps.verify(bin, prefix)
           if (name === DEFAULT_PY_ENV) restoredPython = true
           if (name === DEFAULT_R_ENV) restoredR = true
           rmSync(join(dir, file), { force: true })
@@ -322,18 +450,33 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     const base = language === 'python' ? BASE_PYTHON_PACKAGES : BASE_R_PACKAGES
     const pkgs = [...new Set([...base, ...packages])]
     const prefix = envPrefix(this.deps.root, name)
+    if (
+      (this.deps.platform ?? process.platform) === 'win32' &&
+      prefix.length + DEFAULT_MAX_ENV_RELATIVE_PATH > WINDOWS_MAX_USABLE_PATH
+    ) {
+      throw new Error(
+        `Named environment "${name}" exceeds the conservative Windows environment path budget; ` +
+          'choose a shorter name or data-root path.'
+      )
+    }
     // Take the shared pkgs cache lock for the whole prefix cleanup + create: this create extracts into
     // the SHARED cache, so a concurrent corrupt-cache repair (which takes the cache EXCLUSIVE and deletes
     // incomplete extractions) must not run mid-create and delete a package dir we are still producing.
-    await withSharedCacheLock(this.deps.root, async () => {
-      // Clear a half-built prefix from an interrupted prior create so micromamba doesn't abort on it.
-      this.clearNonCondaPrefix(prefix)
-      await this.deps.runArgv(
-        createFromPackagesArgv(this.deps.mm, this.deps.root, prefix, [this.deps.channel], pkgs)
-      )
-    })
+    await this.runWithMaxPathRecovery(() =>
+      withSharedCacheLocks(this.cacheLockKeys(this.cache), async () => {
+        // Clear a half-built prefix from an interrupted prior create so micromamba doesn't abort on it.
+        this.clearNonCondaPrefix(prefix)
+        await this.deps.runArgv(
+          createFromPackagesArgv(this.deps.mm, this.deps.root, prefix, [this.deps.channel], pkgs),
+          undefined,
+          undefined,
+          this.cache,
+          DEFAULT_MAX_CACHE_RELATIVE_PATH
+        )
+      })
+    )
     const bin = language === 'python' ? pythonBin(prefix) : rBin(prefix)
-    await this.deps.verify(bin)
+    await this.deps.verify(bin, prefix)
     return {
       name,
       language,
@@ -385,7 +528,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
   private async upgradeOrRebuildR(onProgress: (p: ProvisionProgress) => void): Promise<void> {
     const prefix = envPrefix(this.deps.root, DEFAULT_R_ENV)
     try {
-      await this.deps.verify(rBin(prefix))
+      await this.deps.verify(rBin(prefix), prefix)
     } catch {
       // A failed create can leave R.exe before the prefix is runnable. Do not apply an additive
       // upgrade onto unknown partial state; clear it and recreate exactly from the published lock.
@@ -417,13 +560,23 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     const bin = spec.language === 'python' ? pythonBin(prefix) : rBin(prefix)
     // Shared pkgs cache lock: this install extracts into the shared cache, so a concurrent corrupt-cache
     // repair (cache-exclusive) must not delete an incomplete extraction mid-upgrade.
-    await withSharedCacheLock(this.deps.root, () =>
-      this.deps.runArgv(
-        installFromLockArgv(this.deps.mm, this.deps.root, prefix, bundle.lockPath),
-        this.abort?.signal
-      )
+    const selected = this.cacheForBundle(spec, bundle)
+    await this.cleanLegacyWindowsUrlCache(selected.cache, onProgress)
+    await this.runWithMaxPathRecovery(
+      () =>
+        withSharedCacheLocks(this.cacheLockKeys(selected.cache), () =>
+          this.deps.runArgv(
+            installFromLockArgv(this.deps.mm, this.deps.root, prefix, bundle.lockPath),
+            this.abort?.signal,
+            undefined,
+            selected.cache,
+            selected.budget.maxCacheRelativePath || DEFAULT_MAX_CACHE_RELATIVE_PATH
+          )
+        ),
+      undefined,
+      selected.cache
     )
-    await this.deps.verify(bin)
+    await this.deps.verify(bin, prefix)
   }
 
   // micromamba `create -p <prefix>` aborts with "Non-conda folder exists at prefix" when the prefix
@@ -450,7 +603,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     // the prefix first, so it still rebuilds.
     if (existsSync(bin)) {
       try {
-        await this.deps.verify(bin)
+        await this.deps.verify(bin, prefix)
         onProgress({ phase: `${spec.language}-ready`, message: `${spec.name} ready`, progress: 1 })
         return
       } catch {
@@ -502,32 +655,55 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
       void journal
         .update(operationId, { childPid, childStartedAt: Date.now() })
         .catch(() => undefined)
-    const runCreate = (lockPath: string): Promise<void> =>
+    const selected = this.cacheForBundle(spec, bundle)
+    await this.cleanLegacyWindowsUrlCache(selected.cache, onProgress)
+    const runCreate = (
+      lockPath: string,
+      cache: MicromambaCache = selected.cache,
+      budget = selected.budget
+    ): Promise<void> =>
       // Take the shared pkgs cache lock so a concurrent corrupt-cache repair can't delete a package
       // mid-create. The env prefix cleanup + create run inside it.
-      withSharedCacheLock(this.deps.root, () => {
+      withSharedCacheLocks(this.cacheLockKeys(cache), () => {
         // Clear a half-built prefix from an interrupted prior attempt so micromamba doesn't abort on it.
         this.clearNonCondaPrefix(prefix)
         return this.deps.runArgv(
           createFromLockArgv(this.deps.mm, this.deps.root, prefix, lockPath),
           this.abort?.signal,
-          onChild
+          onChild,
+          cache,
+          budget.maxCacheRelativePath || DEFAULT_MAX_CACHE_RELATIVE_PATH
         )
       })
     try {
       try {
-        await runCreate(bundle.lockPath)
+        await this.runWithMaxPathRecovery(
+          () => runCreate(bundle.lockPath),
+          () => {
+            onProgress({
+              phase: `create-${spec.language}`,
+              message: `Retrying ${spec.name} with the short Windows package cache…`,
+              progress: 0.5
+            })
+          },
+          selected.cache
+        )
       } catch (error) {
         // A corrupt pkgs cache (e.g. a prior interrupted extract left an incomplete package dir) makes
         // create abort with "incorrect downloads" / "extracted directory cache". Do NOT wipe the whole
         // shared cache — that would delete other envs' (and the other language's) tarballs needed for
         // offline rebuild. Instead take the cache EXCLUSIVE and remove only INCOMPLETE extracted package
-        // dirs (missing info/index.json), preserving every tarball and complete package; then re-seed
+        // dirs (missing info/repodata_record.json), preserving every tarball and complete package; then re-seed
         // and retry the create ONCE. If nothing was incomplete, this isn't a corrupt-cache fault we can
         // repair, so surface the original error rather than churn. A user cancel is never retried.
-        if (this.abort?.signal.aborted || !isCorruptPkgsCacheError(error)) throw error
-        const repaired = await withExclusiveCacheLock(this.deps.root, () =>
-          Promise.resolve(removeIncompleteExtractedPackages(pkgsCache(this.deps.root)))
+        if (
+          this.abort?.signal.aborted ||
+          error instanceof MaxPathRetryError ||
+          !isCorruptPkgsCacheError(error)
+        )
+          throw error
+        const repaired = await withExclusiveCacheLocks(this.cacheLockKeys(selected.cache), () =>
+          Promise.resolve(removeIncompleteExtractedPackages(this.cacheRoots(selected.cache)))
         )
         if (!repaired) throw error
         onProgress({
@@ -542,7 +718,8 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
           this.abort?.signal
         )
         if (!reseeded) throw error
-        await runCreate(reseeded.lockPath)
+        const retrySelected = this.cacheForBundle(spec, reseeded)
+        await runCreate(reseeded.lockPath, retrySelected.cache, retrySelected.budget)
       }
 
       onProgress({
@@ -550,7 +727,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
         message: `Verifying ${spec.name} interpreter…`,
         progress: 0.9
       })
-      await this.deps.verify(bin)
+      await this.deps.verify(bin, prefix)
       onProgress({ phase: `${spec.language}-ready`, message: `${spec.name} ready`, progress: 0.95 })
     } finally {
       await journal.complete(operationId).catch(() => undefined)
@@ -576,29 +753,22 @@ const isCorruptPkgsCacheError = (error: unknown): boolean => {
 }
 
 // Removes only INCOMPLETE extracted package directories from the shared pkgs cache — a complete conda
-// package extraction always has info/index.json, so a dir lacking it is a partial/interrupted extract.
+// package extraction always has info/repodata_record.json, so a dir lacking it is a partial/interrupted extract.
 // Tarball files (*.conda / *.tar.bz2) and the url download cache are left untouched, so every env's
 // offline-rebuild material survives; the removed dirs are simply re-extracted from those tarballs.
 // Returns true if it removed anything (so the caller only retries when there was something to repair).
-const removeIncompleteExtractedPackages = (cacheDir: string): boolean => {
-  let entries: Dirent[]
-  try {
-    entries = readdirSync(cacheDir, { withFileTypes: true })
-  } catch {
-    return false
+class MaxPathRetryError extends Error {
+  constructor(original: unknown, retry: unknown) {
+    const originalMessage = original instanceof Error ? original.message : String(original)
+    const retryMessage = retry instanceof Error ? retry.message : String(retry)
+    super(
+      'The short Windows package cache recovery was attempted, but micromamba still failed. ' +
+        'Retry Repair; if it fails again, choose a shorter data location.\n' +
+        `Original failure:\n${originalMessage}\nRetry failure:\n${retryMessage}`,
+      { cause: retry }
+    )
+    this.name = 'MaxPathRetryError'
   }
-  let removed = false
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue // keep tarballs and index files
-    // The url-keyed download cache ("cache", or an http* host dir) holds downloaded tarballs — never
-    // remove it, or other envs lose their offline material.
-    if (entry.name === 'cache' || /^https?/i.test(entry.name)) continue
-    const dir = join(cacheDir, entry.name)
-    if (existsSync(join(dir, 'info', 'index.json'))) continue // a complete extraction — keep it
-    rmSync(dir, { recursive: true, force: true })
-    removed = true
-  }
-  return removed
 }
 
 // Best-effort recursive directory size (OQ5: surface disk usage in `list`). Tolerates any error
@@ -691,7 +861,25 @@ export const createProductionProvisioner = (
       createLocalBundleAdapter(opts.root, bundleDir),
       createFetchBundleAdapter(opts.root, cdnBase)
     ]),
-    runArgv: (argv, signal, onChild) => runMicromamba(argv, caEnv, signal, onChild),
-    verify: (bin) => verifyExecutable(bin, caEnv)
+    runArgv: (argv, signal, onChild, runCache, maxCacheRelativePath) =>
+      runMicromamba(
+        argv,
+        micromambaSpawnEnv(
+          opts.root,
+          opts.caBundle,
+          {
+            selectCache: () =>
+              runCache ??
+              selectMicromambaCache(
+                opts.root,
+                maxCacheRelativePath ?? DEFAULT_MAX_CACHE_RELATIVE_PATH
+              )
+          },
+          maxCacheRelativePath ?? DEFAULT_MAX_CACHE_RELATIVE_PATH
+        ),
+        signal,
+        onChild
+      ),
+    verify: (bin, prefix) => verifyExecutable(bin, { prefix, env: caEnv })
   })
 }

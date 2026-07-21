@@ -2,7 +2,17 @@ import type { NotebookLanguage } from './notebook'
 
 // Canonical wire shapes for the notebook runtime provisioning surface (contract §4). Renderer,
 // preload, and the main provisioner (Plan A) all import these so there is one source of truth.
-export type ProvisionProgress = { phase: string; message: string; progress: number }
+export type ProvisionScope = 'python' | 'r'
+export type ProvisionOperationScope = ProvisionScope | 'upgrade'
+export type ProvisionProgress = {
+  phase: string
+  message: string
+  progress: number
+  // Explicit at process boundaries so an automatic R provision is not inferred as a global upgrade.
+  scope?: ProvisionOperationScope
+  // Present for a provision triggered by one notebook run; other sessions remain visible and usable.
+  sessionId?: string
+}
 export type RuntimeBundleSource = {
   kind: 'official' | 'override'
   baseUrl: string
@@ -14,11 +24,6 @@ export type ProvisionStatus = {
   provisioning: boolean
   bundleSource?: RuntimeBundleSource
 }
-
-// Which environment a provisioning run targets — the explicit provision(lang) requests the renderer
-// can make. The "upgrade" (auto additive upgrade) state is inferred by the renderer from
-// `(provisioning && pythonReady)` and is not part of this wire type (contract §4).
-export type ProvisionScope = 'python' | 'r'
 
 // One named environment as surfaced by manage_environments(action:"list") and the UI's env selector.
 export type EnvironmentInfo = {

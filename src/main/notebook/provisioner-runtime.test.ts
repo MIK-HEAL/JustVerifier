@@ -1,10 +1,11 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
 import { md5File, runMicromamba, verifyExecutable } from './provisioner-runtime'
+import { condaActivatedPath } from './runtime-paths'
 
 describe('verifyExecutable', () => {
   it('resolves for a real interpreter that answers --version', async () => {
@@ -15,6 +16,29 @@ describe('verifyExecutable', () => {
   it('rejects for a missing executable', async () => {
     await expect(verifyExecutable('/no/such/binary-xyz')).rejects.toThrow()
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'passes the activated Windows conda PATH to the interpreter process',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'os-r-path-'))
+      const bin = join(dir, 'R.exe')
+      const prefix = 'C:\\runtime\\envs\\default-r'
+      const expectedPath = condaActivatedPath(prefix, 'C:\\Windows', 'win32')
+      writeFileSync(
+        bin,
+        `#!${process.execPath}\nprocess.exit(process.env.PATH === process.env.EXPECTED_PATH ? 0 : 19)\n`
+      )
+      chmodSync(bin, 0o755)
+
+      await expect(
+        verifyExecutable(bin, {
+          prefix,
+          platform: 'win32',
+          env: { PATH: 'C:\\Windows', EXPECTED_PATH: expectedPath }
+        })
+      ).resolves.toBeUndefined()
+    }
+  )
 })
 
 describe('md5File', () => {
@@ -37,7 +61,42 @@ describe('runMicromamba', () => {
 
   it('rejects with a stderr summary on non-zero exit', async () => {
     await expect(
-      runMicromamba([process.execPath, '-e', 'process.stderr.write("boom"); process.exit(3)'])
-    ).rejects.toThrow(/boom/)
+      runMicromamba(
+        [
+          process.execPath,
+          '-e',
+          'process.stdout.write(process.env.MM_STDOUT); process.stderr.write(process.env.MM_STDERR); process.exit(3)'
+        ],
+        { MM_STDOUT: 'stdout-only-token', MM_STDERR: 'stderr-only-token' }
+      )
+    ).rejects.toThrow(/exit 3[^]*stdout-only-token[^]*stderr-only-token/)
+  })
+
+  it('distinguishes timeout from an ordinary non-zero exit and keeps output tails', async () => {
+    await expect(
+      runMicromamba(
+        [
+          process.execPath,
+          '-e',
+          'process.stderr.write(process.env.MM_TIMEOUT_TOKEN); setInterval(() => {}, 1000)'
+        ],
+        { MM_TIMEOUT_TOKEN: 'timeout-stderr-token' },
+        undefined,
+        undefined,
+        200
+      )
+    ).rejects.toThrow(/timed out[^]*timeout-stderr-token/i)
+  })
+
+  it('distinguishes user cancellation from timeout and non-zero exit', async () => {
+    const abort = new AbortController()
+    const running = runMicromamba(
+      [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      undefined,
+      abort.signal
+    )
+    abort.abort()
+
+    await expect(running).rejects.toThrow(/^Runtime setup cancelled\.$/)
   })
 })

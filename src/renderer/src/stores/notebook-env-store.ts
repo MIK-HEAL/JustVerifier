@@ -12,7 +12,7 @@ export type NotebookEnvState = {
   status: ProvisionStatus
   progress?: ProvisionProgress
   error?: string
-  // Last explicit provision request; drives upgrade-vs-python-vs-r scope inference in the reducer.
+  // Last explicit provision request; used when an older progress sender omits its operation scope.
   scope?: ProvisionScope
   // Derived view state (contract §4 UI): recomputed from status/scope/progress/error on every update.
   ui: ProvisionUiState
@@ -82,6 +82,11 @@ export const useNotebookEnvStore = create<NotebookEnvStore>((set, get) => {
         bridge.onProgress((progress) => {
           applyUi({
             progress,
+            ...(progress.scope === 'python' || progress.scope === 'r'
+              ? { scope: progress.scope }
+              : progress.scope === 'upgrade'
+                ? { scope: undefined }
+                : {}),
             error: progress.phase === 'error' ? progress.message : undefined
           })
           void bridge.getStatus().then((status) => applyUi({ status }))
@@ -94,7 +99,7 @@ export const useNotebookEnvStore = create<NotebookEnvStore>((set, get) => {
     provision: async (lang) => {
       const bridge = window.api?.notebookEnv
       const scope: ProvisionScope = lang
-      applyUi({ scope, error: undefined })
+      applyUi({ scope, progress: undefined, error: undefined })
       if (!bridge) return
       try {
         await bridge.provision(lang)
