@@ -3,21 +3,41 @@ import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { promisify } from 'node:util'
 
+import { condaActivatedPath } from './runtime-paths'
+
 const execFileAsync = promisify(execFile)
 
 // Merges extra vars over the current process env for a subprocess (used to inject the CA-bundle vars
 // so an online provision behind an enterprise TLS proxy verifies HTTPS). Undefined → inherit as-is.
-const withEnv = (extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined =>
-  extra && Object.keys(extra).length > 0 ? { ...process.env, ...extra } : undefined
+type VerifyExecutableOptions = {
+  prefix?: string
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+}
+
+const executableEnv = ({
+  prefix,
+  env,
+  platform = process.platform
+}: VerifyExecutableOptions): NodeJS.ProcessEnv | undefined => {
+  if (platform !== 'win32' || !prefix) {
+    return env && Object.keys(env).length > 0 ? { ...process.env, ...env } : undefined
+  }
+  const merged = { ...process.env, ...env }
+  return { ...merged, PATH: condaActivatedPath(prefix, merged.PATH, platform) }
+}
 
 // Verifies a materialized interpreter actually runs `<bin> --version` (spec §5 step 4 — the arm64 /
 // ad-hoc signature verification point). Rejects with the captured stderr on failure.
-export const verifyExecutable = async (bin: string, env?: NodeJS.ProcessEnv): Promise<void> => {
+export const verifyExecutable = async (
+  bin: string,
+  options: VerifyExecutableOptions = {}
+): Promise<void> => {
   try {
     await execFileAsync(bin, ['--version'], {
       timeout: 15_000,
       windowsHide: true,
-      env: withEnv(env)
+      env: executableEnv(options)
     })
   } catch (error) {
     throw new Error(`interpreter not executable: ${bin} (${(error as Error).message})`)
@@ -129,7 +149,7 @@ export const captureMicromamba = async (
       timeout: 600_000,
       windowsHide: true,
       maxBuffer: 32 * 1024 * 1024,
-      env: withEnv(env)
+      env: env && Object.keys(env).length > 0 ? { ...process.env, ...env } : undefined
     })
     return stdout
   } catch (error) {

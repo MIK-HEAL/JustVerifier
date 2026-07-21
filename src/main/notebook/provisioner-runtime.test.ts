@@ -1,10 +1,11 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
 import { md5File, runMicromamba, verifyExecutable } from './provisioner-runtime'
+import { condaActivatedPath } from './runtime-paths'
 
 describe('verifyExecutable', () => {
   it('resolves for a real interpreter that answers --version', async () => {
@@ -15,6 +16,29 @@ describe('verifyExecutable', () => {
   it('rejects for a missing executable', async () => {
     await expect(verifyExecutable('/no/such/binary-xyz')).rejects.toThrow()
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'passes the activated Windows conda PATH to the interpreter process',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'os-r-path-'))
+      const bin = join(dir, 'R.exe')
+      const prefix = 'C:\\runtime\\envs\\default-r'
+      const expectedPath = condaActivatedPath(prefix, 'C:\\Windows', 'win32')
+      writeFileSync(
+        bin,
+        `#!${process.execPath}\nprocess.exit(process.env.PATH === process.env.EXPECTED_PATH ? 0 : 19)\n`
+      )
+      chmodSync(bin, 0o755)
+
+      await expect(
+        verifyExecutable(bin, {
+          prefix,
+          platform: 'win32',
+          env: { PATH: 'C:\\Windows', EXPECTED_PATH: expectedPath }
+        })
+      ).resolves.toBeUndefined()
+    }
+  )
 })
 
 describe('md5File', () => {

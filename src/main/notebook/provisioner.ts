@@ -132,7 +132,7 @@ export type ProvisionerDeps = {
     maxCacheRelativePath?: number
   ) => Promise<void>
   // Verifies `<bin> --version`; rejects otherwise.
-  verify: (bin: string) => Promise<void>
+  verify: (bin: string, prefix: string) => Promise<void>
   // Clock injection for the ready-marker timestamp.
   now?: () => string
   bundleSource?: RuntimeBundleSource
@@ -358,7 +358,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
             : undefined
         if (existingBin) {
           try {
-            await this.deps.verify(existingBin)
+            await this.deps.verify(existingBin, prefix)
             if (name === DEFAULT_PY_ENV) restoredPython = true
             if (name === DEFAULT_R_ENV) restoredR = true
             rmSync(join(dir, file), { force: true })
@@ -387,7 +387,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
             DEFAULT_MAX_CACHE_RELATIVE_PATH
           )
           const bin = existsSync(pythonBin(prefix)) ? pythonBin(prefix) : rBin(prefix)
-          await this.deps.verify(bin)
+          await this.deps.verify(bin, prefix)
           if (name === DEFAULT_PY_ENV) restoredPython = true
           if (name === DEFAULT_R_ENV) restoredR = true
           rmSync(join(dir, file), { force: true })
@@ -446,7 +446,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
       })
     )
     const bin = language === 'python' ? pythonBin(prefix) : rBin(prefix)
-    await this.deps.verify(bin)
+    await this.deps.verify(bin, prefix)
     return {
       name,
       language,
@@ -498,7 +498,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
   private async upgradeOrRebuildR(onProgress: (p: ProvisionProgress) => void): Promise<void> {
     const prefix = envPrefix(this.deps.root, DEFAULT_R_ENV)
     try {
-      await this.deps.verify(rBin(prefix))
+      await this.deps.verify(rBin(prefix), prefix)
     } catch {
       // A failed create can leave R.exe before the prefix is runnable. Do not apply an additive
       // upgrade onto unknown partial state; clear it and recreate exactly from the published lock.
@@ -546,7 +546,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
       selected.cache,
       selected.budget.maxCacheRelativePath || DEFAULT_MAX_CACHE_RELATIVE_PATH
     )
-    await this.deps.verify(bin)
+    await this.deps.verify(bin, prefix)
   }
 
   // micromamba `create -p <prefix>` aborts with "Non-conda folder exists at prefix" when the prefix
@@ -573,7 +573,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     // the prefix first, so it still rebuilds.
     if (existsSync(bin)) {
       try {
-        await this.deps.verify(bin)
+        await this.deps.verify(bin, prefix)
         onProgress({ phase: `${spec.language}-ready`, message: `${spec.name} ready`, progress: 1 })
         return
       } catch {
@@ -697,7 +697,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
         message: `Verifying ${spec.name} interpreter…`,
         progress: 0.9
       })
-      await this.deps.verify(bin)
+      await this.deps.verify(bin, prefix)
       onProgress({ phase: `${spec.language}-ready`, message: `${spec.name} ready`, progress: 0.95 })
     } finally {
       await journal.complete(operationId).catch(() => undefined)
@@ -849,6 +849,6 @@ export const createProductionProvisioner = (
         signal,
         onChild
       ),
-    verify: (bin) => verifyExecutable(bin, caEnv)
+    verify: (bin, prefix) => verifyExecutable(bin, { prefix, env: caEnv })
   })
 }

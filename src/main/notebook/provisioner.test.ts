@@ -427,6 +427,16 @@ describe('DefaultRuntimeProvisioner.provisionR', () => {
     expect(readReadyMarker(root)).toBeUndefined()
   })
 
+  it('verifies the R interpreter with its conda prefix for Windows DLL activation', async () => {
+    const root = makeRoot()
+    const prefix = envPrefix(root, DEFAULT_R_ENV)
+    const verify = vi.fn(async () => undefined)
+
+    await new DefaultRuntimeProvisioner(makeDeps(root, { verify })).provisionR(() => {})
+
+    expect(verify).toHaveBeenLastCalledWith(rBin(prefix), prefix)
+  })
+
   it('clears a non-conda leftover prefix so create does not abort on it (Windows Retry)', async () => {
     const root = makeRoot()
     const prefix = envPrefix(root, DEFAULT_R_ENV)

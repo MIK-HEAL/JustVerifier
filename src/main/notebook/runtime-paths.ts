@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join, win32 } from 'node:path'
 
 import type { NotebookLanguage } from '../../shared/notebook'
 
@@ -139,6 +139,30 @@ export const rScriptBin = (prefix: string): string =>
 // The env's own R package library (Unix: <prefix>/lib/R/library; Windows: <prefix>\Lib\R\library).
 export const rLibraryDir = (prefix: string): string =>
   isWindows() ? join(prefix, 'Lib', 'R', 'library') : join(prefix, 'lib', 'R', 'library')
+
+// Conda activation prepends more than <prefix>\bin on Windows. Native R links BLAS/LAPACK and other
+// runtime DLLs from Library\bin, so starting R.exe with the host PATH alone fails with 0xC0000135.
+// Keep the order aligned with conda's Windows activator; POSIX retains the existing <prefix>/bin
+// behavior. Platform is injectable so the exact Windows contract is testable on non-Windows hosts.
+export const condaActivatedPath = (
+  prefix: string,
+  inheritedPath = '',
+  platform: NodeJS.Platform = process.platform
+): string => {
+  const entries =
+    platform === 'win32'
+      ? [
+          win32.normalize(prefix),
+          win32.join(prefix, 'Library', 'mingw-w64', 'bin'),
+          win32.join(prefix, 'Library', 'usr', 'bin'),
+          win32.join(prefix, 'Library', 'bin'),
+          win32.join(prefix, 'Scripts'),
+          win32.join(prefix, 'bin')
+        ]
+      : [join(prefix, 'bin')]
+  if (inheritedPath) entries.push(inheritedPath)
+  return entries.join(platform === 'win32' ? ';' : delimiter)
+}
 
 // <root>/.env-ready — the JSON readiness marker written after a successful provision.
 export const readyMarkerPath = (root: string): string => join(root, '.env-ready')
