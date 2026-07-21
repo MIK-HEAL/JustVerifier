@@ -89,8 +89,12 @@ describe('CodexAuthController', () => {
       'private@example.test'
     )
 
+    // A signed-out adapter that also cannot offer ChatGPT login has nothing to connect: that is the
+    // genuine capability failure. (A signed-out adapter that DOES advertise chat-gpt is merely
+    // unauthenticated — covered below — not a capability failure.)
     const unsupported = session({
-      initialize: vi.fn().mockResolvedValue({ authMethods: [{ id: 'api-key' }] })
+      initialize: vi.fn().mockResolvedValue({ authMethods: [{ id: 'api-key' }] }),
+      status: vi.fn().mockResolvedValue({ type: 'unauthenticated' })
     })
     const unsupportedController = new CodexAuthController({
       openSession: vi.fn().mockResolvedValue(unsupported)
@@ -101,6 +105,28 @@ describe('CodexAuthController', () => {
       authenticated: false,
       message: 'The installed codex-acp does not advertise ChatGPT authentication.'
     })
+  })
+
+  it('reports a chat-gpt-less adapter that already holds a credential as authenticated', async () => {
+    // Regression: getStatus must not gate on the chat-gpt capability before reading status. An adapter
+    // advertising only api-key, already carrying an api-key/gateway credential, runs fine — reporting
+    // it signed out (a capability failure) would wrongly block an otherwise working provider.
+    for (const type of ['api-key', 'gateway'] as const) {
+      const credentialed = session({
+        initialize: vi.fn().mockResolvedValue({ authMethods: [{ id: 'api-key' }] }),
+        status: vi.fn().mockResolvedValue({ type })
+      })
+      const controller = new CodexAuthController({
+        openSession: vi.fn().mockResolvedValue(credentialed)
+      })
+
+      await expect(controller.getStatus('shared')).resolves.toEqual({
+        mode: 'shared',
+        supported: true,
+        authenticated: true
+      })
+      expect(vi.mocked(credentialed.close)).toHaveBeenCalledOnce()
+    }
   })
 
   it('treats api-key and gateway profiles as authenticated', async () => {
@@ -124,6 +150,105 @@ describe('CodexAuthController', () => {
         authenticated: true
       })
       expect(apiKeySession.authenticateChatGpt).not.toHaveBeenCalled()
+    }
+  })
+
+  it('signs in and out of a chat-gpt-less isolated profile that already holds a credential', async () => {
+    // Regression: loginIsolated/logoutIsolated must not gate on the chat-gpt capability before reading
+    // status, mirroring getStatus. An isolated home carrying an api-key/gateway credential on a build
+    // that never advertises chat-gpt must still report authenticated and stay sign-out-able.
+    for (const type of ['api-key', 'gateway'] as const) {
+      const credentialed = session({
+        initialize: vi.fn().mockResolvedValue({ authMethods: [{ id: 'api-key' }] }),
+        status: vi.fn().mockResolvedValue({ type })
+      })
+      const controller = new CodexAuthController({
+        openSession: vi.fn().mockResolvedValue(credentialed)
+      })
+
+      await expect(controller.loginIsolated()).resolves.toEqual({
+        mode: 'isolated',
+        supported: true,
+        authenticated: true
+      })
+      // No ChatGPT browser flow: the existing credential is exactly what the runtime would use.
+      expect(credentialed.authenticateChatGpt).not.toHaveBeenCalled()
+
+      await expect(controller.logoutIsolated()).resolves.toEqual({
+        mode: 'isolated',
+        supported: true,
+        authenticated: false
+      })
+      expect(vi.mocked(credentialed.logout)).toHaveBeenCalledOnce()
+    }
+  })
+
+  it('still reports a capability failure for a signed-out chat-gpt-less isolated profile', async () => {
+    // The gate remains for the genuine case: signed out AND no ChatGPT login means nothing to do.
+    const signedOut = session({
+      initialize: vi.fn().mockResolvedValue({ authMethods: [{ id: 'api-key' }] }),
+      status: vi.fn().mockResolvedValue({ type: 'unauthenticated' })
+    })
+    const controller = new CodexAuthController({
+      openSession: vi.fn().mockResolvedValue(signedOut)
+    })
+
+    await expect(controller.loginIsolated()).resolves.toEqual({
+      mode: 'isolated',
+      supported: false,
+      authenticated: false,
+      message: 'The installed codex-acp does not advertise ChatGPT authentication.'
+    })
+    expect(signedOut.authenticateChatGpt).not.toHaveBeenCalled()
+    await expect(controller.logoutIsolated()).resolves.toMatchObject({ supported: false })
+    expect(signedOut.logout).not.toHaveBeenCalled()
+  })
+
+  it('reports an unauthenticated but chat-gpt-capable profile as supported, not a capability failure', async () => {
+    const signedOut = session({ status: vi.fn().mockResolvedValue({ type: 'unauthenticated' }) })
+    const controller = new CodexAuthController({
+      openSession: vi.fn().mockResolvedValue(signedOut)
+    })
+
+    await expect(controller.getStatus('shared')).resolves.toEqual({
+      mode: 'shared',
+      supported: true,
+      authenticated: false
+    })
+  })
+
+  it('times out a stalled status read and closes the late session', async () => {
+    vi.useFakeTimers()
+    let resolveStatus!: (value: { type: 'unauthenticated' }) => void
+    const stalledStatus = new Promise<{ type: 'unauthenticated' }>((resolve) => {
+      resolveStatus = resolve
+    })
+    const stalled = session({ status: vi.fn(() => stalledStatus) })
+    const controller = new CodexAuthController({
+      openSession: vi.fn().mockResolvedValue(stalled),
+      statusTimeoutMs: 10
+    })
+    let outcome: Awaited<ReturnType<CodexAuthController['getStatus']>> | undefined
+    const pending = controller.getStatus('shared').then((result) => {
+      outcome = result
+    })
+
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(10)
+    await pending
+
+    try {
+      expect(outcome).toEqual({
+        mode: 'shared',
+        supported: true,
+        authenticated: false,
+        message: 'Codex status check timed out.'
+      })
+      // The stalled read is abandoned, but the session must still be torn down, not leaked.
+      expect(vi.mocked(stalled.close)).toHaveBeenCalledOnce()
+    } finally {
+      resolveStatus({ type: 'unauthenticated' })
+      vi.useRealTimers()
     }
   })
 
@@ -168,6 +293,32 @@ describe('CodexAuthController', () => {
       message: 'Codex sign-in was cancelled.'
     })
     expect(vi.mocked(isolated.close)).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a second concurrent sign-in without opening a second session', async () => {
+    // The in-progress slot must be claimed synchronously, in the same tick as the guard, so two
+    // rapid calls (no await between them) cannot both pass the guard and open two browser flows.
+    const isolated = session({
+      status: vi.fn().mockResolvedValue({ type: 'unauthenticated' }),
+      authenticateChatGpt: vi.fn(() => new Promise<void>(() => undefined))
+    })
+    const openSession = vi.fn().mockResolvedValue(isolated)
+    const controller = new CodexAuthController({ openSession, loginTimeoutMs: 60_000 })
+
+    const first = controller.loginIsolated()
+    const second = controller.loginIsolated()
+
+    await expect(second).resolves.toEqual({
+      mode: 'isolated',
+      supported: true,
+      authenticated: false,
+      message: 'A Codex sign-in is already in progress.'
+    })
+    expect(openSession).toHaveBeenCalledOnce()
+
+    // The first login still owns the slot and remains cancellable.
+    controller.cancelLogin()
+    await expect(first).resolves.toMatchObject({ message: 'Codex sign-in was cancelled.' })
   })
 
   it('times out while isolated login initialization is stalled', async () => {
@@ -297,5 +448,42 @@ describe('CodexAuthController', () => {
       authenticated: false
     })
     expect(vi.mocked(isolated.logout)).toHaveBeenCalledOnce()
+  })
+
+  it('times out a stalled sign-out and closes the session instead of hanging', async () => {
+    // logoutIsolated is user-triggered and now issues its own status round-trip, so it must fail
+    // closed on a stalled adapter like the reads do — not freeze the Settings sign-out.
+    vi.useFakeTimers()
+    let resolveStatus!: (value: { type: 'unauthenticated' }) => void
+    const stalledStatus = new Promise<{ type: 'unauthenticated' }>((resolve) => {
+      resolveStatus = resolve
+    })
+    const isolated = session({ status: vi.fn(() => stalledStatus) })
+    const controller = new CodexAuthController({
+      openSession: vi.fn().mockResolvedValue(isolated),
+      statusTimeoutMs: 10
+    })
+    let outcome: Awaited<ReturnType<CodexAuthController['logoutIsolated']>> | undefined
+    const pending = controller.logoutIsolated().then((result) => {
+      outcome = result
+    })
+
+    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(10)
+    await pending
+
+    try {
+      expect(outcome).toEqual({
+        mode: 'isolated',
+        supported: true,
+        authenticated: false,
+        message: 'Codex sign-out timed out.'
+      })
+      expect(vi.mocked(isolated.logout)).not.toHaveBeenCalled()
+      expect(vi.mocked(isolated.close)).toHaveBeenCalledOnce()
+    } finally {
+      resolveStatus({ type: 'unauthenticated' })
+      vi.useRealTimers()
+    }
   })
 })
