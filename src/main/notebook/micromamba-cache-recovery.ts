@@ -6,7 +6,7 @@ import { WINDOWS_MAX_USABLE_PATH } from './micromamba-cache'
 const COMPLETE_MARKER = join('info', 'repodata_record.json')
 const CONDA_SUBDIR = /^(?:noarch|win-64|osx-(?:64|arm64)|linux-(?:64|aarch64|ppc64le|s390x))$/i
 const isPackageDistLeaf = (value: string): boolean =>
-  /^[A-Za-z0-9_.+-]+-[A-Za-z0-9_.+!]+-[A-Za-z0-9_.+_]+$/.test(value)
+  /^[A-Za-z0-9_.+-]+-[A-Za-z0-9_.+!]+-[A-Za-z0-9_.+]+$/.test(value)
 
 const entries = (path: string): Dirent[] => {
   try {
