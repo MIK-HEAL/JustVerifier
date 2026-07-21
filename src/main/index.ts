@@ -68,7 +68,9 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
         { installAppLifecycle },
         { installRpcCapture },
         { parseWebModeOptions, createWebServiceController, buildAuthenticatedWebUrl },
-        { routeSecondInstance }
+        { routeSecondInstance },
+        { detectActiveSessions: computeActiveSessions },
+        { createElectronCloseConfirm }
       ] = await Promise.all([
         import('./ipc'),
         import('./windows'),
@@ -78,7 +80,9 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
         import('./app-lifecycle'),
         import('./web-service/rpc-capture'),
         import('./web-service'),
-        import('./second-instance-router')
+        import('./second-instance-router'),
+        import('./storage/detect-active'),
+        import('./window-close-confirm')
       ])
 
       // Dev runs get a "(DEV)" suffix so the app name, macOS menu, and per-app paths (logs, userData)
@@ -133,7 +137,9 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
       // can reach them. It only wraps ipcMain.handle — no server, no cost until something serves.
       const rpcCapture = installRpcCapture(ipcMain)
       // Pass the concrete main entry path so ACP can launch the artifact MCP server from the same bundle.
-      const { shutdownCoordinator } = await registerIpcHandlers({ mainEntryPath })
+      const { runtime, notebook, shutdownCoordinator } = await registerIpcHandlers({
+        mainEntryPath
+      })
       const webController = createWebServiceController({
         rpc: rpcCapture,
         requestQuit: () => app.quit()
@@ -150,6 +156,9 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
         buildAuthenticatedWebUrl,
         routeSecondInstance,
         shutdownCoordinator,
+        // Running-work snapshot + confirm coordinator, bound here where runtime/notebook are in scope.
+        detectActiveSessions: () => computeActiveSessions({ runtime, notebook }),
+        createConfirmClose: createElectronCloseConfirm,
         installAppLifecycle,
         log,
         webMode,
@@ -203,7 +212,9 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
         isMigrationInProgress: ctx.isMigrationInProgress,
         quit: () => app.quit(),
         countWindows: () => BrowserWindow.getAllWindows().length,
-        createInitialWindow: !ctx.webMode.headless
+        createInitialWindow: !ctx.webMode.headless,
+        detectActiveSessions: ctx.detectActiveSessions,
+        createConfirmClose: ctx.createConfirmClose
       })
 
       // Route each second launch by its forwarded argv (see second-instance-router): a CLI
