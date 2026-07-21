@@ -271,6 +271,38 @@ gate('NotebookKernelExecutor (fake loop)', () => {
     }
   })
 
+  it('replaces a resolved kernel when only its conda activation prefix changes', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-r-prefix-switch-'))
+    const executor = makeExecutor()
+    const request = {
+      ...baseRequest(cwdDir),
+      resolvedInterpreter: {
+        command: python3 as string,
+        condaPrefix: 'C:\\conda\\envs\\analysis-a'
+      }
+    }
+    try {
+      await executor.execute({ ...request, code: 'a' })
+      const first = procFor(executor, 'python')?.child
+      expect(first).toBeDefined()
+
+      await executor.execute({
+        ...request,
+        code: 'b',
+        resolvedInterpreter: {
+          ...request.resolvedInterpreter,
+          condaPrefix: 'C:\\conda\\envs\\analysis-b'
+        }
+      })
+
+      const procs = (executor as unknown as ExecutorInternals).procs
+      expect(procs.size).toBe(1)
+      expect(procFor(executor, 'python')?.child).not.toBe(first)
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('soft-interrupts a long run with SIGINT and reports a timeout', async () => {
     cwdDir = await makeDefaultEnvCwd('os-kernel-soft-')
     const executor = makeExecutor()
