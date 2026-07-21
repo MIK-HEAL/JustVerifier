@@ -53,6 +53,31 @@ The three process layers live under `src/`:
 4. Run the full check suite locally (see below) and make sure it passes.
 5. Open a pull request with a clear description of the change and its motivation.
 
+### Branch names
+
+Use the format `<type>/<short-description>`, with a lowercase, hyphen-separated
+description:
+
+```text
+feat/project-sidebar-filter
+fix/notebook-kernel-timeout
+ci/codex-pr-review
+```
+
+Use one of these standard type prefixes:
+
+- `feat` — a new feature
+- `fix` — a bug fix
+- `docs` — documentation-only changes
+- `style` — formatting or other changes that do not affect behavior
+- `refactor` — code changes that neither fix a bug nor add a feature
+- `perf` — performance improvements
+- `test` — adding or correcting tests
+- `build` — build system or dependency changes
+- `ci` — CI configuration or script changes
+- `chore` — maintenance work not covered by another type
+- `revert` — reverting a previous change
+
 ### Coding style
 
 - Match the style of the surrounding code — naming, structure, and idioms.
@@ -76,17 +101,37 @@ green. New behavior should come with tests.
 
 ## Commit Messages
 
-- Write clear, imperative-mood commit subjects (e.g. "Add project sidebar
-  filter", not "Added" or "Adds").
-- Keep the subject concise; use the body to explain the *why* when it isn't
+Every commit subject must follow Conventional Commits with a scope:
+
+```text
+<type>(<scope>): <description>
+```
+
+Use the same standard type prefixes listed under [Branch names](#branch-names).
+The scope should be a short, lowercase name for the affected area.
+
+```text
+feat(projects): add sidebar filter
+fix(notebook): prevent kernel startup timeout
+ci(review): add automated Codex review
+```
+
+- Write a clear, lowercase, imperative-mood description.
+- Keep the subject concise; use the body to explain the _why_ when it is not
   obvious from the diff.
+- Add `!` before the colon and a `BREAKING CHANGE:` footer for breaking changes,
+  for example `feat(api)!: remove legacy session endpoint`.
 
 ## Pull Requests
 
+- Use the same `<type>(<scope>): <description>` format for the pull request
+  title, for example `feat(projects): add sidebar filter`.
 - Reference any related issue in the description.
 - Describe what changed and why, and call out anything reviewers should focus on.
 - Keep PRs reasonably small and scoped so they are easy to review.
 - Ensure the required checks above pass.
+- Merge pull requests using **squash merge only**. The squash commit subject must
+  keep the pull request title's Conventional Commit format.
 
 ## Reporting Issues
 
