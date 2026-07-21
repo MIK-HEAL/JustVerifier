@@ -56,6 +56,23 @@ describe('deriveProvisionUi', () => {
     expect(ui).toMatchObject({ kind: 'preparing', scope: 'r', message: 'x', progress: 0.1 })
   })
 
+  it('uses the broadcast scope for automatic R provisioning', () => {
+    const ui = deriveProvisionUi(
+      status({ pythonReady: true, provisioning: true }),
+      undefined,
+      {
+        phase: 'download',
+        message: 'Downloading managed r runtime',
+        progress: 0.4,
+        scope: 'r',
+        sessionId: 'session-a'
+      },
+      undefined
+    )
+
+    expect(ui).toMatchObject({ kind: 'preparing', scope: 'r', sessionId: 'session-a' })
+  })
+
   it('surfaces an error when python is not ready and a provision attempt failed', () => {
     expect(
       deriveProvisionUi(status({ provisioning: false }), 'python', undefined, 'network unreachable')
@@ -83,6 +100,25 @@ describe('notebookGated', () => {
   it('does NOT gate while only R is preparing (Python stays usable)', () => {
     const s = status({ pythonReady: true, provisioning: true })
     expect(notebookGated(s, deriveProvisionUi(s, 'r', undefined, undefined))).toBe(false)
+  })
+
+  it('does not gate a different session during session-scoped Python preparation', () => {
+    const s = status({ provisioning: true })
+    const ui = deriveProvisionUi(
+      s,
+      undefined,
+      {
+        phase: 'download',
+        message: 'Downloading Python runtime',
+        progress: 0.2,
+        scope: 'python',
+        sessionId: 'session-a'
+      },
+      undefined
+    )
+
+    expect(notebookGated(s, ui, 'session-a')).toBe(true)
+    expect(notebookGated(s, ui, 'session-b')).toBe(false)
   })
 
   it('does not gate when ready', () => {

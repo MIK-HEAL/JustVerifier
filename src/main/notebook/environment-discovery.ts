@@ -1,14 +1,14 @@
 import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { DiscoveredInterpreter, EnvProvenance } from '../../shared/notebook-runtime'
 import { probeInterpreterVersion } from './python-command'
 import { parseRVersion, rHasJsonlite } from './r-command'
-import { DEFAULT_PY_ENV, DEFAULT_R_ENV, pythonBin, rBin } from './runtime-paths'
+import { condaActivatedPath, DEFAULT_PY_ENV, DEFAULT_R_ENV, pythonBin, rBin } from './runtime-paths'
 
 export type { DiscoveredInterpreter, EnvProvenance }
 
@@ -157,9 +157,20 @@ const prefixInterpreter = (prefix: string, language: NotebookLanguage): string =
     ? isWin()
       ? join(prefix, 'python.exe')
       : join(prefix, 'bin', 'python')
-    : isWin()
-      ? join(prefix, 'Library', 'bin', 'R.exe')
-      : join(prefix, 'bin', 'R')
+    : rBin(prefix)
+
+// A conda-forge Windows R interpreter lives at <prefix>\Lib\R\bin\R[script].exe and depends on
+// DLLs in <prefix>\Library\bin. Return only that interpreter's own prefix: external CRAN R paths do
+// not match this layout, and an external conda R must never receive the app-managed prefix.
+export const windowsCondaPrefixForR = (
+  interpreterPath: string,
+  platform: NodeJS.Platform = process.platform
+): string | undefined => {
+  if (platform !== 'win32') return undefined
+  const normalized = win32.normalize(interpreterPath)
+  const match = normalized.match(/^(.*)\\Lib\\R\\bin\\R(?:script)?\.exe$/i)
+  return match?.[1]
+}
 
 // Default real enumeration: PATH + common dirs + pyenv + conda envs + the app's own runtime/envs, plus
 // any manually-added interpreter paths from the Settings catalog (so a picked interpreter that is not
@@ -363,37 +374,71 @@ export const rscriptFor = (rInterpreterPath: string): string =>
 // Real dependencies for a live machine: python version via the (python-3-validating) probe, R version
 // via parseRVersion, R runnability via jsonlite probed through the env's OWN Rscript, and the standard
 // enumerators. Enumeration is standard-location-only (see defaultCandidatePaths) — never a disk walk.
+type DiscoveryExec = (
+  file: string,
+  args: readonly string[],
+  options: { timeout: number; windowsHide: boolean; env?: NodeJS.ProcessEnv }
+) => Promise<{ stdout: string; stderr: string }>
+
+type DefaultDiscoveryRuntimeDeps = {
+  platform?: NodeJS.Platform
+  exec?: DiscoveryExec
+}
+
 export const defaultDiscoveryDeps = (
   runtimeRoot: string,
-  manualPaths?: (language: NotebookLanguage) => string[]
-): DiscoveryDeps => ({
-  candidatePaths: defaultCandidatePaths(runtimeRoot, manualPaths),
-  probeVersion: async (interpreterPath, language) => {
-    if (language === 'python') return probeInterpreterVersion(interpreterPath)
-    try {
-      // No shell: execFile runs the interpreter directly, so a path with spaces/metacharacters is
-      // handled safely (shell:true would break "C:\Program Files\…" and allow injection).
-      const { stdout, stderr } = await execFileAsync(
-        interpreterPath,
-        ['--version'],
-        PROBE_EXEC_OPTS
-      )
-      return parseRVersion(`${stdout}\n${stderr}`)
-    } catch {
-      return undefined
-    }
-  },
-  rRunnable: (rInterpreterPath) =>
-    rHasJsonlite({
-      exec: async (args) => {
-        // No shell (see probeVersion): Rscript is run directly with a static arg vector.
-        const { stdout, stderr } = await execFileAsync(rscriptFor(rInterpreterPath), args, {
-          timeout: 15_000,
-          windowsHide: true
-        })
-        return { stdout, stderr }
+  manualPaths?: (language: NotebookLanguage) => string[],
+  runtimeDeps: DefaultDiscoveryRuntimeDeps = {}
+): DiscoveryDeps => {
+  const platform = runtimeDeps.platform ?? process.platform
+  const exec: DiscoveryExec =
+    runtimeDeps.exec ??
+    (async (file, args, options) => {
+      const { stdout, stderr } = await execFileAsync(file, [...args], options)
+      return { stdout: String(stdout), stderr: String(stderr) }
+    })
+  const probeOptions = (
+    interpreterPath: string,
+    timeout = PROBE_TIMEOUT_MS
+  ): { timeout: number; windowsHide: boolean; env?: NodeJS.ProcessEnv } => {
+    const prefix = windowsCondaPrefixForR(interpreterPath, platform)
+    return prefix
+      ? {
+          timeout,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PATH: condaActivatedPath(prefix, process.env.PATH, platform)
+          }
+        }
+      : { timeout, windowsHide: true }
+  }
+  return {
+    candidatePaths: defaultCandidatePaths(runtimeRoot, manualPaths),
+    probeVersion: async (interpreterPath, language) => {
+      if (language === 'python') return probeInterpreterVersion(interpreterPath)
+      try {
+        // No shell: execFile runs the interpreter directly, so a path with spaces/metacharacters is
+        // handled safely (shell:true would break "C:\Program Files\…" and allow injection).
+        const { stdout, stderr } = await exec(
+          interpreterPath,
+          ['--version'],
+          probeOptions(interpreterPath)
+        )
+        return parseRVersion(`${stdout}\n${stderr}`)
+      } catch {
+        return undefined
       }
-    }),
-  realpath: safeRealpath,
-  runtimeRoot
-})
+    },
+    rRunnable: (rInterpreterPath) =>
+      rHasJsonlite({
+        exec: async (args) => {
+          // No shell (see probeVersion): Rscript is run directly with a static arg vector.
+          const rscript = rscriptFor(rInterpreterPath)
+          return exec(rscript, args, probeOptions(rscript, 15_000))
+        }
+      }),
+    realpath: safeRealpath,
+    runtimeRoot
+  }
+}

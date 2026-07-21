@@ -2037,11 +2037,19 @@ describe('notebook runtime service', () => {
       expect(run.status).toBe('failed')
       expect(run.text.traceback).toContain('Could not prepare default-r: checksum mismatch')
       expect(progress).toEqual([
-        { phase: 'fetch-r', message: 'Downloading R runtime', progress: 0.4 },
+        {
+          phase: 'fetch-r',
+          message: 'Downloading R runtime',
+          progress: 0.4,
+          scope: 'r',
+          sessionId: 's'
+        },
         {
           phase: 'error',
           message: 'Could not prepare default-r: checksum mismatch',
-          progress: 0
+          progress: 0,
+          scope: 'r',
+          sessionId: 's'
         }
       ])
     })

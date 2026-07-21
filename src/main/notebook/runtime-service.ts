@@ -716,7 +716,8 @@ class NotebookRuntimeService {
   private async ensureDefaultEnvReady(
     language: NotebookLanguage,
     env: string,
-    runtimeRootDir: string
+    runtimeRootDir: string,
+    sessionId: string
   ): Promise<void> {
     const provisioner = this.defaultEnvProvisioner
     if (!provisioner) return
@@ -731,12 +732,14 @@ class NotebookRuntimeService {
         ? rReady(runtimeRootDir, DEFAULT_ENV_VERSION)
         : pythonReady(runtimeRootDir, DEFAULT_ENV_VERSION)
     if (ready) return
+    const reportProgress = (progress: ProvisionProgress): void =>
+      this.defaultEnvProgress({ ...progress, scope: language, sessionId })
     try {
-      if (language === 'r') await provisioner.provisionR(this.defaultEnvProgress)
-      else await provisioner.provisionPython(this.defaultEnvProgress)
+      if (language === 'r') await provisioner.provisionR(reportProgress)
+      else await provisioner.provisionPython(reportProgress)
     } catch (error) {
       const message = `Could not prepare ${env}: ${error instanceof Error ? error.message : String(error)}`
-      this.defaultEnvProgress({ phase: 'error', message, progress: 0 })
+      reportProgress({ phase: 'error', message, progress: 0 })
       throw new Error(message, { cause: error })
     }
   }
@@ -1303,7 +1306,7 @@ class NotebookRuntimeService {
               'list_notebook_runtimes then notebook_bind_runtime, before running cells.'
           )
         }
-        await this.ensureDefaultEnvReady(cell.language, env, session.runtimeRoot)
+        await this.ensureDefaultEnvReady(cell.language, env, session.runtimeRoot, session.sessionId)
       } catch (error) {
         interpreterResolveError = error
       }

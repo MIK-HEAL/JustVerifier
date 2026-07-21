@@ -129,6 +129,34 @@ describe('NotebookPreview env gate (mounted)', () => {
 
     expect(container.querySelector('[data-testid="notebook-env-gate"]')).toBeNull()
   })
+
+  it('does not cover this notebook for another session provisioning run', () => {
+    const preparingStatus: ProvisionStatus = {
+      pythonReady: false,
+      rReady: false,
+      version: 1,
+      provisioning: true
+    }
+    useNotebookEnvStore.setState({
+      status: preparingStatus,
+      ui: deriveProvisionUi(
+        preparingStatus,
+        undefined,
+        {
+          phase: 'download',
+          message: 'Downloading managed python runtime',
+          progress: 0.25,
+          scope: 'python',
+          sessionId: 'session-2'
+        },
+        undefined
+      )
+    })
+
+    act(() => root.render(<NotebookPreview item={item} />))
+
+    expect(container.querySelector('[data-testid="notebook-env-gate"]')).toBeNull()
+  })
 })
 
 // Minimal NotebookRunRecord builder, mirroring SessionNotebookDialog.render.test.tsx's makeRun.

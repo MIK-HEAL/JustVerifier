@@ -2,14 +2,76 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   collapseRscript,
   defaultCandidatePaths,
+  defaultDiscoveryDeps,
   discoverInterpreters,
   type DiscoveryDeps
 } from './environment-discovery'
+
+describe('defaultDiscoveryDeps Windows conda R probes', () => {
+  it('activates the interpreter own conda prefix for version and jsonlite probes', async () => {
+    const prefix = 'C:\\Users\\HM\\OpenScience\\runtime\\envs\\default-r'
+    const interpreter = `${prefix}\\Lib\\R\\bin\\R.exe`
+    const exec = vi.fn(
+      async (
+        _file: string,
+        args: readonly string[],
+        options: { env?: NodeJS.ProcessEnv }
+      ): Promise<{ stdout: string; stderr: string }> => {
+        const expectedStart = [
+          prefix,
+          `${prefix}\\Library\\mingw-w64\\bin`,
+          `${prefix}\\Library\\usr\\bin`,
+          `${prefix}\\Library\\bin`,
+          `${prefix}\\Scripts`,
+          `${prefix}\\bin`
+        ].join(';')
+        expect(options.env?.PATH?.split(';').slice(0, 6).join(';')).toBe(expectedStart)
+        return args.includes('--version')
+          ? { stdout: '', stderr: 'R version 4.4.3 (2025-02-28 ucrt)' }
+          : { stdout: 'TRUE', stderr: '' }
+      }
+    )
+    const deps = defaultDiscoveryDeps('C:\\Users\\HM\\OpenScience\\runtime', undefined, {
+      platform: 'win32',
+      exec
+    })
+
+    await expect(deps.probeVersion(interpreter, 'r')).resolves.toBe('4.4.3')
+    await expect(deps.rRunnable(interpreter)).resolves.toBe(true)
+    expect(exec.mock.calls.map(([file]) => file)).toEqual([
+      interpreter,
+      `${prefix}\\Lib\\R\\bin\\Rscript.exe`
+    ])
+  })
+
+  it('does not inject conda activation into an external Windows R installation', async () => {
+    const interpreter = 'C:\\Program Files\\R\\R-4.4.3\\bin\\R.exe'
+    const exec = vi.fn(
+      async (
+        _file: string,
+        args: readonly string[],
+        options: { env?: NodeJS.ProcessEnv }
+      ): Promise<{ stdout: string; stderr: string }> => {
+        expect(options.env).toBeUndefined()
+        return args.includes('--version')
+          ? { stdout: '', stderr: 'R version 4.4.3 (2025-02-28 ucrt)' }
+          : { stdout: 'TRUE', stderr: '' }
+      }
+    )
+    const deps = defaultDiscoveryDeps('C:\\Users\\HM\\OpenScience\\runtime', undefined, {
+      platform: 'win32',
+      exec
+    })
+
+    await expect(deps.probeVersion(interpreter, 'r')).resolves.toBe('4.4.3')
+    await expect(deps.rRunnable(interpreter)).resolves.toBe(true)
+  })
+})
 
 // Orchestration-only test (real enumerators are injected): dedup by realpath, provenance
 // classification, and python-vs-r runnability. Uses fake paths so no real machine is touched.
