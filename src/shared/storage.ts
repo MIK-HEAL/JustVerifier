@@ -1,7 +1,7 @@
 // Renderer-safe copies of storage types whose canonical definitions live in main-only modules
 // (src/main/storage/*), mirroring how ArtifactFile/NotebookRunSummary are shared with preload.
 
-export type UsageCategoryKey = 'artifacts' | 'uploads' | 'runtime' | 'notebooks'
+export type UsageCategoryKey = 'artifacts' | 'uploads' | 'runtime' | 'notebooks' | 'workspaces'
 export type UsageChild = { name: string; bytes: number }
 export type UsageCategory = { key: UsageCategoryKey; bytes: number; children?: UsageChild[] }
 export type StorageUsage = { categories: UsageCategory[]; totalBytes: number }
@@ -28,7 +28,9 @@ export type StorageInfo = {
 }
 
 export type ActiveSessionInfo = {
-  projectName: string
+  // The owning project's id (the artifact/notebook storage key). main doesn't hold the human
+  // project name or session title — the renderer maps this id + sessionId to display strings.
+  projectId: string
   sessionId: string
   kind: 'agent' | 'notebook'
   title?: string

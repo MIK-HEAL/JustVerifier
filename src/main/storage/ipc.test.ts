@@ -171,6 +171,28 @@ describe('storage IPC handlers', () => {
     }
   })
 
+  it('get-info flags legacyDataMovePrompt when a legacy config root contains only workspaces', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'ds-legacy-workspace-home-'))
+    electronHome.path = home
+    try {
+      await mkdir(join(home, '.open-science', 'workspaces', 'session-1'), { recursive: true })
+      initDataRoot(undefined)
+      registerStorageIpcHandlers(fakeDeps())
+
+      const info = (await invoke('storage:get-info')) as {
+        legacyDataMovePrompt: boolean
+        dataRoot: string
+      }
+
+      expect(info.dataRoot).toBe(join(home, '.open-science'))
+      expect(info.legacyDataMovePrompt).toBe(true)
+    } finally {
+      electronHome.path = '/home/user'
+      initDataRoot(undefined)
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   it('get-info clears legacyDataMovePrompt once the prompt has been dismissed', async () => {
     const home = await mkdtemp(join(tmpdir(), 'ds-legacy-home-'))
     electronHome.path = home
@@ -283,8 +305,8 @@ describe('storage IPC handlers', () => {
     registerStorageIpcHandlers(deps)
 
     await expect(invoke('storage:detect-active')).resolves.toEqual([
-      { projectName: 'p', sessionId: 'agent-1', kind: 'agent' },
-      { projectName: 'p', sessionId: 'nb-1', kind: 'notebook' }
+      { projectId: 'p', sessionId: 'agent-1', kind: 'agent' },
+      { projectId: 'p', sessionId: 'nb-1', kind: 'notebook' }
     ])
   })
 
@@ -306,7 +328,7 @@ describe('storage IPC handlers', () => {
     registerStorageIpcHandlers(deps)
 
     await expect(invoke('storage:detect-active')).resolves.toEqual([
-      { projectName: 'p', sessionId: 'nb-1', kind: 'notebook' }
+      { projectId: 'p', sessionId: 'nb-1', kind: 'notebook' }
     ])
   })
 
