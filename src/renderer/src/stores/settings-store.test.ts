@@ -27,6 +27,7 @@ type SettingsApi = {
   uninstallCodex: ReturnType<typeof vi.fn>
   onInstallLog: ReturnType<typeof vi.fn>
   setAgentFramework: ReturnType<typeof vi.fn>
+  setReasoningEffort: ReturnType<typeof vi.fn>
   upsertProvider: ReturnType<typeof vi.fn>
   validateProvider: ReturnType<typeof vi.fn>
   cancelCodexLogin: ReturnType<typeof vi.fn>
@@ -70,7 +71,8 @@ const snapshot = (providers: SettingsSnapshot['providers']): SettingsSnapshot =>
   codex: {},
   claudeManaged: false,
   opencodeManaged: false,
-  codexManaged: false
+  codexManaged: false,
+  reasoningEffort: 'default'
 })
 
 const providerView = (id: string): SettingsSnapshot['providers'][number] => ({
@@ -126,6 +128,11 @@ beforeEach(() => {
       callLog.push(`setFramework:${request.id}`)
       return Promise.resolve({ ...snapshot([]), agentFrameworkId: request.id })
     }),
+    setReasoningEffort: vi
+      .fn()
+      .mockImplementation((request: { effort: string }) =>
+        Promise.resolve({ ...snapshot([]), reasoningEffort: request.effort })
+      ),
     upsertProvider: vi.fn(),
     validateProvider: vi.fn(),
     cancelCodexLogin: vi.fn().mockResolvedValue(undefined),
@@ -1058,5 +1065,51 @@ describe('settings store: setAgentFramework', () => {
     await useSettingsStore.getState().uninstallCodex()
     expect(api.uninstallCodex).toHaveBeenCalledOnce()
     expect(useSettingsStore.getState().codex).toEqual({})
+  })
+})
+
+describe('settings store: setReasoningEffort', () => {
+  it('forwards the level to main and caches the returned snapshot', async () => {
+    await useSettingsStore.getState().setReasoningEffort('high')
+
+    expect(api.setReasoningEffort).toHaveBeenCalledWith({ effort: 'high' })
+    expect(useSettingsStore.getState().reasoningEffort).toBe('high')
+  })
+
+  it('applies the picked level optimistically before main confirms', async () => {
+    let resolveIpc: (value: SettingsSnapshot) => void = () => undefined
+    api.setReasoningEffort.mockImplementation(
+      () =>
+        new Promise<SettingsSnapshot>((resolve) => {
+          resolveIpc = resolve
+        })
+    )
+
+    const pending = useSettingsStore.getState().setReasoningEffort('max')
+
+    // The selector must not wait for the reconnect-bearing IPC round trip.
+    expect(useSettingsStore.getState().reasoningEffort).toBe('max')
+
+    resolveIpc({ ...snapshot([]), reasoningEffort: 'max' })
+    await pending
+    expect(useSettingsStore.getState().reasoningEffort).toBe('max')
+  })
+
+  it('reverts to the previous level and logs when main rejects', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    api.setReasoningEffort.mockRejectedValue(new Error('ipc down'))
+
+    await useSettingsStore.getState().setReasoningEffort('low')
+
+    expect(useSettingsStore.getState().reasoningEffort).toBe('default')
+    expect(consoleError).toHaveBeenCalledWith('Failed to set reasoning effort', expect.any(Error))
+  })
+
+  it('load() picks up a non-default level from the settings snapshot', async () => {
+    api.getSettings.mockResolvedValue({ ...snapshot([]), reasoningEffort: 'max' })
+
+    await useSettingsStore.getState().load()
+
+    expect(useSettingsStore.getState().reasoningEffort).toBe('max')
   })
 })

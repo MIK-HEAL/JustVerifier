@@ -2,6 +2,8 @@ import { ipcMain } from 'electron'
 
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
+  isReasoningEffort,
+  type ReasoningEffort,
   type CreateSkillRequest,
   type DeleteProviderRequest,
   type DeleteSkillRequest,
@@ -25,6 +27,7 @@ import {
   type SetConnectorEnabledRequest,
   type SetNcbiCredentialsRequest,
   type SetPackageMirrorRequest,
+  type SetReasoningEffortRequest,
   type SetSkillEnabledRequest,
   type SetToolPermissionRequest,
   type UpdateSkillRequest,
@@ -45,6 +48,10 @@ export type SettingsIpcOptions = {
   service?: SettingsService
   // Called after the active provider changes so the ACP runtime can drop its stale connection.
   onActiveProviderChanged?: () => void
+  // Called after the reasoning effort changes so the ACP runtime can live-apply it to open sessions.
+  // Returns true when the level was applied over ACP (no reconnect needed); false means the active
+  // framework only carries effort in its spawn config and onActiveProviderChanged must fire instead.
+  onReasoningEffortChanged?: (effort: ReasoningEffort) => Promise<boolean>
   // Called after a skill is toggled so the ACP runtime reloads skills on its next reconnect.
   onSkillsChanged?: () => void
   // Called after a connector/tool/credential change so bundled + custom skill docs re-sync.
@@ -61,6 +68,7 @@ const broadcastInstallEvent = (event: ClaudeInstallEvent): void => {
 const registerSettingsIpcHandlers = ({
   service = createDefaultSettingsService(),
   onActiveProviderChanged,
+  onReasoningEffortChanged,
   onSkillsChanged,
   onConnectorsChanged
 }: SettingsIpcOptions = {}): void => {
@@ -151,6 +159,30 @@ const registerSettingsIpcHandlers = ({
       // Switching frameworks needs a fresh agent process, exactly like a provider switch — the live
       // process is a different backend binary, so the choice only takes effect on reconnect.
       onActiveProviderChanged?.()
+
+      return snapshot
+    }
+  )
+  ipcMain.handle(
+    'settings:set-reasoning-effort',
+    async (_event, request: SetReasoningEffortRequest) => {
+      // Renderer payloads are untyped at runtime: reject anything outside the known levels instead
+      // of persisting a value the agent-mapping layers can't interpret.
+      if (!isReasoningEffort(request?.effort)) {
+        throw new Error(`Unknown reasoning effort: ${String(request?.effort)}`)
+      }
+
+      log.info('set reasoning effort requested', { effort: request.effort })
+      const snapshot = await service.setReasoningEffort(request.effort)
+
+      // Live-capable frameworks (Claude Code, Codex) apply the level to open sessions over ACP —
+      // no respawn, the way a model switch feels. Others (opencode) bake effort into the spawn
+      // config, so only the provider-switch reconnect can deliver it.
+      const appliedLive = (await onReasoningEffortChanged?.(request.effort)) ?? false
+
+      if (!appliedLive) {
+        onActiveProviderChanged?.()
+      }
 
       return snapshot
     }

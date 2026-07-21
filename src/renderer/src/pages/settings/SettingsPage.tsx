@@ -49,6 +49,7 @@ import {
   type ProviderFormValue
 } from './provider-form-value'
 import { ProviderList } from './ProviderList'
+import { ReasoningEffortSelect } from './ReasoningEffortSelect'
 import { SettingsRow, SettingsSection } from './SettingsLayout'
 import { UninstallRuntimeDialog } from './UninstallRuntimeDialog'
 import { SwitchFrameworkDialog } from './SwitchFrameworkDialog'
@@ -939,18 +940,34 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                         </SettingsRow>
                       ) : null}
 
-                      <ProviderList
-                        providers={visibleProviders}
-                        activeProviderId={activeProviderId}
-                        busyProviderId={busyProviderId}
-                        onEdit={openEdit}
-                        onDelete={(provider) => void deleteProvider(provider.id)}
-                        onTest={(provider) => void handleTest(provider)}
-                        isCodexLoginPending={isCodexLoginPending}
-                        onCancelCodexLogin={() => void cancelCodexLogin()}
-                        onLoginIsolatedCodex={() => void handleCodexLogin()}
-                        onLogoutIsolatedCodex={() => void handleCodexLogout()}
-                      />
+                      <SettingsRow
+                        label="Reasoning effort"
+                        description={
+                          <>
+                            Higher levels think longer, lower levels respond faster. Applies to
+                            subsequent requests.
+                          </>
+                        }
+                        className={`border-b border-border${providers.length > 0 ? '' : ' pt-0'}`}
+                        controlClassName="w-auto justify-self-end"
+                      >
+                        <ReasoningEffortSelect />
+                      </SettingsRow>
+
+                      <div className="mt-3">
+                        <ProviderList
+                          providers={visibleProviders}
+                          activeProviderId={activeProviderId}
+                          busyProviderId={busyProviderId}
+                          onEdit={openEdit}
+                          onDelete={(provider) => void deleteProvider(provider.id)}
+                          onTest={(provider) => void handleTest(provider)}
+                          isCodexLoginPending={isCodexLoginPending}
+                          onCancelCodexLogin={() => void cancelCodexLogin()}
+                          onLoginIsolatedCodex={() => void handleCodexLogin()}
+                          onLogoutIsolatedCodex={() => void handleCodexLogout()}
+                        />
+                      </div>
                       {providerTestError ? (
                         <p className="text-sm text-destructive" role="alert">
                           {providerTestError}

@@ -12,6 +12,7 @@ import {
 } from '../acp/permission-profile-controller'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import { augmentedPathEnv } from '../settings/shell-path'
+import type { ReasoningEffort } from '../../shared/settings'
 import type {
   AgentFramework,
   AgentAuthentication,
@@ -93,11 +94,23 @@ const buildCodexConfig = (provider: {
   baseUrl?: string
   model?: string
   key?: string
+  reasoningEffort?: ReasoningEffort
 }): Record<string, unknown> => {
   const baseUrl = normalizeResponsesBaseUrl(provider.baseUrl)
+  // Codex config takes low|medium|high|xhigh; the app's top level 'max' maps onto 'xhigh'.
+  // 'default' is filtered upstream (never reaches here), but stay defensive and omit it too.
+  const codexEffort =
+    provider.reasoningEffort === 'max'
+      ? 'xhigh'
+      : provider.reasoningEffort === 'low' ||
+          provider.reasoningEffort === 'medium' ||
+          provider.reasoningEffort === 'high'
+        ? provider.reasoningEffort
+        : undefined
 
   return {
     ...(provider.model ? { model: provider.model } : {}),
+    ...(codexEffort ? { model_reasoning_effort: codexEffort } : {}),
     model_provider: CODEX_PROVIDER_ID,
     model_providers: {
       [CODEX_PROVIDER_ID]: {
@@ -179,6 +192,11 @@ export const createCodexFramework = ({
   displayName: 'Codex',
   supportsSkills: true,
   acceptsStdioMcp: true,
+  // codex-acp advertises a thought_level effort option and honors set_config_option on live sessions
+  // (verified live: a session accepted effort 'high' over ACP). If a future adapter stops
+  // advertising it, the runtime's no-applied-session guard falls back to a reconnect so the baked
+  // model_reasoning_effort config takes over.
+  supportsLiveEffortChange: true,
   supportedApiTypes: ['responses'],
 
   spawn(input: AgentSpawnInput): ChildProcessWithoutNullStreams {
@@ -229,7 +247,8 @@ export const createCodexFramework = ({
             ...provider,
             model: codexModel,
             baseUrl: bridge?.baseUrl ?? provider.baseUrl,
-            key: useBridge ? undefined : provider.key
+            key: useBridge ? undefined : provider.key,
+            reasoningEffort: ctx.reasoningEffort
           })
         ),
         MODEL_PROVIDER: CODEX_PROVIDER_ID,

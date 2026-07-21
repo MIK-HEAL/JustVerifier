@@ -9,6 +9,7 @@ import { PassThrough, Readable, Writable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AcpRuntime } from './runtime'
+import type { ReasoningEffort } from '../../shared/settings'
 import { terminateProcessTree } from '../process-tree'
 import { AgentMcpHttpHost } from './mcp-http-host'
 import { claudeCodeFramework, codexFramework, opencodeFramework } from '../agent-framework'
@@ -103,6 +104,10 @@ const startFakeAgent = (
     supportsResume?: boolean
     modes?: SessionModeState
     configOptions?: SessionConfigOption[]
+    // Option set the set_config_option RESPONSE reports back. Agents rebuild their options when a
+    // switch invalidates them (effort levels are model-dependent), so this can differ from the
+    // session/new set; defaults to echoing configOptions.
+    updatedConfigOptions?: SessionConfigOption[]
     rejectSetConfigOption?: boolean
     // When true, the resume handler rejects with the ACP "Resource not found" (-32002) — the signal a
     // replaced agent (e.g. after a provider switch) gives for a session id it does not hold.
@@ -129,6 +134,7 @@ const startFakeAgent = (
   closedSessions: string[]
   cancelledSessions: string[]
   modeChanges: Array<{ sessionId: string; modeId: string }>
+  configChanges: Array<{ sessionId: string; configId: string; value: string | boolean }>
   actions: string[]
 } => {
   const authRequests: unknown[] = []
@@ -144,6 +150,7 @@ const startFakeAgent = (
   const closedSessions: string[] = []
   const cancelledSessions: string[] = []
   const modeChanges: Array<{ sessionId: string; modeId: string }> = []
+  const configChanges: Array<{ sessionId: string; configId: string; value: string | boolean }> = []
   const actions: string[] = []
   let sessionIndex = 0
 
@@ -208,9 +215,16 @@ const startFakeAgent = (
       actions.push(`mode:${ctx.params.modeId}`)
       return {}
     })
-    .onRequest(acp.methods.agent.session.setConfigOption, () => {
+    .onRequest(acp.methods.agent.session.setConfigOption, (ctx) => {
       if (options.rejectSetConfigOption) throw acp.RequestError.internalError()
-      return { configOptions: options.configOptions ?? [] }
+
+      configChanges.push({
+        sessionId: ctx.params.sessionId,
+        configId: ctx.params.configId,
+        value: ctx.params.value
+      })
+
+      return { configOptions: options.updatedConfigOptions ?? options.configOptions ?? [] }
     })
     .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
       // Flatten text blocks because these tests only exercise plain prompts.
@@ -260,6 +274,7 @@ const startFakeAgent = (
     closedSessions,
     cancelledSessions,
     modeChanges,
+    configChanges,
     actions
   }
 }
@@ -4574,6 +4589,330 @@ describe('ACP runtime — connect failure logging', () => {
 
     const call = errorLogSpy.mock.calls.find(([message]) => message === 'agent connection failed')
     expect((call?.[1] as { framework: string }).framework).toBe('opencode')
+  })
+})
+
+describe('ACP runtime — session effort', () => {
+  // A select option like the thought_level selector opencode/Claude Code advertise from session/new.
+  const thoughtLevelOption = (values: string[]): SessionConfigOption =>
+    ({
+      type: 'select',
+      id: 'effort',
+      name: 'Effort',
+      category: 'thought_level',
+      currentValue: values[0],
+      options: values.map((value) => ({ value, name: value }))
+    }) as SessionConfigOption
+
+  const createEffortRuntime = (
+    process: FakeAgentProcess,
+    sessionEffort: ReasoningEffort | undefined,
+    sessionModel?: string
+  ): AcpRuntime =>
+    new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...opencodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/opencode',
+        env: {},
+        sessionModel,
+        sessionEffort
+      })
+    })
+
+  it('applies the resolved backend effort via the thought_level config option', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-effort'], {
+      configOptions: [thoughtLevelOption(['low', 'medium', 'high'])]
+    })
+    const runtime = createEffortRuntime(process, 'high')
+
+    await runtime.createSession({ cwd: '/workspace' })
+
+    expect(fakeAgent.configChanges).toEqual([
+      { sessionId: 's-effort', configId: 'effort', value: 'high' }
+    ])
+  })
+
+  it('sends no set_config_option request when the resolved backend carries no effort', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-effort'], {
+      configOptions: [thoughtLevelOption(['low', 'high'])]
+    })
+    const runtime = createEffortRuntime(process, undefined)
+
+    await runtime.createSession({ cwd: '/workspace' })
+
+    // Undefined means "don't override": the agent keeps its own default.
+    expect(fakeAgent.configChanges).toEqual([])
+  })
+
+  it('clamps the desired level to the closest advertised value', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-effort'], {
+      configOptions: [thoughtLevelOption(['low', 'medium'])]
+    })
+    const runtime = createEffortRuntime(process, 'max')
+
+    await runtime.createSession({ cwd: '/workspace' })
+
+    // 'max' is not advertised; the model's top level takes its place instead of a no-op.
+    expect(fakeAgent.configChanges).toEqual([
+      { sessionId: 's-effort', configId: 'effort', value: 'medium' }
+    ])
+  })
+
+  it('resolves effort against the option set reported after a model switch', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-effort'], {
+      configOptions: [
+        {
+          type: 'select',
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          currentValue: 'model-a',
+          options: [{ value: 'model-b', name: 'Model B' }]
+        } as SessionConfigOption,
+        thoughtLevelOption(['low', 'high'])
+      ],
+      // Effort levels are model-dependent: model-b tops out at 'medium', not the 'high' the
+      // session originally advertised.
+      updatedConfigOptions: [thoughtLevelOption(['low', 'medium'])]
+    })
+    const runtime = createEffortRuntime(process, 'max', 'model-b')
+
+    await runtime.createSession({ cwd: '/workspace' })
+
+    // Clamping against the pre-switch set would apply 'high' — invalid for model-b. The post-switch
+    // set yields 'medium' instead.
+    expect(fakeAgent.configChanges).toEqual([
+      { sessionId: 's-effort', configId: 'model', value: 'model-b' },
+      { sessionId: 's-effort', configId: 'effort', value: 'medium' }
+    ])
+  })
+
+  it('sends no request when the agent advertises no recognizable effort level', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-effort'], {
+      configOptions: [thoughtLevelOption(['default'])]
+    })
+    const runtime = createEffortRuntime(process, 'max')
+
+    await runtime.createSession({ cwd: '/workspace' })
+
+    // Only the 'default' sentinel is offered: nothing to clamp onto, the agent keeps its default.
+    expect(fakeAgent.configChanges).toEqual([])
+  })
+
+  it('live-applies an effort change to open sessions without a respawn', async () => {
+    const process = new FakeAgentProcess()
+    const spawn = vi.fn(() => asAgentProcess(process))
+    const fakeAgent = startFakeAgent(process, ['s-live', 's-live-2'], {
+      configOptions: [thoughtLevelOption(['default', 'low', 'medium', 'high'])]
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn },
+        executablePath: '/bin/claude',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+    expect(fakeAgent.configChanges).toEqual([])
+
+    const applied = await runtime.applyReasoningEffortChange('max')
+
+    // The open session gets the closest advertised level over ACP, still on the original process.
+    expect(applied).toBe(true)
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(fakeAgent.configChanges).toEqual([
+      { sessionId: 's-live', configId: 'effort', value: 'high' }
+    ])
+
+    // Sessions created later in the same process inherit the new level.
+    await runtime.createSession({ cwd: '/workspace' })
+    expect(fakeAgent.configChanges[1]).toMatchObject({ configId: 'effort', value: 'high' })
+  })
+
+  it('hands control back to the agent default when the level is cleared live', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-live'], {
+      configOptions: [thoughtLevelOption(['default', 'low', 'high'])]
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/claude',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+    await runtime.applyReasoningEffortChange('max')
+
+    const applied = await runtime.applyReasoningEffortChange('default')
+
+    // The advertised 'default' sentinel clears the previously forced level.
+    expect(applied).toBe(true)
+    expect(fakeAgent.configChanges.at(-1)).toEqual({
+      sessionId: 's-live',
+      configId: 'effort',
+      value: 'default'
+    })
+  })
+
+  it('resolves a live effort change against the options reported after a model switch', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-live'], {
+      configOptions: [
+        {
+          type: 'select',
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          currentValue: 'model-a',
+          options: [{ value: 'model-b', name: 'Model B' }]
+        } as SessionConfigOption,
+        thoughtLevelOption(['low', 'high'])
+      ],
+      // The model switch narrows the effort set: the session/new options are now stale.
+      updatedConfigOptions: [thoughtLevelOption(['low', 'medium'])]
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/claude',
+        env: {},
+        sessionModel: 'model-b'
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+    fakeAgent.configChanges.length = 0
+
+    const applied = await runtime.applyReasoningEffortChange('max')
+
+    // The post-switch set tops out at 'medium'; the stale session/new set would wrongly yield 'high'.
+    expect(applied).toBe(true)
+    expect(fakeAgent.configChanges).toEqual([
+      { sessionId: 's-live', configId: 'effort', value: 'medium' }
+    ])
+  })
+
+  it('reports failure so the caller reconnects when a live apply is rejected', async () => {
+    const process = new FakeAgentProcess()
+    const agentOptions: Parameters<typeof startFakeAgent>[2] = {
+      configOptions: [thoughtLevelOption(['low', 'high'])]
+    }
+    const fakeAgent = startFakeAgent(process, ['s-live'], agentOptions)
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/claude',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+
+    agentOptions.rejectSetConfigOption = true
+    const applied = await runtime.applyReasoningEffortChange('high')
+
+    // The level never reached the agent: returning false lets the caller reconnect instead of
+    // leaving the UI showing a level the agent never received.
+    expect(applied).toBe(false)
+    expect(fakeAgent.configChanges).toEqual([])
+  })
+
+  it('declines the live change when the framework bakes effort into its spawn config', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-effort'], {
+      configOptions: [thoughtLevelOption(['low', 'high'])]
+    })
+    // createEffortRuntime drives the opencode framework, which advertises no live effort channel.
+    const runtime = createEffortRuntime(process, 'high')
+    await runtime.createSession({ cwd: '/workspace' })
+    fakeAgent.configChanges.length = 0
+
+    const applied = await runtime.applyReasoningEffortChange('low')
+
+    // The caller reconnects instead: nothing is sent, and the pending level stays as resolved.
+    expect(applied).toBe(false)
+    expect(fakeAgent.configChanges).toEqual([])
+  })
+
+  it('falls back to a reconnect when no Codex session advertises an effort option', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-codex'], {
+      // An adapter build that surfaces no thought_level option at all.
+      configOptions: [],
+      modes: {
+        currentModeId: 'agent',
+        availableModes: ['read-only', 'agent'].map((id) => ({ id, name: id }))
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/codex-acp',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+
+    const applied = await runtime.applyReasoningEffortChange('high')
+
+    // Codex bakes effort into its spawn config, so only a reconnect delivers it here — the UI must
+    // not report a level the running session never received.
+    expect(applied).toBe(false)
+    expect(fakeAgent.configChanges).toEqual([])
+  })
+
+  it('reports success without a reconnect when a Claude session simply lacks effort support', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['s-claude'], { configOptions: [] })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/claude',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+
+    // Claude has no config channel to fall back to: the model doesn't support effort, and a
+    // respawn can't change that — report success rather than restarting for nothing.
+    expect(await runtime.applyReasoningEffortChange('high')).toBe(true)
+  })
+
+  it('swallows a set_config_option rejection instead of failing the session', async () => {
+    warnLogSpy.mockClear()
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s-effort'], {
+      configOptions: [thoughtLevelOption(['low', 'high'])],
+      rejectSetConfigOption: true
+    })
+    const runtime = createEffortRuntime(process, 'high')
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+
+    // Best-effort: the failure is logged, the session still comes up.
+    expect(session.sessionId).toBe('s-effort')
+    expect(fakeAgent.configChanges).toEqual([])
+    const call = warnLogSpy.mock.calls.find(([message]) => message === 'set session effort failed')
+    expect(call).toBeDefined()
+    expect((call?.[1] as { sessionId: string }).sessionId).toBe('s-effort')
   })
 })
 
