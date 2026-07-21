@@ -902,28 +902,130 @@ class SettingsService {
     const cachedVersions = await this.probeCodexRuntime(cached)
     if (cached?.resolvedPath && cachedVersions) {
       await this.repository.setCodexInfo({ ...cached, ...cachedVersions })
+
+      // Build codexComponents even for successful detection so onboarding shows separate rows.
+      let nativeCliFound = !!cached.nativePath
+      let nativeCliPath = cached.nativePath
+      let nativeCliVersion = cachedVersions.nativeVersion
+
+      if (!cached.nativePath) {
+        // A non-managed adapter only gets cached after passing the full smoke test, so a working
+        // native CLI exists. Trust that (mirroring the fresh-detect branch) rather than letting a
+        // narrow probe miss it and block Continue. The probe just enriches the path/version.
+        nativeCliFound = true
+        const { detectNativeCodex } = await import('./codex-detect')
+        const nativeCodex = await detectNativeCodex(this.codexDetectDeps)
+        if (nativeCodex) {
+          nativeCliPath = nativeCodex.path
+          nativeCliVersion = nativeCodex.version
+        }
+      }
+
+      const codexComponents: ClaudeDetectResult['codexComponents'] = {
+        adapterFound: true,
+        adapterPath: cached.resolvedPath,
+        adapterVersion: cachedVersions.version,
+        nativeCliFound,
+        nativeCliPath,
+        nativeCliVersion
+      }
+
       return {
         found: true,
         path: cached.resolvedPath,
-        version: cachedVersions.version
+        version: cachedVersions.version,
+        codexComponents
       }
     }
 
     const detected = await detectCodex(this.codexDetectDeps)
-    if (!detected) {
-      if (cached?.resolvedPath && !(await this.pathExists(cached.resolvedPath))) {
-        await this.repository.clearCodexInfo()
+    if (detected) {
+      await this.repository.setCodexInfo({
+        resolvedPath: detected.adapterPath,
+        version: detected.adapterVersion,
+        nativePath: detected.managedCodexPath,
+        nativeVersion: detected.managedCodexVersion
+      })
+
+      // Build codexComponents for successful detection. For managed adapters, use the bundled
+      // native CLI info. For PATH/npm adapters that passed smoke test, independently probe for
+      // native CLI so the UI can show both components.
+      let nativeCliFound = !!detected.managedCodexPath
+      let nativeCliPath = detected.managedCodexPath
+      let nativeCliVersion = detected.managedCodexVersion
+
+      if (!detected.managedCodexPath) {
+        // Non-managed adapter passed the ACP smoke test, which proves a working native CLI exists
+        // (the handshake spawns a real session). Trust that: mark native as found even if the
+        // independent probe below can't pinpoint the exact path, so a successful pairing never
+        // blocks Continue. The probe only enriches the display with a concrete path/version.
+        nativeCliFound = true
+        const { detectNativeCodex } = await import('./codex-detect')
+        const nativeCodex = await detectNativeCodex(this.codexDetectDeps)
+        if (nativeCodex) {
+          nativeCliPath = nativeCodex.path
+          nativeCliVersion = nativeCodex.version
+        }
       }
-      return { found: false }
+
+      const codexComponents: ClaudeDetectResult['codexComponents'] = {
+        adapterFound: true,
+        adapterPath: detected.adapterPath,
+        adapterVersion: detected.adapterVersion,
+        nativeCliFound,
+        nativeCliPath,
+        nativeCliVersion
+      }
+
+      return {
+        found: true,
+        path: detected.adapterPath,
+        version: detected.adapterVersion,
+        codexComponents
+      }
     }
 
-    await this.repository.setCodexInfo({
-      resolvedPath: detected.adapterPath,
-      version: detected.adapterVersion,
-      nativePath: detected.managedCodexPath,
-      nativeVersion: detected.managedCodexVersion
-    })
-    return { found: true, path: detected.adapterPath, version: detected.adapterVersion }
+    // Full detection failed. Perform detailed component-level detection to provide accurate
+    // diagnostic information distinguishing "adapter missing" from "native Codex missing" from
+    // "both present but incompatible".
+    if (cached?.resolvedPath && !(await this.pathExists(cached.resolvedPath))) {
+      await this.repository.clearCodexInfo()
+    }
+
+    const { detectCodexComponents } = await import('./codex-detect')
+    const components = await detectCodexComponents(this.codexDetectDeps)
+
+    // Build diagnostic message based on what was found
+    let diagnostic: string | undefined
+    if (components.nativeCliFound && !components.adapterFound) {
+      diagnostic = `Native Codex ${components.nativeCliVersion} is installed at ${components.nativeCliPath}, but the Codex ACP adapter required by Open Science is missing.`
+    } else if (!components.nativeCliFound && components.adapterFound) {
+      if (components.adapterFailureReason === 'smoke-test-failed') {
+        diagnostic = `Codex ACP adapter ${components.adapterVersion} is installed at ${components.adapterPath}, but it failed to initialize (native Codex CLI may be missing or incompatible).`
+      } else {
+        diagnostic = `Codex ACP adapter is installed at ${components.adapterPath}, but version detection failed.`
+      }
+    } else if (components.nativeCliFound && components.adapterFound) {
+      if (components.adapterFailureReason === 'smoke-test-failed') {
+        diagnostic = `Both native Codex ${components.nativeCliVersion} and ACP adapter ${components.adapterVersion} are installed, but the adapter failed to initialize with the native CLI.`
+      } else if (components.adapterFailureReason === 'version-probe-failed') {
+        diagnostic = `Native Codex ${components.nativeCliVersion} is installed, and an ACP adapter exists at ${components.adapterPath}, but the adapter's version could not be determined.`
+      }
+    }
+
+    return {
+      found: false,
+      diagnostic,
+      codexComponents: {
+        nativeCliFound: components.nativeCliFound,
+        nativeCliPath: components.nativeCliPath,
+        nativeCliVersion: components.nativeCliVersion,
+        adapterFound: components.adapterFound,
+        adapterPath: components.adapterPath,
+        adapterVersion: components.adapterVersion,
+        adapterFailureReason: components.adapterFailureReason
+      }
+    }
   }
 
   private async probeCodexRuntime(
