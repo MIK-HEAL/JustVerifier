@@ -93,6 +93,11 @@ const assertPackEntry = (id: string, entry: unknown): PackEntry => {
       throw new Error(`manifest pack "${id}" has an invalid "${field}"`)
     }
   }
+  const hasCacheBudget = e.maxCacheRelativePath !== undefined
+  const hasEnvBudget = e.maxEnvRelativePath !== undefined
+  if (hasCacheBudget !== hasEnvBudget) {
+    throw new Error(`manifest pack "${id}" path budget fields must be provided together`)
+  }
   const language = e.language as PackLanguage
   if (packId(language, e.version) !== id) {
     throw new Error(
@@ -120,6 +125,9 @@ const assertPackEntry = (id: string, entry: unknown): PackEntry => {
 // Converts a manifest entry into a usable budget. Both fields are required together; for old
 // manifests, only the currently managed default packs receive a conservative known fallback.
 export const pathBudgetForPack = (entry: PackEntry): PackPathBudget | undefined => {
+  if ((entry.maxCacheRelativePath === undefined) !== (entry.maxEnvRelativePath === undefined)) {
+    return undefined
+  }
   if (entry.maxCacheRelativePath !== undefined && entry.maxEnvRelativePath !== undefined) {
     return {
       maxCacheRelativePath: entry.maxCacheRelativePath,

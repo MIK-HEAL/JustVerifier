@@ -290,8 +290,10 @@ export const createFetchBundleAdapter =
         const code = (error as NodeJS.ErrnoException).code
         if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EPERM') throw error
         try {
-          await readFile(join(finalDir, `${fetched.id}.lock`), 'utf8')
-          // A prior verified immutable fetch won the race; its lock is the same content version.
+          const winnerLockPath = join(finalDir, `${fetched.id}.lock`)
+          await validateAndSeedPack(root, finalDir, winnerLockPath)
+          // A prior verified immutable fetch won the race; revalidating its lock and tarballs ensures
+          // an interrupted directory with only a readable lock cannot masquerade as the winner.
           if (pathBudget) {
             await writeFile(
               join(finalDir, PACK_PATH_BUDGET_FILE),
@@ -299,7 +301,7 @@ export const createFetchBundleAdapter =
               'utf8'
             )
           }
-          return { lockPath: join(finalDir, `${fetched.id}.lock`), pathBudget }
+          return { lockPath: winnerLockPath, pathBudget }
         } catch {
           // Only remove a directory that is demonstrably not a complete pack, then retry the
           // rename. This handles a process interrupted before its final commit.

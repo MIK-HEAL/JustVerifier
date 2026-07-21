@@ -1,18 +1,23 @@
-import { type Dirent, existsSync, readdirSync, realpathSync, rmSync } from 'node:fs'
+import { type Dirent, existsSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { WINDOWS_MAX_USABLE_PATH } from './micromamba-cache'
 
 const COMPLETE_MARKER = join('info', 'repodata_record.json')
 const CONDA_SUBDIR = /^(?:noarch|win-64|osx-(?:64|arm64)|linux-(?:64|aarch64|ppc64le|s390x))$/i
-const CONFIRMED_MAX_PATH_PACKAGE = /^libstdcxx-devel_win-64-/i
+const isPackageDistLeaf = (value: string): boolean =>
+  /^[A-Za-z0-9_.+-]+-[A-Za-z0-9_.+!]+-[A-Za-z0-9_.+_]+$/.test(value)
 
-const directories = (path: string): Dirent[] => {
+const entries = (path: string): Dirent[] => {
   try {
-    return readdirSync(path, { withFileTypes: true }).filter((entry) => entry.isDirectory())
+    return readdirSync(path, { withFileTypes: true })
   } catch {
     return []
   }
+}
+
+const directories = (path: string): Dirent[] => {
+  return entries(path).filter((entry) => entry.isDirectory())
 }
 
 const removeIfIncomplete = (dir: string): boolean => {
@@ -21,20 +26,55 @@ const removeIfIncomplete = (dir: string): boolean => {
   return true
 }
 
+const PACKAGE_TOP_LEVEL_DIRS = new Set([
+  'bin',
+  'conda-meta',
+  'etc',
+  'include',
+  'info',
+  'lib',
+  'library',
+  'scripts',
+  'share'
+])
+
+const looksLikeExtractedPackage = (dir: string): boolean =>
+  entries(dir).some(
+    (entry) => !entry.isDirectory() || PACKAGE_TOP_LEVEL_DIRS.has(entry.name.toLowerCase())
+  )
+
 const removeIncompleteUrlLeaves = (urlRoot: string): boolean => {
-  let removed = false
-  const walk = (dir: string): void => {
+  const walk = (dir: string): { foundBoundary: boolean; removed: boolean } => {
+    let foundBoundary = false
+    let removed = false
     for (const entry of directories(dir)) {
       const child = join(dir, entry.name)
-      if (CONDA_SUBDIR.test(basename(dir))) {
-        removed = removeIfIncomplete(child) || removed
-      } else {
-        walk(child)
+      const isCandidate = CONDA_SUBDIR.test(basename(dir)) && isPackageDistLeaf(entry.name)
+      if (!isCandidate) {
+        const nested = walk(child)
+        foundBoundary = nested.foundBoundary || foundBoundary
+        removed = nested.removed || removed
+        continue
       }
+
+      if (looksLikeExtractedPackage(child)) {
+        foundBoundary = true
+        removed = removeIfIncomplete(child) || removed
+        continue
+      }
+
+      // An empty or unfamiliar candidate may be an interrupted package, but a channel path can also
+      // contain subdir/dist-shaped segments. Prefer a deeper package boundary when one exists;
+      // otherwise the empty candidate itself is the interrupted package leaf.
+      const nested = walk(child)
+      foundBoundary = true
+      removed = nested.foundBoundary
+        ? nested.removed || removed
+        : removeIfIncomplete(child) || removed
     }
+    return { foundBoundary, removed }
   }
-  walk(urlRoot)
-  return removed
+  return walk(urlRoot).removed
 }
 
 export const removeIncompleteExtractedPackages = (cacheDirs: string[]): boolean => {
@@ -57,14 +97,30 @@ export type MaxPathRecoveryDeps = {
   platform?: NodeJS.Platform
   canonicalize?: (path: string) => string
   remove?: (path: string) => void
-  // Required for remove_all evidence: unlike a concrete missing-file path, that message does not
-  // contain the over-limit leaf. The staged pack metadata supplies the exact cache budget instead.
-  maxCacheRelativePath?: number
 }
 
 const archiveLeaf = (value: string): string | undefined => {
-  const leaf = basename(value).replace(/(?:\.conda|\.tar\.bz2)$/i, '')
+  const leaf = basename(value).replace(/\.(?:conda|tar\.bz2)$/i, '')
   return /^[A-Za-z0-9][A-Za-z0-9_.+-]*$/.test(leaf) ? leaf : undefined
+}
+
+const markerMatchesPackageLeaf = (candidate: string, leaf: string): boolean => {
+  try {
+    const record = JSON.parse(readFileSync(join(candidate, COMPLETE_MARKER), 'utf8')) as Record<
+      string,
+      unknown
+    >
+    const fromUrl = typeof record.url === 'string' ? archiveLeaf(record.url) : undefined
+    const fromFields =
+      typeof record.name === 'string' &&
+      typeof record.version === 'string' &&
+      typeof record.build === 'string'
+        ? `${record.name}-${record.version}-${record.build}`
+        : undefined
+    return fromUrl === leaf || fromFields === leaf
+  } catch {
+    return false
+  }
 }
 
 const containedBy = (root: string, target: string): boolean => {
@@ -74,6 +130,33 @@ const containedBy = (root: string, target: string): boolean => {
 
 const quotedPaths = (message: string): string[] =>
   [...message.matchAll(/['"]([^'"\r\n]+)['"]/g)].map((match) => match[1])
+
+type CanonicalRoot = { lexical: string; physical: string }
+
+const packageLeafFromEvidence = (
+  evidencePath: string,
+  roots: CanonicalRoot[],
+  expectedLeaf?: string
+): { evidence: string; candidate: string; root: CanonicalRoot; leaf: string } | undefined => {
+  const evidence = resolve(evidencePath)
+  for (const root of roots) {
+    if (!containedBy(root.lexical, evidence)) continue
+    const parts = relative(root.lexical, evidence).split(sep)
+    if (!/^https?$/i.test(parts[0])) continue
+    for (let subdirIndex = parts.length - 2; subdirIndex >= 2; subdirIndex -= 1) {
+      if (!CONDA_SUBDIR.test(parts[subdirIndex])) continue
+      const leaf = archiveLeaf(parts[subdirIndex + 1])
+      if (!leaf || (expectedLeaf ? leaf !== expectedLeaf : !isPackageDistLeaf(leaf))) continue
+      const candidate = join(root.lexical, ...parts.slice(0, subdirIndex + 2))
+      // Proactive cleanup has no diagnostic package name, so bind the candidate to its parsed
+      // repodata marker. Reactive recovery already has an exact archive leaf from micromamba and
+      // must also handle extraction failures that occurred before the marker was written.
+      if (!expectedLeaf && !markerMatchesPackageLeaf(candidate, leaf)) continue
+      return { evidence, candidate, root, leaf }
+    }
+  }
+  return undefined
+}
 
 export const recoverWindowsMaxPathPackage = (
   error: unknown,
@@ -93,43 +176,27 @@ export const recoverWindowsMaxPathPackage = (
   const expectedLeaf = archiveMatch ? archiveLeaf(archiveMatch[1]) : undefined
   const paths = quotedPaths(message).filter((value) => value !== archiveMatch?.[1])
   const canonicalize = deps.canonicalize ?? ((path: string) => realpathSync.native(path))
-  const roots = allowedCacheRoots.flatMap((root) => {
+  const roots = allowedCacheRoots.flatMap((root): CanonicalRoot[] => {
+    const lexical = resolve(root)
     try {
-      return [canonicalize(resolve(root))]
+      return [{ lexical, physical: canonicalize(lexical) }]
     } catch {
       return []
     }
   })
 
   for (const evidencePath of paths) {
-    const absoluteEvidence = resolve(evidencePath)
-    let candidate = absoluteEvidence
-    if (expectedLeaf) {
-      const parts = absoluteEvidence.split(sep)
-      const index = parts.lastIndexOf(expectedLeaf)
-      if (index < 0) continue
-      candidate = parts.slice(0, index + 1).join(sep) || sep
-    }
-    const leaf = archiveLeaf(candidate)
-    if (!leaf || (expectedLeaf && leaf !== expectedLeaf)) continue
+    const parsed = packageLeafFromEvidence(evidencePath, roots, expectedLeaf)
+    if (!parsed) continue
 
     let physical: string
     try {
-      physical = canonicalize(candidate)
+      physical = canonicalize(parsed.candidate)
     } catch {
       continue
     }
-    const root = roots.find((allowed) => containedBy(allowed, physical))
-    if (!root) continue
-    const rel = relative(root, physical).split(sep)
-    if (!/^https?$/i.test(rel[0]) || rel.length < 5 || rel.at(-1) !== leaf) continue
-
-    const reachesPathLimit = hasMissingContext
-      ? absoluteEvidence.length > WINDOWS_MAX_USABLE_PATH
-      : CONFIRMED_MAX_PATH_PACKAGE.test(leaf) &&
-        Number.isSafeInteger(deps.maxCacheRelativePath) &&
-        root.length + (deps.maxCacheRelativePath as number) > WINDOWS_MAX_USABLE_PATH
-    if (!reachesPathLimit) continue
+    if (!containedBy(parsed.root.physical, physical)) continue
+    if (parsed.evidence.length <= WINDOWS_MAX_USABLE_PATH) continue
 
     const remove =
       deps.remove ??
@@ -139,4 +206,69 @@ export const recoverWindowsMaxPathPackage = (
     return true
   }
   return false
+}
+
+export type OverBudgetCleanupDeps = Pick<
+  MaxPathRecoveryDeps,
+  'platform' | 'canonicalize' | 'remove'
+>
+
+const containsOverBudgetPath = (dir: string): boolean => {
+  for (const entry of entries(dir)) {
+    const child = join(dir, entry.name)
+    if (child.length > WINDOWS_MAX_USABLE_PATH) return true
+    if (entry.isDirectory() && containsOverBudgetPath(child)) return true
+  }
+  return false
+}
+
+// One-time migration cleanup for caches created before the short-cache fix. It examines only the
+// URL-derived cache tree and removes only a package leaf that contains a path Windows cannot address
+// under the conservative MAX_PATH budget. Flat tarballs and neighboring packages are preserved.
+export const removeOverBudgetUrlPackages = (
+  cacheDir: string,
+  deps: OverBudgetCleanupDeps = {}
+): boolean => {
+  if ((deps.platform ?? process.platform) !== 'win32') return false
+  const lexicalRoot = resolve(cacheDir)
+  const canonicalize = deps.canonicalize ?? ((path: string) => realpathSync.native(path))
+  let physicalRoot: string
+  try {
+    physicalRoot = canonicalize(lexicalRoot)
+  } catch {
+    return false
+  }
+  const roots: CanonicalRoot[] = [{ lexical: lexicalRoot, physical: physicalRoot }]
+  const remove =
+    deps.remove ??
+    ((path: string): void =>
+      rmSync(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }))
+  let removed = false
+
+  const walk = (dir: string): void => {
+    for (const entry of directories(dir)) {
+      const child = join(dir, entry.name)
+      const isCandidate = CONDA_SUBDIR.test(basename(dir)) && isPackageDistLeaf(entry.name)
+      if (!isCandidate) {
+        walk(child)
+        continue
+      }
+      const parsed = packageLeafFromEvidence(child, roots)
+      if (!parsed || parsed.candidate !== child || !containsOverBudgetPath(child)) {
+        walk(child)
+        continue
+      }
+      let physical: string
+      try {
+        physical = canonicalize(child)
+      } catch {
+        continue
+      }
+      if (!containedBy(physicalRoot, physical)) continue
+      remove(physical)
+      removed = true
+    }
+  }
+  for (const protocol of ['http', 'https']) walk(join(lexicalRoot, protocol))
+  return removed
 }

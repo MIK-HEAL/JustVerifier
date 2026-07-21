@@ -272,6 +272,9 @@ type NotebookRuntimeServiceOptions = {
   // Locale used to pick the default region mirror when nothing is configured (see shared/mirror.ts).
   // Defaults to a non-CN locale so an omitted value never silently forces a CN mirror.
   locale?: string
+  // Platform seam for path-layout decisions. Production uses process.platform; tests can verify that
+  // a Windows-shaped string alone never activates Windows conda behavior on another platform.
+  platform?: NodeJS.Platform
   // Latency-probe deps for the fastest-mirror auto-selection, injectable so tests stay hermetic (the
   // real probe does live HEAD requests). Undefined in production → effectiveMirrorAsync's real probe.
   mirrorProbe?: ProbeDeps
@@ -804,7 +807,7 @@ class NotebookRuntimeService {
     const source = env.provenance === 'user-own' ? 'external' : 'managed'
     const externalRCondaPrefix =
       source === 'external' && env.language === 'r'
-        ? windowsCondaPrefixForR(env.interpreterPath, 'win32')
+        ? windowsCondaPrefixForR(env.interpreterPath, this.options.platform ?? process.platform)
         : undefined
     return {
       language: env.language,

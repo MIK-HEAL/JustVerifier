@@ -13,13 +13,15 @@ import type {
 import { chainFetchBundle, createLocalBundleAdapter, resolveBundleDir } from './bundle-local'
 import { createFetchBundleAdapter } from './language-pack-fetch'
 import { DEFAULT_MAX_ENV_RELATIVE_PATH, type PackPathBudget } from './bundle-manifest'
-import { withExclusiveCacheLock, withSharedCacheLock } from './pkgs-cache-lock'
+import { withExclusiveCacheLocks, withSharedCacheLocks } from './pkgs-cache-lock'
 import {
   recoverWindowsMaxPathPackage,
+  removeOverBudgetUrlPackages,
   removeIncompleteExtractedPackages
 } from './micromamba-cache-recovery'
 import {
   DEFAULT_MAX_CACHE_RELATIVE_PATH,
+  micromambaCacheLockKey,
   WINDOWS_MAX_USABLE_PATH,
   selectMicromambaCache,
   type MicromambaCache
@@ -158,6 +160,7 @@ export interface RuntimeProvisioner {
 
 export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
   private provisioning = false
+  private legacyCacheCleanupComplete = false
 
   constructor(private readonly deps: ProvisionerDeps) {}
 
@@ -167,6 +170,13 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
 
   private cacheRoots(cache: MicromambaCache): string[] {
     return [...new Set([pkgsCache(this.deps.root), cache.path])]
+  }
+
+  private cacheLockKeys(cache: MicromambaCache): string[] {
+    return [
+      cache.lockKey,
+      micromambaCacheLockKey(pkgsCache(this.deps.root), { platform: this.deps.platform })
+    ]
   }
 
   private cacheForBundle(
@@ -195,7 +205,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     ) {
       throw new Error(
         `Managed ${spec.language} ${spec.version} pack exceeds the Windows path budget for ` +
-          `${spec.name}; choose a shorter data-root path or enable LongPathsEnabled.`
+          `${spec.name}; choose a shorter data-root path.`
       )
     }
     return { cache, budget }
@@ -204,18 +214,16 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
   private async runWithMaxPathRecovery(
     run: () => Promise<void>,
     onRecovery?: () => void,
-    cache: MicromambaCache = this.cache,
-    maxCacheRelativePath = DEFAULT_MAX_CACHE_RELATIVE_PATH
+    cache: MicromambaCache = this.cache
   ): Promise<void> {
     try {
       await run()
     } catch (original) {
       if (this.abort?.signal.aborted) throw original
-      const recovered = await withExclusiveCacheLock(cache.lockKey, () =>
+      const recovered = await withExclusiveCacheLocks(this.cacheLockKeys(cache), () =>
         Promise.resolve(
           recoverWindowsMaxPathPackage(original, this.cacheRoots(cache), {
-            platform: this.deps.platform,
-            maxCacheRelativePath
+            platform: this.deps.platform
           })
         )
       )
@@ -226,6 +234,29 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
       } catch (retry) {
         throw new MaxPathRetryError(original, retry)
       }
+    }
+  }
+
+  private async cleanLegacyWindowsUrlCache(
+    cache: MicromambaCache,
+    onProgress: (p: ProvisionProgress) => void
+  ): Promise<void> {
+    if (this.legacyCacheCleanupComplete || (this.deps.platform ?? process.platform) !== 'win32')
+      return
+    const removed = await withExclusiveCacheLocks(this.cacheLockKeys(cache), () =>
+      Promise.resolve(
+        removeOverBudgetUrlPackages(pkgsCache(this.deps.root), {
+          platform: this.deps.platform
+        })
+      )
+    )
+    this.legacyCacheCleanupComplete = true
+    if (removed) {
+      onProgress({
+        phase: 'upgrade',
+        message: 'Removed a legacy package blocked by the Windows path limit.',
+        progress: 0.05
+      })
     }
   }
 
@@ -373,7 +404,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
           // concurrent corrupt-cache repair (cache-exclusive) can't delete an incomplete extraction.
           await this.runWithMaxPathRecovery(
             () =>
-              withSharedCacheLock(this.cache.lockKey, () =>
+              withSharedCacheLocks(this.cacheLockKeys(this.cache), () =>
                 this.deps.runArgv(
                   createFromLockArgv(this.deps.mm, this.deps.root, prefix, join(dir, file)),
                   undefined,
@@ -383,8 +414,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
                 )
               ),
             undefined,
-            this.cache,
-            DEFAULT_MAX_CACHE_RELATIVE_PATH
+            this.cache
           )
           const bin = existsSync(pythonBin(prefix)) ? pythonBin(prefix) : rBin(prefix)
           await this.deps.verify(bin, prefix)
@@ -433,7 +463,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     // the SHARED cache, so a concurrent corrupt-cache repair (which takes the cache EXCLUSIVE and deletes
     // incomplete extractions) must not run mid-create and delete a package dir we are still producing.
     await this.runWithMaxPathRecovery(() =>
-      withSharedCacheLock(this.cache.lockKey, async () => {
+      withSharedCacheLocks(this.cacheLockKeys(this.cache), async () => {
         // Clear a half-built prefix from an interrupted prior create so micromamba doesn't abort on it.
         this.clearNonCondaPrefix(prefix)
         await this.deps.runArgv(
@@ -531,9 +561,10 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     // Shared pkgs cache lock: this install extracts into the shared cache, so a concurrent corrupt-cache
     // repair (cache-exclusive) must not delete an incomplete extraction mid-upgrade.
     const selected = this.cacheForBundle(spec, bundle)
+    await this.cleanLegacyWindowsUrlCache(selected.cache, onProgress)
     await this.runWithMaxPathRecovery(
       () =>
-        withSharedCacheLock(selected.cache.lockKey, () =>
+        withSharedCacheLocks(this.cacheLockKeys(selected.cache), () =>
           this.deps.runArgv(
             installFromLockArgv(this.deps.mm, this.deps.root, prefix, bundle.lockPath),
             this.abort?.signal,
@@ -543,8 +574,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
           )
         ),
       undefined,
-      selected.cache,
-      selected.budget.maxCacheRelativePath || DEFAULT_MAX_CACHE_RELATIVE_PATH
+      selected.cache
     )
     await this.deps.verify(bin, prefix)
   }
@@ -626,6 +656,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
         .update(operationId, { childPid, childStartedAt: Date.now() })
         .catch(() => undefined)
     const selected = this.cacheForBundle(spec, bundle)
+    await this.cleanLegacyWindowsUrlCache(selected.cache, onProgress)
     const runCreate = (
       lockPath: string,
       cache: MicromambaCache = selected.cache,
@@ -633,7 +664,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
     ): Promise<void> =>
       // Take the shared pkgs cache lock so a concurrent corrupt-cache repair can't delete a package
       // mid-create. The env prefix cleanup + create run inside it.
-      withSharedCacheLock(cache.lockKey, () => {
+      withSharedCacheLocks(this.cacheLockKeys(cache), () => {
         // Clear a half-built prefix from an interrupted prior attempt so micromamba doesn't abort on it.
         this.clearNonCondaPrefix(prefix)
         return this.deps.runArgv(
@@ -655,8 +686,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
               progress: 0.5
             })
           },
-          selected.cache,
-          selected.budget.maxCacheRelativePath || DEFAULT_MAX_CACHE_RELATIVE_PATH
+          selected.cache
         )
       } catch (error) {
         // A corrupt pkgs cache (e.g. a prior interrupted extract left an incomplete package dir) makes
@@ -672,7 +702,7 @@ export class DefaultRuntimeProvisioner implements RuntimeProvisioner {
           !isCorruptPkgsCacheError(error)
         )
           throw error
-        const repaired = await withExclusiveCacheLock(selected.cache.lockKey, () =>
+        const repaired = await withExclusiveCacheLocks(this.cacheLockKeys(selected.cache), () =>
           Promise.resolve(removeIncompleteExtractedPackages(this.cacheRoots(selected.cache)))
         )
         if (!repaired) throw error
@@ -732,7 +762,8 @@ class MaxPathRetryError extends Error {
     const originalMessage = original instanceof Error ? original.message : String(original)
     const retryMessage = retry instanceof Error ? retry.message : String(retry)
     super(
-      'micromamba failed after one Windows MAX_PATH cache recovery retry.\n' +
+      'The short Windows package cache recovery was attempted, but micromamba still failed. ' +
+        'Retry Repair; if it fails again, choose a shorter data location.\n' +
         `Original failure:\n${originalMessage}\nRetry failure:\n${retryMessage}`,
       { cause: retry }
     )

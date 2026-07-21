@@ -1,10 +1,13 @@
-import { win32 } from 'node:path'
+import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, win32 } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_MAX_CACHE_RELATIVE_PATH,
   isTrustedWindowsCacheAcl,
+  micromambaCacheLockKey,
   removeMicromambaCacheForRoot,
   selectMicromambaCache,
   WINDOWS_CACHE_DANGEROUS_RIGHT_NAMES,
@@ -20,6 +23,21 @@ const windowsDeps = (overrides: Partial<MicromambaCacheDeps> = {}): MicromambaCa
 })
 
 describe('selectMicromambaCache', () => {
+  it('keeps the physical lock identity stable when a cache is created beneath an aliased root', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'os-cache-alias-'))
+    const physicalRoot = join(sandbox, 'physical')
+    const aliasedRoot = join(sandbox, 'alias')
+    mkdirSync(physicalRoot)
+    symlinkSync(physicalRoot, aliasedRoot, process.platform === 'win32' ? 'junction' : 'dir')
+    const cache = join(aliasedRoot, 'pkgs')
+
+    const before = micromambaCacheLockKey(cache)
+    mkdirSync(join(physicalRoot, 'pkgs'))
+    const after = micromambaCacheLockKey(cache)
+
+    expect(before).toBe(after)
+  })
+
   it('chooses a deterministic same-volume cache keyed by user and canonical runtime root', () => {
     const first = selectMicromambaCache(
       'D:\\OpenScience\\runtime',
@@ -64,7 +82,14 @@ describe('selectMicromambaCache', () => {
         250,
         windowsDeps({ env: { USERNAME: 'alice', USERPROFILE: 'C:\\Users\\a-very-long-profile' } })
       )
-    ).toThrow(/LongPathsEnabled/i)
+    ).toThrow(/shorter (?:Windows user profile|data-root)/i)
+    expect(() =>
+      selectMicromambaCache(
+        'D:\\OpenScience\\runtime',
+        250,
+        windowsDeps({ env: { USERNAME: 'alice', USERPROFILE: 'C:\\Users\\a-very-long-profile' } })
+      )
+    ).not.toThrow(/LongPathsEnabled|administrator/i)
   })
 
   it('rejects an untrusted candidate and tries the profile location', () => {

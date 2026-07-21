@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve, win32 } from 'node:path'
+import { basename, dirname, join, resolve, win32 } from 'node:path'
 
 import { DEFAULT_MAX_CACHE_RELATIVE_PATH as MANIFEST_DEFAULT_MAX_CACHE_RELATIVE_PATH } from './bundle-manifest'
 
@@ -46,11 +46,26 @@ const isInside = (parent: string, child: string): boolean => {
 }
 
 const canonicalizeExisting = (path: string): string => {
-  try {
-    return realpathSync.native(path)
-  } catch {
-    return resolve(path)
+  let current = resolve(path)
+  const missing: string[] = []
+  for (;;) {
+    try {
+      return join(realpathSync.native(current), ...missing)
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return resolve(path)
+      missing.unshift(basename(current))
+      current = parent
+    }
   }
+}
+
+export const micromambaCacheLockKey = (
+  path: string,
+  deps: Pick<MicromambaCacheDeps, 'platform' | 'canonicalize'> = {}
+): string => {
+  const physical = (deps.canonicalize ?? canonicalizeExisting)(path)
+  return (deps.platform ?? process.platform) === 'win32' ? windowsKey(physical) : physical
 }
 
 const powershellLiteral = (value: string): string => value.replaceAll("'", "''")
@@ -262,12 +277,12 @@ export const selectMicromambaCache = (
       (deps.prepare !== undefined && !verifyOwnership(physical, userIdentity))
     )
       continue
-    return { path: physical, lockKey: windowsKey(physical) }
+    return { path: physical, lockKey: micromambaCacheLockKey(physical, { platform, canonicalize }) }
   }
 
   throw new Error(
     'No trusted writable package cache fits the managed runtime path budget. ' +
-      'Ask an administrator to enable Windows LongPathsEnabled, or choose a shorter profile path.'
+      'Choose a shorter Windows user profile or data-root path.'
   )
 }
 

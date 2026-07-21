@@ -90,6 +90,31 @@ describe('notebook-env-store', () => {
     expect(api.getStatus).toHaveBeenCalledTimes(2)
   })
 
+  it('maps language progress scopes and clears the scope for a global upgrade', async () => {
+    const { emit } = installApi()
+    await useNotebookEnvStore.getState().init()
+
+    emit({ phase: 'create-r', message: 'Preparing R', progress: 0.4, scope: 'r' })
+    expect(useNotebookEnvStore.getState().scope).toBe('r')
+
+    emit({ phase: 'upgrade', message: 'Updating runtimes', progress: 0.5, scope: 'upgrade' })
+    expect(useNotebookEnvStore.getState().scope).toBeUndefined()
+  })
+
+  it('clears stale progress when a new provision starts', async () => {
+    installApi()
+    useNotebookEnvStore.setState({
+      progress: { phase: 'error', message: 'Previous failure', progress: 0.8 },
+      error: 'Previous failure'
+    })
+
+    const pending = useNotebookEnvStore.getState().provision('python')
+
+    expect(useNotebookEnvStore.getState().progress).toBeUndefined()
+    expect(useNotebookEnvStore.getState().error).toBeUndefined()
+    await pending
+  })
+
   it('captures a rejected provision as error state', async () => {
     installApi({ provision: vi.fn(async () => Promise.reject(new Error('offline'))) })
     await useNotebookEnvStore.getState().provision('python')

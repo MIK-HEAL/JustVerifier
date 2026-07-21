@@ -14,11 +14,12 @@ import {
 } from './micromamba'
 import {
   DEFAULT_MAX_CACHE_RELATIVE_PATH,
+  micromambaCacheLockKey,
   selectMicromambaCache,
   type MicromambaCache
 } from './micromamba-cache'
 import { recoverWindowsMaxPathPackage } from './micromamba-cache-recovery'
-import { withExclusiveCacheLock, withSharedCacheLock } from './pkgs-cache-lock'
+import { withExclusiveCacheLocks, withSharedCacheLocks } from './pkgs-cache-lock'
 import {
   DEFAULT_PY_ENV,
   DEFAULT_R_ENV,
@@ -162,6 +163,12 @@ const defaultSpawn: InstallSpawn = (command, args, env, onChild) =>
 const mergeLog = (result: SpawnResult): string =>
   [result.stdout, result.stderr].filter((part) => part.length > 0).join('\n')
 
+const condaFailureMessage = (action: 'install' | 'remove', result: SpawnResult): string =>
+  /Retry failure after MAX_PATH recovery/i.test(mergeLog(result))
+    ? `conda ${action} failed after short Windows package cache recovery. Retry Repair; ` +
+      'if it fails again, choose a shorter data location.'
+    : `conda ${action} failed.`
+
 // The default (managed) envs are ADDITIVE-ONLY (foundation "default-environment restrictions"): a spec may be a bare
 // package name or a bare name pinned to an exact `==version`, and nothing else. This regex rejects
 // version RANGES (>=, <, ~=, !=, commas), git/VCS/URL/local specs (contain +, :, /, @), EXTRAS
@@ -246,7 +253,14 @@ export async function installPackages(
   }
   const runConda: InstallSpawn = async (command, args) => {
     const context = resolveCondaContext()
-    const result = await withSharedCacheLock(context.cache.lockKey, () =>
+    const cacheKeys = [
+      context.cache.lockKey,
+      micromambaCacheLockKey(join(root, 'pkgs'), {
+        platform: deps.micromambaEnv?.platform,
+        canonicalize: deps.micromambaEnv?.canonicalize
+      })
+    ]
+    const result = await withSharedCacheLocks(cacheKeys, () =>
       baseSpawn(command, args, context.env, deps.onChild)
     )
     if (result.code === 0) return result
@@ -254,14 +268,13 @@ export async function installPackages(
     let recovered = false
     let cleanupError: unknown
     try {
-      recovered = await withExclusiveCacheLock(context.cache.lockKey, () =>
+      recovered = await withExclusiveCacheLocks(cacheKeys, () =>
         Promise.resolve(
           recoverWindowsMaxPathPackage(
             new Error(evidence),
             [join(root, 'pkgs'), context.cache.path],
             {
-              platform: deps.micromambaEnv?.platform,
-              maxCacheRelativePath: DEFAULT_MAX_CACHE_RELATIVE_PATH
+              platform: deps.micromambaEnv?.platform
             }
           )
         )
@@ -278,7 +291,7 @@ export async function installPackages(
       }
     }
     if (!recovered) return result
-    const retry = await withSharedCacheLock(context.cache.lockKey, () =>
+    const retry = await withSharedCacheLocks(cacheKeys, () =>
       baseSpawn(command, args, context.env, deps.onChild)
     )
     if (retry.code === 0) return retry
@@ -408,7 +421,7 @@ export async function installPackages(
       log: mergeLog(result),
       method: 'conda',
       prefix,
-      error: result.code === 0 ? undefined : 'conda install failed.'
+      error: result.code === 0 ? undefined : condaFailureMessage('install', result)
     }
   }
 
@@ -441,7 +454,13 @@ export async function installPackages(
     log: `${mergeLog(conda)}\n${mergeLog(fallback)}`,
     method: 'cran',
     prefix: rLib,
-    error: ok ? undefined : 'conda and CRAN install both failed.'
+    error:
+      ok || !/Retry failure after MAX_PATH recovery/i.test(mergeLog(conda))
+        ? ok
+          ? undefined
+          : 'conda and CRAN install both failed.'
+        : 'conda failed after short Windows package cache recovery, and CRAN install also failed. ' +
+          'Retry Repair; if it fails again, choose a shorter data location.'
   }
 }
 
@@ -498,7 +517,7 @@ async function uninstallPackages(
       log: mergeLog(result),
       method: 'conda',
       prefix,
-      error: result.code === 0 ? undefined : 'conda remove failed.'
+      error: result.code === 0 ? undefined : condaFailureMessage('remove', result)
     }
   }
 
@@ -527,7 +546,7 @@ async function uninstallPackages(
       log: condaLog,
       method: 'conda',
       prefix,
-      error: 'conda remove failed.'
+      error: condaFailureMessage('remove', conda)
     }
   }
 

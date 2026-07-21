@@ -13,7 +13,7 @@ vi.mock('./micromamba', async (importActual) => ({
 }))
 
 import { installPackages, type InstallSpawn, type SpawnResult } from './package-manager'
-import { selectMicromambaCache } from './micromamba-cache'
+import { micromambaCacheLockKey, selectMicromambaCache } from './micromamba-cache'
 import { withExclusiveCacheLock } from './pkgs-cache-lock'
 import {
   envPrefix,
@@ -344,6 +344,8 @@ describe('installPackages', () => {
     expect(result.log).toContain('Retry failure after MAX_PATH recovery')
     expect(result.log).toContain('original install stdout')
     expect(result.log).toContain('retry install stdout')
+    expect(result.error).toMatch(/short Windows package cache[^]*shorter data location/i)
+    expect(result.error).not.toMatch(/LongPathsEnabled|administrator/i)
   })
 
   it('rejects an empty package list without spawning', async () => {
@@ -706,6 +708,53 @@ describe('installPackages default-env additive-only policy', () => {
 })
 
 describe('installPackages shared pkgs cache lock', () => {
+  it.each(['legacy', 'selected'] as const)(
+    'holds the %s physical cache identity while micromamba runs',
+    async (heldCache) => {
+      const storageRoot = mkdtempSync(join(tmpdir(), 'os-package-lock-'))
+      const root = runtimeRoot(storageRoot)
+      const shortCache = { path: 'C:\\osp1234567890', lockKey: 'c:\\osp1234567890' }
+      const legacyKey = micromambaCacheLockKey(join(root, 'pkgs'), {
+        platform: 'win32',
+        canonicalize: (path) => path
+      })
+      const heldKey = heldCache === 'legacy' ? legacyKey : shortCache.lockKey
+      let releaseCache!: () => void
+      let cacheHeld!: () => void
+      const release = new Promise<void>((resolve) => {
+        releaseCache = resolve
+      })
+      const held = new Promise<void>((resolve) => {
+        cacheHeld = resolve
+      })
+      const reader = withExclusiveCacheLock(heldKey, async () => {
+        cacheHeld()
+        await release
+      })
+      await held
+      const spawn = vi.fn<InstallSpawn>(async () => ok)
+      const install = installPackages(
+        { language: 'python', packages: ['numpy'] },
+        {
+          ...base,
+          storageRoot,
+          spawn,
+          micromambaEnv: {
+            platform: 'win32',
+            canonicalize: (path) => path,
+            selectCache: () => shortCache
+          }
+        }
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(spawn).not.toHaveBeenCalled()
+      releaseCache()
+      await Promise.all([reader, install])
+      expect(spawn).toHaveBeenCalledOnce()
+    }
+  )
+
   // Regression: micromamba install/remove extract into and mutate the SHARED pkgs cache, so they must
   // hold the shared cache lock (keyed by runtimeRoot(storageRoot)) — otherwise a concurrent corrupt-cache
   // repair (cache-exclusive, deletes incomplete extractions) could delete a package dir mid-op. We prove

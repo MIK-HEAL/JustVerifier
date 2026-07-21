@@ -86,6 +86,16 @@ describe('parseManifest', () => {
     })
   })
 
+  it.each(['maxCacheRelativePath', 'maxEnvRelativePath'] as const)(
+    'rejects a manifest with only %s',
+    (field) => {
+      const raw = validManifest()
+      raw.packs['python-3.12'][field] = 207
+      expect(() => parseManifest(JSON.stringify(raw))).toThrow(/path budget fields.*together/i)
+      expect(pathBudgetForPack(raw.packs['python-3.12'])).toBeUndefined()
+    }
+  )
+
   it('rejects non-JSON text', () => {
     expect(() => parseManifest('not json')).toThrow(/valid JSON/)
   })

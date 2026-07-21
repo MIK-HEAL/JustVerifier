@@ -2623,6 +2623,7 @@ describe('v4 runtime bindings & agent tools', () => {
       enablement?: RuntimeEnablement
       executions?: NotebookExecutionRequest[]
       terminations?: string[]
+      platform?: NodeJS.Platform
       installPackagesImpl?: (
         request: InstallRequestForTest,
         deps?: Partial<InstallDepsForTest>
@@ -2639,6 +2640,7 @@ describe('v4 runtime bindings & agent tools', () => {
           (env) => env.language === language
         ),
       getRuntimeEnablement: async () => options.enablement,
+      platform: options.platform,
       installPackagesImpl: options.installPackagesImpl,
       executorFactory: () => ({
         execute: async (request): Promise<NotebookExecutionResult> => {
@@ -2907,7 +2909,8 @@ describe('v4 runtime bindings & agent tools', () => {
     const service = bindingService(root, {
       discovered: [windowsCondaR],
       enablement: { enabled: { [windowsCondaR.envId]: true }, installAuthorized: {} },
-      executions
+      executions,
+      platform: 'win32'
     })
 
     await service.bindRuntime({
@@ -2922,6 +2925,37 @@ describe('v4 runtime bindings & agent tools', () => {
       command: `${prefix}\\Lib\\R\\bin\\Rscript.exe`,
       condaPrefix: prefix
     })
+  })
+
+  it('does not infer Windows conda activation from a Windows-shaped R path on another platform', async () => {
+    const root = await createStorageRoot()
+    const executions: NotebookExecutionRequest[] = []
+    const prefix = 'C:\\Users\\HM\\miniforge3\\envs\\analysis'
+    const windowsShapedR: DiscoveredInterpreter = {
+      language: 'r',
+      provenance: 'user-own',
+      envId: `${prefix}\\Lib\\R\\bin\\R.exe`,
+      interpreterPath: `${prefix}\\Lib\\R\\bin\\R.exe`,
+      label: 'analysis',
+      version: '4.4.3',
+      runnable: true
+    }
+    const service = bindingService(root, {
+      discovered: [windowsShapedR],
+      enablement: { enabled: { [windowsShapedR.envId]: true }, installAuthorized: {} },
+      executions,
+      platform: 'darwin'
+    })
+
+    await service.bindRuntime({
+      sessionId: 's',
+      workspaceCwd: root,
+      language: 'r',
+      runtimeId: windowsShapedR.envId
+    })
+    await service.execute({ sessionId: 's', workspaceCwd: root, code: '1', language: 'r' })
+
+    expect(executions[0].resolvedInterpreter?.condaPrefix).toBeUndefined()
   })
 
   it('binds an agent-created named env and runs cells in it via the managed conda path', async () => {

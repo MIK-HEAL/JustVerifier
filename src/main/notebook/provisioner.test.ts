@@ -28,8 +28,8 @@ import {
   type ProvisionerDeps
 } from './provisioner'
 import { envsLockDir } from './runtime-relocation'
-import { withExclusiveCacheLock } from './pkgs-cache-lock'
-import { selectMicromambaCache } from './micromamba-cache'
+import { withExclusiveCacheLock, withSharedCacheLock } from './pkgs-cache-lock'
+import { micromambaCacheLockKey, selectMicromambaCache } from './micromamba-cache'
 import {
   operationJournalPath,
   RuntimeOperationJournal,
@@ -141,7 +141,9 @@ describe('DefaultRuntimeProvisioner.provisionPython', () => {
       })
     )
 
-    await expect(provisioner.provisionPython(() => {})).rejects.toThrow(/path budget/i)
+    const failure = provisioner.provisionPython(() => {})
+    await expect(failure).rejects.toThrow(/path budget[^]*shorter data-root/i)
+    await expect(failure).rejects.not.toThrow(/LongPathsEnabled|administrator/i)
     expect(runArgv).not.toHaveBeenCalled()
   })
 
@@ -343,6 +345,113 @@ describe('DefaultRuntimeProvisioner.provisionPython', () => {
     expect(existsSync(packageDir)).toBe(false)
   })
 
+  it('proactively clears an over-budget legacy URL-cache leaf before fresh materialization', async () => {
+    const root = makeRoot()
+    const legacyLeaf = join(
+      pkgsCache(root),
+      'https',
+      'host',
+      'channel',
+      'win-64',
+      'legacy-deep-package-1.0-0'
+    )
+    const deepFile = join(legacyLeaf, 'Library', 'a'.repeat(100), 'b'.repeat(100), 'file.hpp')
+    mkdirSync(join(deepFile, '..'), { recursive: true })
+    writeFileSync(deepFile, 'x')
+    mkdirSync(join(legacyLeaf, 'info'), { recursive: true })
+    writeFileSync(
+      join(legacyLeaf, 'info', 'repodata_record.json'),
+      JSON.stringify({ url: 'https://host/channel/win-64/legacy-deep-package-1.0-0.conda' })
+    )
+    const runArgv = vi.fn(async () => {
+      expect(existsSync(legacyLeaf)).toBe(false)
+      const bin = pythonBin(envPrefix(root, DEFAULT_PY_ENV))
+      mkdirSync(join(bin, '..'), { recursive: true })
+      writeFileSync(bin, 'ok')
+    })
+    const provisioner = new DefaultRuntimeProvisioner(
+      makeDeps(root, {
+        platform: 'win32',
+        cache: { path: 'C:\\osp1234567890', lockKey: 'c:\\osp1234567890' },
+        fetchBundle: async (): Promise<FetchedBundle> => ({
+          lockPath: join(root, 'p.lock'),
+          pathBudget: { maxCacheRelativePath: 1, maxEnvRelativePath: 1 }
+        }),
+        runArgv
+      })
+    )
+
+    await provisioner.provisionPython(() => {})
+
+    expect(runArgv).toHaveBeenCalledOnce()
+    expect(existsSync(legacyLeaf)).toBe(false)
+  })
+
+  it.each(['legacy', 'selected'] as const)(
+    'locks proactive cleanup against the %s physical cache identity',
+    async (heldCache) => {
+      const root = makeRoot()
+      const shortCache = { path: 'C:\\osp1234567890', lockKey: 'c:\\osp1234567890' }
+      const heldKey =
+        heldCache === 'legacy'
+          ? micromambaCacheLockKey(pkgsCache(root), { platform: 'win32' })
+          : shortCache.lockKey
+      const legacyLeaf = join(
+        pkgsCache(root),
+        'https',
+        'host',
+        'channel',
+        'win-64',
+        'legacy-deep-package-1.0-0'
+      )
+      const deepFile = join(legacyLeaf, 'Library', 'a'.repeat(100), 'b'.repeat(100), 'file.hpp')
+      mkdirSync(join(deepFile, '..'), { recursive: true })
+      writeFileSync(deepFile, 'x')
+      mkdirSync(join(legacyLeaf, 'info'), { recursive: true })
+      writeFileSync(
+        join(legacyLeaf, 'info', 'repodata_record.json'),
+        JSON.stringify({ url: 'https://host/channel/win-64/legacy-deep-package-1.0-0.conda' })
+      )
+      let releaseCache!: () => void
+      let cacheHeld!: () => void
+      const release = new Promise<void>((resolve) => {
+        releaseCache = resolve
+      })
+      const held = new Promise<void>((resolve) => {
+        cacheHeld = resolve
+      })
+      const reader = withSharedCacheLock(heldKey, async () => {
+        cacheHeld()
+        await release
+      })
+      await held
+      const runArgv = vi.fn(async () => {
+        const bin = pythonBin(envPrefix(root, DEFAULT_PY_ENV))
+        mkdirSync(join(bin, '..'), { recursive: true })
+        writeFileSync(bin, 'ok')
+      })
+      const provisioning = new DefaultRuntimeProvisioner(
+        makeDeps(root, {
+          platform: 'win32',
+          cache: shortCache,
+          fetchBundle: async (): Promise<FetchedBundle> => ({
+            lockPath: join(root, 'p.lock'),
+            pathBudget: { maxCacheRelativePath: 1, maxEnvRelativePath: 1 }
+          }),
+          runArgv
+        })
+      ).provisionPython(() => {})
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(existsSync(legacyLeaf)).toBe(true)
+      expect(runArgv).not.toHaveBeenCalled()
+      releaseCache()
+      await Promise.all([reader, provisioning])
+      expect(existsSync(legacyLeaf)).toBe(false)
+      expect(runArgv).toHaveBeenCalledOnce()
+    }
+  )
+
   it('preserves original and retry diagnostics when bounded MAX_PATH recovery fails', async () => {
     const root = makeRoot()
     const cache = pkgsCache(root)
@@ -371,9 +480,12 @@ describe('DefaultRuntimeProvisioner.provisionPython', () => {
       })
     )
 
-    await expect(provisioner.provisionPython(() => {})).rejects.toThrow(
+    const failure = provisioner.provisionPython(() => {})
+    await expect(failure).rejects.toThrow(
       /Original failure:[^]*Invalid package cache[^]*Retry failure:[^]*different disk error/
     )
+    await expect(failure).rejects.toThrow(/short Windows package cache[^]*Repair/i)
+    await expect(failure).rejects.not.toThrow(/LongPathsEnabled|administrator/i)
     expect(creates).toBe(2)
   })
 
