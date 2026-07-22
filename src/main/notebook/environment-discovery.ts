@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, realpathSync } from 'node:fs'
+import { access, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, win32 } from 'node:path'
 import { promisify } from 'node:util'
@@ -240,6 +241,54 @@ export const defaultCandidatePaths =
 
     // Windows Python launcher: `py -0p` lists installed interpreters' paths.
     if (language === 'python' && isWin()) for (const p of await pyLauncherPaths()) found.add(p)
+
+    // Windows CRAN R standard installations: check Program Files and user-local directories for versioned
+    // R installs (R-x.y.z). CRAN R doesn't register with a launcher like Python's `py`, so we enumerate
+    // the standard install roots directly. Each version may have 64-bit (bin/x64/R.exe, most common) or
+    // fallback (bin/R.exe) layouts.
+    if (language === 'r' && isWin()) {
+      const home = homedir()
+      const programFiles = [
+        process.env.ProgramFiles ?? 'C:\\Program Files',
+        process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)',
+        join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Programs')
+      ]
+      for (const installRoot of programFiles) {
+        const rRoot = join(installRoot, 'R')
+        let entries: string[]
+        try {
+          entries = await readdir(rRoot)
+        } catch (err: unknown) {
+          // Discovery is best-effort: absorb all errors and continue. ENOENT/EACCES/EPERM are expected
+          // on locked-down corporate machines, but unexpected errors (EIO, ENOTDIR, EMFILE) can also
+          // occur (e.g., network-mapped Program Files with dropped shares). Log unexpected codes for
+          // observability but do not reject the entire Promise.all that would block Python discovery too.
+          const code = (err as NodeJS.ErrnoException).code
+          if (code !== 'ENOENT' && code !== 'EACCES' && code !== 'EPERM') {
+            console.warn('[cran-r] unexpected error scanning', rRoot, code)
+          }
+          continue
+        }
+        for (const ver of entries) {
+          // Match R-x.y.z or R-x.y.z-suffix (e.g., R-4.2.0-ucrt for CRAN's UCRT builds)
+          if (!/^R-\d+\.\d+\.\d+(-\w+)?$/.test(ver)) continue
+          // Try 64-bit first (standard since R 4.2), then fallback to bin/R.exe.
+          const candidates = [
+            join(rRoot, ver, 'bin', 'x64', 'R.exe'),
+            join(rRoot, ver, 'bin', 'R.exe')
+          ]
+          for (const p of candidates) {
+            try {
+              await access(p)
+              found.add(p)
+              break
+            } catch {
+              // Candidate doesn't exist, try next
+            }
+          }
+        }
+      }
+    }
 
     // The app's own envs under runtime/envs: the default(s) AND any agent-created named env, so a conda
     // env the agent made with manage_environments is discovered and therefore bindable. Scan every
