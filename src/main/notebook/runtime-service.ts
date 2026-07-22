@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
@@ -17,6 +17,7 @@ import type {
   NotebookKernelMetadata,
   NotebookLanguage,
   NotebookOutput,
+  NotebookRunDocument,
   NotebookRunRecord,
   NotebookRunSource,
   NotebookRunStatus,
@@ -35,7 +36,7 @@ import type {
   ProvisionProgress
 } from '../../shared/notebook-env'
 import type { PackageMirror } from '../../shared/mirror'
-import { runDocumentToIpynb, type ResolvedArtifact } from './ipynb-export'
+import { runDocumentToIpynb, type NbformatOutput, type ResolvedArtifact } from './ipynb-export'
 import { NotebookKernelExecutor, type NotebookKernelExecutorOptions } from './kernel-executor'
 import type { KernelProcessKind } from './kernel-executor'
 import { effectiveMirrorAsync, type ProbeDeps } from './mirror-probe'
@@ -307,8 +308,13 @@ type NotebookRuntimeServiceOptions = {
   appVersion?: string
   // Save-dialog seam for notebook export tests. Production falls back to Electron's native dialog.
   saveIpynb?: (suggestedName: string, data: string) => Promise<ExportNotebookResult>
-  // Resolves app-managed artifact paths with the artifact repository's canonical/symlink checks.
-  resolveArtifactPath?: (path: string) => Promise<string>
+  // Resolves app-managed artifact paths with the artifact repository's canonical/symlink checks,
+  // bound to the artifact's declaring project/session subtree.
+  resolveArtifactPath?: (request: {
+    path: string
+    projectName: string
+    sessionId: string
+  }) => Promise<string>
 }
 
 // The wire binding plus the interpreter override the executor needs. `resolvedInterpreter` is set only
@@ -392,16 +398,38 @@ const isPathInside = (root: string, candidate: string): boolean => {
 const artifactMimeData = async (
   root: string,
   artifact: NotebookRunRecord['artifacts'][number],
-  resolveManagedPath?: (path: string) => Promise<string>
+  resolveManagedPath?: (request: {
+    path: string
+    projectName: string
+    sessionId: string
+  }) => Promise<string>
 ): Promise<ResolvedArtifact | null> => {
   const mimeType = artifact.mimeType
   if (!mimeType) return null
-  const filePath = isPathInside(root, artifact.path)
-    ? artifact.path
-    : await resolveManagedPath?.(artifact.path)
+
+  let filePath: string | undefined
+  if (isPathInside(root, artifact.path)) {
+    // Lexical containment is not enough — a symlink inside the notebook root can point anywhere.
+    // Canonicalize both sides and require the real path to stay inside the real notebook root.
+    const [realRoot, realFilePath] = await Promise.all([realpath(root), realpath(artifact.path)])
+    if (!isPathInside(realRoot, realFilePath)) {
+      throw new Error(`Artifact escapes the notebook session root: ${artifact.name}`)
+    }
+    filePath = realFilePath
+  } else {
+    filePath = await resolveManagedPath?.({
+      path: artifact.path,
+      projectName: artifact.projectName,
+      sessionId: artifact.sessionId
+    })
+  }
   if (!filePath) return null
 
   const binary = await readFile(filePath)
+  // nbformat stores SVG as raw text; only binary images (png/jpeg/…) are base64-encoded.
+  if (mimeType === 'image/svg+xml') {
+    return { mimeType, data: binary.toString('utf8') }
+  }
   if (mimeType.startsWith('image/')) {
     return { mimeType, data: binary.toString('base64') }
   }
@@ -412,6 +440,53 @@ const artifactMimeData = async (
     return { mimeType, data: binary.toString('utf8') }
   }
   return null
+}
+
+// The IO phase of an ipynb export: resolves every run's artifacts into nbformat outputs up front,
+// so the projection itself (runDocumentToIpynb) is a pure function that never touches the
+// filesystem. Only artifacts belonging to this document are inlined; read/parse failures degrade
+// to a stderr marker output rather than aborting the export.
+const resolveNotebookArtifactOutputs = async (
+  document: NotebookRunDocument,
+  resolveManagedPath?: (request: {
+    path: string
+    projectName: string
+    sessionId: string
+  }) => Promise<string>
+): Promise<Map<string, NbformatOutput[]>> => {
+  const outputsByRun = new Map<string, NbformatOutput[]>()
+  const artifactSessionId = document.artifactSessionId ?? document.sessionId
+
+  for (const run of document.runs) {
+    if (run.artifacts.length === 0) continue
+
+    const outputs: NbformatOutput[] = []
+    for (const artifact of run.artifacts) {
+      try {
+        const belongsToDocument =
+          artifact.projectName === document.projectName && artifact.sessionId === artifactSessionId
+        const resolved = belongsToDocument
+          ? await artifactMimeData(document.notebookSessionRoot, artifact, resolveManagedPath)
+          : null
+        if (resolved) {
+          outputs.push({
+            output_type: 'display_data',
+            data: { [resolved.mimeType]: resolved.data },
+            metadata: {}
+          })
+        }
+      } catch {
+        outputs.push({
+          output_type: 'stream',
+          name: 'stderr',
+          text: [`[Open Science] Could not inline artifact: ${artifact.name}\n`]
+        })
+      }
+    }
+    outputsByRun.set(run.runId, outputs)
+  }
+
+  return outputsByRun
 }
 
 // Builds the compact plain text output list shown in the preview panel.
@@ -1930,6 +2005,7 @@ class NotebookRuntimeService {
   }
 
   // Exports the durable history as an nbformat projection; run.json remains the source of truth.
+  // Artifact IO is resolved first, then the projection runs as a pure function over the result.
   async exportIpynb(request: NotebookSessionRequest): Promise<ExportNotebookResult> {
     const projectName = request.projectName ?? this.options.projectName
     const document = await this.repository.findExisting(projectName, request.sessionId)
@@ -1937,22 +2013,13 @@ class NotebookRuntimeService {
       throw new Error(`Notebook session not found: ${request.sessionId}`)
     }
 
-    const notebook = await runDocumentToIpynb(document, {
+    const artifactOutputs = await resolveNotebookArtifactOutputs(
+      document,
+      this.options.resolveArtifactPath
+    )
+    const notebook = runDocumentToIpynb(document, {
       appVersion: this.options.appVersion,
-      resolveArtifact: (artifact) => {
-        const artifactSessionId = document.artifactSessionId ?? document.sessionId
-        if (
-          artifact.projectName !== document.projectName ||
-          artifact.sessionId !== artifactSessionId
-        ) {
-          return Promise.resolve(null)
-        }
-        return artifactMimeData(
-          document.notebookSessionRoot,
-          artifact,
-          this.options.resolveArtifactPath
-        )
-      }
+      artifactOutputs
     })
     const suggestedName = `session-${request.sessionId.slice(0, 8)}.ipynb`
     const serialized = `${JSON.stringify(notebook, null, 2)}\n`
