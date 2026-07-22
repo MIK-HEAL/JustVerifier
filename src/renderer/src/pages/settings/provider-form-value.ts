@@ -1,5 +1,6 @@
 import {
   codexSubscriptionProviderIdentity,
+  type AgentFrameworkId,
   type ChatApiEndpoint,
   type ProviderType
 } from '../../../../shared/settings'
@@ -43,6 +44,31 @@ export const createEmptyProviderFormValue = (
   ...overrides
 })
 
+// The provider kind pre-selected when the Add provider form opens, matched to the active agent
+// framework's most common official vendor: Claude Code → Anthropic, Codex → OpenAI,
+// OpenCode → DeepSeek. Exhaustive over AgentFrameworkId so a new framework forces a deliberate
+// choice, and keyed off OfficialVendorId so a registry rename fails at compile time.
+export const defaultProviderKindKey = (
+  frameworkId: AgentFrameworkId
+): `official:${OfficialVendorId}` => {
+  switch (frameworkId) {
+    case 'claude-code':
+      return 'official:anthropic'
+    case 'codex':
+      return 'official:openai'
+    case 'opencode':
+      return 'official:deepseek'
+    default: {
+      // The never assignment keeps the switch exhaustive at compile time. Persisted state could
+      // still hold a stale value outside the union; this runs during render, so degrade to the
+      // Claude Code vendor instead of throwing.
+      const exhaustive: never = frameworkId
+      void exhaustive
+      return 'official:anthropic'
+    }
+  }
+}
+
 // Per-field validation errors. Custom needs base URL/model/key; official needs only a key (base URL
 // and model come from the registry); claude-default has no required fields.
 export type ProviderFormErrors = {
@@ -79,6 +105,14 @@ export const hasProviderFormErrors = (errors: ProviderFormErrors): boolean =>
 // 'other' = the custom gateway and local Claude. ('coding' — subscription coding plans — is reserved
 // for once those endpoints are wired up.)
 export type ProviderKindGroup = 'coding' | 'api' | 'other'
+
+// Group headers shown in the provider-type picker and dropdown, in display order. ('coding' is
+// reserved for subscription coding-plan endpoints once those are wired up.)
+export const PROVIDER_KIND_GROUPS: { id: ProviderKindGroup; label: string }[] = [
+  { id: 'coding', label: 'Codex subscription' },
+  { id: 'api', label: 'Official API' },
+  { id: 'other', label: 'Other' }
+]
 
 // A selectable option in the provider-type dropdown. Official vendors are keyed `official:<vendorId>`.
 export type ProviderKind = {
