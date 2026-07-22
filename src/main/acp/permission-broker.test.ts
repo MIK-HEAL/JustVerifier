@@ -85,6 +85,26 @@ describe('ACP permission broker', () => {
     })
   })
 
+  it('preserves an explicit shell title when raw input also contains a command', async () => {
+    const emitted: Array<Parameters<ConstructorParameters<typeof AcpPermissionBroker>[0]>[0]> = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createToolPermissionRequest({
+      title: 'Build project',
+      providerToolName: 'Bash',
+      kind: 'execute'
+    })
+    request.toolCall.rawInput = { command: './build.sh --verbose' }
+
+    const response = broker.requestPermission(request)
+
+    expect(emitted[0].title).toBe('Build project')
+    broker.respond({ requestId: emitted[0].requestId, optionId: 'allow-always' })
+    await response
+    expect(broker.listGrants('session-1')).toEqual([
+      { categoryKey: 'bash:Build project', kind: 'shell', label: 'Build project' }
+    ])
+  })
+
   it('auto-approves only conservative Auto operations accepted by policy', async () => {
     const emittedRequests: string[] = []
     const broker = new AcpPermissionBroker((request) => emittedRequests.push(request.requestId))
@@ -368,6 +388,36 @@ describe('ACP permission broker', () => {
       { profile: 'ask', mcpServerNames }
     )
     expect(emittedRequests).toHaveLength(1)
+  })
+
+  it('keeps MCP identity when raw input contains a command field', async () => {
+    const emittedRequests: Array<
+      Parameters<ConstructorParameters<typeof AcpPermissionBroker>[0]>[0]
+    > = []
+    const broker = new AcpPermissionBroker((request) => emittedRequests.push(request))
+    const firstRequest = createToolPermissionRequest({
+      title: 'mcp__runner__execute',
+      kind: 'execute'
+    })
+    firstRequest.toolCall.rawInput = { command: 'npm publish' }
+
+    const firstResponse = broker.requestPermission(firstRequest)
+
+    expect(emittedRequests[0]).toMatchObject({
+      title: 'mcp__runner__execute',
+      isMcp: true
+    })
+    broker.respond({ requestId: emittedRequests[0].requestId, optionId: 'allow-always' })
+    await firstResponse
+
+    const secondRequest = createToolPermissionRequest({
+      title: 'mcp__other__execute',
+      kind: 'execute'
+    })
+    secondRequest.toolCall.rawInput = { command: 'npm publish' }
+    void broker.requestPermission(secondRequest)
+
+    expect(emittedRequests).toHaveLength(2)
   })
 
   it('does not remember Always across sessions for built-in tools', async () => {

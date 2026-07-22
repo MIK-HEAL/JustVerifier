@@ -24,14 +24,37 @@ type EmitPermissionRequest = (request: AcpPermissionRequest) => void
 const ALLOW_ALWAYS_OPTION_KIND = 'allow_always'
 const ALLOW_ONCE_OPTION_KIND = 'allow_once'
 
+const commandFromRawInput = (rawInput: unknown): string | undefined => {
+  if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return undefined
+
+  const command = (rawInput as Record<string, unknown>).command
+
+  return typeof command === 'string' && command.trim() ? command : undefined
+}
+
+const reportedPermissionTitle = (params: RequestPermissionRequest): string =>
+  params.toolCall.title ?? params.toolCall.toolCallId
+
+// codex-acp command approvals omit title but retain the exact command in rawInput. Prefer that
+// security-relevant value only for confirmed non-MCP shell requests; MCP inputs are arbitrary and
+// may contain an unrelated `command` field.
+const resolvePermissionTitle = (params: RequestPermissionRequest, isMcp: boolean): string => {
+  const isShell =
+    extractProviderToolName(params.toolCall) === 'Bash' || params.toolCall.kind === 'execute'
+  const hasNoTitle = !params.toolCall.title?.trim()
+
+  return (
+    (!isMcp && isShell && hasNoTitle ? commandFromRawInput(params.toolCall.rawInput) : undefined) ??
+    reportedPermissionTitle(params)
+  )
+}
+
 // Trivial `KEY=VALUE` env assignment prefixing a shell command (e.g. `FOO=bar python a.py`). Values
 // containing whitespace/quotes are not covered (already split away) and fall back to the raw token.
 const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=[^\s]*$/
 
-// Derives the command signature used to group shell/execute permissions. Leading trivial env
-// assignments are dropped, then the remaining command (executable plus its arguments) is normalized
-// to single-spaced form. Keying on the full command — not just the executable — keeps "Always" on
-// `python a.py` from also allowing `python b.py`.
+// Derives the normalized full-command signature used to group shell/execute permissions. Leading
+// trivial env assignments are skipped, but arguments remain part of the authorization boundary.
 const commandSignature = (command: string): string => {
   const tokens = command.trim().split(/\s+/)
   let index = 0
@@ -57,15 +80,17 @@ const resolveCategoryKey = (
   mcpServerNames: readonly string[] = []
 ): string => {
   const { toolCall } = params
-  const title = toolCall.title ?? toolCall.toolCallId
+  const reportedTitle = reportedPermissionTitle(params)
   const providerToolName = extractProviderToolName(toolCall)
 
   if (
     isMcpToolName(toolCall.title, mcpServerNames) ||
     isMcpToolName(providerToolName, mcpServerNames)
   ) {
-    return `mcp:${title}`
+    return `mcp:${reportedTitle}`
   }
+
+  const title = resolvePermissionTitle(params, false)
 
   if (providerToolName === 'Bash' || toolCall.kind === 'execute') {
     return `bash:${commandSignature(title)}`
@@ -130,14 +155,15 @@ class AcpPermissionBroker {
   ): Promise<RequestPermissionResponse> {
     const requestId = randomUUID()
     const categoryKey = resolveCategoryKey(params, policyContext?.mcpServerNames)
+    const isMcp = categoryKey.startsWith('mcp:')
     const request: AcpPermissionRequest = {
       requestId,
       sessionId: params.sessionId,
       toolCallId: params.toolCall.toolCallId,
-      title: params.toolCall.title ?? params.toolCall.toolCallId,
+      title: resolvePermissionTitle(params, isMcp),
       status: params.toolCall.status ?? undefined,
       providerToolName: extractProviderToolName(params.toolCall),
-      isMcp: categoryKey.startsWith('mcp:'),
+      isMcp,
       toolKind: params.toolCall.kind ?? undefined,
       toolLocations: params.toolCall.locations ?? undefined,
       rawInput: params.toolCall.rawInput,
