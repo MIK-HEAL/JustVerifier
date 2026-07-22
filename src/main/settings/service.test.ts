@@ -620,6 +620,90 @@ describe('SettingsService: validation', () => {
     expect(stored.lastValidationFailure?.at).toBeGreaterThan(0)
   })
 
+  it('reports incompatible (no network probe) when the provider cannot drive the active framework', async () => {
+    const service = createService()
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // Default framework is Claude Code (Anthropic /v1/messages only); an OpenAI-only gateway can't drive
+    // it, so testing must fail with the pairing reason rather than firing a misleading /v1/messages probe.
+    const created = (
+      await service.upsertProvider({
+        type: 'custom',
+        name: 'G',
+        baseUrl: 'https://g',
+        model: 'm',
+        key: 'k',
+        apiEndpoints: ['openai']
+      })
+    ).providers[0]
+
+    const result = await service.validateProvider({ providerId: created.id })
+
+    expect(result).toMatchObject({ ok: false, category: 'incompatible', applied: true })
+    expect(result.message).toContain('/v1/chat/completions')
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const stored = (await repository.getSettings()).providers.find((p) => p.id === created.id)
+    expect(stored?.lastValidatedAt).toBeUndefined()
+    expect(stored?.lastValidationFailure).toMatchObject({ category: 'incompatible' })
+  })
+
+  it('probes normally once the active framework can drive the provider', async () => {
+    const service = createService()
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const created = (
+      await service.upsertProvider({
+        type: 'custom',
+        name: 'G',
+        baseUrl: 'https://g',
+        model: 'm',
+        key: 'k',
+        apiEndpoints: ['openai']
+      })
+    ).providers[0]
+
+    // OpenCode accepts /v1/chat/completions, so the same provider now validates over the network.
+    await service.setAgentFramework('opencode')
+    const result = await service.validateProvider({ providerId: created.id })
+
+    expect(result).toMatchObject({ ok: true, category: 'ok' })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toContain('/v1/chat/completions')
+  })
+
+  it('probes the route the active framework drives for a multi-route provider', async () => {
+    const service = createService()
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // A provider that speaks both routes. preferredEndpoint would pick OpenAI globally, but Claude Code
+    // runs /v1/messages — so the probe must hit that, or a passing test wouldn't prove the real route.
+    const created = (
+      await service.upsertProvider({
+        type: 'custom',
+        name: 'G',
+        baseUrl: 'https://g',
+        model: 'm',
+        key: 'k',
+        apiEndpoints: ['anthropic', 'openai']
+      })
+    ).providers[0]
+
+    // Default framework is Claude Code (Anthropic only).
+    await service.validateProvider({ providerId: created.id })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toContain('/v1/messages')
+
+    // The same provider under OpenCode should instead be probed on the OpenAI route it will run.
+    await service.setAgentFramework('opencode')
+    await service.validateProvider({ providerId: created.id })
+    expect(fetchMock.mock.calls[1][0]).toContain('/v1/chat/completions')
+  })
+
   it('clears a recorded failure once a later validation succeeds', async () => {
     const service = createService()
     const fetchMock = vi.fn().mockResolvedValue({ status: 401 })
@@ -1604,6 +1688,9 @@ describe('SettingsService: official vendors', () => {
     const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
     vi.stubGlobal('fetch', fetchMock)
 
+    // OpenCode drives DeepSeek's OpenAI route, so the probe hits /v1/chat/completions — but as a plain
+    // non-streaming ping (the bridge streaming function-tool probe is Codex-only).
+    await service.setAgentFramework('opencode')
     const result = await service.validateProvider({
       draft: { type: 'official', vendorId: 'deepseek', key: 'sk-ds' }
     })
