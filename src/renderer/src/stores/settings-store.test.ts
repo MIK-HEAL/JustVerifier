@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  ClaudeInstallEvent,
   EnvironmentCheckResult,
   SettingsSnapshot,
   ValidateProviderResult,
@@ -9,6 +10,7 @@ import type {
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../../shared/settings'
 import {
   createInitialSettingsState,
+  selectAnyInstalling,
   selectProviderModelOptions,
   useSettingsStore
 } from './settings-store'
@@ -23,6 +25,8 @@ type SettingsApi = {
   detectClaude: ReturnType<typeof vi.fn>
   detectOpencode: ReturnType<typeof vi.fn>
   detectCodex: ReturnType<typeof vi.fn>
+  installClaude: ReturnType<typeof vi.fn>
+  installOpencode: ReturnType<typeof vi.fn>
   installCodex: ReturnType<typeof vi.fn>
   uninstallCodex: ReturnType<typeof vi.fn>
   onInstallLog: ReturnType<typeof vi.fn>
@@ -121,6 +125,8 @@ beforeEach(() => {
         codex: { resolvedPath: '/bin/codex-acp', version: '1.1.4' }
       })
     }),
+    installClaude: vi.fn().mockResolvedValue({ installId: 'claude-1', ok: true }),
+    installOpencode: vi.fn().mockResolvedValue({ installId: 'opencode-1', ok: true }),
     installCodex: vi.fn().mockResolvedValue({ installId: 'codex-1', ok: true }),
     uninstallCodex: vi.fn().mockResolvedValue(snapshot([])),
     onInstallLog: vi.fn().mockReturnValue(vi.fn()),
@@ -1065,6 +1071,150 @@ describe('settings store: setAgentFramework', () => {
     await useSettingsStore.getState().uninstallCodex()
     expect(api.uninstallCodex).toHaveBeenCalledOnce()
     expect(useSettingsStore.getState().codex).toEqual({})
+  })
+
+  it('streams install events into the installing runtime slice only, leaving the others untouched (#278)', async () => {
+    // Capture the install-log listener and hold the install open so mid-install state is observable.
+    let emit: (event: ClaudeInstallEvent) => void = () => undefined
+    api.onInstallLog.mockImplementation((listener: (event: ClaudeInstallEvent) => void) => {
+      emit = listener
+      return vi.fn()
+    })
+    let resolveInstall: (result: { installId: string; ok: boolean }) => void = () => undefined
+    api.installCodex.mockImplementation(
+      () =>
+        new Promise<{ installId: string; ok: boolean }>((resolve) => {
+          resolveInstall = resolve
+        })
+    )
+
+    const pending = useSettingsStore.getState().installCodex()
+
+    // A progress tick and a log chunk arrive on the shared channel while Codex is installing.
+    emit({ kind: 'progress', installId: 'codex-1', phase: 'installing' })
+    emit({ kind: 'log', installId: 'codex-1', stream: 'stdout', chunk: 'Fetching adapter\n' })
+
+    const mid = useSettingsStore.getState().installStates
+    // Codex's slice reflects its own install...
+    expect(mid.codex.isInstalling).toBe(true)
+    expect(mid.codex.installProgress).toEqual({
+      kind: 'progress',
+      installId: 'codex-1',
+      phase: 'installing'
+    })
+    expect(mid.codex.installLogs).toEqual(['Fetching adapter\n'])
+    // ...while Claude's and OpenCode's slices stay pristine — no phantom install (the bug in #278).
+    expect(mid['claude-code']).toEqual({
+      isInstalling: false,
+      installLogs: [],
+      installProgress: null,
+      installError: undefined
+    })
+    expect(mid.opencode).toEqual({
+      isInstalling: false,
+      installLogs: [],
+      installProgress: null,
+      installError: undefined
+    })
+
+    resolveInstall({ installId: 'codex-1', ok: true })
+    await pending
+
+    // After completion the install flag clears and no error is recorded on a success.
+    const done = useSettingsStore.getState().installStates
+    expect(done.codex.isInstalling).toBe(false)
+    expect(done.codex.installError).toBeUndefined()
+  })
+
+  it('records an install failure on the runtime slice without disturbing the others', async () => {
+    api.installCodex.mockResolvedValue({
+      installId: 'codex-1',
+      ok: false,
+      error: 'Download failed'
+    })
+
+    await useSettingsStore.getState().installCodex()
+
+    const states = useSettingsStore.getState().installStates
+    expect(states.codex.installError).toBe('Download failed')
+    expect(states.codex.isInstalling).toBe(false)
+    expect(states['claude-code'].installError).toBeUndefined()
+    expect(states.opencode.installError).toBeUndefined()
+  })
+
+  it('does not relabel a successful install as failed when the post-install reconcile throws', async () => {
+    api.installCodex.mockResolvedValue({ installId: 'codex-1', ok: true })
+    // The install succeeded, but the snapshot reconcile that follows it fails (transient IPC error).
+    api.getSettings.mockRejectedValueOnce(new Error('IPC channel closed'))
+
+    // The reconcile error is swallowed (the install succeeded), so the call resolves rather than throws.
+    const result = await useSettingsStore.getState().installCodex()
+    expect(result).toEqual({ installId: 'codex-1', ok: true })
+
+    const state = useSettingsStore.getState().installStates.codex
+    // No phantom failure: installError stays clear and the install flag is reset.
+    expect(state.installError).toBeUndefined()
+    expect(state.isInstalling).toBe(false)
+  })
+
+  it('refuses a second concurrent install so subscriptions can never cross-contaminate (#278)', async () => {
+    // Hold a Claude install open so a second install is attempted while the first is still in flight.
+    api.onInstallLog.mockReturnValue(vi.fn())
+    let resolveClaude: (result: { installId: string; ok: boolean }) => void = () => undefined
+    api.installClaude.mockImplementation(
+      () =>
+        new Promise<{ installId: string; ok: boolean }>((resolve) => {
+          resolveClaude = resolve
+        })
+    )
+
+    const firstPending = useSettingsStore.getState().installClaude('managed')
+    expect(useSettingsStore.getState().installStates['claude-code'].isInstalling).toBe(true)
+
+    // The store's atomic guard rejects the overlapping install for a different runtime — main is never
+    // asked to install, and the Codex slice stays pristine (no phantom install).
+    const blocked = await useSettingsStore.getState().installCodex()
+    expect(blocked).toEqual({
+      installId: '',
+      ok: false,
+      error: 'Another install is already in progress.'
+    })
+    expect(api.installCodex).not.toHaveBeenCalled()
+    expect(useSettingsStore.getState().installStates.codex).toEqual({
+      isInstalling: false,
+      installLogs: [],
+      installProgress: null,
+      installError: undefined
+    })
+
+    resolveClaude({ installId: 'claude-1', ok: true })
+    await firstPending
+    expect(useSettingsStore.getState().installStates['claude-code'].isInstalling).toBe(false)
+  })
+
+  it('clearInstallLogs clears transient fields but preserves the install lock (isInstalling)', () => {
+    // Simulate a runtime mid-install with accumulated logs/progress/error.
+    useSettingsStore.setState((state) => ({
+      installStates: {
+        ...state.installStates,
+        codex: {
+          isInstalling: true,
+          installLogs: ['line 1', 'line 2'],
+          installProgress: { kind: 'progress', phase: 'download', message: 'x' } as never,
+          installError: 'stale error'
+        }
+      }
+    }))
+
+    useSettingsStore.getState().clearInstallLogs('codex')
+
+    const codex = useSettingsStore.getState().installStates.codex
+    expect(codex.installLogs).toEqual([])
+    expect(codex.installProgress).toBeNull()
+    expect(codex.installError).toBeUndefined()
+    // The lock must survive: dropping it mid-install would let a second install start.
+    expect(codex.isInstalling).toBe(true)
+    expect(selectAnyInstalling(useSettingsStore.getState())).toBe(true)
   })
 })
 
