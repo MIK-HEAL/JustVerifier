@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-import { app, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Notification } from 'electron'
 
 import { createDefaultNotebookRuntimeService, registerAcpIpcHandlers } from './acp/ipc'
 import { createDefaultArtifactRepository, registerArtifactIpcHandlers } from './artifacts/ipc'
@@ -20,7 +20,12 @@ import { registerGithubIpcHandlers } from './github-ipc'
 import { BackendShutdownCoordinator, UPDATE_SHUTDOWN_BUDGET_MS } from './lifecycle-shutdown'
 import { registerLogsIpcHandlers } from './logs-ipc'
 import { registerWindowIpcHandlers } from './window-ipc'
-import { createLogger } from './logger'
+import { TaskNotificationService } from './notifications/task-notifications'
+import {
+  buildConnectorApprovalBroadcast,
+  buildTaskNotificationShow
+} from './notifications/electron-wiring'
+import { createLogger, errorLogFields } from './logger'
 import {
   broadcastNotebookEnvProgress,
   registerNotebookEnvIpcHandlers,
@@ -77,6 +82,9 @@ import { broadcastToRenderers } from './renderer-broadcast'
 
 type IpcRegistrationOptions = {
   mainEntryPath: string
+  // Headless web-serve launches (--serve) have no local desktop user; task notifications are
+  // disabled there by contract, not just incidentally via Notification.isSupported().
+  headless?: boolean
 }
 
 // Builds a short, human-readable preview of a connector call's arguments for the approval card.
@@ -126,11 +134,13 @@ const refreshConnectorSkillDocs = async (
 // needs the configured package mirror, read from disk; callers await this before creating the main
 // window so every IPC channel (incl. notebook-env) is registered before the renderer can call it.
 const registerIpcHandlers = async ({
-  mainEntryPath
+  mainEntryPath,
+  headless = false
 }: IpcRegistrationOptions): Promise<{
   runtime: ReturnType<typeof registerAcpIpcHandlers>
   notebook: ReturnType<typeof createDefaultNotebookRuntimeService>
   shutdownCoordinator: BackendShutdownCoordinator
+  taskNotifications: TaskNotificationService
 }> => {
   // One settings service backs both the settings IPC and the ACP spawn config (single source of truth).
   const settingsService = createDefaultSettingsService()
@@ -238,6 +248,34 @@ const registerIpcHandlers = async ({
   // Read fresh on every call so a future connectors-settings mutation (Plan 2 UI) only needs to call
   // refreshConnectorSkillDocs again to take effect, without reconstructing the connector service.
   let connectorsSnapshot: StoredConnectors | undefined
+  // Desktop notifications for finished/failed agent tasks and approval waits. Delivery is
+  // Electron's Notification (Notification Center on macOS, toasts on Windows, libnotify on Linux);
+  // the service itself stays Electron-free so its filtering rules are unit-testable. The click
+  // handler is bound later, in index.ts, where showMainWindow exists. Constructed before the
+  // connector approval broker, which nudges through it.
+  //
+  // The wiring is extracted into electron-wiring helpers so the headless gate and the broker→service
+  // sessionId pass-through have a unit-level home — inline closures were untestable, and a
+  // regression on either of those contracts would not be caught by TaskNotificationService tests.
+  const notificationsLog = createLogger('notifications')
+  const liveNotifications = new Set<Notification>()
+  const taskNotifications = new TaskNotificationService({
+    isEnabled: () => settingsService.getNotificationsEnabled(),
+    isAppFocused: () => BrowserWindow.getAllWindows().some((window) => window.isFocused()),
+    show: buildTaskNotificationShow({
+      notificationCtor: Notification,
+      liveNotifications,
+      log: notificationsLog,
+      headless
+    }),
+    onDeliveryError: (error) =>
+      notificationsLog.warn('task notification delivery failed', errorLogFields(error))
+  })
+  // The renderer pulls the notification click target once its sessions are hydrated (a push sent
+  // before the listener exists would be lost); consume-once semantics live in the service.
+  ipcMain.handle('notifications:take-pending-open-session', () =>
+    taskNotifications.takePendingOpenSession()
+  )
   // One MCP client manager backs both dispatch (ConnectorService.call → custom server) and skill-doc
   // generation (listTools) for user-added custom MCP servers (stdio + remote). It lazily connects per
   // server, so constructing it here does not spawn anything until a custom server is actually used.
@@ -246,9 +284,10 @@ const registerIpcHandlers = async ({
   // pre-allowed or skip-approved is held here until the user decides (or it auto-denies on timeout).
   const approvalBroker = new ApprovalBroker({
     generateId: () => randomUUID(),
-    broadcast: (request) => {
-      broadcastToRenderers('connectors:approval-request', request)
-    }
+    broadcast: buildConnectorApprovalBroadcast({
+      broadcastToRenderers,
+      taskNotifications
+    })
   })
   // Late-bound app runtime for connector tools that attach a generated file to the current turn. The
   // runtime is created below (it depends on the connector service), so the handler resolves it lazily.
@@ -265,8 +304,13 @@ const registerIpcHandlers = async ({
     getConnectors: () => connectorsSnapshot,
     resolveApiKey: (ref) => tryDecryptKey(ref),
     mcpClientManager,
-    requestApproval: ({ connector, method, args }) =>
-      approvalBroker.request({ connector, method, argsPreview: previewArgs(args) }),
+    requestApproval: ({ connector, method, args, sessionId }) =>
+      approvalBroker.request({
+        connector,
+        method,
+        argsPreview: previewArgs(args),
+        ...(sessionId ? { sessionId } : {})
+      }),
     localToolHandlers: { 'molecule/preview_molecule': moleculePreviewHandler }
   })
   const notebookRpcServer = new NotebookLocalRpcServer(notebookService, { connectorService })
@@ -319,7 +363,8 @@ const registerIpcHandlers = async ({
     runRegistry: artifactRunRegistry,
     uploadRepository,
     notebookRpcServer,
-    settingsService
+    settingsService,
+    taskNotifications
   })
   runtimeRef.current = runtime
   // Single shared teardown owner for both the before-quit handler (index.ts) and the pre-update-install
@@ -506,7 +551,7 @@ const registerIpcHandlers = async ({
 
   // Return the long-lived backend handles so the app lifecycle (before-quit) can shut them down
   // cleanly on quit — the agent process tree and every notebook kernel.
-  return { runtime, notebook: notebookService, shutdownCoordinator }
+  return { runtime, notebook: notebookService, shutdownCoordinator, taskNotifications }
 }
 
 export { registerIpcHandlers }
