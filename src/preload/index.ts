@@ -44,6 +44,11 @@ import type { DirListing, DownloadDest, LocalFile } from '../shared/remote-fs'
 import type { OpenLogFileResult, RevealLogFileResult } from '../shared/logs'
 import type { OpenSessionFromNotificationRequest } from '../shared/notifications'
 import type {
+  ProjectDeletedEvent,
+  SessionDeletedEvent,
+  SessionUpsertEvent
+} from '../shared/lifecycle-events'
+import type {
   AppendNotebookCodeCellRequest,
   BeginNotebookCodeCellRequest,
   NotebookAvailableEvent,
@@ -210,6 +215,9 @@ type OpenScienceAPI = {
     chrome: string
     node: string
   }
+  lifecycle: {
+    getClientId: () => Promise<string>
+  }
   acp: {
     getState: () => Promise<AcpStateSnapshot>
     connect: (request?: AcpConnectRequest) => Promise<AcpStateSnapshot>
@@ -232,6 +240,9 @@ type OpenScienceAPI = {
     saveSession: (session: PersistedChatSession) => Promise<void>
     deleteSession: (request: DeleteSessionRequest) => Promise<void>
     saveManifest: (request: SaveSessionManifestRequest) => Promise<void>
+    onCreated: (listener: AcpListener<SessionUpsertEvent>) => RemoveListener
+    onUpdated: (listener: AcpListener<SessionUpsertEvent>) => RemoveListener
+    onDeleted: (listener: AcpListener<SessionDeletedEvent>) => RemoveListener
   }
   settings: {
     getPreflight: () => Promise<Preflight>
@@ -327,6 +338,9 @@ type OpenScienceAPI = {
     create: (request: CreateProjectRequest) => Promise<Project>
     update: (request: UpdateProjectRequest) => Promise<Project>
     delete: (request: DeleteProjectRequest) => Promise<void>
+    onCreated: (listener: AcpListener<Project>) => RemoveListener
+    onUpdated: (listener: AcpListener<Project>) => RemoveListener
+    onDeleted: (listener: AcpListener<ProjectDeletedEvent>) => RemoveListener
   }
   projectFiles: {
     getOverview: (request: { projectId: string }) => Promise<ProjectFilesOverview>
@@ -559,6 +573,9 @@ const api: OpenScienceAPI = {
     chrome: process.versions.chrome,
     node: process.versions.node
   }),
+  lifecycle: {
+    getClientId: () => ipcRenderer.invoke('lifecycle:client-id') as Promise<string>
+  },
   acp: {
     getState: () => ipcRenderer.invoke('acp:get-state') as Promise<AcpStateSnapshot>,
     connect: (request = {}) =>
@@ -595,7 +612,10 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke('sessions:delete-session', request) as Promise<void>,
     // Persists the last-open project/session pointer.
     saveManifest: (request) =>
-      ipcRenderer.invoke('sessions:save-manifest', request) as Promise<void>
+      ipcRenderer.invoke('sessions:save-manifest', request) as Promise<void>,
+    onCreated: (listener) => onIpcMessage('session:created', listener),
+    onUpdated: (listener) => onIpcMessage('session:updated', listener),
+    onDeleted: (listener) => onIpcMessage('session:deleted', listener)
   },
   settings: {
     // Model-settings/onboarding surface: secrets stay in main, the renderer only sees masked views.
@@ -753,7 +773,10 @@ const api: OpenScienceAPI = {
     get: (id) => ipcRenderer.invoke('projects:get', id) as Promise<Project | null>,
     create: (request) => ipcRenderer.invoke('projects:create', request) as Promise<Project>,
     update: (request) => ipcRenderer.invoke('projects:update', request) as Promise<Project>,
-    delete: (request) => ipcRenderer.invoke('projects:delete', request) as Promise<void>
+    delete: (request) => ipcRenderer.invoke('projects:delete', request) as Promise<void>,
+    onCreated: (listener) => onIpcMessage('project:created', listener),
+    onUpdated: (listener) => onIpcMessage('project:updated', listener),
+    onDeleted: (listener) => onIpcMessage('project:deleted', listener)
   },
   // Files exposes metadata pages only. Thumbnail/full-preview bytes continue through the existing
   // artifact/upload APIs after a visible item has been selected or rendered.

@@ -52,6 +52,13 @@ vi.mock('@/lib/deep-link', () => ({
 vi.mock('@/hooks/useCloseActivePaneShortcut', () => ({
   useCloseActivePaneShortcut: vi.fn()
 }))
+vi.mock('@/hooks/useLifecycleSync', () => ({
+  useLifecycleSync: () => ({
+    notice: undefined,
+    dismissNotice: vi.fn(),
+    viewNotice: vi.fn()
+  })
+}))
 vi.mock('@/stores/navigation-store', () => ({
   useNavigationStore: Object.assign(
     <T,>(selector: (state: typeof mocks.navigation) => T): T => selector(mocks.navigation),
@@ -95,6 +102,9 @@ vi.mock('@/components/LegacyDataMoveDialog', () => ({
   LegacyDataMoveDialog: ({ currentDataRoot }: { currentDataRoot: string }): React.JSX.Element => (
     <div data-testid="legacy-move">{currentDataRoot}</div>
   )
+}))
+vi.mock('@/components/LifecycleToast', () => ({
+  LifecycleToast: (): React.JSX.Element => <div data-testid="lifecycle-toast" />
 }))
 vi.mock('@/components/UpdateDialog', () => ({
   UpdateDialog: (): React.JSX.Element => <div data-testid="update-dialog" />

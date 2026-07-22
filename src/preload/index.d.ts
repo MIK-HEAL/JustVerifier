@@ -42,6 +42,11 @@ import type { DirListing, DownloadDest, LocalFile } from '../shared/remote-fs'
 import type { OpenLogFileResult, RevealLogFileResult } from '../shared/logs'
 import type { OpenSessionFromNotificationRequest } from '../shared/notifications'
 import type {
+  ProjectDeletedEvent,
+  SessionDeletedEvent,
+  SessionUpsertEvent
+} from '../shared/lifecycle-events'
+import type {
   AppendNotebookCodeCellRequest,
   BeginNotebookCodeCellRequest,
   NotebookAvailableEvent,
@@ -187,6 +192,9 @@ interface OpenScienceAPI {
     chrome: string
     node: string
   }
+  lifecycle: {
+    getClientId(): Promise<string>
+  }
   acp: {
     getState(): Promise<AcpStateSnapshot>
     connect(request?: AcpConnectRequest): Promise<AcpStateSnapshot>
@@ -209,6 +217,9 @@ interface OpenScienceAPI {
     saveSession(session: PersistedChatSession): Promise<void>
     deleteSession(request: DeleteSessionRequest): Promise<void>
     saveManifest(request: SaveSessionManifestRequest): Promise<void>
+    onCreated(listener: AcpListener<SessionUpsertEvent>): RemoveListener
+    onUpdated(listener: AcpListener<SessionUpsertEvent>): RemoveListener
+    onDeleted(listener: AcpListener<SessionDeletedEvent>): RemoveListener
   }
   settings: {
     getPreflight(): Promise<Preflight>
@@ -299,6 +310,9 @@ interface OpenScienceAPI {
     create(request: CreateProjectRequest): Promise<Project>
     update(request: UpdateProjectRequest): Promise<Project>
     delete(request: DeleteProjectRequest): Promise<void>
+    onCreated(listener: AcpListener<Project>): RemoveListener
+    onUpdated(listener: AcpListener<Project>): RemoveListener
+    onDeleted(listener: AcpListener<ProjectDeletedEvent>): RemoveListener
   }
   projectFiles: {
     getOverview(request: { projectId: string }): Promise<ProjectFilesOverview>

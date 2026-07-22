@@ -28,6 +28,7 @@ import { registerFileSaveHandlers } from './file-save'
 import { registerCliInstallIpcHandlers } from './cli-install/ipc'
 import { registerGithubIpcHandlers } from './github-ipc'
 import { BackendShutdownCoordinator, UPDATE_SHUTDOWN_BUDGET_MS } from './lifecycle-shutdown'
+import { registerLifecycleIpcHandlers } from './lifecycle-broadcast'
 import { registerLogsIpcHandlers } from './logs-ipc'
 import { registerWindowIpcHandlers } from './window-ipc'
 import { TaskNotificationService } from './notifications/task-notifications'
@@ -238,7 +239,10 @@ const registerIpcHandlers = async ({
     },
     saveSession: async (session) => {
       await projectDeletionCoordinator.recoverPendingDeletions()
-      return sessionPersistenceCoordinator.saveSession(session)
+      const created =
+        (await sessionRepository.loadSession(session.projectId, session.id)) === undefined
+      await sessionPersistenceCoordinator.saveSession(session)
+      return created
     },
     deleteSession: async (projectId, sessionId) => {
       await projectDeletionCoordinator.recoverPendingDeletions()
@@ -612,6 +616,7 @@ const registerIpcHandlers = async ({
     projectDeletionCoordinator
   )
   registerProjectIpcHandlers(projectRepository, previewStateRepository, projectDeletionCoordinator)
+  registerLifecycleIpcHandlers()
   // Compute IPC handlers are registered earlier (before the notebook RPC server) so computeService
   // can be injected into the RPC server for the computeCall route. See above.
   // Wire the reviewer backend into the app lifecycle: installs ipcMain.handle('reviewer:run', ...)
