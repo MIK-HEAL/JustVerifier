@@ -27,6 +27,10 @@ const ALLOW_ONCE_OPTION_KIND = 'allow_once'
 // options whose IDs match this shape. If codex-acp renames them, projection silently stops — the
 // projection tests (permission-broker.test.ts) pin this contract and would fail on such a drift.
 const CODEX_POLICY_AMENDMENT_OPTION_ID_PATTERN = /^accept_.*policy_amendment$/
+// Codex sends two allow_always options for MCP tool requests. The persistent cross-session one uses
+// this option ID; the session-scoped one uses 'allow-session'. Keying on the persistent ID (not
+// position) is robust to option reordering — tests pin this contract.
+const CODEX_MCP_PERSISTENT_ALLOW_OPTION_ID = 'allow-always'
 
 const commandFromRawInput = (rawInput: unknown): string | undefined => {
   if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return undefined
@@ -72,23 +76,33 @@ const commandSignature = (command: string): string => {
   return rest.length > 0 ? rest.join(' ') : command.trim()
 }
 
-// Open Science owns per-session grants, so Codex command approvals omit native exec/network policy
-// amendments that persist outside the app's visible, revocable grant model. Their presence also
-// identifies command requests when optional execute metadata is absent.
+// Open Science owns per-session grants, so Codex approvals omit options that grant persistent
+// (cross-session) access outside the app's visible, revocable grant model.
 const projectPermissionOptions = (
   params: RequestPermissionRequest,
   policyContext: PermissionPolicyContext | undefined,
   isMcp: boolean
 ): RequestPermissionRequest['options'] => {
+  if (policyContext?.frameworkId !== 'codex') {
+    return params.options
+  }
+
+  // Codex MCP tools send two allow_always variants: a session-scoped one ('allow-session') and
+  // a persistent cross-session one ('allow-always'). Strip the persistent one by its known
+  // option ID so the app's session-only, revocable grant model is never bypassed.
+  if (isMcp) {
+    return params.options.filter(
+      (option) => option.optionId !== CODEX_MCP_PERSISTENT_ALLOW_OPTION_ID
+    )
+  }
+
+  // For non-MCP Codex tools, strip native policy amendments that persist outside the app.
+  // Their presence also identifies execute requests when optional kind metadata is absent.
   const hasPolicyAmendment = params.options.some((option) =>
     CODEX_POLICY_AMENDMENT_OPTION_ID_PATTERN.test(option.optionId)
   )
 
-  if (
-    policyContext?.frameworkId !== 'codex' ||
-    isMcp ||
-    (params.toolCall.kind !== 'execute' && !hasPolicyAmendment)
-  ) {
+  if (params.toolCall.kind !== 'execute' && !hasPolicyAmendment) {
     return params.options
   }
 
