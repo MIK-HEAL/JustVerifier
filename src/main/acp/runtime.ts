@@ -521,6 +521,10 @@ class AcpRuntime {
   // A provider change requested while a prompt was running, applied when the session next goes idle.
   private pendingProviderReconnect = false
   private pendingSkillsReload = false
+  // Barrier awaited by ensureConnected so a createSession called while a deferred reconnect is
+  // queued blocks until the reconnect completes rather than reusing the stale connection.
+  private reconnectBarrier: Promise<void> | undefined
+  private reconnectBarrierResolve: (() => void) | undefined
   private expectedProcessExits = new WeakSet<ChildProcessWithoutNullStreams>()
   private readonly permissionBroker: AcpPermissionBroker
   private readonly callbacks: AcpRuntimeCallbacks
@@ -1572,6 +1576,9 @@ class AcpRuntime {
   async requestProviderReconnect(): Promise<void> {
     if (this.promptInFlightSessionIds.size > 0) {
       this.pendingProviderReconnect = true
+      // Arm the barrier so any concurrent createSession waits for the reconnect
+      // rather than reusing the stale connection with the old backend.
+      this.armReconnectBarrier()
       return
     }
 
@@ -1583,15 +1590,45 @@ class AcpRuntime {
   private maybeApplyPendingProviderReconnect(): void {
     if (this.promptInFlightSessionIds.size > 0) return
 
-    if (this.pendingProviderReconnect) {
+    // A single reconnect satisfies both a pending provider switch and a pending skills reload: the
+    // fresh spawn picks up the new backend AND re-provisions the current skill set. So clear both
+    // flags before tearing down — leaving one set would fire a second, redundant disconnect on the
+    // next idle turn, needlessly killing the just-established connection.
+    if (this.pendingProviderReconnect || this.pendingSkillsReload) {
       this.pendingProviderReconnect = false
-      void this.disconnect()
-      return
-    }
-
-    if (this.pendingSkillsReload) {
       this.pendingSkillsReload = false
-      void this.disconnect()
+      // Resolve the barrier once teardown settles so ensureConnected falls through to a fresh
+      // connect with the new backend, not back onto the stale connection. disconnectForDeferredReconnect
+      // resolves the barrier even if disconnect() rejects — otherwise it strands and every later
+      // createSession hangs forever — and swallows the rejection so it never surfaces as unhandled.
+      void this.disconnectForDeferredReconnect()
+    }
+  }
+
+  // Tears down the connection for a deferred provider/skills reconnect, always releasing the
+  // reconnect barrier — even if the disconnect rejects — and never leaking an unhandled rejection.
+  private async disconnectForDeferredReconnect(): Promise<void> {
+    try {
+      await this.disconnect()
+    } catch (error) {
+      safeLogError('deferred reconnect disconnect failed', errorLogFields(error))
+      // disconnect() rejected — its synchronous teardown may have thrown before clearing the
+      // connection (e.g. session.dispose or connection.close). Force the connection invalid so the
+      // barrier-release below cannot let a blocked ensureConnected reuse the STALE connection on the
+      // old backend; the re-check there will fall through to a fresh connect(). Set status directly
+      // rather than via setStatus — the throw may have come from emitState itself.
+      this.connection = undefined
+      this.status = 'closed'
+      // Broadcast the closed status defensively so the renderer doesn't keep showing the prior
+      // 'connected' state when no createSession follows to re-emit it. Guarded because emitState may
+      // be the very thing that threw — the barrier release below must still run.
+      try {
+        this.emitState()
+      } catch (emitError) {
+        safeLogError('emitState after failed deferred disconnect failed', errorLogFields(emitError))
+      }
+    } finally {
+      this.resolveReconnectBarrier()
     }
   }
 
@@ -1602,11 +1639,29 @@ class AcpRuntime {
   async requestSkillsReload(): Promise<void> {
     if (this.promptInFlightSessionIds.size > 0) {
       this.pendingSkillsReload = true
+      this.armReconnectBarrier()
       return
     }
 
     this.pendingSkillsReload = false
     await this.disconnect()
+  }
+
+  // Creates the reconnect barrier promise if one is not already pending.
+  private armReconnectBarrier(): void {
+    if (!this.reconnectBarrier) {
+      this.reconnectBarrier = new Promise<void>((resolve) => {
+        this.reconnectBarrierResolve = resolve
+      })
+    }
+  }
+
+  // Resolves and clears the reconnect barrier, unblocking any ensureConnected callers.
+  private resolveReconnectBarrier(): void {
+    const resolve = this.reconnectBarrierResolve
+    this.reconnectBarrier = undefined
+    this.reconnectBarrierResolve = undefined
+    resolve?.()
   }
 
   private async disconnectCurrent(emitClosedStatus = true): Promise<AcpStateSnapshot> {
@@ -1959,7 +2014,14 @@ class AcpRuntime {
         this.currentPromptTurnBySession.delete(request.sessionId)
         this.promptInFlightSessionIds.delete(request.sessionId)
       }
-      this.emitState()
+      // emitState invokes the renderer onStateChanged callback; guard it so a throw there cannot skip
+      // the reconnect below. maybeApplyPendingProviderReconnect is what resolves an armed reconnect
+      // barrier, so skipping it would strand the barrier and hang every later createSession.
+      try {
+        this.emitState()
+      } catch (error) {
+        safeLogError('emitState after prompt turn failed', errorLogFields(error))
+      }
       // A disabled skill forced for this turn is restored now: clear the force set, then schedule a
       // reconnect so the NEXT prompt respawns with the normal enabled set. Ordering matters — the clear
       // must happen before the reconnect is applied so the fresh spawn no longer sees the forced ids.
@@ -2394,6 +2456,14 @@ class AcpRuntime {
 
   // Lazily initializes the process connection before session creation.
   private async ensureConnected(cwd: string): Promise<ClientConnection> {
+    // A deferred provider/framework/skills reconnect is pending: wait for it to
+    // complete before reusing (or opening) a connection. Without this guard a
+    // createSession called while a prompt is still running would piggy-back onto
+    // the stale connection and land on the old backend.
+    if (this.reconnectBarrier) {
+      await this.reconnectBarrier
+    }
+
     if (this.connection && this.status === 'connected') {
       return this.connection
     }
@@ -3310,6 +3380,13 @@ class AcpRuntime {
     this.connection = undefined
     this.agentProcess = undefined
     this.promptInFlightSessionIds.clear()
+    // The connection is already gone, so any ensureConnected caller waiting on
+    // the reconnect barrier must unblock now — it will fall through to connect()
+    // and pick up the new backend from resolveBackend. A fresh spawn re-provisions
+    // skills too, so clear both pending flags to avoid a spurious later reconnect.
+    this.pendingProviderReconnect = false
+    this.pendingSkillsReload = false
+    this.resolveReconnectBarrier()
     this.setStatus('closed')
   }
 
