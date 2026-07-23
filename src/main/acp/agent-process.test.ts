@@ -118,24 +118,6 @@ describe('buildAgentSpawnEnv', () => {
     expect(env.CLAUDE_CONFIG_DIR).toBe('/provider/config')
   })
 
-  it('preserves the legacy local Claude auth context until claude-default is removed', () => {
-    const env = buildAgentSpawnEnv(
-      {
-        ANTHROPIC_BASE_URL: 'https://proxy.example',
-        CLAUDE_CODE_OAUTH_TOKEN: 'local-subscription-token',
-        CLAUDE_CONFIG_DIR: '/inherited/config',
-        PATH: '/usr/bin'
-      },
-      { ANTHROPIC_MODEL: 'claude-opus' },
-      '/bin/claude'
-    )
-
-    expect(env.ANTHROPIC_BASE_URL).toBe('https://proxy.example')
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('local-subscription-token')
-    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined()
-    expect(env.ANTHROPIC_MODEL).toBe('claude-opus')
-  })
-
   it('drops inherited CLAUDE_CONFIG_DIR even when envOverrides provides a different one', () => {
     // The override block is the only path that can set CLAUDE_CONFIG_DIR for the child. The
     // parent shell may have a different value (developer who happens to have a Claude Code login
@@ -150,6 +132,20 @@ describe('buildAgentSpawnEnv', () => {
     )
 
     expect(env.CLAUDE_CONFIG_DIR).toBe('/app/claude')
+  })
+
+  it('rejects a provider that omits the app-owned CLAUDE_CONFIG_DIR', () => {
+    expect(() =>
+      buildAgentSpawnEnv(
+        {
+          CLAUDE_CONFIG_DIR: '/parent/shell/claude',
+          ANTHROPIC_API_KEY: 'inherited-token',
+          PATH: '/usr/bin'
+        },
+        { ANTHROPIC_AUTH_TOKEN: 'provider-token' },
+        '/bin/claude'
+      )
+    ).toThrow('Claude config directory is not configured')
   })
 })
 
