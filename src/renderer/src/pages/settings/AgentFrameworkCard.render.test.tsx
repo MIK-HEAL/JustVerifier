@@ -31,6 +31,7 @@ const baseProps: CardProps = {
   name: 'Claude Agent',
   description: "Anthropic's agentic coding tool for the terminal.",
   ready: false,
+  needsRepair: false,
   notReadyHint: 'Install Claude Agent below.',
   sourceLabel: 'anthropics/claude-code',
   sourceUrl: 'https://github.com/anthropics/claude-code',
@@ -46,6 +47,7 @@ const baseProps: CardProps = {
   install: { isInstalling: false, installLogs: [] as string[], installProgress: null },
   installRunning: false,
   npmAvailable: true,
+  blockedInstallSources: {},
   onInstall: vi.fn()
 }
 
@@ -69,6 +71,15 @@ describe('AgentFrameworkCard', () => {
     expect(badge?.textContent).toBe('Active')
     expect(badge?.getAttribute('data-variant')).toBe('default')
     expect(container.querySelector('[data-slot="card"]')?.className).toContain('ring-primary')
+  })
+
+  it('does not give a not-ready default framework the active treatment', () => {
+    renderCard({ ready: false, active: true })
+
+    const card = container.querySelector('[data-slot="card"]')
+    expect(card?.className).not.toContain('ring-primary')
+    expect(container.querySelector('[data-slot="badge"]')?.textContent).toBe('Not installed')
+    expect(container.querySelector('[role="radio"]')).toBeNull()
   })
 
   it('shows name, muted v-prefixed version, description, path chip and repo link', () => {
@@ -119,18 +130,22 @@ describe('AgentFrameworkCard', () => {
     expect(container.textContent).toContain('Install Claude Agent below.')
   })
 
-  it('routes the chosen install source to onInstall', () => {
+  it.each([
+    ['App-managed download', 'managed'],
+    ['npm (global install)', 'npm'],
+    ['Official install.sh', 'official-script']
+  ] as const)('routes the %s source to onInstall', (sourceLabel, source) => {
     const onInstall = vi.fn()
     renderCard({ ready: false, onInstall })
     openInstallMenu()
 
-    const npmItem = Array.from(
+    const sourceItem = Array.from(
       document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')
-    ).find((item) => item.textContent?.includes('npm (global install)'))
-    expect(npmItem).toBeDefined()
-    clickRadixMenuItem(npmItem)
+    ).find((item) => item.textContent?.includes(sourceLabel))
+    expect(sourceItem).toBeDefined()
+    clickRadixMenuItem(sourceItem)
 
-    expect(onInstall).toHaveBeenCalledWith('npm')
+    expect(onInstall).toHaveBeenCalledWith(source)
   })
 
   it('disables npm sources in the menu when npm is unavailable', () => {
@@ -142,6 +157,28 @@ describe('AgentFrameworkCard', () => {
     ).find((item) => item.textContent?.includes('npm (global install)'))
     expect(npmItem?.getAttribute('data-disabled')).toBeDefined()
     expect(npmItem?.textContent).toContain('(npm not found)')
+  })
+
+  it('disables only the install sources blocked by the environment check', () => {
+    renderCard({
+      ready: false,
+      blockedInstallSources: {
+        managed: 'System requirements not met',
+        npm: 'Installation network unavailable'
+      }
+    })
+    openInstallMenu()
+
+    const items = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+    const managedItem = items.find((item) => item.textContent?.includes('App-managed download'))
+    const npmItem = items.find((item) => item.textContent?.includes('npm (global install)'))
+    const officialItem = items.find((item) => item.textContent?.includes('Official install.sh'))
+
+    expect(managedItem?.getAttribute('data-disabled')).toBe('')
+    expect(managedItem?.textContent).toContain('(System requirements not met)')
+    expect(npmItem?.getAttribute('data-disabled')).toBe('')
+    expect(npmItem?.textContent).toContain('(Installation network unavailable)')
+    expect(officialItem?.getAttribute('data-disabled')).toBeNull()
   })
 
   it('shows the progress bar and an "Installing…" button while its install runs', () => {
@@ -207,5 +244,76 @@ describe('AgentFrameworkCard', () => {
         button.textContent?.includes('Uninstall')
       )
     ).toBe(false)
+  })
+
+  it('requests repair instead of selecting when a broken card is clicked', () => {
+    const onRepairRequired = vi.fn()
+    const onSelect = vi.fn()
+    renderCard({
+      ready: false,
+      path: '/broken/claude',
+      onRepairRequired,
+      onSelect
+    })
+
+    const card = container.querySelector<HTMLElement>('[data-slot="card"]')
+    act(() => card?.click())
+
+    expect(onRepairRequired).toHaveBeenCalledOnce()
+    expect(onSelect).not.toHaveBeenCalled()
+
+    const repair = container.querySelector<HTMLButtonElement>('[aria-label="Repair Claude Agent"]')
+    act(() => repair?.click())
+    expect(onRepairRequired).toHaveBeenCalledOnce()
+  })
+
+  it('requests repair from the keyboard without selecting the broken framework', () => {
+    const onRepairRequired = vi.fn()
+    const onSelect = vi.fn()
+    renderCard({
+      ready: false,
+      path: '/broken/claude',
+      onRepairRequired,
+      onSelect
+    })
+
+    const card = container.querySelector<HTMLElement>('[data-slot="card"]')
+    act(() => {
+      card?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+
+    expect(onRepairRequired).toHaveBeenCalledOnce()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('does not open the card repair dialog from the Repair button keyboard event', () => {
+    const onRepairRequired = vi.fn()
+    renderCard({
+      ready: false,
+      path: '/broken/claude',
+      onRepairRequired
+    })
+
+    const repair = container.querySelector<HTMLButtonElement>('[aria-label="Repair Claude Agent"]')
+    act(() => {
+      repair?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+
+    expect(onRepairRequired).not.toHaveBeenCalled()
+  })
+
+  it('shows Repair for a failed selected runtime even when detection found no path', () => {
+    const onInstall = vi.fn()
+    renderCard({ ready: false, needsRepair: true, onInstall })
+
+    expect(container.textContent).toContain('Needs repair')
+    openRadixMenu(container.querySelector<HTMLButtonElement>('[aria-label^="Repair"]'))
+    expect(container.querySelector('[aria-label^="Install"]')).toBeNull()
+
+    const managedItem = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ).find((item) => item.textContent?.includes('App-managed download'))
+    clickRadixMenuItem(managedItem)
+    expect(onInstall).toHaveBeenCalledWith('managed')
   })
 })

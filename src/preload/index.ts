@@ -179,6 +179,7 @@ import type {
   DataRootValidationResult,
   MigrationOutcome,
   MigrationProgress,
+  RevealAppStorageResult,
   StorageInfo
 } from '../shared/storage'
 import type { CliLauncherStatus } from '../shared/cli'
@@ -539,6 +540,7 @@ type OpenScienceAPI = {
   }
   storage: {
     getInfo: () => Promise<StorageInfo>
+    revealAppStorage: () => Promise<RevealAppStorageResult>
     detectActive: () => Promise<ActiveSessionInfo[]>
     // Opens the native folder picker; resolves null on cancel.
     pickDirectory: () => Promise<string | null>
@@ -1044,6 +1046,8 @@ const api: OpenScienceAPI = {
   },
   storage: {
     getInfo: () => ipcRenderer.invoke('storage:get-info') as Promise<StorageInfo>,
+    revealAppStorage: () =>
+      ipcRenderer.invoke('storage:reveal-app-storage') as Promise<RevealAppStorageResult>,
     detectActive: () => ipcRenderer.invoke('storage:detect-active') as Promise<ActiveSessionInfo[]>,
     pickDirectory: () => ipcRenderer.invoke('storage:pick-directory') as Promise<string | null>,
     validateDataRoot: (parent) =>
