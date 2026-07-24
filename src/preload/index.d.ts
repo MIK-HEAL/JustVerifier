@@ -79,6 +79,12 @@ import type {
   SavePreviewStateRequest
 } from '../shared/preview-state'
 import type {
+  OfficePreviewAttachResult,
+  OfficePreviewOpenRequest,
+  OfficePreviewOpenResult,
+  OfficePreviewRuntimeState
+} from '../shared/office-preview'
+import type {
   AcquireManagedPreviewRequest,
   ManagedPreviewRangeResult,
   ManagedPreviewResource,
@@ -384,6 +390,13 @@ interface OpenScienceAPI {
     acquire(request: AcquireManagedPreviewRequest): Promise<ManagedPreviewResource>
     readRange(request: ReadManagedPreviewRangeRequest): Promise<ManagedPreviewRangeResult>
     release(request: ReleaseManagedPreviewRequest): Promise<void>
+  }
+  officePreview: {
+    open(request: OfficePreviewOpenRequest): Promise<OfficePreviewOpenResult>
+    attachFrame(sessionId: string): Promise<OfficePreviewAttachResult | undefined>
+    reportState(sessionId: string, state: OfficePreviewRuntimeState): void
+    close(sessionId: string): Promise<void>
+    onState(listener: (state: OfficePreviewRuntimeState) => void): RemoveListener
   }
   artifacts: {
     finalizeRunArtifacts(request: FinalizeRunArtifactsRequest): Promise<ArtifactFile[]>

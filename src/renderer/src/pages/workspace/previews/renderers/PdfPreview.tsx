@@ -70,7 +70,7 @@ const PdfPageCanvas = ({
         setAspectRatio(viewport.width / viewport.height)
         canvas.width = viewport.width
         canvas.height = viewport.height
-        renderTask = loadedPage.render({ canvasContext: context, viewport })
+        renderTask = loadedPage.render({ canvas, canvasContext: context, viewport })
         await renderTask.promise
         if (!canceled) setStatus('ready')
       })
@@ -98,7 +98,7 @@ const PdfPageCanvas = ({
     >
       {displayedStatus === 'loading' || (displayedStatus === 'idle' && isNearViewport) ? (
         <div className="absolute inset-0">
-          <PreviewLoadingContent />
+          <PreviewLoadingContent compact />
         </div>
       ) : null}
       {displayedStatus === 'error' ? (
@@ -206,9 +206,7 @@ export const PdfPreviewContent = ({
   if (hasError) {
     return (
       <PreviewErrorCard
-        path={path}
         name={name}
-        source={source}
         error={currentDocumentState.error}
         fallbackMessage="This PDF couldn't be rendered for preview"
       />

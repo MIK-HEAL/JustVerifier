@@ -165,7 +165,7 @@ const renderFirstPage = async (
 
     canvas.width = viewport.width
     canvas.height = viewport.height
-    renderTask = page.render({ canvasContext: context, viewport })
+    renderTask = page.render({ canvas, canvasContext: context, viewport })
     await renderTask.promise
     if (signal.aborted) throw createAbortError()
 

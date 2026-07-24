@@ -30,6 +30,10 @@ const PREVIEW_SUPPORTED_EXTENSIONS: Record<string, PreviewFileFormat> = {
   smiles: 'molecule',
   rxn: 'molecule',
   pdf: 'pdf',
+  docx: 'word',
+  xls: 'spreadsheet',
+  xlsx: 'spreadsheet',
+  pptx: 'presentation',
   bash: 'text',
   conf: 'text',
   config: 'text',
@@ -83,6 +87,24 @@ const getPreviewFormatForMimeType = (mimeType: string): PreviewFileFormat => {
     return 'molecule'
   }
   if (normalizedMimeType === 'application/pdf') return 'pdf'
+  // Office MIME fallback covers extensionless uploads while preserving explicit format routing.
+  if (
+    normalizedMimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    return 'word'
+  }
+  if (
+    normalizedMimeType === 'application/vnd.ms-excel' ||
+    normalizedMimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  ) {
+    return 'spreadsheet'
+  }
+  if (
+    normalizedMimeType ===
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  ) {
+    return 'presentation'
+  }
   if (normalizedMimeType.startsWith('text/')) return 'text'
 
   return 'unknown'
@@ -90,9 +112,12 @@ const getPreviewFormatForMimeType = (mimeType: string): PreviewFileFormat => {
 
 // Looks up the render format for one file, defaulting to the unsupported fallback state.
 export const getPreviewFormat = (extension: string, mimeType?: string): PreviewFileFormat => {
-  const extensionFormat = PREVIEW_SUPPORTED_EXTENSIONS[extension.toLowerCase()]
+  const normalizedExtension = extension.toLowerCase()
+  const extensionFormat = PREVIEW_SUPPORTED_EXTENSIONS[normalizedExtension]
 
   if (extensionFormat) return extensionFormat
+  // Legacy Office formats must not enter OOXML renderers through misleading MIME metadata.
+  if (normalizedExtension === 'doc' || normalizedExtension === 'ppt') return 'unknown'
 
   return getPreviewFormatForMimeType(mimeType ?? '')
 }
@@ -115,9 +140,21 @@ export const getPreviewFormatForFile = ({
 
 // Selects the reader encoding used for lightweight thumbnails in file lists.
 export const getPreviewThumbnailReadEncoding = (format: PreviewFileFormat): 'utf8' | undefined => {
-  if (format === 'image' || format === 'pdf' || format === 'unknown') return undefined
+  // Binary document formats use dedicated full-byte readers and must not use truncated thumbnails.
+  if (
+    format === 'markdown' ||
+    format === 'text' ||
+    format === 'json' ||
+    format === 'csv' ||
+    format === 'fasta' ||
+    format === 'html' ||
+    format === 'pdb' ||
+    format === 'molecule'
+  ) {
+    return 'utf8'
+  }
 
-  return 'utf8'
+  return undefined
 }
 
 // Shared with artifact-preview.tsx thumbnails so both surfaces infer the same mime type from a name.

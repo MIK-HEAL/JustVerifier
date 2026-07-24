@@ -7,10 +7,16 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve('src/renderer/src'),
-      '@renderer': resolve('src/renderer/src')
+      '@renderer': resolve('src/renderer/src'),
+      'e-virt-table/dist/index.es.js': resolve('test/fixtures/fake-e-virt-table.ts')
     }
   },
   test: {
+    server: {
+      deps: {
+        inline: ['@file-viewer/renderer-spreadsheet']
+      }
+    },
     // Loads .env into process.env before tests run. Integration tests gated on RUN_COMPUTE_JOBS=1
     // read their target alias from COMPUTE_TEST_SSH_ALIAS. The file is gitignored; .env.example
     // documents the supported variables.

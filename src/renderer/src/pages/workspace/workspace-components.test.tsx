@@ -575,7 +575,7 @@ describe('preview workbench integration', () => {
   it('animates panel expand and collapse through percentage resize', () => {
     const workspacePageSource = readFileSync(workspacePagePath, 'utf8')
 
-    expect(workspacePageSource).toContain('panel.resize(`${Number(size.toFixed(3))}%`)')
+    expect(workspacePageSource).toContain('currentPanel.resize(`${Number(size.toFixed(3))}%`)')
     expect(workspacePageSource).toContain('onUpdate: resizePanel')
     expect(workspacePageSource).toContain('prefersReducedMotion')
     expect(workspacePageSource).toContain(

@@ -172,6 +172,7 @@ describe('PreviewPanel', () => {
     )
 
     await renderPanel()
+    const compactContent = container.querySelector('[data-testid="file-content"]')
 
     await act(async () => {
       container
@@ -194,7 +195,7 @@ describe('PreviewPanel', () => {
     expect(dialog?.className).toContain('shadow-dialog')
     expect(dialog?.className).toContain('data-[state=open]:zoom-in-95')
     expect(dialog?.querySelector('[data-testid="file-content"]')?.textContent).toContain(name)
-    expect(container.querySelector('[data-testid="file-content"]')).toBeNull()
+    expect(dialog?.querySelector('[data-testid="file-content"]')).toBe(compactContent)
     expect(dialog?.querySelector(`[aria-label="Open full screen preview of ${name}"]`)).toBeNull()
 
     await act(async () => {

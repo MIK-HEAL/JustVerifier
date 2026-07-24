@@ -81,6 +81,19 @@ import type {
   SavePreviewStateRequest
 } from '../shared/preview-state'
 import type {
+  OfficePreviewAttachResult,
+  OfficePreviewOpenRequest,
+  OfficePreviewOpenResult,
+  OfficePreviewRuntimeState
+} from '../shared/office-preview'
+import {
+  OFFICE_PREVIEW_ATTACH_FRAME_CHANNEL,
+  OFFICE_PREVIEW_CLOSE_CHANNEL,
+  OFFICE_PREVIEW_OPEN_CHANNEL,
+  OFFICE_PREVIEW_REPORT_STATE_CHANNEL,
+  OFFICE_PREVIEW_STATE_CHANNEL
+} from '../shared/office-preview'
+import type {
   AcquireManagedPreviewRequest,
   ManagedPreviewRangeResult,
   ManagedPreviewResource,
@@ -417,6 +430,13 @@ type OpenScienceAPI = {
     readRange: (request: ReadManagedPreviewRangeRequest) => Promise<ManagedPreviewRangeResult>
     release: (request: ReleaseManagedPreviewRequest) => Promise<void>
   }
+  officePreview: {
+    open: (request: OfficePreviewOpenRequest) => Promise<OfficePreviewOpenResult>
+    attachFrame: (sessionId: string) => Promise<OfficePreviewAttachResult | undefined>
+    reportState: (sessionId: string, state: OfficePreviewRuntimeState) => void
+    close: (sessionId: string) => Promise<void>
+    onState: (listener: (state: OfficePreviewRuntimeState) => void) => RemoveListener
+  }
   artifacts: {
     // Finalizes files produced during one runtime event after the renderer has selected a message.
     finalizeRunArtifacts: (request: FinalizeRunArtifactsRequest) => Promise<ArtifactFile[]>
@@ -677,7 +697,10 @@ const api: OpenScienceAPI = {
     // The Claude subscription's setup-token paste. Same shape as the codex login, but the renderer
     // supplies the token (no browser flow), so the payload is the plaintext string itself.
     loginIsolatedClaude: (token: string) =>
-      ipcRenderer.invoke('settings:login-isolated-claude', token) as Promise<ValidateProviderResult>,
+      ipcRenderer.invoke(
+        'settings:login-isolated-claude',
+        token
+      ) as Promise<ValidateProviderResult>,
     logoutIsolatedClaude: () =>
       ipcRenderer.invoke('settings:logout-isolated-claude') as Promise<ValidateProviderResult>,
     refreshProviderModels: (request) =>
@@ -723,10 +746,7 @@ const api: OpenScienceAPI = {
     listAgentHomeSkills: () =>
       ipcRenderer.invoke('settings:list-agent-home-skills') as Promise<AgentHomeSkillView[]>,
     importAgentHomeSkill: (request: ImportAgentHomeSkillRequest) =>
-      ipcRenderer.invoke(
-        'settings:import-agent-home-skill',
-        request
-      ) as Promise<ImportSkillResult>,
+      ipcRenderer.invoke('settings:import-agent-home-skill', request) as Promise<ImportSkillResult>,
     listConnectors: () =>
       ipcRenderer.invoke('settings:list-connectors') as Promise<ConnectorsSnapshot>,
     getConnectorDetail: (id: string) =>
@@ -895,6 +915,20 @@ const api: OpenScienceAPI = {
       ) as Promise<ManagedPreviewRangeResult>,
     release: (request) => ipcRenderer.invoke('preview-resources:release', request) as Promise<void>
   },
+  officePreview: {
+    open: (request) =>
+      ipcRenderer.invoke(OFFICE_PREVIEW_OPEN_CHANNEL, request) as Promise<OfficePreviewOpenResult>,
+    attachFrame: (sessionId) =>
+      ipcRenderer.invoke(OFFICE_PREVIEW_ATTACH_FRAME_CHANNEL, sessionId) as Promise<
+        OfficePreviewAttachResult | undefined
+      >,
+    // Runtime phases are one-way notifications relayed from the sandboxed child frame.
+    reportState: (sessionId, state) =>
+      ipcRenderer.send(OFFICE_PREVIEW_REPORT_STATE_CHANNEL, sessionId, state),
+    close: (sessionId) =>
+      ipcRenderer.invoke(OFFICE_PREVIEW_CLOSE_CHANNEL, sessionId) as Promise<void>,
+    onState: (listener) => onIpcMessage(OFFICE_PREVIEW_STATE_CHANNEL, listener)
+  },
   artifacts: {
     // Keep generated file movement in the main process where filesystem trust checks live.
     finalizeRunArtifacts: (request) =>
@@ -952,15 +986,9 @@ const api: OpenScienceAPI = {
     execute: (request) =>
       ipcRenderer.invoke('notebook:execute', request) as Promise<NotebookRunSummary>,
     exportIpynb: (request) =>
-      ipcRenderer.invoke(
-        'notebook:export-ipynb',
-        request
-      ) as Promise<ExportNotebookResult>,
+      ipcRenderer.invoke('notebook:export-ipynb', request) as Promise<ExportNotebookResult>,
     exportIpynbAll: (request) =>
-      ipcRenderer.invoke(
-        'notebook:export-ipynb-all',
-        request
-      ) as Promise<ExportNotebookAllResult>,
+      ipcRenderer.invoke('notebook:export-ipynb-all', request) as Promise<ExportNotebookAllResult>,
     restart: (request) =>
       ipcRenderer.invoke('notebook:restart', request) as Promise<NotebookSessionState>,
     shutdown: (request) =>

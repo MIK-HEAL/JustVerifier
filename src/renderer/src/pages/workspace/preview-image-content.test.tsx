@@ -14,6 +14,7 @@ describe('PreviewUnsupportedContent', () => {
     container = document.createElement('div')
     document.body.appendChild(container)
     window.api = {
+      saveManagedFile: vi.fn().mockResolvedValue({ saved: false }),
       artifacts: {
         openFile: vi.fn().mockResolvedValue(undefined),
         readPreview: vi.fn(),
@@ -29,21 +30,38 @@ describe('PreviewUnsupportedContent', () => {
     container.remove()
   })
 
-  it('shows the fallback message and opens the file externally on request', async () => {
+  it('downloads an unsupported file from the primary action below its message', async () => {
     root = createRoot(container)
     await act(async () => {
-      root.render(<PreviewUnsupportedContent path="/workspace/report.pdf" name="report.pdf" />)
+      root.render(
+        <PreviewUnsupportedContent source="upload" path="/workspace/report.ppt" name="report.ppt" />
+      )
     })
 
-    expect(container.textContent).toContain('report.pdf')
+    const status = container.querySelector('[data-preview-status="unsupported"]')
+    const description = Array.from(status?.querySelectorAll('p') ?? []).find((paragraph) =>
+      paragraph.textContent?.includes("This file type isn't supported for preview")
+    )
+    const button = status?.querySelector<HTMLButtonElement>('button')
+
+    expect(container.textContent).toContain('report.ppt')
     expect(container.textContent).toContain("This file type isn't supported for preview")
+    expect(description?.parentElement?.contains(button ?? null)).toBe(true)
+    expect(button?.dataset.variant).toBe('default')
+    expect(button?.textContent).toBe('Download')
+    expect(button?.querySelector('svg')).not.toBeNull()
 
-    const openButton = container.querySelector('button')
     await act(async () => {
-      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      button?.click()
+      await Promise.resolve()
     })
 
-    expect(window.api.artifacts.openFile).toHaveBeenCalledWith({ path: '/workspace/report.pdf' })
+    expect(window.api.saveManagedFile).toHaveBeenCalledWith({
+      source: 'upload',
+      path: '/workspace/report.ppt',
+      suggestedName: 'report.ppt'
+    })
+    expect(window.api.artifacts.openFile).not.toHaveBeenCalled()
   })
 })
 
@@ -96,7 +114,7 @@ describe('PreviewImageContent', () => {
       root.render(<PreviewImageContent path="/workspace/photo.png" name="photo.png" />)
     })
 
-    expect(container.querySelector('.animate-spin')).not.toBeNull()
+    expect(container.querySelector('[data-preview-status="loading"]')).not.toBeNull()
 
     await act(async () => {
       resolveAcquire?.({

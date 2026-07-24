@@ -10,8 +10,9 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-const { invokeMock, exposeMock } = vi.hoisted(() => ({
+const { invokeMock, sendMock, exposeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
+  sendMock: vi.fn(),
   exposeMock: vi.fn()
 }))
 
@@ -21,7 +22,7 @@ vi.mock('electron', () => ({
     invoke: invokeMock,
     on: vi.fn(),
     off: vi.fn(),
-    send: vi.fn(),
+    send: sendMock,
     removeListener: vi.fn()
   }
 }))
@@ -64,6 +65,10 @@ type PreloadApi = {
     install: () => unknown
     uninstall: () => unknown
   }
+  officePreview: {
+    attachFrame: (sessionId: string) => Promise<unknown>
+    reportState: (sessionId: string, state: unknown) => void
+  }
 }
 
 let api: PreloadApi
@@ -83,6 +88,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   invokeMock.mockClear()
+  sendMock.mockClear()
 })
 
 // Each case: invoke a bridge method with sample args, then assert the exact channel + forwarded args.
@@ -269,5 +275,20 @@ describe('preload bridge — sessions + agent-framework IPC channels', () => {
     // ipcRenderer.invoke unchanged.
     api.settings.installOpencode(sampleInstall)
     expect(invokeMock.mock.calls[0]?.[1]).toBe(sampleInstall)
+  })
+
+  it('attaches the OOPIF and reports runtime state over the narrow Office bridge', async () => {
+    invokeMock.mockResolvedValueOnce({ kind: 'attached' })
+    await api.officePreview.attachFrame('office-session-1')
+    api.officePreview.reportState('office-session-1', {
+      sessionId: 'office-session-1',
+      phase: 'ready'
+    })
+
+    expect(invokeMock).toHaveBeenCalledWith('office-preview:attach-frame', 'office-session-1')
+    expect(sendMock).toHaveBeenCalledWith('office-preview:report-state', 'office-session-1', {
+      sessionId: 'office-session-1',
+      phase: 'ready'
+    })
   })
 })

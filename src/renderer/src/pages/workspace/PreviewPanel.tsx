@@ -1,13 +1,13 @@
 import { X } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { PanelImperativeHandle, PanelSize } from 'react-resizable-panels'
 
+import { dialogOverlayClassName, dialogPanelClassName } from '@/components/ui/dialog-chrome'
 import { ResizablePanel } from '@/components/ui/resizable'
 import { cn } from '@/lib/utils'
 import type { PreviewFileItem, PreviewItem } from '@/stores/preview-workbench-store'
 import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
 
-import { FilePreviewDialog } from './FilePreviewDialog'
 import { MiddleEllipsisFileName, PreviewFileSurface } from './PreviewFileSurface'
 import { PreviewFileContent } from './previews/PreviewFileContent'
 import { PreviewToolContent } from './previews/PreviewToolContent'
@@ -43,6 +43,8 @@ const previewTabClassName =
 
 const getPreviewTabId = (itemId: string): string => `preview-tab-${encodeURIComponent(itemId)}`
 const getPreviewPanelId = (itemId: string): string => `preview-panel-${encodeURIComponent(itemId)}`
+const PREVIEW_MODAL_FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 // One tab owns activation/keyboard behavior while its sibling close button preserves quick removal.
 const PreviewTab = ({
@@ -172,8 +174,7 @@ const PreviewTabBar = ({
   )
 }
 
-// Keep dialog state local to the active file panel. While the dialog owns the preview, unmount the
-// compact renderer so large files are not acquired and rendered twice at the same time.
+// The same surface switches between panel and modal layout so stateful renderers never remount.
 const PreviewFilePanel = ({
   item,
   contentKey,
@@ -184,29 +185,97 @@ const PreviewFilePanel = ({
   onClose: (id: string) => void
 }): React.JSX.Element => {
   const [isFullScreenOpen, setIsFullScreenOpen] = useState(false)
+  const surfaceRef = useRef<HTMLElement | null>(null)
+
+  const closeFullScreen = (): void => {
+    setIsFullScreenOpen(false)
+  }
+
+  const openFullScreen = (): void => {
+    setIsFullScreenOpen(true)
+  }
+
+  useEffect(() => {
+    if (!isFullScreenOpen) return
+
+    const surface = surfaceRef.current
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    surface?.focus()
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setIsFullScreenOpen(false)
+        return
+      }
+      if (event.key !== 'Tab' || !surface) return
+
+      const focusable = Array.from(
+        surface.querySelectorAll<HTMLElement>(PREVIEW_MODAL_FOCUSABLE_SELECTOR)
+      )
+      if (focusable.length === 0) {
+        event.preventDefault()
+        surface.focus()
+        return
+      }
+
+      const first = focusable[0]
+      const last = focusable.at(-1)
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last?.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first?.focus()
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown, true)
+      document.body.style.overflow = previousOverflow
+      document.getElementById(getPreviewTabId(item.id))?.focus()
+    }
+  }, [isFullScreenOpen, item.id])
 
   return (
     <>
+      {isFullScreenOpen ? (
+        <div
+          aria-hidden="true"
+          data-state="open"
+          className={`${dialogOverlayClassName} z-[60] cursor-default`}
+          onClick={closeFullScreen}
+        />
+      ) : null}
       <section
+        ref={surfaceRef}
         data-testid="preview-card"
-        role="tabpanel"
-        id={getPreviewPanelId(item.id)}
-        aria-labelledby={getPreviewTabId(item.id)}
-        tabIndex={0}
-        className="flex h-full min-h-0 w-full flex-col overflow-hidden rounded-md bg-bg-000 shadow-card"
+        role={isFullScreenOpen ? 'dialog' : 'tabpanel'}
+        aria-modal={isFullScreenOpen || undefined}
+        aria-label={isFullScreenOpen ? `Preview ${item.title}` : undefined}
+        id={isFullScreenOpen ? undefined : getPreviewPanelId(item.id)}
+        aria-labelledby={isFullScreenOpen ? undefined : getPreviewTabId(item.id)}
+        tabIndex={isFullScreenOpen ? -1 : 0}
+        data-state={isFullScreenOpen ? 'open' : undefined}
+        className={
+          isFullScreenOpen
+            ? dialogPanelClassName(
+                'z-[61] flex h-[90vh] w-[90vw] max-w-none min-h-0 flex-col overflow-hidden overscroll-contain p-0'
+              )
+            : cn(
+                'flex h-full min-h-0 w-full flex-col overflow-hidden rounded-md bg-bg-000 shadow-card'
+              )
+        }
       >
         <PreviewFileSurface
           item={item}
           contentKey={contentKey}
-          renderContent={!isFullScreenOpen}
-          onClose={() => onClose(item.id)}
-          onOpenFullScreen={() => setIsFullScreenOpen(true)}
+          onClose={isFullScreenOpen ? closeFullScreen : () => onClose(item.id)}
+          onOpenFullScreen={isFullScreenOpen ? undefined : openFullScreen}
         />
       </section>
-      <FilePreviewDialog
-        item={isFullScreenOpen ? item : undefined}
-        onClose={() => setIsFullScreenOpen(false)}
-      />
     </>
   )
 }
