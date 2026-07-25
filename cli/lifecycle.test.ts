@@ -1,6 +1,21 @@
+import { EventEmitter } from 'node:events'
+import { closeSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 
-import { statusCommand, stopCommand, terminateDaemon, urlCommand } from './index.mjs'
+import {
+  buildAppLaunchArgs,
+  formatStartupFailure,
+  openLaunchLog,
+  statusCommand,
+  stopCommand,
+  terminateDaemon,
+  urlCommand,
+  waitForStartup
+} from './index.mjs'
 
 // A running daemon's on-disk state, as findServiceState would return it.
 const RUNNING_STATE = { pid: 4242, port: 44100, configRoot: '/tmp/os-config' }
@@ -90,6 +105,79 @@ describe('terminateDaemon', () => {
     const stopped = await terminateDaemon(7, { ...base, isAlive: () => true, forceKill })
     expect(stopped).toBe(false)
     expect(forceKill).toHaveBeenCalledWith(7)
+  })
+})
+
+describe('headless startup', () => {
+  it('starts each launch with an empty diagnostic log', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'open-science-cli-log-'))
+    const logPath = join(directory, 'cli-daemon.log')
+    try {
+      await writeFile(logPath, 'stale SUID sandbox failure')
+
+      closeSync(openLaunchLog(logPath))
+
+      await expect(readFile(logPath, 'utf8')).resolves.toBe('')
+    } finally {
+      await rm(directory, { recursive: true })
+    }
+  })
+
+  it('places the no-sandbox runtime switch before the development app path', () => {
+    expect(buildAppLaunchArgs(['app-root'], { noSandbox: true }, 44100)).toEqual([
+      '--no-sandbox',
+      'app-root',
+      '--open-science-headless',
+      '--serve=44100'
+    ])
+    expect(buildAppLaunchArgs(['app-root'], {}, 44100)).not.toContain('--no-sandbox')
+  })
+
+  it('stops waiting as soon as the packaged app exits', async () => {
+    const child = new EventEmitter()
+    const deps = makeDeps({
+      findServiceState: vi.fn().mockImplementation(() => {
+        child.emit('exit', 1, null)
+        return Promise.resolve(undefined)
+      })
+    })
+
+    await expect(waitForStartup('/tmp/os-config', child, deps, 30_000)).resolves.toEqual({
+      kind: 'exit',
+      code: 1,
+      signal: null
+    })
+    expect(deps.sleep).not.toHaveBeenCalled()
+  })
+
+  it('keeps waiting after a successful second-instance handoff', async () => {
+    const child = new EventEmitter()
+    const findServiceState = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        child.emit('exit', 0, null)
+        return Promise.resolve(undefined)
+      })
+      .mockResolvedValue(RUNNING_STATE)
+    const deps = makeDeps({ findServiceState })
+
+    await expect(waitForStartup('/tmp/os-config', child, deps, 30_000)).resolves.toEqual({
+      kind: 'ready',
+      state: RUNNING_STATE
+    })
+    expect(findServiceState).toHaveBeenCalledTimes(2)
+  })
+
+  it('explains the AppImage sandbox failure and the explicit security trade-off', () => {
+    const message = formatStartupFailure(
+      { kind: 'exit', code: 1, signal: null },
+      'FATAL:sandbox/linux/suid/client/setuid_sandbox_host.cc:166\nThe SUID sandbox helper binary was found, but is not configured correctly.',
+      { noSandbox: false }
+    )
+
+    expect(message).toContain('open-science start --no-sandbox')
+    expect(message).toContain('reduces security')
+    expect(message).toContain('AppImage')
   })
 })
 
