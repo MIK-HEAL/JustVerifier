@@ -17,20 +17,37 @@ const EnvStatusBanner = ({
   const show = (ui.kind === 'preparing' && ui.scope === 'upgrade') || ui.kind === 'error'
   if (!show) return null
 
+  // A preparing banner is a compact single-line pill; an error can carry a longer provisioner reason,
+  // so it uses a wider rounded card (matching the app's dialog chrome). This banner is the ONLY error
+  // surface outside the notebook pane (it renders globally from App, incl. Home where there is no
+  // EnvProvisionOverlay), so the reason must stay fully readable — bound it to a scrollable box rather
+  // than clamping lines, which could hide the actionable tail. The source excerpt is already short
+  // (provisioner-runtime.briefTail); full diagnostics also live in the logs.
+  const isError = ui.kind === 'error'
+
   return (
     <div
       data-testid="env-status-banner"
-      className="fixed left-1/2 top-2 z-50 flex max-w-[min(90vw,640px)] -translate-x-1/2 items-center justify-center gap-2 rounded-full border border-border-100 bg-bg-200 px-3 py-1 text-center text-xs text-text-100 shadow-md"
+      className={`fixed left-1/2 top-2 z-50 -translate-x-1/2 border border-border bg-card text-foreground shadow-dialog ${
+        isError
+          ? 'flex max-w-[min(90vw,560px)] items-start gap-3 rounded-xl px-4 py-3 text-left text-xs'
+          : 'flex max-w-[min(90vw,640px)] items-center justify-center gap-2 rounded-full px-3 py-1 text-center text-xs'
+      }`}
     >
       {ui.kind === 'error' ? (
         <>
-          <span>Environment update failed — {ui.message}</span>
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-foreground">Environment update failed</p>
+            <p className="mt-0.5 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-muted-foreground">
+              {ui.message}
+            </p>
+          </div>
           {onRetry ? (
             <button
               type="button"
               data-testid="env-status-banner-retry"
               onClick={onRetry}
-              className="rounded border border-border-100 px-2 py-0.5 text-xs text-text-100 hover:bg-bg-300"
+              className="shrink-0 rounded-lg border border-border px-2 py-0.5 text-xs text-foreground hover:bg-muted"
             >
               Retry
             </button>

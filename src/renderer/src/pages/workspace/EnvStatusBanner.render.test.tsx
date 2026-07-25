@@ -113,6 +113,35 @@ describe('EnvStatusBanner', () => {
     expect(retried).toBe(1)
   })
 
+  it('bounds a long error reason in a scrollable box and uses the dialog card chrome, keeping the full text readable', () => {
+    // A provisioner failure can carry a long reason. This banner is the ONLY error surface outside the
+    // notebook pane (Home has no overlay), so the reason must stay fully readable: bound it to a
+    // scrollable box (max-h + overflow) rather than clamping lines, which could hide the actionable tail.
+    const longReason = `micromamba failed (exit 1): ${'pkg==1.0=hbuild_0 - '.repeat(400)}`
+    act(() =>
+      root.render(
+        <EnvStatusBanner ui={{ kind: 'error', message: longReason }} onRetry={() => {}} />
+      )
+    )
+    const banner = container.querySelector('[data-testid="env-status-banner"]') as HTMLElement
+    expect(banner).not.toBeNull()
+    // Dialog chrome (matches dialog-chrome.ts): rounded card, card surface, dialog shadow.
+    expect(banner.className).toContain('rounded-xl')
+    expect(banner.className).toContain('bg-card')
+    expect(banner.className).toContain('shadow-dialog')
+    // The reason is bounded (max-h) and scrollable (overflow-y-auto) rather than line-clamped, so the
+    // banner cannot fill the screen yet the full excerpt remains reachable — no line-clamp truncation.
+    const reason = banner.querySelector('.overflow-y-auto') as HTMLElement
+    expect(reason).not.toBeNull()
+    expect(reason.className).toMatch(/max-h-/)
+    expect(reason.className).not.toContain('line-clamp')
+    expect(reason.textContent).toContain('micromamba failed (exit 1)')
+    // The full reason text is rendered (not truncated in the DOM), so scrolling exposes all of it.
+    expect(reason.textContent).toBe(longReason)
+    // The standing title is separate from the scrollable reason.
+    expect(banner.textContent).toContain('Environment update failed')
+  })
+
   it('is hidden for a first-run python preparation (that is the onboarding/gate surface, not a banner)', () => {
     act(() =>
       root.render(

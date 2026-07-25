@@ -4,7 +4,13 @@ import { join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { killAndConfirmExit, md5File, runMicromamba, verifyExecutable } from './provisioner-runtime'
+import {
+  killAndConfirmExit,
+  md5File,
+  micromambaDiagnosticText,
+  runMicromamba,
+  verifyExecutable
+} from './provisioner-runtime'
 import { condaActivatedPath } from './runtime-paths'
 
 describe('verifyExecutable', () => {
@@ -59,7 +65,9 @@ describe('runMicromamba', () => {
     ).resolves.toBeUndefined()
   })
 
-  it('rejects with a stderr summary on non-zero exit', async () => {
+  it('rejects with a short stderr excerpt on non-zero exit, keeping full tails in data', async () => {
+    // The user-facing message prefers the stderr reason (not the package-plan stdout) so the
+    // provisioning banner never floods; both full tails stay on the error's structured `data`.
     await expect(
       runMicromamba(
         [
@@ -69,7 +77,45 @@ describe('runMicromamba', () => {
         ],
         { MM_STDOUT: 'stdout-only-token', MM_STDERR: 'stderr-only-token' }
       )
-    ).rejects.toThrow(/exit 3[^]*stdout-only-token[^]*stderr-only-token/)
+    ).rejects.toMatchObject({
+      code: 'MICROMAMBA_EXIT',
+      message: expect.stringMatching(/exit 3[^]*stderr-only-token/),
+      data: {
+        exitCode: 3,
+        stderrTail: 'stderr-only-token',
+        stdoutTail: 'stdout-only-token'
+      }
+    })
+  })
+
+  it('omits the stdout package plan from the exit message when stderr carries the reason', async () => {
+    await expect(
+      runMicromamba(
+        [
+          process.execPath,
+          '-e',
+          'process.stdout.write(process.env.MM_STDOUT); process.stderr.write(process.env.MM_STDERR); process.exit(1)'
+        ],
+        { MM_STDOUT: 'plan-noise-token', MM_STDERR: 'the-real-reason' }
+      )
+    ).rejects.toThrow(/^(?:(?!plan-noise-token)[^])*the-real-reason(?:(?!plan-noise-token)[^])*$/)
+  })
+
+  it('caps the exit message excerpt while retaining the full stderr tail in data', async () => {
+    // 2 KB of stderr must not reach the message verbatim (the banner-flood bug); the excerpt is
+    // bounded and prefixed with an ellipsis, but the full tail is preserved on `data`.
+    await expect(
+      runMicromamba([
+        process.execPath,
+        '-e',
+        "process.stderr.write('X'.repeat(2048)); process.exit(2)"
+      ])
+    ).rejects.toMatchObject({
+      code: 'MICROMAMBA_EXIT',
+      // The ellipsis-prefixed excerpt ends in EXACTLY 500 X's — proof the 2048-char tail was capped.
+      message: expect.stringMatching(/…X{500}$/),
+      data: { stderrTail: 'X'.repeat(2048) }
+    })
   })
 
   it('distinguishes timeout from an ordinary non-zero exit and keeps output tails', async () => {
@@ -214,5 +260,33 @@ describe('killAndConfirmExit', () => {
       once: () => undefined // never fires exit
     } as never
     expect(await killAndConfirmExit(fake, 40)).toBe(false)
+  })
+})
+
+describe('micromambaDiagnosticText', () => {
+  it('reconstructs the FULL diagnostics from data tails so recovery parsing survives the short message', () => {
+    // The UI message is a capped excerpt; a cache-corruption / MAX_PATH signature or over-budget path
+    // can sit only in the full stdout/stderr tails. The reconstructed text must expose both.
+    const error = Object.assign(new Error('micromamba failed (exit 1; mm create): …tail-excerpt'), {
+      code: 'MICROMAMBA_EXIT',
+      data: {
+        argv: ['mm', 'create'],
+        exitCode: 1,
+        stderrTail: "Invalid package cache, 'C:/very/long/path/pkg.conda' is missing",
+        stdoutTail: 'plan-line-1\nplan-line-2'
+      }
+    })
+    const text = micromambaDiagnosticText(error)
+    expect(text).toContain('micromamba failed (exit 1')
+    expect(text).toContain('Invalid package cache')
+    expect(text).toContain("'C:/very/long/path/pkg.conda' is missing")
+    expect(text).toContain('plan-line-1')
+  })
+
+  it('falls back to the plain message for an error without structured data (e.g. spawn failure)', () => {
+    expect(micromambaDiagnosticText(new Error('micromamba failed to start (mm): ENOENT'))).toBe(
+      'micromamba failed to start (mm): ENOENT'
+    )
+    expect(micromambaDiagnosticText('not-an-error')).toBe('not-an-error')
   })
 })

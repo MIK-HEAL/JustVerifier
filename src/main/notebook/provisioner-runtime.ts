@@ -14,6 +14,39 @@ export const CHILD_UNCONFIRMED = 'RUNTIME_CHILD_UNCONFIRMED'
 export const isChildUnconfirmedError = (error: unknown): boolean =>
   error instanceof Error && error.message.includes(CHILD_UNCONFIRMED)
 
+// Structured payload attached to a runMicromamba failure (exit / timeout). The user-facing
+// `Error.message` carries only a short excerpt; the full stdout/stderr tails live here so machine
+// consumers (cache-corruption / MAX_PATH recovery parsers, startup-gate logging) keep the complete
+// diagnostics the message no longer holds.
+export type MicromambaErrorData = {
+  argv: string[]
+  exitCode?: number | null
+  stderrTail?: string
+  stdoutTail?: string
+}
+
+const hasMicromambaErrorData = (error: unknown): error is { data: MicromambaErrorData } =>
+  error instanceof Error &&
+  typeof (error as { data?: unknown }).data === 'object' &&
+  (error as { data?: unknown }).data !== null
+
+// The FULL micromamba diagnostic text for machine parsing (not for the UI). Prefers the untruncated
+// stdout+stderr tails on `error.data`; falls back to `error.message` for errors raised without the
+// structured payload (e.g. captureMicromamba, spawn-failure). Recovery heuristics regex-match this, so
+// it must reconstruct what the pre-excerpt `Error.message` used to contain.
+export const micromambaDiagnosticText = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : String(error)
+  if (!hasMicromambaErrorData(error)) return message
+  const { stdoutTail, stderrTail } = error.data
+  return [
+    message,
+    stdoutTail && `stdout tail:\n${stdoutTail}`,
+    stderrTail && `stderr tail:\n${stderrTail}`
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 // Kills a child and resolves ONLY once it has actually exited, escalating SIGTERM -> SIGKILL. Resolves
 // true when exit is confirmed, false when it can't be confirmed within the deadline (SIGTERM can be
 // ignored/delayed and kill() can return false, so a single kill() is not proof of exit). The caller
@@ -134,6 +167,9 @@ export const runMicromamba = (
     })
 
     const maxTail = 16 * 1024
+    // Cap the excerpt embedded in the user-facing error message; full tails still reach the logs via
+    // the error's structured `data`.
+    const MESSAGE_TAIL_LIMIT = 500
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -163,10 +199,16 @@ export const runMicromamba = (
       clearTimeout(timeout)
       signal?.removeEventListener('abort', onAbort)
     }
-    const output = (): string =>
-      [stdout && `stdout tail:\n${stdout}`, stderr && `stderr tail:\n${stderr}`]
-        .filter(Boolean)
-        .join('\n')
+    // Full tails go into the error's structured `data` for the logs; the user-facing message gets only
+    // this short excerpt. micromamba writes its package plan (thousands of pinned specs) to stdout, so
+    // embedding the raw tails in the message floods the provisioning banner — prefer the stderr reason,
+    // capped, and fall back to stdout only when stderr is empty.
+    const briefTail = (): string => {
+      const source = stderr.trim() || stdout.trim()
+      return source.length > MESSAGE_TAIL_LIMIT
+        ? `…${source.slice(-MESSAGE_TAIL_LIMIT).trimStart()}`
+        : source
+    }
 
     // Record the spawned PID for crash-recovery supervision. If recording FAILS, fail closed: kill the
     // child and only settle once it is CONFIRMED gone — the close handler then rejects with
@@ -216,11 +258,11 @@ export const runMicromamba = (
         reject(new Error('Runtime setup cancelled.'))
         return
       }
-      const tails = output()
+      const excerpt = briefTail()
       if (timedOut) {
         const timeoutError = Object.assign(
           new Error(
-            `micromamba timed out after ${timeoutMs}ms (${argv.join(' ')})${tails ? `:\n${tails}` : ''}`
+            `micromamba timed out after ${timeoutMs}ms (${argv.join(' ')})${excerpt ? `:\n${excerpt}` : ''}`
           ),
           {
             code: 'MICROMAMBA_TIMEOUT',
@@ -244,8 +286,17 @@ export const runMicromamba = (
         return
       }
       const status = code === null ? `signal ${closeSignal ?? 'unknown'}` : `exit ${code}`
+      // Short message for the UI banner; full tails attached to `data` for the logs (see briefTail).
       reject(
-        new Error(`micromamba failed (${status}; ${argv.join(' ')})${tails ? `:\n${tails}` : ''}`)
+        Object.assign(
+          new Error(
+            `micromamba failed (${status}; ${argv.join(' ')})${excerpt ? `:\n${excerpt}` : ''}`
+          ),
+          {
+            code: 'MICROMAMBA_EXIT',
+            data: { argv, exitCode: code, stderrTail: stderr, stdoutTail: stdout }
+          }
+        )
       )
     })
   })
