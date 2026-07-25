@@ -51,15 +51,22 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
     { app, BrowserWindow, ipcMain, nativeImage, protocol },
     { electronApp },
     { default: icon },
+    { default: iconDark },
     { acquireSingleInstanceLock },
     { orchestrateAppStartup }
   ] = await Promise.all([
     import('electron'),
     import('@electron-toolkit/utils'),
     import('../../resources/icon.png?asset'),
+    import('../../resources/icon-dark.png?asset'),
     import('./single-instance'),
     import('./app-startup')
   ])
+
+  // The bundled asset path for each selectable icon variant (light = current shipped default, dark =
+  // the original Open Science icon). Resolved once here and reused by the icon controller and the
+  // Settings preview builder.
+  const iconVariantPaths = { light: icon, dark: iconDark }
 
   // Ordered startup: the single-instance lock is acquired FIRST (UI path only — the MCP stdio server
   // modes never reach startElectronApp), so a secondary launch quits before prepare() imports any
@@ -84,7 +91,8 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
         { routeSecondInstance },
         { detectActiveSessions: computeActiveSessions },
         { createElectronCloseConfirm },
-        { installWindowShortcuts }
+        { installWindowShortcuts },
+        { createAppIconController, buildAppIconPreviews }
       ] = await Promise.all([
         import('./ipc'),
         import('./windows'),
@@ -98,7 +106,8 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
         import('./second-instance-router'),
         import('./storage/detect-active'),
         import('./window-close-confirm'),
-        import('./window-shortcuts')
+        import('./window-shortcuts'),
+        import('./app-icon')
       ])
 
       // Dev runs get a "(DEV)" suffix so the app name, macOS menu, and per-app paths (logs, userData)
@@ -142,13 +151,13 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
       // preventDefault() on Cmd+- and Cmd+= and silently disables zoom out / reset (issue #336).
       installWindowShortcuts(app)
 
-      // Dev builds use the app icon for the macOS dock.
-      if (process.platform === 'darwin') {
-        const dockIcon = nativeImage.createFromPath(icon)
-        if (!dockIcon.isEmpty()) {
-          app.dock?.setIcon(dockIcon)
-        }
-      }
+      // Held in a box (not a bare let) so the settings IPC callback registered below can reach the icon
+      // controller, which itself needs the persisted variant that only exists once settingsService is
+      // constructed. The change callback only fires on a user action (well after startup), so the
+      // controller is always set by then. Mirrors the trayBox late-binding pattern in app-lifecycle.ts.
+      const appIconControllerBox: {
+        current: ReturnType<typeof createAppIconController> | undefined
+      } = { current: undefined }
 
       const webMode = parseWebModeOptions(process.argv)
       // Always install the capture layer BEFORE handlers register: it records ipcMain.handle handlers as
@@ -159,8 +168,23 @@ async function startElectronApp(mainEntryPath: string): Promise<void> {
       const { runtime, notebook, shutdownCoordinator, taskNotifications, settingsService } =
         await registerIpcHandlers({
           mainEntryPath,
-          headless: webMode.headless
+          headless: webMode.headless,
+          onAppIconVariantChanged: (variant) => appIconControllerBox.current?.setVariant(variant),
+          listAppIconPreviews: () => buildAppIconPreviews(nativeImage, iconVariantPaths)
         })
+
+      // Apply the persisted icon variant now and keep it in sync as windows come and go. Created
+      // unconditionally — even a headless launch can later surface a desktop window on a plain second
+      // launch (routeSecondInstance -> showMainWindow), and that window plus any live icon-setting
+      // change must still pick up the variant. Construction is safe headless: the dock is set on macOS
+      // (as the pre-existing startup code did unconditionally) and the window loop is a no-op until the
+      // browser-window-created listener sees the first window. The controller owns the macOS dock icon.
+      const initialVariant = await settingsService.getAppIconVariant()
+      appIconControllerBox.current = createAppIconController({
+        electron: { app, getAllWindows: () => BrowserWindow.getAllWindows(), nativeImage },
+        variantPaths: iconVariantPaths,
+        initialVariant
+      })
       const webController = createWebServiceController({
         rpc: rpcCapture,
         requestQuit: () => app.quit()
