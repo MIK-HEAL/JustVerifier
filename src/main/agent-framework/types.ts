@@ -5,7 +5,11 @@ import type { PermissionProfileApplication } from '../acp/permission-profile-con
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import type { AgentFrameworkId, ChatApiEndpoint, ReasoningEffort } from '../../shared/settings'
 import type { ResolvedProvider } from '../settings/provider-env'
-import type { ResponsesBridgeConnection } from '../settings/responses-bridge'
+import type {
+  ResponsesBridgeConnection,
+  ResponsesBridgeSkillCandidate,
+  ResponsesBridgeSkillInput
+} from '../settings/responses-bridge'
 
 // The agent frameworks the app can drive over ACP (id union defined in shared settings so the renderer
 // and persisted settings share it). Adding one means implementing AgentFramework.
@@ -146,6 +150,9 @@ export type ResolvedAgentBackend = {
   args?: string[]
   // Framework-native session options retained by the runtime and passed through buildSessionSetup.
   sessionOptions?: Record<string, unknown>
+  // Backend-resolved guidance appended to every session. Connector conventions use this channel for
+  // Claude and Codex; OpenCode keeps the same guidance in its generated instructions config.
+  systemPromptAppends?: string[]
   // Model to apply per session via the ACP `model` configOption, for frameworks that select the model
   // over the protocol rather than via env (opencode). Undefined ⇒ the framework's env/config drives it
   // (Claude uses ANTHROPIC_MODEL). Applied best-effort: skipped when the agent advertises no match.
@@ -164,6 +171,11 @@ export type ResolvedAgentBackend = {
   // A bridged backend owns one reference to its local loopback bridge. Runtime teardown releases it;
   // reviewer sessions register their Codex prompt_cache_key here so routing never depends on content.
   responsesBridgeLease?: {
+    selectSkills: (
+      text: string,
+      catalog: ResponsesBridgeSkillCandidate[],
+      signal?: AbortSignal
+    ) => Promise<ResponsesBridgeSkillInput[]>
     registerReviewerSession: (promptCacheKey: string) => void
     unregisterReviewerSession: (promptCacheKey: string) => boolean
     release: () => Promise<void>

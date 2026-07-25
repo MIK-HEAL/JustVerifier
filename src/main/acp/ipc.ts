@@ -100,7 +100,7 @@ const createRuntime = ({
   }
 
   return new AcpRuntimeCoordinator(
-    (runtimeCallbacks) => {
+    (runtimeCallbacks, permissionGrantStore) => {
       // Capture only the non-secret selection per generation. Credentials are resolved fresh at spawn
       // and released by AcpRuntime after authentication instead of living in this coordinator closure.
       const selection = settingsService.captureActiveAgentBackendSelection()
@@ -115,7 +115,10 @@ const createRuntime = ({
         mcpHttpHost: new AgentMcpHttpHost(),
         skills: {
           needForceLoad: (ids) => settingsService.skillsNeedingForceLoad(ids),
-          namesForIds: (ids) => settingsService.skillNudgeNamesForIds(ids)
+          namesForIds: (ids) => settingsService.skillNudgeNamesForIds(ids),
+          descriptorsForIds: (ids, codexHome) =>
+            settingsService.codexSkillDescriptorsForIds(ids, codexHome),
+          catalogForCodexHome: (codexHome) => settingsService.codexSkillCatalog(codexHome)
         },
         artifacts: {
           configRoot,
@@ -134,7 +137,8 @@ const createRuntime = ({
             notebookRpcServer.registerSessionAlias(aliasSessionId, sessionId)
         },
         activityGroups: { mcpEntryPath },
-        callbacks: runtimeCallbacks
+        callbacks: runtimeCallbacks,
+        permissionGrantStore
       })
     },
     callbacks,
