@@ -214,11 +214,13 @@ const hasValidAnthropicMessage = (bodyText: string): boolean => {
 }
 
 // Maps an HTTP status to a validation category. 2xx is success; auth/model errors are distinguished
-// so the UI can point the user at the credential vs. the model field.
+// so the UI can point the user at the credential vs. the model field. 5xx server errors are surfaced
+// as a distinct category so users can distinguish gateway/upstream issues from client-side problems.
 const classifyStatus = (status: number): ValidationCategory => {
   if (status >= 200 && status < 300) return 'ok'
   if (status === 401 || status === 403) return 'auth'
   if (status === 404) return 'model-not-found'
+  if (status >= 500 && status < 600) return 'server-error'
 
   return 'unknown'
 }
@@ -444,7 +446,7 @@ const validateProviderThroughResponsesBridge = async (
     if (category !== 'ok') {
       return toResult(category, {
         status: response.status,
-        ...(category === 'unknown' ? { message: providerMessage } : {})
+        ...(category === 'unknown' || category === 'server-error' ? { message: providerMessage } : {})
       })
     }
     if (!hasResponsesBridgeProbeToolCall(bodyText)) {
@@ -514,11 +516,11 @@ const validateCustomProvider = async (
       }
     }
 
-    // Only the catch-all 'unknown' status (402 billing, 429 rate limit, 5xx, …) lacks guidance of its
-    // own, so surface the gateway's error text there — whatever it actually says — rather than an
-    // assumed meaning. auth/model-not-found already map to targeted advice, so their raw bodies would
-    // only muddy it.
-    if (category === 'unknown') {
+    // Only the catch-all 'unknown' status (402 billing, 429 rate limit, …) and 'server-error' (5xx)
+    // lack guidance of their own, so surface the gateway's error text there — whatever it actually
+    // says — rather than an assumed meaning. auth/model-not-found already map to targeted advice, so
+    // their raw bodies would only muddy it.
+    if (category === 'unknown' || category === 'server-error') {
       return toResult(category, {
         status: response.status,
         message: providerMessage
