@@ -1315,6 +1315,62 @@ describe('ACP runtime session management', () => {
     ).resolves.toBe('hello from upload')
   })
 
+  it('sends Skill packages as text references instead of unsupported ZIP file parts', async () => {
+    const root = await createTemporaryRoot()
+    const uploadRepository = new UploadRepository(root)
+    const stagedAttachments = await uploadRepository.stageFiles({
+      files: [
+        {
+          name: 'example-skill.zip',
+          mimeType: 'application/zip',
+          content: Buffer.from('zip-bytes').toString('base64')
+        },
+        {
+          name: 'example-package.skill',
+          mimeType: 'application/octet-stream',
+          content: Buffer.from('skill-bytes').toString('base64')
+        }
+      ]
+    })
+    const process = new FakeAgentProcess()
+    const receivedPrompts: ContentBlock[][] = []
+    startFakeAgent(process, ['remote-session-1'], {
+      onPrompt: ({ prompt }) => {
+        receivedPrompts.push(prompt)
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      uploads: { repository: uploadRepository }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'import this Skill',
+      attachments: stagedAttachments
+    })
+
+    expect(receivedPrompts).toHaveLength(1)
+    expect(receivedPrompts[0][1]).toMatchObject({
+      type: 'text',
+      text: expect.stringMatching(
+        /"uri":"file:\/\/\/.*\/uploads\/default-project\/remote-session-1\/example-skill\.zip"/
+      )
+    })
+    expect(receivedPrompts[0][2]).toMatchObject({
+      type: 'text',
+      text: expect.stringMatching(
+        /"uri":"file:\/\/\/.*\/uploads\/default-project\/remote-session-1\/example-package\.skill"/
+      )
+    })
+    expect(receivedPrompts[0]).not.toContainEqual(
+      expect.objectContaining({ type: 'resource_link' })
+    )
+  })
+
   it('inlines an image attachment as pixels when the browser sent no usable MIME type', async () => {
     const root = await createTemporaryRoot()
     const uploadRepository = new UploadRepository(root)
@@ -2467,10 +2523,11 @@ describe('ACP runtime session management', () => {
     expect(fakeAgent.prompts[0].text).toContain('hello opencode')
   })
 
-  it('serves artifact/notebook MCP over the http host for an http-only framework', async () => {
+  it('serves app MCP tools over the http host for an http-only framework', async () => {
     const root = await createTemporaryRoot()
     const httpHost = new AgentMcpHttpHost()
     const closeHttpHost = vi.spyOn(httpHost, 'close')
+    const unregisterHttpSession = vi.spyOn(httpHost, 'unregister')
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['oc-session'])
     const runtime = new AcpRuntime({
@@ -2491,11 +2548,19 @@ describe('ACP runtime session management', () => {
         projectName: 'default-project',
         mcpEntryPath: '/app/out/main/index.js',
         getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:1/notebook', token: 'nb' })
+      },
+      skillImport: {
+        mcpEntryPath: '/app/out/main/index.js',
+        getRpcConnection: async () => ({
+          endpoint: 'http://127.0.0.1:1/skill-import',
+          token: 'skill'
+        })
       }
     })
 
     try {
-      await runtime.createSession({ cwd: '/workspace' })
+      const session = await runtime.createSession({ cwd: '/workspace' })
+      await runtime.sendPrompt({ sessionId: session.sessionId, text: 'install this skill' })
 
       const servers = fakeAgent.newSessions[0].mcpServers as Array<{
         type?: string
@@ -2505,13 +2570,26 @@ describe('ACP runtime session management', () => {
       }>
 
       // opencode gets http MCP configs (not stdio) pointing at the local host, with bearer auth.
-      expect(servers.map((server) => server.type)).toEqual(['http', 'http'])
+      expect(servers.map((server) => server.type)).toEqual(['http', 'http', 'http'])
       expect(servers.map((server) => server.name)).toEqual(
-        expect.arrayContaining(['open-science-artifacts', 'open-science-notebook'])
+        expect.arrayContaining([
+          'open-science-artifacts',
+          'open-science-notebook',
+          'open-science-skills'
+        ])
       )
       const artifactServer = servers.find((server) => server.name === 'open-science-artifacts')
       expect(artifactServer?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/artifact\//)
       expect(artifactServer?.headers?.[0]).toMatchObject({ name: 'authorization' })
+      const skillImportServer = servers.find((server) => server.name === 'open-science-skills')
+      expect(skillImportServer?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp\/skill-import\//)
+      expect(fakeAgent.prompts[0].text).toContain('request_skill_import')
+
+      const skillImportRoutingId = decodeURIComponent(
+        new URL(skillImportServer?.url ?? '').pathname.split('/').at(-1) ?? ''
+      )
+      await runtime.deleteSession({ sessionId: session.sessionId })
+      expect(unregisterHttpSession).toHaveBeenCalledWith(skillImportRoutingId)
 
       await runtime.requestRetirement()
       expect(closeHttpHost).toHaveBeenCalledOnce()
@@ -6449,6 +6527,46 @@ describe('ACP runtime session management', () => {
     const createdSessionMeta = JSON.stringify(fakeAgent.newSessions[0]._meta)
     expect(createdSessionMeta).toContain('mcp__open-science-notebook__notebook_execute')
     expect(createdSessionMeta).not.toContain('`notebook_execute`')
+  })
+
+  it('passes the conversation Skill import tool a session-scoped route', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['remote-session-1'])
+    const aliases: Array<{ aliasSessionId: string; sessionId: string }> = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      skillImport: {
+        mcpEntryPath: '/app/out/main/index.js',
+        mcpCommand: '/Applications/Open Science.app/Contents/MacOS/Open Science',
+        getRpcConnection: async () => ({
+          endpoint: 'http://127.0.0.1:4567',
+          token: 'secret-token'
+        }),
+        registerSessionAlias: (aliasSessionId, sessionId) => {
+          aliases.push({ aliasSessionId, sessionId })
+        }
+      }
+    })
+
+    const createdSession = await runtime.createSession({ cwd: '/workspace' })
+
+    expect(fakeAgent.newSessions[0].mcpServers).toHaveLength(1)
+    expect(fakeAgent.newSessions[0].mcpServers[0]).toMatchObject({
+      name: 'open-science-skills',
+      command: '/Applications/Open Science.app/Contents/MacOS/Open Science',
+      args: ['/app/out/main/index.js', '--open-science-skill-import-mcp']
+    })
+    const aliasSessionId = getEnvValue(
+      fakeAgent.newSessions[0].mcpServers[0],
+      'OPEN_SCIENCE_SKILL_IMPORT_SESSION_ID'
+    )
+    expect(aliasSessionId).toMatch(/^skill-import-session-/)
+    expect(aliases).toEqual([{ aliasSessionId, sessionId: createdSession.sessionId }])
+    expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).toContain(
+      'mcp__open-science-skills__request_skill_import'
+    )
   })
 
   it('passes only the workspace as a static allowed import root, not the pre-start notebook alias', async () => {

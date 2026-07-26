@@ -102,6 +102,8 @@ import { registerUpdateIpcHandlers } from './update/ipc'
 import { startUpdateScheduler } from './update/scheduler'
 import { createDefaultUploadRepository, registerUploadIpcHandlers } from './uploads/ipc'
 import { broadcastToRenderers } from './renderer-broadcast'
+import { ConversationSkillImporter, SkillImportApprovalBroker } from './skills/conversation-import'
+import type { ConversationSkillImportApprovalResponse } from '../shared/settings'
 
 type IpcRegistrationOptions = {
   mainEntryPath: string
@@ -328,6 +330,20 @@ const registerIpcHandlers = async ({
   const runtimeRef: { current: ReturnType<typeof registerAcpIpcHandlers> | undefined } = {
     current: undefined
   }
+  const skillImportApprovalBroker = new SkillImportApprovalBroker({
+    generateId: () => randomUUID(),
+    broadcast: (request) => broadcastToRenderers('skills:conversation-import-request', request),
+    onSettled: (id) => broadcastToRenderers('skills:conversation-import-settled', id)
+  })
+  const conversationSkillImporter = new ConversationSkillImporter({
+    uploads: uploadRepository,
+    previewBundle: (bundle) => settingsService.previewSkillArchive(bundle),
+    importBundle: (bundle, items) => settingsService.importSkillArchiveBatch(bundle, items),
+    requestApproval: (request) => skillImportApprovalBroker.request(request),
+    // If a prompt is active the coordinator defers the reconnect until its terminal event, making the
+    // new Skill available on the next user turn without interrupting the importing tool call.
+    onSkillsChanged: () => void runtimeRef.current?.requestSkillsReload()
+  })
   const moleculePreviewHandler = createMoleculePreviewHandler({
     writeArtifactForCurrentRun: (sessionId, input) => {
       if (!runtimeRef.current) throw new Error('Artifact runtime is not initialized.')
@@ -405,7 +421,8 @@ const registerIpcHandlers = async ({
   const computeServiceWithRegistry = attachEnabledComputeHosts(computeService, hostsRegistry)
   const notebookRpcServer = new NotebookLocalRpcServer(notebookService, {
     connectorService,
-    computeService: computeServiceWithRegistry
+    computeService: computeServiceWithRegistry,
+    skillImporter: conversationSkillImporter
   })
   // The RPC server needs the runtime service to dispatch to, and the runtime service needs the RPC
   // server's (lazily-started) connection for host.mcp() env injection — wire the second half here to
@@ -433,6 +450,15 @@ const registerIpcHandlers = async ({
       approvalBroker.respond(request.id, request.decision)
     }
   )
+  ipcMain.handle(
+    'skills:conversation-import-respond',
+    (_event, response: ConversationSkillImportApprovalResponse) => {
+      skillImportApprovalBroker.respond(response)
+    }
+  )
+  ipcMain.handle('skills:conversation-import-replay-pending', () => {
+    skillImportApprovalBroker.replayPending()
+  })
 
   const initialConnectorSkillsReady = waitForInitialConnectorRefresh(
     refreshConnectorSkillDocs(
@@ -466,6 +492,8 @@ const registerIpcHandlers = async ({
     notebookRpcServer,
     settingsService,
     taskNotifications,
+    onSessionCancelled: (sessionId) => skillImportApprovalBroker.cancelSession(sessionId),
+    onAllSessionsCancelled: () => skillImportApprovalBroker.cancelAll(),
     initializationBarrier: initialConnectorSkillsReady
   })
   runtimeRef.current = runtime
