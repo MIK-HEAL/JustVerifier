@@ -28,6 +28,7 @@ import {
 import { parseSkillDocument } from './frontmatter'
 import type { BundledSkill } from './registry'
 import { readSkillFile } from './skill-files'
+import { selectSkillManifestRoots } from './skill-bundle-paths'
 import { extractZip, extractZipLenient } from './zip-extract'
 
 const log = createLogger('skills')
@@ -181,31 +182,15 @@ type SkillRoot = { subPath: string; files: FetchedSkillFile[] }
 // `*/SKILL.md`, or `*/*/SKILL.md`); deeper SKILL.md files are ignored. A root nested under a shallower
 // one is dropped so a single skill is never counted twice. Archive paths always use forward slashes.
 const findSkillRoots = (entries: { path: string; content: Buffer }[]): SkillRoot[] => {
-  const candidates = new Set<string>()
-  for (const entry of entries) {
-    const segments = entry.path.split('/')
-    if (segments[segments.length - 1].toLowerCase() !== 'skill.md') continue
-    if (segments.length > 3) continue
-    candidates.add(segments.slice(0, -1).join('/'))
-  }
+  const roots = selectSkillManifestRoots(entries.map((entry) => entry.path))
 
-  // Keep only the shallowest root on each branch: a candidate under another (or under the archive
-  // root '') is that skill's own file, not a separate skill.
-  const all = [...candidates]
-  const roots = all.filter(
-    (subPath) =>
-      !all.some((other) => other !== subPath && (other === '' || subPath.startsWith(`${other}/`)))
-  )
-
-  return roots
-    .map((subPath) => {
-      const prefix = subPath === '' ? '' : `${subPath}/`
-      const files = entries
-        .filter((entry) => entry.path.startsWith(prefix))
-        .map((entry) => ({ relativePath: entry.path.slice(prefix.length), content: entry.content }))
-      return { subPath, files }
-    })
-    .sort((a, b) => a.subPath.localeCompare(b.subPath))
+  return roots.map((subPath) => {
+    const prefix = subPath === '' ? '' : `${subPath}/`
+    const files = entries
+      .filter((entry) => entry.path.startsWith(prefix))
+      .map((entry) => ({ relativePath: entry.path.slice(prefix.length), content: entry.content }))
+    return { subPath, files }
+  })
 }
 
 // True for an archive entry that is itself a skill bundle (a .zip / .skill nested inside the upload).
@@ -1586,4 +1571,4 @@ class UserSkillRepository {
   }
 }
 
-export { UserSkillRepository, parseUserSkillId, toSlug, frontmatterBlock }
+export { UserSkillRepository, frontmatterBlock, parseUserSkillId, toSlug }

@@ -12,6 +12,7 @@ import type {
   SessionNotification
 } from '@agentclientprotocol/sdk'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { rmSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -70,7 +71,8 @@ import {
   buildOversizedAttachmentNotice,
   imageAttachmentMimeType,
   isTabularAttachment,
-  isTextLikeAttachment
+  isTextLikeAttachment,
+  mimeEssence
 } from './attachment-content'
 import { readBoundedManagedFilePreview } from '../managed-file-preview'
 import {
@@ -108,6 +110,7 @@ import {
   type SkillImportMcpEnvironment,
   type SkillImportRpcConnection
 } from '../skills/mcp-server'
+import { isImportableSkillArchivePath } from '../skills/skill-archive-sniffer'
 import { getNotebookDataRoot, getNotebookSessionRoot } from '../notebook/repository'
 import { codexStorageDir, codexSubscriptionStorageDir } from '../agent-framework/codex'
 import { getAppClaudeConfigDir } from '../settings/provider-env'
@@ -135,6 +138,13 @@ export type AcpRuntimeCallbacks = {
   onStateChanged?: (state: AcpStateSnapshot) => void
   onEvent?: (event: AcpRuntimeEvent) => void
   onPermissionRequest?: (request: AcpPermissionRequest) => void
+  onPromptStarted?: (sessionId: string, turnToken: string, promptAttemptId?: string) => void
+  onPromptEnded?: (sessionId: string, turnToken: string) => void
+  onSkillImportAttachmentEligible?: (
+    sessionId: string,
+    turnToken: string,
+    attachmentUri: string
+  ) => void
   onRetired?: () => void
 }
 
@@ -729,6 +739,7 @@ class AcpRuntime {
   // unregistered on session delete (the artifact routing id is tracked in artifactSessionIds).
   private readonly notebookRoutingIds = new Map<string, string>()
   private readonly skillImportRoutingIds = new Map<string, string>()
+  private readonly skillImportTurnTokens = new Map<string, string>()
   private artifactSessionSequence = 0
   private artifactRunSequence = 0
   private notebookSessionSequence = 0
@@ -2006,6 +2017,7 @@ class AcpRuntime {
       this.artifactSessionIds.clear()
       this.notebookRoutingIds.clear()
       this.skillImportRoutingIds.clear()
+      this.skillImportTurnTokens.clear()
       this.mcpHttpHost?.clear()
       this.agentToAppSessionId.clear()
       this.currentSessionId = undefined
@@ -2177,11 +2189,16 @@ class AcpRuntime {
   }
 
   // Sends one prompt turn to the targeted session and streams updates until stop.
-  async sendPrompt(request: AcpPromptRequest): Promise<PromptResponse> {
-    return this.withOperationLease(() => withDataRootWrite(() => this.sendPromptTurn(request)))
+  async sendPrompt(request: AcpPromptRequest, promptAttemptId?: string): Promise<PromptResponse> {
+    return this.withOperationLease(() =>
+      withDataRootWrite(() => this.sendPromptTurn(request, promptAttemptId))
+    )
   }
 
-  private async sendPromptTurn(request: AcpPromptRequest): Promise<PromptResponse> {
+  private async sendPromptTurn(
+    request: AcpPromptRequest,
+    promptAttemptId?: string
+  ): Promise<PromptResponse> {
     let activeSession = this.sessions.get(request.sessionId)
 
     if (!activeSession) {
@@ -2202,6 +2219,13 @@ class AcpRuntime {
     try {
       if (this.skillsHooks && forced.length > 0) {
         const toForce = await this.skillsHooks.needForceLoad(forced)
+
+        // The Skill check yields before a force-load reconnect mutates runtime-wide state. A newer turn
+        // may have claimed this session meanwhile, so refuse the stale reconnect before it can tear down
+        // that turn.
+        if (this.promptInFlightSessionIds.has(request.sessionId)) {
+          throw new Error('An ACP prompt is already running for this session')
+        }
 
         if (toForce.length > 0) {
           // Capture routing before disconnect clears it, so resume lands on the same conversation.
@@ -2238,13 +2262,27 @@ class AcpRuntime {
       throw error
     }
 
+    // Another prompt can claim this session while the force-load check above is awaiting. Re-acquire
+    // the turn lock before publishing its token so a delayed attempt cannot overwrite a newer turn's
+    // lifecycle state.
+    if (this.promptInFlightSessionIds.has(request.sessionId)) {
+      throw new Error('An ACP prompt is already running for this session')
+    }
+
     this.currentSessionId = request.sessionId
     // Claim ownership of this session's shared turn state so a superseded turn's later finally can tell it
     // no longer owns the lock/artifact run (see the guarded cleanup in this turn's finally).
     const promptTurn = ++this.promptTurnSequence
+    const skillImportTurnToken = randomUUID()
     this.promptInFlightSessionIds.add(request.sessionId)
     this.currentPromptTurnBySession.set(request.sessionId, promptTurn)
+    this.skillImportTurnTokens.set(request.sessionId, skillImportTurnToken)
     this.cancelledPromptTurnsBySession.delete(request.sessionId)
+    try {
+      this.callbacks.onPromptStarted?.(request.sessionId, skillImportTurnToken, promptAttemptId)
+    } catch (error) {
+      safeLogError('prompt-start callback failed', errorLogFields(error))
+    }
     this.emitState()
     log.info('prompt start', {
       sessionId: request.sessionId,
@@ -2494,6 +2532,14 @@ class AcpRuntime {
         this.clearOpenCodePermissionToolContext(request.sessionId)
         this.currentPromptTurnBySession.delete(request.sessionId)
         this.promptInFlightSessionIds.delete(request.sessionId)
+        if (this.skillImportTurnTokens.get(request.sessionId) === skillImportTurnToken) {
+          this.skillImportTurnTokens.delete(request.sessionId)
+        }
+        try {
+          this.callbacks.onPromptEnded?.(request.sessionId, skillImportTurnToken)
+        } catch (error) {
+          safeLogError('prompt-end callback failed', errorLogFields(error))
+        }
       }
       // emitState invokes the renderer onStateChanged callback; guard it so a throw there cannot skip
       // the reconnect below. maybeApplyPendingProviderReconnect is what resolves an armed reconnect
@@ -2639,6 +2685,7 @@ class AcpRuntime {
     this.artifactSessionIds.delete(request.sessionId)
     this.notebookRoutingIds.delete(request.sessionId)
     this.skillImportRoutingIds.delete(request.sessionId)
+    this.skillImportTurnTokens.delete(request.sessionId)
     this.promptInFlightSessionIds.delete(request.sessionId)
 
     // Only announce a deletion and shift the current session when something was actually attached; a
@@ -2886,7 +2933,8 @@ class AcpRuntime {
       uri: pathToFileURL(filePath).href,
       name: attachment.originalName || attachment.name,
       mimeType: attachment.mimeType,
-      size
+      size,
+      allowSkillImportReference: true
     })
   }
 
@@ -2895,7 +2943,10 @@ class AcpRuntime {
     sessionId: string,
     reference: ArtifactReference
   ): Promise<ContentBlock[]> {
-    const filePath = await this.resolveReferencedArtifactPath(reference)
+    const { filePath, allowSkillImportReference } = await this.resolveReferencedArtifactPath(
+      sessionId,
+      reference
+    )
     const { size } = await stat(filePath)
 
     return this.buildFileContentBlock({
@@ -2904,19 +2955,42 @@ class AcpRuntime {
       uri: pathToFileURL(filePath).href,
       name: reference.name,
       mimeType: reference.mimeType,
-      size
+      size,
+      // The import tool currently owns only session uploads. Artifact-store paths remain ordinary
+      // references so the prompt never advertises a URI that main will reject at the trust boundary.
+      allowSkillImportReference
     })
   }
 
   // Resolves a referenced file through the managed-path validator for its owning repository.
-  private async resolveReferencedArtifactPath(reference: ArtifactReference): Promise<string> {
+  private async resolveReferencedArtifactPath(
+    sessionId: string,
+    reference: ArtifactReference
+  ): Promise<{ filePath: string; allowSkillImportReference: boolean }> {
     if (reference.source === 'upload') {
       if (!this.uploadRepository) throw new Error('Upload storage is not configured.')
-      return this.uploadRepository.resolveManagedUploadPath({ path: reference.path })
+      try {
+        return {
+          filePath: await this.uploadRepository.resolveSessionUploadPath(sessionId, {
+            path: reference.path
+          }),
+          allowSkillImportReference: true
+        }
+      } catch {
+        // Cross-session uploads remain readable generic references, but the session-scoped importer
+        // must never be advertised for a path its ownership boundary will reject.
+        return {
+          filePath: await this.uploadRepository.resolveManagedUploadPath({ path: reference.path }),
+          allowSkillImportReference: false
+        }
+      }
     }
 
     if (!this.artifactRepository) throw new Error('Artifact storage is not configured.')
-    return this.artifactRepository.resolveManagedFilePath({ path: reference.path })
+    return {
+      filePath: await this.artifactRepository.resolveManagedFilePath({ path: reference.path }),
+      allowSkillImportReference: false
+    }
   }
 
   // Builds the richest ACP content block that is safe for a resolved file, shared by uploads and
@@ -2928,25 +3002,55 @@ class AcpRuntime {
     name: string
     mimeType?: string
     size: number
+    allowSkillImportReference: boolean
   }): Promise<ContentBlock[]> {
-    const { sessionId, absolutePath, uri, name, mimeType, size } = descriptor
+    const { sessionId, absolutePath, uri, name, mimeType, size, allowSkillImportReference } =
+      descriptor
 
     // ACP providers such as OpenCode reject ZIP uploads before the prompt reaches the agent
-    // (`file part media type application/zip functionality not supported`). Skill packages only need
-    // to expose their exact local URI: the agent passes it to the app-owned request_skill_import tool,
-    // which performs parsing, validation and user confirmation. Keep the reference as JSON text so it
-    // also remains usable when the user wants to inspect the archive instead of importing it.
-    if (this.isSkillPackageFile(name)) {
-      return [
-        {
-          type: 'text',
-          text: [
-            '<attached_local_file>',
-            JSON.stringify({ name, uri, mimeType, size }),
-            '</attached_local_file>'
-          ].join('\n')
+    // (`file part media type application/zip functionality not supported`). Keep all ZIPs off that
+    // file-part path, but mark only importer-owned, manifest-confirmed archives as Skill packages so an
+    // ordinary ZIP remains inspectable without advertising request_skill_import.
+    const attachmentTextReference = (
+      tag: 'attached_skill_package' | 'attached_local_archive',
+      skillImportEligible: boolean,
+      turnToken?: string
+    ): ContentBlock => ({
+      type: 'text',
+      text: [
+        `<${tag}>`,
+        JSON.stringify({
+          name,
+          uri,
+          mimeType,
+          size,
+          skillImportEligible,
+          ...(turnToken ? { skillImportTurnToken: turnToken } : {})
+        }),
+        `</${tag}>`
+      ].join('\n')
+    })
+    if (allowSkillImportReference && (await this.isSkillPackageFile(name, absolutePath))) {
+      const turnToken = this.skillImportTurnTokens.get(sessionId)
+      if (turnToken) {
+        try {
+          this.callbacks.onSkillImportAttachmentEligible?.(sessionId, turnToken, uri)
+        } catch (error) {
+          safeLogError('skill import attachment callback failed', errorLogFields(error))
         }
-      ]
+        return [attachmentTextReference('attached_skill_package', true, turnToken)]
+      }
+    }
+
+    const normalizedName = name.toLowerCase()
+    const normalizedMimeType = mimeEssence(mimeType)
+    if (
+      normalizedName.endsWith('.zip') ||
+      normalizedName.endsWith('.skill') ||
+      normalizedMimeType === 'application/zip' ||
+      normalizedMimeType === 'application/x-zip-compressed'
+    ) {
+      return [attachmentTextReference('attached_local_archive', false)]
     }
 
     // Images are embedded as base64 so vision-capable agents receive the actual pixels.
@@ -3038,10 +3142,12 @@ class AcpRuntime {
     return name.toLowerCase().endsWith('.pdf')
   }
 
-  private isSkillPackageFile(name: string): boolean {
+  private async isSkillPackageFile(name: string, filePath: string): Promise<boolean> {
     const normalizedName = name.toLowerCase()
 
-    return normalizedName.endsWith('.zip') || normalizedName.endsWith('.skill')
+    if (!normalizedName.endsWith('.skill') && !normalizedName.endsWith('.zip')) return false
+
+    return isImportableSkillArchivePath(filePath)
   }
 
   // Turns a PDF into a text resource block, degrading to an explanatory note when extraction fails

@@ -34,6 +34,8 @@ const createFakeRuntime = (options: {
   sessionIds: string[]
   callbacks: AcpRuntimeCallbacks
   permissionGrantStore?: ConversationPermissionGrantStore
+  beforePromptStart?: () => Promise<void>
+  eligibleAttachmentUri?: string
   prompt?: (sessionId: string) => Promise<unknown>
 }): {
   runtime: AcpRuntime
@@ -41,6 +43,8 @@ const createFakeRuntime = (options: {
   createSession: ReturnType<typeof vi.fn>
   resetSessionContext: ReturnType<typeof vi.fn>
   resumeSession: ReturnType<typeof vi.fn>
+  cancelPrompt: ReturnType<typeof vi.fn>
+  deleteSession: ReturnType<typeof vi.fn>
   disconnect: ReturnType<typeof vi.fn>
   requestRetirement: ReturnType<typeof vi.fn>
   requestProviderReconnect: ReturnType<typeof vi.fn>
@@ -50,9 +54,11 @@ const createFakeRuntime = (options: {
   emitEvent: (event: AcpRuntimeEvent) => void
   emitPermission: (request: AcpPermissionRequest) => void
   emitState: (overrides: Partial<AcpStateSnapshot>) => void
+  setStateSilently: (overrides: Partial<AcpStateSnapshot>) => void
 } => {
   let snapshot = emptySnapshot()
   let sessionIndex = 0
+  let turnSequence = 0
   const connect = vi.fn(async () => snapshot)
   const createSession = vi.fn(async () => {
     const sessionId = options.sessionIds[sessionIndex]
@@ -78,6 +84,16 @@ const createFakeRuntime = (options: {
     frameworkId: options.frameworkId,
     contextReset: true
   }))
+  const cancelPrompt = vi.fn(async () => snapshot)
+  const deleteSession = vi.fn(async ({ sessionId }: { sessionId: string }) => {
+    snapshot = {
+      ...snapshot,
+      sessionId: snapshot.sessionId === sessionId ? undefined : snapshot.sessionId,
+      sessionIds: snapshot.sessionIds.filter((candidate) => candidate !== sessionId)
+    }
+    options.callbacks.onStateChanged?.(snapshot)
+    return snapshot
+  })
   const disconnect = vi.fn(async () => snapshot)
   const requestRetirement = vi.fn(async () => undefined)
   const requestProviderReconnect = vi.fn(async () => undefined)
@@ -87,29 +103,42 @@ const createFakeRuntime = (options: {
   const shutdown = vi.fn()
   const shutdownForQuit = vi.fn(async () => ({ reaped: true }))
   const shutdownForUpdateGate = vi.fn(async () => ({ reaped: true }))
-  const sendPrompt = vi.fn(async ({ sessionId }: { sessionId: string }) => {
-    snapshot = {
-      ...snapshot,
-      promptInFlight: true,
-      promptInFlightSessionIds: [...snapshot.promptInFlightSessionIds, sessionId]
-    }
-    options.callbacks.onStateChanged?.(snapshot)
-
-    try {
-      return await (options.prompt
-        ? options.prompt(sessionId)
-        : Promise.resolve({ stopReason: 'end_turn' }))
-    } finally {
+  const sendPrompt = vi.fn(
+    async ({ sessionId }: { sessionId: string }, promptAttemptId?: string) => {
+      await options.beforePromptStart?.()
+      const turnToken = `turn-${++turnSequence}`
       snapshot = {
         ...snapshot,
-        promptInFlight: false,
-        promptInFlightSessionIds: snapshot.promptInFlightSessionIds.filter(
-          (candidate) => candidate !== sessionId
+        promptInFlight: true,
+        promptInFlightSessionIds: [...snapshot.promptInFlightSessionIds, sessionId]
+      }
+      options.callbacks.onPromptStarted?.(sessionId, turnToken, promptAttemptId)
+      if (options.eligibleAttachmentUri) {
+        options.callbacks.onSkillImportAttachmentEligible?.(
+          sessionId,
+          turnToken,
+          options.eligibleAttachmentUri
         )
       }
       options.callbacks.onStateChanged?.(snapshot)
+
+      try {
+        return await (options.prompt
+          ? options.prompt(sessionId)
+          : Promise.resolve({ stopReason: 'end_turn' }))
+      } finally {
+        options.callbacks.onPromptEnded?.(sessionId, turnToken)
+        snapshot = {
+          ...snapshot,
+          promptInFlight: false,
+          promptInFlightSessionIds: snapshot.promptInFlightSessionIds.filter(
+            (candidate) => candidate !== sessionId
+          )
+        }
+        options.callbacks.onStateChanged?.(snapshot)
+      }
     }
-  })
+  )
   const runtime = {
     getSnapshot: () => snapshot,
     getActivePromptSessions: () => [],
@@ -118,6 +147,8 @@ const createFakeRuntime = (options: {
     createSession,
     resumeSession,
     resetSessionContext,
+    cancelPrompt,
+    deleteSession,
     revokePermissionGrant: vi.fn(
       ({ sessionId, categoryKey }: { sessionId: string; categoryKey: string }) => {
         options.permissionGrantStore?.revoke(sessionId, categoryKey)
@@ -154,6 +185,8 @@ const createFakeRuntime = (options: {
     createSession,
     resetSessionContext,
     resumeSession,
+    cancelPrompt,
+    deleteSession,
     disconnect,
     requestRetirement,
     requestProviderReconnect,
@@ -173,6 +206,9 @@ const createFakeRuntime = (options: {
     emitState: (overrides) => {
       snapshot = { ...snapshot, ...overrides }
       options.callbacks.onStateChanged?.(snapshot)
+    },
+    setStateSilently: (overrides) => {
+      snapshot = { ...snapshot, ...overrides }
     }
   }
 }
@@ -222,6 +258,8 @@ describe('AcpRuntimeCoordinator', () => {
   it('does not connect after shutdown supersedes initialization', async () => {
     const initialization = createDeferred()
     const created: ReturnType<typeof createFakeRuntime>[] = []
+    const onDisconnected = vi.fn()
+    const onAllSessionsCancellationRequested = vi.fn()
     const coordinator = new AcpRuntimeCoordinator(
       (callbacks) => {
         const fake = createFakeRuntime({
@@ -234,7 +272,10 @@ describe('AcpRuntimeCoordinator', () => {
       },
       {},
       '',
-      initialization.promise
+      initialization.promise,
+      onDisconnected,
+      undefined,
+      { onAllSessionsCancellationRequested }
     )
 
     const connecting = coordinator.connect()
@@ -243,6 +284,14 @@ describe('AcpRuntimeCoordinator', () => {
 
     await expect(connecting).rejects.toThrow(/superseded/i)
     expect(created[0].connect).not.toHaveBeenCalled()
+    expect(vi.mocked(created[0].runtime.shutdown)).toHaveBeenCalledOnce()
+    expect(onAllSessionsCancellationRequested).toHaveBeenCalledOnce()
+    expect(onAllSessionsCancellationRequested.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(created[0].runtime.shutdown).mock.invocationCallOrder[0]
+    )
+    expect(vi.mocked(created[0].runtime.shutdown).mock.invocationCallOrder[0]).toBeLessThan(
+      onDisconnected.mock.invocationCallOrder[0]
+    )
   })
 
   it('shares one conversation permission store across runtime generations', async () => {
@@ -266,6 +315,116 @@ describe('AcpRuntimeCoordinator', () => {
 
     expect(stores).toHaveLength(2)
     expect(stores[1]).toBe(stores[0])
+  })
+
+  it('forwards a real runtime prompt start to the session turn lifecycle', async () => {
+    const onSessionTurnStarted = vi.fn()
+    const onSessionTurnEnded = vi.fn()
+    const onSkillImportAttachmentEligible = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) =>
+        createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: ['session-1'],
+          callbacks,
+          eligibleAttachmentUri: 'file:///current.skill'
+        }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      { onSessionTurnStarted, onSessionTurnEnded, onSkillImportAttachmentEligible }
+    )
+
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    await coordinator.sendPrompt({ sessionId: session.sessionId, text: 'import this Skill' })
+
+    expect(onSessionTurnStarted).toHaveBeenCalledOnce()
+    expect(onSessionTurnStarted).toHaveBeenCalledWith('session-1', 'turn-1')
+    expect(onSessionTurnEnded).toHaveBeenCalledOnce()
+    expect(onSessionTurnEnded).toHaveBeenCalledWith('session-1', 'turn-1')
+    expect(onSkillImportAttachmentEligible).toHaveBeenCalledWith(
+      'session-1',
+      'turn-1',
+      'file:///current.skill'
+    )
+  })
+
+  it('does not reactivate a prompt attempt cancelled before its runtime turn starts', async () => {
+    const firstPromptStart = createDeferred<void>()
+    let promptAttempt = 0
+    const onSessionTurnStarted = vi.fn()
+    const onSessionCancellationRequested = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) =>
+        createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: ['session-1'],
+          callbacks,
+          beforePromptStart: () =>
+            promptAttempt++ === 0 ? firstPromptStart.promise : Promise.resolve()
+        }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      { onSessionTurnStarted, onSessionCancellationRequested }
+    )
+
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const cancelledBeforeStart = coordinator.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'first turn'
+    })
+    await coordinator.cancelPrompt({ sessionId: session.sessionId })
+    firstPromptStart.resolve()
+    await cancelledBeforeStart
+
+    expect(onSessionCancellationRequested).toHaveBeenCalledWith('session-1')
+    expect(onSessionTurnStarted).not.toHaveBeenCalled()
+
+    await coordinator.sendPrompt({ sessionId: session.sessionId, text: 'next turn' })
+    expect(onSessionTurnStarted).toHaveBeenCalledOnce()
+    expect(onSessionTurnStarted).toHaveBeenCalledWith('session-1', 'turn-2')
+  })
+
+  it('matches out-of-order prompt starts to their exact coordinator attempts', async () => {
+    const firstPromptStart = createDeferred<void>()
+    let promptAttempt = 0
+    const onSessionTurnStarted = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) =>
+        createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: ['session-1'],
+          callbacks,
+          beforePromptStart: () =>
+            promptAttempt++ === 0 ? firstPromptStart.promise : Promise.resolve()
+        }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      { onSessionTurnStarted }
+    )
+
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const stalePrompt = coordinator.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'cancelled before start'
+    })
+    await coordinator.cancelPrompt({ sessionId: session.sessionId })
+
+    await coordinator.sendPrompt({ sessionId: session.sessionId, text: 'new turn starts first' })
+    expect(onSessionTurnStarted).toHaveBeenCalledOnce()
+    expect(onSessionTurnStarted).toHaveBeenCalledWith('session-1', 'turn-1')
+
+    firstPromptStart.resolve()
+    await stalePrompt
+    expect(onSessionTurnStarted).toHaveBeenCalledOnce()
   })
 
   it('keeps detached conversation grants visible and revocable during framework rotation', async () => {
@@ -360,23 +519,35 @@ describe('AcpRuntimeCoordinator', () => {
     expect(created[1].applyReasoningEffortChange).toHaveBeenCalledWith('high')
   })
 
-  it('attempts every runtime disconnect before surfacing a partial failure', async () => {
+  it('attempts every runtime disconnect and preserves the surviving snapshot primary', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
-    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
-      const fake = createFakeRuntime({
-        frameworkId: created.length === 0 ? 'claude-code' : 'codex',
-        sessionIds: [`session-${created.length + 1}`],
-        callbacks
-      })
-      created.push(fake)
-      return fake.runtime
-    })
+    const onSessionUnavailable = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: created.length === 0 ? 'claude-code' : 'codex',
+          sessionIds: [`session-${created.length + 1}`],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      onSessionUnavailable
+    )
 
     await coordinator.createSession()
     await coordinator.requestAgentFrameworkSwitch()
     await coordinator.createSession()
+    created[0].emitState({ cwd: '/surviving-old-runtime' })
     const activeDisconnect = createDeferred<AcpStateSnapshot>()
-    created[0].disconnect.mockRejectedValueOnce(new Error('old disconnect failed'))
+    created[0].disconnect.mockImplementationOnce(async () => {
+      created[0].setStateSilently({ sessionId: undefined, sessionIds: [] })
+      throw new Error('old disconnect failed')
+    })
     created[1].disconnect.mockReturnValueOnce(activeDisconnect.promise)
 
     let settled = false
@@ -391,27 +562,210 @@ describe('AcpRuntimeCoordinator', () => {
     expect(created[1].disconnect).toHaveBeenCalledOnce()
     activeDisconnect.resolve(emptySnapshot())
     await expect(disconnecting).rejects.toThrow('old disconnect failed')
+    expect(coordinator.getSnapshot()).toMatchObject({
+      status: 'connected',
+      cwd: '/surviving-old-runtime'
+    })
+    expect(created).toHaveLength(2)
+    expect(onSessionUnavailable).toHaveBeenCalledTimes(2)
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-1')
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-2')
   })
 
-  it('attempts every runtime quit teardown before surfacing a partial failure', async () => {
+  it('preserves sessions still reported by a runtime whose teardown rejects', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
-    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
-      const fake = createFakeRuntime({
-        frameworkId: created.length === 0 ? 'claude-code' : 'codex',
-        sessionIds: [`session-${created.length + 1}`],
-        callbacks
-      })
-      created.push(fake)
-      return fake.runtime
-    })
+    const onSessionUnavailable = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: created.length === 0 ? 'claude-code' : 'codex',
+          sessionIds: [`session-${created.length + 1}`],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      onSessionUnavailable
+    )
 
     await coordinator.createSession()
     await coordinator.requestAgentFrameworkSwitch()
     await coordinator.createSession()
-    const activeShutdown = createDeferred<{ reaped: boolean }>()
-    vi.mocked(created[0].runtime.shutdownForQuit).mockRejectedValueOnce(
-      new Error('old shutdown failed')
+    created[0].disconnect.mockRejectedValueOnce(new Error('old disconnect failed early'))
+
+    await expect(coordinator.disconnect()).rejects.toThrow('old disconnect failed early')
+
+    expect(onSessionUnavailable).toHaveBeenCalledOnce()
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-2')
+    expect(onSessionUnavailable).not.toHaveBeenCalledWith('session-1')
+  })
+
+  it('invalidates only sessions owned by a runtime that closes unexpectedly', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const onSessionUnavailable = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: created.length === 0 ? 'claude-code' : 'codex',
+          sessionIds: [`session-${created.length + 1}`],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      onSessionUnavailable
     )
+
+    await coordinator.createSession()
+    await coordinator.requestAgentFrameworkSwitch()
+    await coordinator.createSession()
+
+    created[0].emitState({ status: 'closed', sessionId: undefined, sessionIds: [] })
+
+    expect(onSessionUnavailable).toHaveBeenCalledOnce()
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-1')
+    expect(onSessionUnavailable).not.toHaveBeenCalledWith('session-2')
+  })
+
+  it('invalidates a successfully deleted session exactly once', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const onSessionUnavailable = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: ['session-1'],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      onSessionUnavailable
+    )
+
+    await coordinator.createSession()
+    await coordinator.deleteSession({ sessionId: 'session-1' })
+
+    expect(created[0].deleteSession).toHaveBeenCalledWith({ sessionId: 'session-1' })
+    expect(onSessionUnavailable).toHaveBeenCalledOnce()
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-1')
+  })
+
+  it('invalidates a successfully deleted detached session without a runtime state event', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const onSessionUnavailable = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: [],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      onSessionUnavailable
+    )
+
+    await coordinator.deleteSession({ sessionId: 'detached-session' })
+
+    expect(created[0].deleteSession).toHaveBeenCalledWith({ sessionId: 'detached-session' })
+    expect(onSessionUnavailable).toHaveBeenCalledOnce()
+    expect(onSessionUnavailable).toHaveBeenCalledWith('detached-session')
+  })
+
+  it('preserves a session adopted by a new generation while the old delete is in flight', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const onSessionUnavailable = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: created.length === 0 ? 'claude-code' : 'codex',
+          sessionIds: created.length === 0 ? ['session-1'] : [],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      onSessionUnavailable
+    )
+
+    await coordinator.createSession()
+    await coordinator.requestAgentFrameworkSwitch()
+    const deleteDeferred = createDeferred<AcpStateSnapshot>()
+    created[0].deleteSession.mockReturnValueOnce(deleteDeferred.promise)
+
+    const deleting = coordinator.deleteSession({ sessionId: 'session-1' })
+    await vi.waitFor(() => expect(created[0].deleteSession).toHaveBeenCalledOnce())
+    await coordinator.resumeSession({ sessionId: 'session-1', cwd: '/workspace' })
+    deleteDeferred.resolve(emptySnapshot())
+
+    await expect(deleting).resolves.toMatchObject({ sessionIds: ['session-1'] })
+    await coordinator.sendPrompt({ sessionId: 'session-1', text: 'continue on new runtime' })
+
+    expect(vi.mocked(created[0].runtime.sendPrompt)).not.toHaveBeenCalled()
+    expect(vi.mocked(created[1].runtime.sendPrompt)).toHaveBeenCalledWith(
+      {
+        sessionId: 'session-1',
+        text: 'continue on new runtime'
+      },
+      expect.any(String)
+    )
+    expect(onSessionUnavailable).not.toHaveBeenCalled()
+  })
+
+  it('attempts every runtime quit teardown and preserves the surviving snapshot primary', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const onDisconnected = vi.fn()
+    const onSessionUnavailable = vi.fn()
+    const onAllSessionsCancellationRequested = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: created.length === 0 ? 'claude-code' : 'codex',
+          sessionIds: [`session-${created.length + 1}`],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      onDisconnected,
+      onSessionUnavailable,
+      { onAllSessionsCancellationRequested }
+    )
+
+    await coordinator.createSession()
+    await coordinator.requestAgentFrameworkSwitch()
+    await coordinator.createSession()
+    created[0].emitState({ cwd: '/surviving-old-runtime' })
+    const activeShutdown = createDeferred<{ reaped: boolean }>()
+    vi.mocked(created[0].runtime.shutdownForQuit).mockImplementationOnce(async () => {
+      created[0].setStateSilently({ sessionId: undefined, sessionIds: [] })
+      throw new Error('old shutdown failed')
+    })
     vi.mocked(created[1].runtime.shutdownForQuit).mockReturnValueOnce(activeShutdown.promise)
 
     let settled = false
@@ -424,8 +778,27 @@ describe('AcpRuntimeCoordinator', () => {
     expect(settled).toBe(false)
     expect(created[0].runtime.shutdownForQuit).toHaveBeenCalledOnce()
     expect(created[1].runtime.shutdownForQuit).toHaveBeenCalledOnce()
+    expect(onAllSessionsCancellationRequested).toHaveBeenCalledOnce()
+    expect(onAllSessionsCancellationRequested.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(created[0].runtime.shutdownForQuit).mock.invocationCallOrder[0]
+    )
     activeShutdown.resolve({ reaped: true })
     await expect(shuttingDown).rejects.toThrow('old shutdown failed')
+    expect(onSessionUnavailable).toHaveBeenCalledTimes(2)
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-1')
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-2')
+    expect(onDisconnected).not.toHaveBeenCalled()
+    expect(coordinator.getSnapshot()).toMatchObject({
+      status: 'connected',
+      cwd: '/surviving-old-runtime'
+    })
+    expect(created).toHaveLength(2)
+
+    vi.mocked(created[0].runtime.shutdownForQuit).mockResolvedValueOnce({ reaped: true })
+    await expect(coordinator.shutdownForQuit()).resolves.toEqual({ reaped: true })
+    expect(created[0].runtime.shutdownForQuit).toHaveBeenCalledTimes(2)
+    expect(onAllSessionsCancellationRequested).toHaveBeenCalledTimes(2)
+    expect(onDisconnected).toHaveBeenCalledOnce()
   })
 
   it('runs new sessions immediately and moves the old session after its active turn', async () => {
@@ -489,10 +862,13 @@ describe('AcpRuntimeCoordinator', () => {
       cwd: '/workspace',
       previousFrameworkId: 'claude-code'
     })
-    expect(vi.mocked(created[1].runtime.sendPrompt)).toHaveBeenCalledWith({
-      sessionId: 'old-session',
-      text: 'continue on Codex'
-    })
+    expect(vi.mocked(created[1].runtime.sendPrompt)).toHaveBeenCalledWith(
+      {
+        sessionId: 'old-session',
+        text: 'continue on Codex'
+      },
+      expect.any(String)
+    )
   })
 
   it('invalidates the old framework context usage until the adopted session reports a new value', async () => {
@@ -703,18 +1079,26 @@ describe('AcpRuntimeCoordinator', () => {
 
   it('removes a runtime from aggregation after its retirement completes', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
-    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
-      const fake = createFakeRuntime({
-        frameworkId: created.length === 0 ? 'claude-code' : 'codex',
-        sessionIds: [`session-${created.length + 1}`],
-        callbacks
-      })
-      fake.requestRetirement.mockImplementation(async () => {
-        callbacks.onRetired?.()
-      })
-      created.push(fake)
-      return fake.runtime
-    })
+    const onSessionUnavailable = vi.fn()
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: created.length === 0 ? 'claude-code' : 'codex',
+          sessionIds: [`session-${created.length + 1}`],
+          callbacks
+        })
+        fake.requestRetirement.mockImplementation(async () => {
+          callbacks.onRetired?.()
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      onSessionUnavailable
+    )
 
     await coordinator.createSession()
     created[0].emitEvent({
@@ -729,6 +1113,8 @@ describe('AcpRuntimeCoordinator', () => {
 
     expect(coordinator.getSnapshot().events).toEqual([])
     expect(coordinator.getSnapshot().sessionIds).toEqual([])
+    expect(onSessionUnavailable).toHaveBeenCalledOnce()
+    expect(onSessionUnavailable).toHaveBeenCalledWith('session-1')
   })
 
   it('projects connection status from each session owning runtime', async () => {

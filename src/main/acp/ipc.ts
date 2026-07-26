@@ -54,8 +54,16 @@ type AcpIpcOptions = AcpIpcArtifacts & {
   // Observes prompt starts and terminal turn events for desktop notifications. Optional so tests
   // and headless setups can run without a notification surface.
   taskNotifications?: TaskNotificationService
-  onSessionCancelled?: (sessionId: string) => void
-  onAllSessionsCancelled?: () => void
+  onSessionTurnStarted?: (sessionId: string, turnToken: string) => void
+  onSessionTurnEnded?: (sessionId: string, turnToken: string) => void
+  onSkillImportAttachmentEligible?: (
+    sessionId: string,
+    turnToken: string,
+    attachmentUri: string
+  ) => void
+  onSessionCancellationRequested?: (sessionId: string) => void
+  onSessionUnavailable?: (sessionId: string) => void
+  onAllSessionsCancellationRequested?: () => void
 }
 
 // Sends one runtime payload to every currently open renderer window.
@@ -83,7 +91,12 @@ const createRuntime = ({
   settingsService,
   initializationBarrier,
   taskNotifications,
-  onAllSessionsCancelled
+  onSessionTurnStarted,
+  onSessionTurnEnded,
+  onSkillImportAttachmentEligible,
+  onSessionCancellationRequested,
+  onSessionUnavailable,
+  onAllSessionsCancellationRequested
 }: AcpIpcOptions): AcpRuntimeCoordinator => {
   const configRoot = resolveConfigRoot()
   const dataRoot = resolveDataRoot()
@@ -153,7 +166,15 @@ const createRuntime = ({
     callbacks,
     defaultCwd,
     initializationBarrier,
-    onAllSessionsCancelled
+    undefined,
+    onSessionUnavailable,
+    {
+      onSessionTurnStarted,
+      onSessionTurnEnded,
+      onSkillImportAttachmentEligible,
+      onSessionCancellationRequested,
+      onAllSessionsCancellationRequested
+    }
   )
 }
 
@@ -215,12 +236,12 @@ const registerAcpIpcHandlers = (options: AcpIpcOptions): AcpRuntimeCoordinator =
 
     return runtime.getSnapshot()
   })
-  ipcMain.handle('acp:cancel', (_event, request: AcpCancelPromptRequest) => {
-    options.onSessionCancelled?.(request.sessionId)
-    return runtime.cancelPrompt(request)
-  })
-  ipcMain.handle('acp:delete-session', (_event, request: AcpDeleteSessionRequest) => {
-    options.onSessionCancelled?.(request.sessionId)
+  ipcMain.handle('acp:cancel', (_event, request: AcpCancelPromptRequest) =>
+    runtime.cancelPrompt(request)
+  )
+  ipcMain.handle('acp:delete-session', async (_event, request: AcpDeleteSessionRequest) => {
+    // The coordinator owns session disappearance notifications for delete, connection loss, and
+    // retirement. Keeping that signal in one layer prevents a successful delete from firing twice.
     return runtime.deleteSession(request)
   })
   ipcMain.handle('acp:respond-permission', (_event, response: AcpPermissionResponse) =>

@@ -12,8 +12,13 @@ import type {
 } from '../../shared/settings'
 import type { UploadRepository } from '../uploads/repository'
 import { SKILL_IMPORT_LIMITS } from './import-limits'
+import { isImportableSkillArchivePath } from './skill-archive-sniffer'
 
 type SkillImportApprovalInfo = Omit<ConversationSkillImportApprovalRequest, 'id'>
+
+type SkillImportCancellationGuard = {
+  isCancelled: () => boolean
+}
 
 type SkillImportApprovalBrokerOptions = {
   broadcast: (request: ConversationSkillImportApprovalRequest) => void
@@ -39,6 +44,10 @@ class SkillImportApprovalBroker {
   private readonly timeoutMs: number
   private readonly setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   private readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void
+  private readonly activeSessionTurns = new Map<
+    string,
+    { turnToken: string; eligibleAttachmentUris: Set<string> }
+  >()
 
   constructor(private readonly options: SkillImportApprovalBrokerOptions) {
     this.timeoutMs = options.timeoutMs ?? 5 * 60_000
@@ -46,9 +55,53 @@ class SkillImportApprovalBroker {
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle))
   }
 
-  request(info: SkillImportApprovalInfo): Promise<ConversationSkillImportApprovalResponse> {
+  beginSessionTurn(sessionId: string, turnToken: string): void {
+    this.activeSessionTurns.set(sessionId, {
+      turnToken,
+      eligibleAttachmentUris: new Set()
+    })
+    // A new turn cannot inherit an unanswered dialog from an older turn of the same session.
+    for (const [id, pending] of this.pending) {
+      if (pending.sessionId === sessionId) this.settle({ id, cancelled: true })
+    }
+  }
+
+  allowSessionTurnAttachment(sessionId: string, turnToken: string, attachmentUri: string): void {
+    const turn = this.activeSessionTurns.get(sessionId)
+    if (turn?.turnToken === turnToken) turn.eligibleAttachmentUris.add(attachmentUri)
+  }
+
+  endSessionTurn(sessionId: string, turnToken: string): void {
+    if (this.activeSessionTurns.get(sessionId)?.turnToken !== turnToken) return
+    this.activeSessionTurns.delete(sessionId)
+    for (const [id, pending] of this.pending) {
+      if (pending.sessionId === sessionId) this.settle({ id, cancelled: true })
+    }
+  }
+
+  createCancellationGuard(
+    sessionId: string,
+    turnToken: string,
+    attachmentUri: string
+  ): SkillImportCancellationGuard {
+    return {
+      isCancelled: () => {
+        const turn = this.activeSessionTurns.get(sessionId)
+        return turn?.turnToken !== turnToken || !turn.eligibleAttachmentUris.has(attachmentUri)
+      }
+    }
+  }
+
+  request(
+    info: SkillImportApprovalInfo,
+    cancellation?: SkillImportCancellationGuard
+  ): Promise<ConversationSkillImportApprovalResponse> {
     const id = this.options.generateId()
     const request = { id, ...info }
+
+    // A teardown may have arrived while the importer was asynchronously sniffing/previewing the
+    // archive, before this approval was registered. Never broadcast a dialog for that stale request.
+    if (cancellation?.isCancelled()) return Promise.resolve({ id, cancelled: true })
 
     return new Promise((resolve) => {
       const timer = this.setTimer(() => this.settle({ id, cancelled: true }), this.timeoutMs)
@@ -66,12 +119,14 @@ class SkillImportApprovalBroker {
   }
 
   cancelSession(sessionId: string): void {
+    this.activeSessionTurns.delete(sessionId)
     for (const [id, pending] of this.pending) {
       if (pending.sessionId === sessionId) this.settle({ id, cancelled: true })
     }
   }
 
   cancelAll(): void {
+    this.activeSessionTurns.clear()
     for (const id of this.pending.keys()) this.settle({ id, cancelled: true })
   }
 
@@ -92,6 +147,11 @@ class SkillImportApprovalBroker {
 
 type ConversationSkillImporterOptions = {
   uploads: Pick<UploadRepository, 'resolveSessionUploadPath'>
+  createCancellationGuard: (
+    sessionId: string,
+    turnToken: string,
+    attachmentUri: string
+  ) => SkillImportCancellationGuard
   previewBundle: (bundle: Buffer) => Promise<SkillBundlePreviewResult>
   importBundle: (
     bundle: Buffer,
@@ -104,13 +164,15 @@ type ConversationSkillImporterOptions = {
     }>
   >
   requestApproval: (
-    request: SkillImportApprovalInfo
+    request: SkillImportApprovalInfo,
+    cancellation: SkillImportCancellationGuard
   ) => Promise<ConversationSkillImportApprovalResponse>
   onSkillsChanged?: () => void
 }
 
 type ConversationSkillImportRequest = {
   sessionId: string
+  turnToken: string
   attachmentUri: string
 }
 
@@ -165,6 +227,12 @@ class ConversationSkillImporter {
   constructor(private readonly options: ConversationSkillImporterOptions) {}
 
   async request(request: ConversationSkillImportRequest): Promise<ConversationSkillImportResult> {
+    const cancellation = this.options.createCancellationGuard(
+      request.sessionId,
+      request.turnToken,
+      request.attachmentUri
+    )
+    if (cancellation.isCancelled()) return { status: 'cancelled', skills: [] }
     const requestedPath = attachmentPathFromUri(request.attachmentUri)
     const filePath = await this.options.uploads.resolveSessionUploadPath(request.sessionId, {
       path: requestedPath
@@ -176,6 +244,11 @@ class ConversationSkillImporter {
     if ((await stat(filePath)).size > SKILL_IMPORT_LIMITS.maxBundleBytes) {
       throw new Error('The attached Skill bundle is too large to import.')
     }
+    // Prompt tags are guidance for the model, not an authorization boundary. Re-run the same bounded
+    // classifier here so a forged tool call cannot turn an ordinary session ZIP into an import flow.
+    if (!(await isImportableSkillArchivePath(filePath))) {
+      throw new Error('The attached archive is not eligible for Skill import.')
+    }
 
     const previewed = await (async () => {
       const bundle = await readFile(filePath)
@@ -186,12 +259,15 @@ class ConversationSkillImporter {
       throw new Error('The attached bundle does not contain an importable Skill.')
     }
 
-    const approval = await this.options.requestApproval({
-      sessionId: request.sessionId,
-      attachmentName,
-      ...preview
-    })
-    if (approval.cancelled || approval.items.length === 0) {
+    const approval = await this.options.requestApproval(
+      {
+        sessionId: request.sessionId,
+        attachmentName,
+        ...preview
+      },
+      cancellation
+    )
+    if (cancellation.isCancelled() || approval.cancelled || approval.items.length === 0) {
       return { status: 'cancelled', skills: [] }
     }
 
@@ -203,6 +279,7 @@ class ConversationSkillImporter {
     if (sha256(bundle) !== previewed.digest) {
       throw new Error('The attached Skill bundle changed after it was previewed.')
     }
+    if (cancellation.isCancelled()) return { status: 'cancelled', skills: [] }
     const outcomes = await this.options.importBundle(bundle, items)
     const previewsByPath = new Map(
       preview.previews.map((candidate) => [candidate.subPath, candidate])
@@ -240,6 +317,7 @@ export { ConversationSkillImporter, SkillImportApprovalBroker }
 export type {
   ConversationSkillImporterOptions,
   ConversationSkillImportRequest,
+  SkillImportCancellationGuard,
   SkillImportApprovalBrokerOptions,
   SkillImportApprovalInfo
 }

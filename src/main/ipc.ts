@@ -337,9 +337,12 @@ const registerIpcHandlers = async ({
   })
   const conversationSkillImporter = new ConversationSkillImporter({
     uploads: uploadRepository,
+    createCancellationGuard: (sessionId, turnToken, attachmentUri) =>
+      skillImportApprovalBroker.createCancellationGuard(sessionId, turnToken, attachmentUri),
     previewBundle: (bundle) => settingsService.previewSkillArchive(bundle),
     importBundle: (bundle, items) => settingsService.importSkillArchiveBatch(bundle, items),
-    requestApproval: (request) => skillImportApprovalBroker.request(request),
+    requestApproval: (request, cancellation) =>
+      skillImportApprovalBroker.request(request, cancellation),
     // If a prompt is active the coordinator defers the reconnect until its terminal event, making the
     // new Skill available on the next user turn without interrupting the importing tool call.
     onSkillsChanged: () => void runtimeRef.current?.requestSkillsReload()
@@ -492,8 +495,16 @@ const registerIpcHandlers = async ({
     notebookRpcServer,
     settingsService,
     taskNotifications,
-    onSessionCancelled: (sessionId) => skillImportApprovalBroker.cancelSession(sessionId),
-    onAllSessionsCancelled: () => skillImportApprovalBroker.cancelAll(),
+    onSessionTurnStarted: (sessionId, turnToken) =>
+      skillImportApprovalBroker.beginSessionTurn(sessionId, turnToken),
+    onSessionTurnEnded: (sessionId, turnToken) =>
+      skillImportApprovalBroker.endSessionTurn(sessionId, turnToken),
+    onSkillImportAttachmentEligible: (sessionId, turnToken, attachmentUri) =>
+      skillImportApprovalBroker.allowSessionTurnAttachment(sessionId, turnToken, attachmentUri),
+    onSessionCancellationRequested: (sessionId) =>
+      skillImportApprovalBroker.cancelSession(sessionId),
+    onSessionUnavailable: (sessionId) => skillImportApprovalBroker.cancelSession(sessionId),
+    onAllSessionsCancellationRequested: () => skillImportApprovalBroker.cancelAll(),
     initializationBarrier: initialConnectorSkillsReady
   })
   runtimeRef.current = runtime
