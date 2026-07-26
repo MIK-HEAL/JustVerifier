@@ -141,6 +141,359 @@ describe('PdfPreviewContent', () => {
     clientWidthSpy.mockRestore()
   })
 
+  it('re-rasterizes at a higher resolution when the user zooms in', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(400)
+    vi.stubGlobal('devicePixelRatio', 1)
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 400 * scale,
+        height: 560 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/zoom.pdf" name="zoom.pdf" source="artifact" />
+      )
+    })
+    // At fit width (100%) the 400pt page backs the canvas at its own width.
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLCanvasElement>('canvas')?.width).toBe(400)
+    )
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+      await Promise.resolve()
+    })
+
+    // 125% zoom widens the page and re-rasterizes rather than upscaling the old bitmap.
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLCanvasElement>('canvas')?.width).toBe(500)
+    )
+    expect(container.textContent).toContain('125%')
+    expect(container.querySelector<HTMLCanvasElement>('canvas')?.height).toBe(700)
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('left-aligns pages once zoomed past fit so the left edge stays reachable', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(400)
+    vi.stubGlobal('devicePixelRatio', 1)
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 400 * scale,
+        height: 560 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/align.pdf" name="align.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBe(400))
+
+    // At fit width the pages column is centered.
+    const column = container.querySelector('[data-page-number]')?.parentElement
+    expect(column?.className).toContain('items-center')
+    expect(column?.className).not.toContain('items-start')
+
+    // Zoomed wider than the pane, it must left-align so scrollLeft=0 reaches the true left edge.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-page-number]')?.parentElement?.className).toContain(
+        'items-start'
+      )
+    )
+    expect(container.querySelector('[data-page-number]')?.parentElement?.className).not.toContain(
+      'items-center'
+    )
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('exposes the scroll container as a keyboard-focusable region', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(400)
+    vi.stubGlobal('devicePixelRatio', 1)
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 400 * scale,
+        height: 560 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/a11y.pdf" name="a11y.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBe(400))
+
+    // The inner scroller (parent of the measurement probe) owns overflow, so it must be reachable
+    // by keyboard — the outer surface that gets focus is not the scrollable element.
+    const scroll = container.querySelector<HTMLElement>('[aria-hidden="true"]')?.parentElement
+    expect(scroll?.getAttribute('tabindex')).toBe('0')
+    expect(scroll?.getAttribute('role')).toBe('region')
+    expect(scroll?.getAttribute('aria-label')).toContain('a11y.pdf')
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('keeps a zoomed page centered on a wide pane until it overflows the real viewport', async () => {
+    // Pane is 1200px wide — well past the 768 reading-width cap. fitWidth caps at 768 but the
+    // overflow decision must use the real 1200px viewport, not the cap.
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(1200)
+    vi.stubGlobal('devicePixelRatio', 1)
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 595 * scale,
+        height: 842 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/wide.pdf" name="wide.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBeGreaterThan(0))
+
+    const columnClass = (): string =>
+      container.querySelector('[data-page-number]')?.parentElement?.className ?? ''
+
+    // 125% (page 768*1.25 = 960px) still fits the 1200px pane → stays centered (regression check).
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('125%'))
+    expect(columnClass()).toContain('items-center')
+    expect(columnClass()).not.toContain('items-start')
+
+    // 150% (960 -> 1152px) still fits → still centered.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('150%'))
+    expect(columnClass()).toContain('items-center')
+
+    // 175% (768*1.75 = 1344px) overflows the 1200px pane → now left-aligns.
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('175%'))
+    expect(columnClass()).toContain('items-start')
+    expect(columnClass()).not.toContain('items-center')
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('coalesces same-frame Ctrl/Cmd+wheel into one proportional zoom and ignores plain scroll', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(400)
+    vi.stubGlobal('devicePixelRatio', 1)
+    // Controllable rAF: capture the scheduled callback so same-frame events can be coalesced and
+    // flushed once on demand, rather than running synchronously per event.
+    let scheduled: { id: number; cb: FrameRequestCallback } | null = null
+    let nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
+      scheduled = { id: nextRafId, cb }
+      return nextRafId++
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      if (scheduled?.id === id) scheduled = null
+    })
+    const flushFrame = (): void => {
+      const pending = scheduled
+      scheduled = null
+      pending?.cb(0)
+    }
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 400 * scale,
+        height: 560 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/wheel.pdf" name="wheel.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBe(400))
+
+    // The scroll container owns the wheel listener; it is the parent of the measurement probe.
+    const scroll = container.querySelector<HTMLElement>('[aria-hidden="true"]')?.parentElement
+    expect(scroll).toBeTruthy()
+
+    // A plain wheel scroll schedules nothing and must not zoom.
+    await act(async () => {
+      scroll?.dispatchEvent(
+        new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true })
+      )
+      await Promise.resolve()
+    })
+    expect(scheduled).toBeNull()
+    expect(container.textContent).toContain('100%')
+
+    // Two Ctrl+wheel events in the same frame coalesce: only one frame is scheduled and their
+    // deltas sum (-200 * 0.0025 = +0.5), so a single flush yields 150%, not two separate steps.
+    await act(async () => {
+      scroll?.dispatchEvent(
+        new WheelEvent('wheel', { deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true })
+      )
+      scroll?.dispatchEvent(
+        new WheelEvent('wheel', { deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true })
+      )
+      flushFrame()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('150%'))
+
+    // The Cmd (metaKey) branch also zooms: deltaY +100 * 0.0025 = -0.25 (150% -> 125%).
+    await act(async () => {
+      scroll?.dispatchEvent(
+        new WheelEvent('wheel', { deltaY: 100, metaKey: true, bubbles: true, cancelable: true })
+      )
+      flushFrame()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('125%'))
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('drops a queued wheel zoom when the file switches before the frame flushes', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(400)
+    vi.stubGlobal('devicePixelRatio', 1)
+    // Faithful rAF/cancel: a canceled frame cannot be flushed, mirroring the browser.
+    let scheduled: { id: number; cb: FrameRequestCallback } | null = null
+    let nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
+      scheduled = { id: nextRafId, cb }
+      return nextRafId++
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      if (scheduled?.id === id) scheduled = null
+    })
+    const flushFrame = (): void => {
+      const pending = scheduled
+      scheduled = null
+      pending?.cb(0)
+    }
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 400 * scale,
+        height: 560 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/first.pdf" name="first.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBe(400))
+
+    const scroll = container.querySelector<HTMLElement>('[aria-hidden="true"]')?.parentElement
+    // Queue a Ctrl+wheel zoom but do NOT flush the frame yet.
+    await act(async () => {
+      scroll?.dispatchEvent(
+        new WheelEvent('wheel', { deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true })
+      )
+      await Promise.resolve()
+    })
+    expect(scheduled).not.toBeNull()
+    expect(container.textContent).toContain('100%')
+
+    // Switch files in place before the frame runs: the wheel effect restarts on requestKey and
+    // cancels the queued frame, so the stale delta cannot re-apply on top of the reset.
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/second.pdf" name="second.pdf" source="artifact" />
+      )
+    })
+    await act(async () => {
+      flushFrame()
+      await Promise.resolve()
+    })
+
+    // The new document stays at fit (100%); the queued 25% was dropped, not re-applied.
+    expect(container.textContent).toContain('100%')
+    expect(container.textContent).not.toContain('125%')
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('resets zoom to fit when the previewed file changes in place (dialog path)', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(400)
+    vi.stubGlobal('devicePixelRatio', 1)
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 400 * scale,
+        height: 560 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/first.pdf" name="first.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBe(400))
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('125%'))
+
+    // The Files-tab dialog swaps the file in place (same component instance, no remount / key).
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/second.pdf" name="second.pdf" source="artifact" />
+      )
+    })
+
+    // The new file must open fit-to-width, not inherit the previous document's zoom.
+    await vi.waitFor(() => expect(container.textContent).toContain('100%'))
+    expect(container.textContent).not.toContain('125%')
+
+    clientWidthSpy.mockRestore()
+  })
+
   it('re-rasterizes a widened page without reloading it through the range transport', async () => {
     const resizeCallbacks: ResizeObserverCallback[] = []
     vi.stubGlobal(
@@ -189,6 +542,26 @@ describe('PdfPreviewContent', () => {
     await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(2))
     expect(getPage).toHaveBeenCalledTimes(1)
     expect(container.querySelector<HTMLCanvasElement>('canvas')?.width).toBe(600)
+    expect(container.querySelector<HTMLElement>('[data-page-number="1"]')?.style.width).toBe(
+      '600px'
+    )
+
+    // Narrowing the panel (or returning from full screen) must shrink the displayed page back to
+    // fit, not leave it pinned at the old larger width forcing horizontal scroll at 100%.
+    await act(async () => {
+      measuredWidth = 300
+      resizeCallbacks[0]?.([] as unknown as ResizeObserverEntry[], {} as ResizeObserver)
+      await Promise.resolve()
+    })
+    await vi.waitFor(() =>
+      expect(container.querySelector<HTMLElement>('[data-page-number="1"]')?.style.width).toBe(
+        '300px'
+      )
+    )
+    expect(getPage).toHaveBeenCalledTimes(1)
+    // Displayed width is responsive (300px), while the backing store never drops below the page's
+    // intrinsic 400px width — the crisp bitmap simply downscales via CSS.
+    expect(container.querySelector<HTMLCanvasElement>('canvas')?.width).toBe(400)
 
     clientWidthSpy.mockRestore()
   })
@@ -223,6 +596,91 @@ describe('PdfPreviewContent', () => {
     expect(canvas?.width).toBeLessThanOrEqual(8192)
     // Sanity: without the clamp this page would have been ~48000px tall.
     expect(canvas?.height).toBeLessThan(12000)
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('rasterizes zoom at full high-DPI resolution, not clipped to a fixed 4x cap', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(768)
+    vi.stubGlobal('devicePixelRatio', 2)
+    // A4-like page (595pt wide) at the 768px fit width, zoomed to 175% on a 2x display needs a
+    // backing width of 768 * 1.75 * 2 = 2688px to stay sharp. A fixed 4x cap would clip it to
+    // 595 * 4 = 2380px and the browser would upscale — the blur this removal fixes.
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 595 * scale,
+        height: 842 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/hidpi.pdf" name="hidpi.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBeGreaterThan(0))
+
+    // Zoom to 175% (100 -> 125 -> 150 -> 175 via three button steps).
+    for (let i = 0; i < 3; i += 1) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+        await Promise.resolve()
+      })
+    }
+    await vi.waitFor(() => expect(container.textContent).toContain('175%'))
+
+    const width = container.querySelector<HTMLCanvasElement>('canvas')?.width ?? 0
+    // Backing reaches the physical on-screen pixels (~2688), well past the old 2380 (4x) ceiling,
+    // and stays within the browser canvas limit.
+    expect(width).toBeGreaterThan(2380)
+    expect(width).toBeLessThanOrEqual(2688)
+    expect(width).toBeLessThanOrEqual(8192)
+
+    clientWidthSpy.mockRestore()
+  })
+
+  it('caps the backing scale at the deepest zoom to bound per-page memory', async () => {
+    const clientWidthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockReturnValue(768)
+    vi.stubGlobal('devicePixelRatio', 2)
+    // A4-like page (595x842) at 768px fit, 300% zoom, 2x DPI: the physical target scale is
+    // 768*3*2/595 = 7.74, and even the area clamp alone would allow ~5.79 (595*5.79 = 3443px).
+    // The MAX_RENDER_SCALE=5 ceiling caps it to 595*5 = 2975px so a page cannot take the full
+    // canvas-area budget.
+    getPage.mockResolvedValue({
+      getViewport: vi.fn(({ scale }: { scale: number }) => ({
+        width: 595 * scale,
+        height: 842 * scale
+      })),
+      render: vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() })),
+      cleanup: vi.fn()
+    })
+
+    await act(async () => {
+      root.render(
+        <PdfPreviewContent path="/workspace/deep.pdf" name="deep.pdf" source="artifact" />
+      )
+    })
+    await vi.waitFor(() => expect(container.querySelector('canvas')?.width).toBeGreaterThan(0))
+
+    // Zoom to the 300% max (eight 25% button steps).
+    for (let i = 0; i < 8; i += 1) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click()
+        await Promise.resolve()
+      })
+    }
+    await vi.waitFor(() => expect(container.textContent).toContain('300%'))
+
+    const width = container.querySelector<HTMLCanvasElement>('canvas')?.width ?? 0
+    // Scale is capped at 5 → 595*5 = 2975, below the ~3443 the area clamp alone would permit.
+    expect(width).toBe(2975)
+    expect(width).toBeLessThan(3443)
 
     clientWidthSpy.mockRestore()
   })

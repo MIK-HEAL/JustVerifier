@@ -1,5 +1,9 @@
+import { Maximize2, ZoomIn, ZoomOut } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 import type { PreviewFileSource } from '@/stores/preview-workbench-store'
 
 import { PreviewErrorCard, PreviewLoadingContent } from '../PreviewFallback'
@@ -14,14 +18,72 @@ type DocumentState =
   | { requestKey: string; status: 'ready'; document: PdfDocument }
   | { requestKey: string; status: 'error'; error: unknown }
 
-// Comfortable reading width a page fills; also caps the backing resolution the parent measures.
+// Comfortable reading width a page fills at 100%; zoom scales the displayed page beyond it.
 const FIT_PAGE_WIDTH = 768
-// Bound the backing-store resolution so an over-magnified small page cannot exhaust GPU memory.
-const MAX_RENDER_SCALE = 4
-// Keep the backing store within browser canvas limits so a tall/narrow page cannot render blank:
-// clamp each side and the total area (Chromium caps a dimension at 16384 and area near 2^28).
+const MIN_ZOOM = 0.5
+const MAX_ZOOM = 3
+const ZOOM_BUTTON_STEP = 0.25
+// Wheel zoom is proportional to accumulated deltaY so one trackpad/pinch gesture (many small
+// events) maps to a controlled amount rather than a full step per event. ~100px notch ≈ 0.25.
+const ZOOM_WHEEL_SENSITIVITY = 0.0025
+
+const clampZoom = (zoom: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom))
+
+// Bottom-right overlay mirroring the image preview's zoom affordances for a consistent feel.
+const PdfZoomControls = ({
+  zoom,
+  onZoomIn,
+  onZoomOut,
+  onReset
+}: {
+  zoom: number
+  onZoomIn: () => void
+  onZoomOut: () => void
+  onReset: () => void
+}): React.JSX.Element => {
+  const actions = [
+    { label: 'Zoom out', icon: ZoomOut, onClick: onZoomOut, disabled: zoom <= MIN_ZOOM },
+    { label: 'Reset zoom', icon: Maximize2, onClick: onReset, disabled: zoom === 1 },
+    { label: 'Zoom in', icon: ZoomIn, onClick: onZoomIn, disabled: zoom >= MAX_ZOOM }
+  ]
+
+  return (
+    <TooltipProvider delayDuration={300}>
+      <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1 rounded-md border border-border-300/50 bg-bg-000/90 p-1 shadow-sm backdrop-blur">
+        <span className="min-w-[3ch] px-1 text-center text-[11px] tabular-nums text-text-200">
+          {Math.round(zoom * 100)}%
+        </span>
+        {actions.map(({ label, icon: Icon, onClick, disabled }) => (
+          <Tooltip key={label}>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="text-text-100 hover:text-text-000"
+                aria-label={label}
+                disabled={disabled}
+                onClick={onClick}
+              >
+                <Icon aria-hidden="true" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{label}</TooltipContent>
+          </Tooltip>
+        ))}
+      </div>
+    </TooltipProvider>
+  )
+}
+// Keep the backing store within browser canvas limits so a tall/narrow or heavily zoomed page
+// cannot render blank: clamp each side and the total area (Chromium caps a dimension at 16384 and
+// area near 2^28).
 const MAX_CANVAS_DIMENSION = 8192
 const MAX_CANVAS_AREA = 16 * 1024 * 1024
+// Per-page backing-scale ceiling. Set above the ~4.5 that a full-width page needs at 175% zoom on
+// a 2x display, so normal zoom stays crisp, while capping the deepest zoom so a few near-viewport
+// pages cannot each allocate the full canvas-area budget and spike renderer memory.
+const MAX_RENDER_SCALE = 5
 
 // PDF.js rejects an in-flight render with this when cancel() is called; it is an expected teardown,
 // not a page failure, so scroll-out, preview switches, and resize rerenders must not surface it.
@@ -120,7 +182,9 @@ const PdfPageCanvas = ({
 
       const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1)
       const baseViewport = page.getViewport({ scale: 1 })
-      // Rasterize at the physical pixels the page occupies on screen; never below intrinsic size.
+      // Rasterize at the physical pixels the page occupies on screen (never below intrinsic size)
+      // so zoom stays crisp at any DPI, capped by MAX_RENDER_SCALE so the deepest zoom cannot
+      // allocate the full canvas budget per page.
       const targetCssWidth = pageWidth > 0 ? pageWidth : baseViewport.width
       const desiredScale = Math.max(
         1,
@@ -167,8 +231,13 @@ const PdfPageCanvas = ({
   return (
     <div
       ref={setNearViewportRef}
-      className="relative mx-auto mb-3 w-full max-w-3xl bg-bg-000 shadow-sm"
-      style={{ aspectRatio }}
+      className={cn(
+        'relative bg-bg-000 shadow-sm',
+        // Alignment is owned by the parent column; fall back to a responsive width until it has
+        // measured the fit width.
+        pageWidth > 0 ? 'max-w-none' : 'w-full max-w-3xl'
+      )}
+      style={pageWidth > 0 ? { aspectRatio, width: pageWidth } : { aspectRatio }}
       data-page-number={pageNumber}
     >
       {displayedStatus === 'loading' || (displayedStatus === 'idle' && isNearViewport) ? (
@@ -205,9 +274,21 @@ export const PdfPreviewContent = ({
 }): React.JSX.Element => {
   const requestKey = createPreviewResourceKey({ source, path, mimeType, size, mtimeMs })
   const [documentState, setDocumentState] = useState<DocumentState | null>(null)
-  // The width one page fills: the content box, capped to a comfortable reading width. Owned here so
-  // one ResizeObserver serves the whole document instead of one per page.
+  const [zoom, setZoom] = useState(1)
+  // The PreviewPanel path remounts on a file switch, but the Files-tab dialog updates item in place
+  // with no contentKey, so reset zoom to fit whenever the previewed file changes (adjust-on-render).
+  const [zoomedKey, setZoomedKey] = useState(requestKey)
+  if (zoomedKey !== requestKey) {
+    setZoomedKey(requestKey)
+    setZoom(1)
+  }
+  // The width one page fills at 100%: the content box, capped to a comfortable reading width. Owned
+  // here so one ResizeObserver serves the whole document instead of one per page.
   const [fitWidth, setFitWidth] = useState(0)
+  // The real (uncapped) content-box width, used only to decide when a zoomed page actually
+  // overflows the viewport — distinct from the capped fitWidth that sizes a 100% page.
+  const [viewportWidth, setViewportWidth] = useState(0)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const measureRef = useRef<HTMLDivElement | null>(null)
   const pageDisposersRef = useRef(new Set<() => void>())
   const registerPageDisposer = useCallback((dispose: () => void): (() => void) => {
@@ -215,15 +296,51 @@ export const PdfPreviewContent = ({
     return () => pageDisposersRef.current.delete(dispose)
   }, [])
 
+  // Ctrl/Cmd+wheel zooms the document instead of scrolling, matching the image preview gesture.
+  // A trackpad/pinch emits many small wheel events per gesture, so accumulate deltaY and apply it
+  // proportionally once per frame — one gesture yields a controlled zoom and few rerasterizations.
+  // Keyed to requestKey and run as a layout effect so a file switch cancels any queued frame during
+  // commit — before the browser's rAF phase — so a stale flush cannot re-apply zoom on top of the
+  // new document's reset (a passive-effect cleanup would run after paint, too late to cancel it).
+  useLayoutEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+
+    let pendingDelta = 0
+    let frame: number | undefined
+    const flush = (): void => {
+      frame = undefined
+      const delta = pendingDelta
+      pendingDelta = 0
+      if (delta !== 0) setZoom((current) => clampZoom(current - delta * ZOOM_WHEEL_SENSITIVITY))
+    }
+    const handleWheel = (event: WheelEvent): void => {
+      if (!event.ctrlKey && !event.metaKey) return
+      event.preventDefault()
+      pendingDelta += event.deltaY
+      frame ??= requestAnimationFrame(flush)
+    }
+
+    element.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      element.removeEventListener('wheel', handleWheel)
+      if (frame !== undefined) cancelAnimationFrame(frame)
+    }
+  }, [requestKey])
+
   // Measure the content-box width before paint (zero-height probe, unaffected by page overflow) so
-  // pages rasterize once at the right width on open, and only grow it so a shrink reuses the bitmap.
+  // pages rasterize once at the right width on open. Tracks the current width so pages stay
+  // responsive: narrowing the panel (or returning from full screen) shrinks them back to fit.
   useLayoutEffect(() => {
     const element = measureRef.current
     if (!element) return
 
     const measure = (): void => {
-      const width = Math.min(element.clientWidth, FIT_PAGE_WIDTH)
-      if (width > 0) setFitWidth((current) => (width > current ? width : current))
+      const raw = element.clientWidth
+      if (raw <= 0) return
+      const width = Math.min(raw, FIT_PAGE_WIDTH)
+      setFitWidth((current) => (width === current ? current : width))
+      setViewportWidth((current) => (raw === current ? current : raw))
     }
     measure()
 
@@ -312,28 +429,59 @@ export const PdfPreviewContent = ({
 
   const document = currentDocumentState?.status === 'ready' ? currentDocumentState.document : null
   const pageCount = document?.numPages ?? 0
+  const pageWidth = fitWidth > 0 ? Math.round(fitWidth * zoom) : 0
+  const zoomBy = (delta: number): void => setZoom((current) => clampZoom(current + delta))
 
   return (
-    <div className="relative size-full overflow-auto bg-bg-20 p-4">
-      {/* Zero-height probe: reports the content-box width once for every page. */}
-      <div ref={measureRef} className="h-0 w-full" aria-hidden="true" />
-      {!document ? (
-        <div className="absolute inset-0">
-          <PreviewLoadingContent />
-        </div>
+    <div className="relative size-full overflow-hidden bg-bg-20">
+      {/* The inner element is the real scroller (the outer div holds the fixed zoom overlay), so it
+          must be keyboard-focusable or PageUp/Down, Space, and arrows never reach the PDF. */}
+      <div
+        ref={scrollRef}
+        className="size-full overflow-auto p-4 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
+        tabIndex={0}
+        role="region"
+        aria-label={`${name} scrollable preview`}
+      >
+        {/* Zero-height probe: reports the content-box width even when pages overflow horizontally. */}
+        <div ref={measureRef} className="h-0 w-full" aria-hidden="true" />
+        {!document ? (
+          <div className="absolute inset-0">
+            <PreviewLoadingContent />
+          </div>
+        ) : null}
+        {document ? (
+          // Center pages while they fit the real viewport, but left-align once a zoomed page
+          // overflows it: a centered overflow puts the left margin before scrollLeft=0, making it
+          // unreachable. Compared against the uncapped viewport width, not the reading-width cap,
+          // so a page still fitting a wide/full-screen pane stays centered.
+          <div
+            className={cn(
+              'flex min-w-full flex-col gap-3',
+              viewportWidth > 0 && pageWidth > viewportWidth ? 'items-start' : 'items-center'
+            )}
+          >
+            {Array.from({ length: pageCount }, (_, index) => (
+              // Each page mounts its canvas only inside the viewport overscan window.
+              <PdfPageCanvas
+                key={index + 1}
+                document={document}
+                pageNumber={index + 1}
+                pageWidth={pageWidth}
+                registerDisposer={registerPageDisposer}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {document ? (
+        <PdfZoomControls
+          zoom={zoom}
+          onZoomIn={() => zoomBy(ZOOM_BUTTON_STEP)}
+          onZoomOut={() => zoomBy(-ZOOM_BUTTON_STEP)}
+          onReset={() => setZoom(1)}
+        />
       ) : null}
-      {document
-        ? Array.from({ length: pageCount }, (_, index) => (
-            // Each page mounts its canvas only inside the viewport overscan window.
-            <PdfPageCanvas
-              key={index + 1}
-              document={document}
-              pageNumber={index + 1}
-              pageWidth={fitWidth}
-              registerDisposer={registerPageDisposer}
-            />
-          ))
-        : null}
     </div>
   )
 }
