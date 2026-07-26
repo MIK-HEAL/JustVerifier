@@ -669,6 +669,25 @@ describe('SettingsService: providers', () => {
     expect(JSON.stringify(stored)).not.toContain('sk-super-secret')
   })
 
+  it('persists and exposes custom model reasoning effort settings', async () => {
+    const service = createService()
+
+    const snapshot = await service.upsertProvider({
+      type: 'custom',
+      name: 'Gateway',
+      baseUrl: 'https://g/v1',
+      model: 'm',
+      reasoningEffortPreset: 'none-high',
+      reasoningEffortTransport: 'deepseek',
+      key: 'sk-super-secret'
+    })
+
+    expect(snapshot.providers[0].reasoningEffortPreset).toBe('none-high')
+    expect(snapshot.providers[0].reasoningEffortTransport).toBe('deepseek')
+    expect((await repository.getSettings()).providers[0].reasoningEffortPreset).toBe('none-high')
+    expect((await repository.getSettings()).providers[0].reasoningEffortTransport).toBe('deepseek')
+  })
+
   it('persists a custom context window and carries it into the OpenCode model metadata', async () => {
     vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'opencode')
     await repository.setAgentFramework('opencode')
@@ -2101,6 +2120,7 @@ describe('SettingsService: preflight & spawn config', () => {
       lastValidatedAt: Date.now()
     })
     await service.setActiveProvider(provider.id, 'deepseek-v4-flash')
+    await repository.setReasoningEffort('low')
 
     vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'codex')
     const backend = await service.resolveActiveAgentBackend()
@@ -2108,6 +2128,7 @@ describe('SettingsService: preflight & spawn config', () => {
     // Chat Completions provider ⇒ bridge ⇒ Codex runs the classic-tool-mode catalog model so it
     // advertises the shell_command function tool the bridge can forward (CODEX_BRIDGE_MODEL).
     expect(backend.sessionModel).toBe('gpt-5.4')
+    expect(backend.sessionEffort).toBe('none')
     expect(backend.contextWindow).toBe(1_000_000)
     expect(backend.providerConfiguration).toEqual({
       providerId: 'custom-gateway',
@@ -2155,6 +2176,8 @@ describe('SettingsService: preflight & spawn config', () => {
       ])
     })
     const upstreamMessages = JSON.stringify(upstreamRequest?.messages)
+    expect(upstreamRequest).toMatchObject({ thinking: { type: 'disabled' } })
+    expect(upstreamRequest).not.toHaveProperty('reasoning_effort')
     expect(upstreamMessages).not.toContain('<open_science_connector_instructions>')
     expect(upstreamMessages).not.toContain('host.mcp("pubmed", "search_articles"')
 
@@ -2269,7 +2292,7 @@ describe('SettingsService: preflight & spawn config', () => {
     ).resolves.toEqual([{ name: 'mcp-pubmed', path: '/skills/pubmed/SKILL.md' }])
     expect(selectSkills).toHaveBeenCalledWith('search PubMed', skillCatalog, undefined)
     bridges[0].registerReviewerSession('reviewer-one')
-    bridges[1].registerReviewerSession('reviewer-two')
+    bridges[2].registerReviewerSession('reviewer-two')
 
     const send = async (backend: typeof firstBackend, promptCacheKey: string): Promise<void> => {
       const response = await localFetch(`${backend.providerConfiguration?.baseUrl}/responses`, {
@@ -2313,7 +2336,7 @@ describe('SettingsService: preflight & spawn config', () => {
         responsesBridges: Map<string, unknown>
       }
     ).responsesBridges
-    expect(bridgePool.size).toBe(2)
+    expect(bridgePool.size).toBe(3)
     await firstBackend.responsesBridgeLease?.release()
     expect(bridgePool.size).toBe(2)
     await firstBackendPeer.responsesBridgeLease?.release()
@@ -3781,7 +3804,132 @@ describe('SettingsService: reasoning effort', () => {
     expect((await repository.getSettings()).reasoningEffort).toBe('max')
   })
 
-  it('surfaces the stored level as sessionEffort on the resolved OpenCode backend', async () => {
+  it("maps a five-level intent onto DeepSeek's three supported levels", async () => {
+    const service = createService()
+    const provider = (
+      await service.upsertProvider({
+        type: 'official',
+        name: 'DeepSeek',
+        vendorId: 'deepseek',
+        key: 'k'
+      })
+    ).providers[0]
+    await service.setActiveProvider(provider.id, 'deepseek-v4-pro')
+
+    expect(await service.resolveActiveReasoningEffort('low')).toBe('none')
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('max')
+  })
+
+  it("maps the top intent onto StepFun's highest supported level", async () => {
+    const service = createService()
+    const provider = (
+      await service.upsertProvider({
+        type: 'official',
+        name: 'StepFun',
+        vendorId: 'stepfun',
+        key: 'k'
+      })
+    ).providers[0]
+    await service.setActiveProvider(provider.id, 'step-3.7-flash')
+
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('high')
+  })
+
+  it('maps a custom model intent through its stored effort preset', async () => {
+    const service = createService()
+    const provider = (
+      await service.upsertProvider({
+        type: 'custom',
+        name: 'Gateway',
+        baseUrl: 'https://g/v1',
+        model: 'm',
+        reasoningEffortPreset: 'none-high',
+        key: 'k'
+      })
+    ).providers[0]
+    await service.setActiveProvider(provider.id)
+
+    expect(await service.resolveActiveReasoningEffort('low')).toBe('none')
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('high')
+  })
+
+  it("returns 'default' for default intent and models that do not support effort", async () => {
+    const service = createService()
+    const provider = (
+      await service.upsertProvider({
+        type: 'custom',
+        name: 'Gateway',
+        baseUrl: 'https://g/v1',
+        model: 'm',
+        reasoningEffortPreset: 'unsupported',
+        key: 'k'
+      })
+    ).providers[0]
+    await service.setActiveProvider(provider.id)
+
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('default')
+    expect(await service.resolveActiveReasoningEffort('default')).toBe('default')
+  })
+
+  it('uses the OpenAI and Anthropic registries for subscription models', async () => {
+    const service = createService()
+    const codex = (await service.upsertProvider({ type: 'codex-isolated' })).providers[0]
+    await service.setActiveProvider(codex.id, 'gpt-5.6-sol')
+
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('ultra')
+
+    const claude = (
+      await service.upsertProvider({
+        type: 'claude-shared',
+        model: 'claude-haiku-4-5-20251001'
+      })
+    ).providers.find((provider) => provider.type === 'claude-shared')!
+    await service.setActiveProvider(claude.id, 'claude-haiku-4-5-20251001')
+
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('default')
+  })
+
+  it('does not guess an effort profile for an unpinned Codex subscription model', async () => {
+    const adapterPath = join(storageRoot, 'bin', 'codex-acp')
+    await mkdir(dirname(adapterPath), { recursive: true })
+    await writeFile(adapterPath, MANAGED_CODEX_ADAPTER_FIXTURE, 'utf8')
+    await chmod(adapterPath, 0o755)
+    const service = createService(undefined, {
+      managedCodexAdapterPath: adapterPath,
+      managedCodexNativePath: execPath
+    })
+    await repository.setCodexInfo({
+      resolvedPath: adapterPath,
+      version: '1.1.4',
+      nativePath: execPath,
+      nativeVersion: '0.144.6'
+    })
+    const codex = (await service.upsertProvider({ type: 'codex-isolated' })).providers[0]
+    await service.setActiveProvider(codex.id)
+
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('default')
+
+    await repository.setReasoningEffort('max')
+    expect((await service.resolveActiveAgentBackend()).sessionEffort).toBeUndefined()
+  })
+
+  it('does not guess an effort profile for an unpinned Claude subscription model', async () => {
+    vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'claude-code')
+    const service = createService()
+    await repository.setClaudeInfo({ resolvedPath: execPath, version: '2.1.0' })
+    const claude = (await service.upsertProvider({ type: 'claude-shared' })).providers.find(
+      (provider) => provider.type === 'claude-shared'
+    )!
+    await service.setActiveProvider(claude.id)
+    await repository.setReasoningEffort('max')
+
+    expect(await service.resolveActiveReasoningEffort('max')).toBe('default')
+    const backend = await service.resolveActiveAgentBackend()
+    expect(backend.sessionEffort).toBeUndefined()
+    expect(backend.env).not.toHaveProperty('ANTHROPIC_MODEL')
+  })
+
+  it('passes the model-mapped effort to both OpenCode delivery channels', async () => {
     // resolveActiveAgentBackend honors this forced-framework env above stored settings; set it
     // explicitly (a prior test may leave it stubbed) so this resolves OpenCode.
     vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'opencode')
@@ -3790,19 +3938,132 @@ describe('SettingsService: reasoning effort', () => {
       opencodeDetected: { path: '/usr/local/bin/opencode', version: '1.19.0' }
     })
     const provider = (
-      await service.upsertProvider({ type: 'official', name: 'Kimi', vendorId: 'kimi', key: 'k' })
+      await service.upsertProvider({
+        type: 'official',
+        name: 'DeepSeek',
+        vendorId: 'deepseek',
+        key: 'k'
+      })
     ).providers[0]
-    await service.setActiveProvider(provider.id)
-    await repository.setReasoningEffort('high')
+    await service.setActiveProvider(provider.id, 'deepseek-v4-pro')
+    await repository.setReasoningEffort('low')
 
     const backend = await service.resolveActiveAgentBackend()
 
-    expect(backend.sessionEffort).toBe('high')
-    // The level also reaches the framework's own config channel (opencode model options).
+    expect(backend.sessionEffort).toBe('none')
+    // The official vendor identity survives provider resolution, so OpenCode receives DeepSeek's
+    // native thinking switch instead of an invalid reasoningEffort: none literal.
     const content = JSON.parse(backend.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
-    expect(content.provider['openai-compatible'].models['kimi-k3']).toEqual(
-      expect.objectContaining({ options: { reasoningEffort: 'high' } })
+    expect(content.provider['openai-compatible'].models['deepseek-v4-pro']).toEqual(
+      expect.objectContaining({ options: { thinking: { type: 'disabled' } } })
     )
+  })
+
+  it('uses one effective catalog model for both the backend and its effort profile', async () => {
+    vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'opencode')
+    await repository.setAgentFramework('opencode')
+    const service = createService(undefined, {
+      opencodeDetected: { path: '/usr/local/bin/opencode', version: '1.19.0' }
+    })
+    const provider = (
+      await service.upsertProvider({
+        type: 'official',
+        name: 'Anthropic',
+        vendorId: 'anthropic',
+        key: 'k'
+      })
+    ).providers[0]
+    await service.setActiveProvider(provider.id, 'claude-haiku-4-5-20251001')
+    await repository.setReasoningEffort('max')
+
+    const stored = (await repository.getSettings()).providers[0]
+    await repository.upsertProvider({ ...stored, fetchedModels: ['claude-opus-5'] })
+
+    const backend = await service.resolveActiveAgentBackend()
+    const content = JSON.parse(backend.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
+
+    expect(backend.sessionModel).toBe('claude-opus-5')
+    expect(backend.sessionEffort).toBe('max')
+    expect(content.model).toBe('anthropic/claude-opus-5')
+  })
+
+  it('isolates live effort changes between overlapping bridge generations', async () => {
+    const localFetch = globalThis.fetch
+    const upstreamEfforts: unknown[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+        upstreamEfforts.push(body.reasoning_effort)
+        return new Response(
+          [
+            'data: ' +
+              JSON.stringify({
+                id: 'chat-isolated-effort',
+                model: 'model-a',
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+              }),
+            '',
+            'data: [DONE]',
+            ''
+          ].join('\n'),
+          { headers: { 'content-type': 'text/event-stream' } }
+        )
+      })
+    )
+    const service = createService()
+    const bridgeService = service as unknown as {
+      ensureResponsesBridge: (
+        provider: {
+          type: 'custom'
+          baseUrl: string
+          apiEndpoints: ['openai']
+          model: string
+          key: string
+        },
+        effort: 'low' | 'max'
+      ) => Promise<{
+        baseUrl: string
+        token: string
+        lease: {
+          setReasoningEffort: (effort: 'low' | 'high' | 'max') => void
+          release: () => Promise<void>
+        }
+      }>
+    }
+    const provider = {
+      type: 'custom' as const,
+      baseUrl: 'https://vendor.example/v1',
+      apiEndpoints: ['openai'] as ['openai'],
+      model: 'model-a',
+      key: 'key-a'
+    }
+    const first = await bridgeService.ensureResponsesBridge(provider, 'low')
+    const second = await bridgeService.ensureResponsesBridge(provider, 'max')
+    const post = async (connection: { baseUrl: string; token: string }): Promise<void> => {
+      const response = await localFetch(`${connection.baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ model: 'catalog', input: 'hi', stream: true })
+      })
+      await response.text()
+    }
+
+    try {
+      await post(first)
+      await post(second)
+      second.lease.setReasoningEffort('high')
+      await post(first)
+      await post(second)
+
+      expect(upstreamEfforts).toEqual(['low', 'max', 'low', 'high'])
+    } finally {
+      await first.lease.release()
+      await second.lease.release()
+    }
   })
 
   it('surfaces sessionEffort on the Claude backend too (the early-return path)', async () => {
@@ -3851,7 +4112,7 @@ describe('SettingsService: reasoning effort', () => {
     expect((await service.resolveActiveAgentBackend()).sessionEffort).toBeUndefined()
   })
 
-  it('updates the live bridge forwarding policy when the level changes', async () => {
+  it('lets the owning runtime update its live bridge with a model-resolved effort', async () => {
     const localFetch = globalThis.fetch
     let upstreamRequest: Record<string, unknown> | undefined
     vi.stubGlobal(
@@ -3920,13 +4181,19 @@ describe('SettingsService: reasoning effort', () => {
     await post()
     expect(upstreamRequest).not.toHaveProperty('reasoning_effort')
 
-    // An explicit level forwards — Codex applies it live over ACP, no reconnect touches the bridge.
-    await service.setReasoningEffort('high')
+    // The active runtime owns this lease, so it updates only the bridge for its own provider/model.
+    backend.responsesBridgeLease?.setReasoningEffort?.('high')
     await post()
     expect(upstreamRequest).toMatchObject({ reasoning_effort: 'high' })
 
+    // The bridge receives the concrete mapped value, not a forwarding boolean: it replaces Codex's
+    // own request effort instead of letting an incompatible value leak to the selected model.
+    backend.responsesBridgeLease?.setReasoningEffort?.('max')
+    await post()
+    expect(upstreamRequest).toMatchObject({ reasoning_effort: 'max' })
+
     // Back to 'default': stripping is restored so Codex's own effort can't leak upstream.
-    await service.setReasoningEffort('default')
+    backend.responsesBridgeLease?.setReasoningEffort?.(undefined)
     await post()
     expect(upstreamRequest).not.toHaveProperty('reasoning_effort')
   })

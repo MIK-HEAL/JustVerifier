@@ -12,7 +12,7 @@ import {
 } from '../acp/permission-profile-controller'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import { augmentedPathEnv } from '../settings/shell-path'
-import type { ReasoningEffort } from '../../shared/settings'
+import type { ModelReasoningEffort } from '../../shared/reasoning-effort'
 import type {
   AgentFramework,
   AgentAuthentication,
@@ -73,10 +73,7 @@ export const codexStorageDir = (storageRoot: string): string => join(storageRoot
 export const codexSubscriptionStorageDir = (storageRoot: string): string =>
   join(storageRoot, 'codex-subscription')
 
-const isolatedCodexHomeEnv = (
-  codexHome: string,
-  platform: NodeJS.Platform
-): NodeJS.ProcessEnv => ({
+const isolatedCodexHomeEnv = (codexHome: string, platform: NodeJS.Platform): NodeJS.ProcessEnv => ({
   // Codex discovers user-installed Skills under $HOME/.agents/skills in addition to
   // $CODEX_HOME/skills. Point both roots at the app-owned profile so a session cannot inherit the
   // desktop user's Skills. USERPROFILE is the native home source on Windows; HOME is retained there
@@ -107,27 +104,17 @@ const normalizeResponsesBaseUrl = (value: string | undefined): string | undefine
   return normalized
 }
 
-// Codex config takes low|medium|high|xhigh; the app's top level 'max' maps onto 'xhigh'.
-// 'default' is filtered upstream (never reaches here), but stay defensive and omit it too.
-const codexReasoningEffortFor = (effort: ReasoningEffort | undefined): string | undefined =>
-  effort === 'max'
-    ? 'xhigh'
-    : effort === 'low' || effort === 'medium' || effort === 'high'
-      ? effort
-      : undefined
-
 // Just the model + reasoning-effort fields a Codex config can carry, with no provider plumbing.
 // The bridge path layers the open-science custom provider on top of this; the codex-isolated path
 // uses it on its own so codex-acp can drive the ChatGPT subscription with the user's selected
 // model from session start (issue #277).
 const buildCodexModelOptions = (input: {
   model?: string
-  reasoningEffort?: ReasoningEffort
+  reasoningEffort?: ModelReasoningEffort
 }): Record<string, unknown> => {
-  const codexEffort = codexReasoningEffortFor(input.reasoningEffort)
   return {
     ...(input.model ? { model: input.model } : {}),
-    ...(codexEffort ? { model_reasoning_effort: codexEffort } : {})
+    ...(input.reasoningEffort ? { model_reasoning_effort: input.reasoningEffort } : {})
   }
 }
 
@@ -136,7 +123,7 @@ const buildCodexConfig = (provider: {
   model?: string
   contextWindow?: number
   key?: string
-  reasoningEffort?: ReasoningEffort
+  reasoningEffort?: ModelReasoningEffort
 }): Record<string, unknown> => {
   const baseUrl = normalizeResponsesBaseUrl(provider.baseUrl)
   const contextWindow =

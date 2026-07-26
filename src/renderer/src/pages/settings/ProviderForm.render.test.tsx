@@ -110,6 +110,43 @@ describe('ProviderForm field switching', () => {
     )
   })
 
+  it('lets a custom model declare its reasoning effort group', () => {
+    render(
+      createEmptyProviderFormValue({
+        type: 'custom',
+        reasoningEffortPreset: 'none-high',
+        reasoningEffortTransport: 'deepseek'
+      })
+    )
+
+    expect(
+      container
+        .querySelector('[aria-label="Supports reasoning effort"]')
+        ?.getAttribute('data-state')
+    ).toBe('checked')
+    expect(
+      container.querySelector('[aria-label="Reasoning effort levels"]')?.textContent
+    ).toContain('None / High')
+    expect(container.textContent).toContain('exact effort levels accepted by this model')
+    expect(container.textContent).toContain('maps five relative strengths onto them')
+    expect(
+      container.querySelector('[aria-label="Reasoning effort request format"]')?.textContent
+    ).toContain('DeepSeek thinking + effort')
+  })
+
+  it('lets a custom model explicitly disable reasoning effort', () => {
+    const onChange = vi.fn()
+    render(createEmptyProviderFormValue({ type: 'custom' }), { onChange })
+
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Supports reasoning effort"]')
+        ?.click()
+    })
+
+    expect(onChange).toHaveBeenCalledWith({ reasoningEffortPreset: 'unsupported' })
+  })
+
   it('describes existing Codex authentication as a one-time import', () => {
     render(
       createEmptyProviderFormValue({

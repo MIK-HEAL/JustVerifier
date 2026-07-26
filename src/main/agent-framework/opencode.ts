@@ -8,10 +8,11 @@ import {
 } from '../acp/permission-profile-controller'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import { preferredEndpoint } from '../../shared/settings'
-import type { ReasoningEffort } from '../../shared/settings'
+import type { ModelReasoningEffort } from '../../shared/reasoning-effort'
 import { anthropicMessagesBase, openAiCompletionsBase } from '../settings/base-url'
 import { augmentedPathEnv } from '../settings/shell-path'
 import type { ResolvedProvider } from '../settings/provider-env'
+import { resolveChatReasoningTransport } from '../settings/reasoning-transport'
 import type {
   AgentFramework,
   AgentModelConfig,
@@ -135,27 +136,47 @@ const resolveOpencodeEndpoint = (
   return { bareModel, providerId, npm, baseURL }
 }
 
+// Current OpenCode accepts the provider-neutral ladder through `reasoningEffort` up to `max`.
+// `ultra` is a Codex-specific top rung, so map it to OpenCode's highest transport value rather than
+// dropping the user's explicit top-effort selection and falling back to the provider default.
+// Provider-specific wire shapes (thinking switches and OpenRouter's reasoning object) are resolved
+// separately and passed through model options by the openai-compatible AI SDK.
+const opencodeReasoningOptions = (
+  provider: ResolvedProvider,
+  effort: ModelReasoningEffort
+): Record<string, unknown> => {
+  const transportEffort = effort === 'ultra' ? 'max' : effort
+  const transport = resolveChatReasoningTransport(
+    provider.vendorId,
+    provider.model,
+    transportEffort,
+    provider.reasoningEffortTransport
+  )
+
+  return {
+    ...(transport.reasoningEffort ? { reasoningEffort: transport.reasoningEffort } : {}),
+    ...(transport.thinking ? { thinking: transport.thinking } : {}),
+    ...(transport.reasoning ? { reasoning: transport.reasoning } : {})
+  }
+}
+
 // The opencode per-model capability block. opencode strips image parts before calling the provider for
 // any model whose config does not declare vision — custom and freshly-registered models default to
 // text-only — so a base64 image sent over ACP silently never reaches the provider. A multimodal model
 // must therefore advertise both the attachment capability and an image input modality. Empty (text-only)
-// otherwise, so a non-vision model is never told it can accept images. A reasoning-effort preference is
-// declared via the model's `options.reasoningEffort`, opencode's per-model knob passed through to the
-// AI SDK provider; providers that don't support it ignore the option.
+// otherwise, so a non-vision model is never told it can accept images. Reasoning preferences are
+// declared in the model's `options` block, which OpenCode passes through to the AI SDK provider.
 const buildModelCapabilities = (
   provider: ResolvedProvider,
-  reasoningEffort?: ReasoningEffort
-): Record<string, unknown> => ({
-  ...(provider.supportsImageInput
-    ? { attachment: true, modalities: { input: ['text', 'image'] } }
-    : {}),
-  ...(reasoningEffort ? { options: { reasoningEffort: clampOpencodeEffort(reasoningEffort) } } : {})
-})
-
-// opencode's reasoningEffort follows the AI SDK levels, which top out at 'high'; the app's top level
-// 'max' clamps down to it. 'default' is filtered upstream and never reaches here.
-const clampOpencodeEffort = (effort: ReasoningEffort): 'low' | 'medium' | 'high' =>
-  effort === 'low' || effort === 'medium' ? effort : 'high'
+  reasoningEffort?: ModelReasoningEffort
+): Record<string, unknown> => {
+  return {
+    ...(provider.supportsImageInput
+      ? { attachment: true, modalities: { input: ['text', 'image'] } }
+      : {}),
+    ...(reasoningEffort ? { options: opencodeReasoningOptions(provider, reasoningEffort) } : {})
+  }
+}
 
 // The app-authoritative config layer (model + provider block + permission policy) passed verbatim to
 // opencode via OPENCODE_CONFIG_CONTENT, which opencode deep-merges ABOVE both the app-owned global config
@@ -165,7 +186,7 @@ const clampOpencodeEffort = (effort: ReasoningEffort): 'low' | 'medium' | 'high'
 // real key can only ever go to the app's own endpoint. The key stays an env reference, never plaintext.
 const buildAppConfigContent = (
   provider: ResolvedProvider,
-  reasoningEffort?: ReasoningEffort
+  reasoningEffort?: ModelReasoningEffort
 ): Record<string, unknown> => {
   const { bareModel, providerId, npm, baseURL } = resolveOpencodeEndpoint(provider)
   const modelConfig = {
@@ -205,7 +226,7 @@ const buildOpencodeConfig = (
   provider: ResolvedProvider,
   baseConfig: Record<string, unknown> = {},
   instructionPaths: string[] = [],
-  reasoningEffort?: ReasoningEffort
+  reasoningEffort?: ModelReasoningEffort
 ): string => {
   const { bareModel, providerId, npm, baseURL } = resolveOpencodeEndpoint(provider)
 

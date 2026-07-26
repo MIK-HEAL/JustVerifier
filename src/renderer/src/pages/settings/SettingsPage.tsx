@@ -65,6 +65,8 @@ const toFormValue = (provider: ProviderView): ProviderFormValue =>
     contextWindow: provider.contextWindow?.toString() ?? '',
     apiEndpoint: provider.apiEndpoints?.[0] ?? 'anthropic',
     supportsImageInput: provider.supportsImageInput,
+    reasoningEffortPreset: provider.reasoningEffortPreset ?? 'standard-5',
+    reasoningEffortTransport: provider.reasoningEffortTransport ?? 'reasoning-effort',
     vendorId: provider.vendorId,
     region: provider.region
   })
@@ -86,6 +88,8 @@ const toUpsertRequest = (
       : undefined,
   apiEndpoints: [value.apiEndpoint],
   supportsImageInput: value.supportsImageInput,
+  reasoningEffortPreset: value.type === 'custom' ? value.reasoningEffortPreset : undefined,
+  reasoningEffortTransport: value.type === 'custom' ? value.reasoningEffortTransport : undefined,
   vendorId: value.vendorId,
   region: value.region,
   key: value.key || undefined

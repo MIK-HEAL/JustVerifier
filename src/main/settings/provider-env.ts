@@ -2,6 +2,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 import type { ChatApiEndpoint, ProviderType } from '../../shared/settings'
+import type { OfficialVendorId } from '../../shared/provider-registry'
+import type { CustomReasoningEffortTransport } from '../../shared/reasoning-effort'
 import { normalizeAnthropicBaseUrl } from './base-url'
 
 // Resolves an active provider into the environment overrides that the ACP agent (and the claude
@@ -10,6 +12,9 @@ import { normalizeAnthropicBaseUrl } from './base-url'
 // A provider resolved for spawning: the plaintext key is already decrypted by the caller.
 export type ResolvedProvider = {
   type: ProviderType
+  // Retained for official providers even though they use the custom credential path at runtime.
+  // Transport adapters need this stable identity because `none` has vendor-specific wire semantics.
+  vendorId?: OfficialVendorId
   // Anthropic /v1/messages base (also the sole base for a custom provider). Claude always uses this.
   baseUrl?: string
   // Distinct OpenAI /v1/chat/completions base for a dual-endpoint vendor (e.g. DeepSeek). Used only
@@ -26,6 +31,8 @@ export type ResolvedProvider = {
   // Whether the active model accepts image input. opencode strips image parts for a custom/registered
   // model whose config does not declare vision, so this is surfaced into its per-model capabilities.
   supportsImageInput?: boolean
+  // Explicit only for user-defined gateways; official providers use vendorId for transport mapping.
+  reasoningEffortTransport?: CustomReasoningEffortTransport
 }
 
 export type ProviderEnvOptions = {

@@ -37,6 +37,8 @@ const toUpsertRequest = (value: ProviderFormValue): UpsertProviderRequest => ({
   // Persist the chosen API format so an OpenAI-compatible provider is validated + driven correctly.
   apiEndpoints: [value.apiEndpoint],
   supportsImageInput: value.supportsImageInput,
+  reasoningEffortPreset: value.type === 'custom' ? value.reasoningEffortPreset : undefined,
+  reasoningEffortTransport: value.type === 'custom' ? value.reasoningEffortTransport : undefined,
   key: value.key || undefined
 })
 

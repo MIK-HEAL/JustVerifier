@@ -249,10 +249,19 @@ describe('opencodeFramework.prepareModelConfig', () => {
     })
   })
 
-  it("clamps the app's top level 'max' to opencode's 'high' in both layers", () => {
+  it.each([
+    ['none', 'none'],
+    ['minimal', 'minimal'],
+    ['low', 'low'],
+    ['medium', 'medium'],
+    ['high', 'high'],
+    ['xhigh', 'xhigh'],
+    ['max', 'max'],
+    ['ultra', 'max']
+  ] as const)('encodes model effort %s as OpenCode transport level %s', (effort, expected) => {
     const config = opencodeFramework.prepareModelConfig(
       { type: 'custom', baseUrl: 'https://gw/v1', model: 'm', key: 'k' },
-      { storageRoot: '/data', executablePath: '/bin/opencode', reasoningEffort: 'max' }
+      { storageRoot: '/data', executablePath: '/bin/opencode', reasoningEffort: effort }
     )
 
     const fileConfig = JSON.parse(
@@ -260,12 +269,68 @@ describe('opencodeFramework.prepareModelConfig', () => {
     )
     const content = JSON.parse(config.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
 
-    // opencode's reasoningEffort follows the AI SDK levels, which top out at 'high'.
-    expect(fileConfig.provider.anthropic.models).toEqual({
-      m: { options: { reasoningEffort: 'high' } }
-    })
-    expect(content.provider.anthropic.models).toEqual({
-      m: { options: { reasoningEffort: 'high' } }
+    const expectedModel = { options: { reasoningEffort: expected } }
+    expect(fileConfig.provider.anthropic.models).toEqual({ m: expectedModel })
+    expect(content.provider.anthropic.models).toEqual({ m: expectedModel })
+  })
+
+  it.each([
+    ['minimax', 'MiniMax-M3', 'none', { thinking: { type: 'disabled' } }],
+    ['minimax', 'MiniMax-M3', 'high', { thinking: { type: 'adaptive' } }],
+    ['xiaomimimo', 'mimo-v2.5-pro', 'none', { thinking: { type: 'disabled' } }],
+    ['xiaomimimo', 'mimo-v2.5-pro', 'high', { thinking: { type: 'enabled' } }],
+    ['deepseek', 'deepseek-v4-pro', 'none', { thinking: { type: 'disabled' } }],
+    [
+      'deepseek',
+      'deepseek-v4-pro',
+      'max',
+      { reasoningEffort: 'max', thinking: { type: 'enabled' } }
+    ],
+    ['openrouter', 'qwen/qwen3.7-max', 'none', { reasoning: { enabled: false } }],
+    ['openrouter', 'openai/gpt-5.5', 'high', { reasoning: { effort: 'high' } }]
+  ] as const)(
+    'encodes %s model %s effort %s with its provider-native options',
+    (vendorId, model, reasoningEffort, expected) => {
+      const config = opencodeFramework.prepareModelConfig(
+        {
+          type: 'custom',
+          vendorId,
+          baseUrl: 'https://gw.example/anthropic',
+          openaiBaseUrl: 'https://gw.example/v1',
+          apiEndpoints: ['anthropic', 'openai'],
+          model,
+          key: 'k'
+        },
+        { storageRoot: '/data', executablePath: '/bin/opencode', reasoningEffort }
+      )
+
+      const fileConfig = JSON.parse(
+        config.configFiles?.find((file) => file.path.endsWith('opencode.json'))?.content ?? '{}'
+      )
+      const content = JSON.parse(config.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
+
+      expect(fileConfig.provider['openai-compatible'].models[model].options).toEqual(expected)
+      expect(content.provider['openai-compatible'].models[model].options).toEqual(expected)
+    }
+  )
+
+  it('uses an explicit custom-provider transport without guessing from its URL or model', () => {
+    const config = opencodeFramework.prepareModelConfig(
+      {
+        type: 'custom',
+        baseUrl: 'https://private-gateway.example/v1',
+        apiEndpoints: ['openai'],
+        model: 'private-model',
+        key: 'k',
+        reasoningEffortTransport: 'deepseek'
+      },
+      { storageRoot: '/data', executablePath: '/bin/opencode', reasoningEffort: 'none' }
+    )
+
+    const content = JSON.parse(config.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
+
+    expect(content.provider['openai-compatible'].models['private-model'].options).toEqual({
+      thinking: { type: 'disabled' }
     })
   })
 

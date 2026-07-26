@@ -3,7 +3,7 @@ import { access, chmod, mkdir, readdir, realpath, writeFile } from 'node:fs/prom
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual, promisify } from 'node:util'
 
 import { z } from 'zod'
@@ -107,6 +107,15 @@ import {
   resolveVendorModelsUrl,
   resolveVendorOpenAiBaseUrl
 } from '../../shared/provider-registry'
+import {
+  resolveProviderEffectiveModel,
+  resolveProviderReasoningEffortProfile
+} from '../../shared/provider-reasoning-effort'
+import {
+  resolveReasoningEffortValue,
+  type ModelReasoningEffort,
+  type ResolvedReasoningEffort
+} from '../../shared/reasoning-effort'
 import { resolveStorageRoot } from '../storage-root'
 import { buildAgentSpawnEnv } from '../acp/agent-process'
 import {
@@ -174,8 +183,7 @@ import {
 import {
   ResponsesBridge,
   type ResponsesBridgeConnection,
-  type ResponsesBridgeNamespacedTool,
-  type ResponsesBridgeTarget
+  type ResponsesBridgeNamespacedTool
 } from './responses-bridge'
 import { SettingsRepository } from './repository'
 import { sanitizeCustomMcpServer } from './repository'
@@ -231,10 +239,9 @@ export type AgentBackendResolutionContext = {
   forcedSkillIds?: string[]
 }
 
-type ResponsesBridgePoolEntry = {
+type ResponsesBridgeEntry = {
   bridge: ResponsesBridge
   connection: Promise<ResponsesBridgeConnection>
-  leaseCount: number
 }
 
 type LeasedResponsesBridgeConnection = ResponsesBridgeConnection & {
@@ -490,7 +497,10 @@ class SettingsService {
   private claudeSharedAuthStatusGeneration = 0
   private claudeSharedAuthStatusPromise:
     { generation: number; promise: Promise<boolean> } | undefined
-  private readonly responsesBridges = new Map<string, ResponsesBridgePoolEntry>()
+  // A bridge owns mutable per-runtime state (reasoning override, reviewer scopes, and reasoning
+  // replay). Track each backend generation separately so an overlapping reconnect cannot mutate the
+  // bridge still serving the retiring generation.
+  private readonly responsesBridges = new Map<string, ResponsesBridgeEntry>()
   private providerSequence = 0
   private readonly providerValidationGenerations = new Map<string, number>()
 
@@ -806,14 +816,16 @@ class SettingsService {
   async setReasoningEffort(effort: ReasoningEffort): Promise<SettingsSnapshot> {
     await this.repository.setReasoningEffort(effort)
 
-    // A live bridge never sees resolveActiveAgentBackend again until the next provider switch, so its
-    // forwarding policy must be updated in place: an explicit level forwards, 'default' restores
-    // stripping so Codex's own default effort never leaks upstream.
-    for (const { bridge } of this.responsesBridges.values()) {
-      bridge.setForwardReasoningEffort(effort !== DEFAULT_REASONING_EFFORT)
-    }
-
     return this.getSettingsView()
+  }
+
+  // Projects one of the app's five stable user-intent slots through the active model's static effort
+  // profile. This is intentionally async only because settings are read from disk; capability lookup
+  // is synchronous and never performs provider discovery or a network request.
+  async resolveActiveReasoningEffort(intent: ReasoningEffort): Promise<ResolvedReasoningEffort> {
+    const settings = await this.repository.getSettings()
+
+    return this.resolveReasoningEffortFromSettings(settings, intent)
   }
 
   // Whether desktop notifications for finished/failed agent tasks are on, read fresh so the
@@ -2245,6 +2257,10 @@ class SettingsService {
       if (contextWindow !== undefined) provider.contextWindow = contextWindow
       provider.supportsImageInput =
         request.supportsImageInput ?? existing?.supportsImageInput ?? false
+      provider.reasoningEffortPreset =
+        request.reasoningEffortPreset ?? existing?.reasoningEffortPreset ?? 'standard-5'
+      provider.reasoningEffortTransport =
+        request.reasoningEffortTransport ?? existing?.reasoningEffortTransport ?? 'reasoning-effort'
       // Which chat APIs this gateway speaks (drives per-framework availability); defaults to anthropic.
       provider.apiEndpoints = apiEndpoints
       credentialsChanged =
@@ -3261,7 +3277,8 @@ class SettingsService {
 
   private async resolveSpawnConfig(
     settings: StoredSettings,
-    forcedSkillIds: ReadonlySet<string>
+    forcedSkillIds: ReadonlySet<string>,
+    resolvedSelection?: { model?: string }
   ): Promise<AgentSpawnConfig> {
     let executablePath = settings.claude?.resolvedPath
 
@@ -3293,7 +3310,12 @@ class SettingsService {
     // ACP session injects this bundle as a local plugin plus highest-priority settings layer.
     const appConfigDir = await this.provisionClaudeRuntimeConfig(settings, forcedSkillIds)
 
-    const provider = this.resolveProvider(activeProvider, settings.activeModel)
+    const provider = this.resolveProvider(
+      activeProvider,
+      resolvedSelection
+        ? resolvedSelection.model
+        : this.resolveActiveModel(activeProvider, settings.activeModel)
+    )
     const envOverrides = buildProviderEnv(provider, {
       storageRoot: this.storageRoot,
       claudeExecutablePath: executablePath,
@@ -3368,17 +3390,9 @@ class SettingsService {
     const forcedSkillIds = new Set(context.forcedSkillIds ?? [])
     const framework = getAgentFramework(frameworkId)
     // 'default' means "don't override": nothing is sent over ACP or framework config, so the agent
-    // keeps its own default effort. A concrete level is delivered through two channels deliberately
-    // (defense-in-depth, mirroring how sessionModel reaches opencode): the framework's own config
-    // (Codex model_reasoning_effort, opencode model options) covers agents that ignore the protocol,
-    // while sessionEffort drives the ACP thought_level configOption — Claude Code's only channel —
-    // and, being applied per session after spawn, wins over the baked config when both fire. The
-    // channels clamp 'max' independently (Codex config → xhigh, opencode config → high, ACP → the
-    // nearest advertised rung), which is accepted: each stays within its own supported set.
-    const sessionEffort =
-      settings.reasoningEffort && settings.reasoningEffort !== DEFAULT_REASONING_EFFORT
-        ? settings.reasoningEffort
-        : undefined
+    // keeps its own default effort. A concrete intent is projected through the active model profile
+    // exactly once here, then delivered through the framework config and ACP session channels. Those
+    // transports receive the same model-native value and must not independently reinterpret it.
 
     // Enforce provider↔framework compatibility up front so an incompatible pair fails with a clear
     // message instead of spawning an agent that can't use the credentials — e.g. OpenCode + a Local
@@ -3390,6 +3404,21 @@ class SettingsService {
     if (!activeProvider) {
       throw new Error(NO_ACTIVE_PROVIDER_MESSAGE)
     }
+
+    // Resolve the model exactly once for this backend generation. The same selection drives the
+    // model profile, bridge compatibility, and the framework config so a refreshed catalog cannot
+    // make the effort belong to one model while the request is sent to another.
+    const effectiveModel = this.resolveActiveModel(activeProvider, settings.activeModel)
+    const effortIntent = settings.reasoningEffort ?? DEFAULT_REASONING_EFFORT
+    const resolvedEffort =
+      effortIntent === DEFAULT_REASONING_EFFORT
+        ? DEFAULT_REASONING_EFFORT
+        : resolveReasoningEffortValue(
+            effortIntent,
+            resolveProviderReasoningEffortProfile(activeProvider, effectiveModel)
+          )
+    const sessionEffort: ModelReasoningEffort | undefined =
+      resolvedEffort === 'default' ? undefined : resolvedEffort
 
     if (
       !isProviderUsableByFramework(
@@ -3406,20 +3435,14 @@ class SettingsService {
     const enabledConnectorIds = this.enabledConnectorIds(settings.connectors)
     const connectorInstructions = renderConnectorInstructions(enabledConnectorIds)
 
-    if (
-      framework.id === 'codex' &&
-      !isModelBridgeSupported(
-        activeProvider,
-        this.resolveActiveModel(activeProvider, settings.activeModel)
-      )
-    ) {
+    if (framework.id === 'codex' && !isModelBridgeSupported(activeProvider, effectiveModel)) {
       throw new Error(CODEX_BRIDGE_UNSUPPORTED_MESSAGE)
     }
 
     if (framework.id === 'claude-code') {
       // Claude path: app-owned runtime provisioning + Anthropic-shaped env + local-auth handling.
       const { envOverrides, executablePath, sessionOptions, contextWindow } =
-        await this.resolveSpawnConfig(settings, forcedSkillIds)
+        await this.resolveSpawnConfig(settings, forcedSkillIds, { model: effectiveModel })
 
       return {
         framework,
@@ -3439,7 +3462,7 @@ class SettingsService {
             settings.codex?.nativePath
           )
         : await this.resolveOpencodeExecutable(settings.opencodePath)
-    const provider = this.resolveProvider(activeProvider, settings.activeModel)
+    const provider = this.resolveProvider(activeProvider, effectiveModel)
     // `codex-shared` is accepted only as a legacy/provider-time import request. Every runtime
     // subscription record converges on the same app-owned backend and profile boundary.
     const backendProviderId =
@@ -3464,7 +3487,7 @@ class SettingsService {
     // A bridge may still serve a live Codex runtime from an earlier framework generation. Do not stop
     // or retarget it merely because the newly selected framework/provider does not need one.
     const responsesBridge = needsResponsesBridge
-      ? await this.ensureResponsesBridge(provider, sessionEffort !== undefined)
+      ? await this.ensureResponsesBridge(provider, sessionEffort)
       : undefined
     try {
       const modelConfig = framework.prepareModelConfig(provider, {
@@ -3510,7 +3533,7 @@ class SettingsService {
 
   private async ensureResponsesBridge(
     provider: ResolvedProvider,
-    forwardReasoningEffort: boolean
+    reasoningEffort: ModelReasoningEffort | undefined
   ): Promise<LeasedResponsesBridgeConnection> {
     // Resolve to the OpenAI base the bridge appends `/chat/completions` to: an official vendor's exact
     // versioned base, or a custom gateway root normalized to `<root>/v1`.
@@ -3520,8 +3543,10 @@ class SettingsService {
     const target = {
       baseUrl: targetBaseUrl,
       key: provider.key,
+      vendorId: provider.vendorId,
+      reasoningEffortTransport: provider.reasoningEffortTransport,
       model: provider.model,
-      forwardReasoningEffort,
+      reasoningEffort,
       namespacedTools: [
         ...CODEX_BRIDGE_NOTEBOOK_TOOLS,
         ...CODEX_BRIDGE_ARTIFACT_TOOLS,
@@ -3531,27 +3556,17 @@ class SettingsService {
         namespacedTools: REVIEWER_BRIDGE_NAMESPACED_TOOLS
       }
     }
-    const fingerprint = this.responsesBridgeFingerprint(target)
-    let entry = this.responsesBridges.get(fingerprint)
-    if (!entry) {
-      const bridge = new ResponsesBridge(target)
-      entry = { bridge, connection: bridge.start(), leaseCount: 0 }
-      this.responsesBridges.set(fingerprint, entry)
-    } else {
-      // Reasoning effort is a live global preference, not part of the bridge's pinned routing target.
-      entry.bridge.setForwardReasoningEffort(forwardReasoningEffort)
-    }
-    entry.leaseCount += 1
+    const bridgeId = randomUUID()
+    const bridge = new ResponsesBridge(target)
+    const entry = { bridge, connection: bridge.start() }
+    this.responsesBridges.set(bridgeId, entry)
 
     let connection: ResponsesBridgeConnection
     try {
       connection = await entry.connection
     } catch (error) {
-      entry.leaseCount = Math.max(0, entry.leaseCount - 1)
-      if (entry.leaseCount === 0 && this.responsesBridges.get(fingerprint) === entry) {
-        this.responsesBridges.delete(fingerprint)
-        await entry.bridge.close().catch(() => undefined)
-      }
+      if (this.responsesBridges.get(bridgeId) === entry) this.responsesBridges.delete(bridgeId)
+      await entry.bridge.close().catch(() => undefined)
       throw error
     }
 
@@ -3566,34 +3581,16 @@ class SettingsService {
           leasedEntry.bridge.registerReviewerSession(promptCacheKey),
         unregisterReviewerSession: (promptCacheKey) =>
           leasedEntry.bridge.unregisterReviewerSession(promptCacheKey),
+        setReasoningEffort: (effort) => leasedEntry.bridge.setReasoningEffort(effort),
         release: async () => {
           if (released) return
           released = true
-          leasedEntry.leaseCount = Math.max(0, leasedEntry.leaseCount - 1)
-          if (
-            leasedEntry.leaseCount > 0 ||
-            this.responsesBridges.get(fingerprint) !== leasedEntry
-          ) {
-            return
-          }
-          this.responsesBridges.delete(fingerprint)
+          if (this.responsesBridges.get(bridgeId) !== leasedEntry) return
+          this.responsesBridges.delete(bridgeId)
           await leasedEntry.bridge.close()
         }
       }
     }
-  }
-
-  private responsesBridgeFingerprint(target: ResponsesBridgeTarget): string {
-    // forwardReasoningEffort is intentionally live mutable and therefore excluded from the pinned
-    // routing identity. Including it would split leases and prevent effort fan-out to existing bridges.
-    const pinnedTarget = {
-      baseUrl: target.baseUrl,
-      key: target.key,
-      model: target.model,
-      namespacedTools: target.namespacedTools,
-      reviewerScope: target.reviewerScope
-    }
-    return createHash('sha256').update(JSON.stringify(pinnedTarget)).digest('hex')
   }
 
   // Locates the opencode binary: an explicitly stored path wins, else a best-effort PATH lookup.
@@ -3675,6 +3672,10 @@ class SettingsService {
       model: provider.model,
       contextWindow: provider.contextWindow,
       supportsImageInput: this.providerSupportsImageInput(provider, activeModel),
+      reasoningEffortPreset:
+        provider.type === 'custom' ? provider.reasoningEffortPreset : undefined,
+      reasoningEffortTransport:
+        provider.type === 'custom' ? provider.reasoningEffortTransport : undefined,
       vendorId: provider.vendorId,
       region: provider.region,
       models: this.availableModels(provider),
@@ -3779,16 +3780,29 @@ class SettingsService {
     provider: StoredProvider | undefined,
     requested?: string
   ): string | undefined {
-    if (!provider) return undefined
+    return resolveProviderEffectiveModel(
+      provider ? { ...provider, models: this.availableModels(provider) } : undefined,
+      requested
+    )
+  }
 
-    const available = this.availableModels(provider)
+  private resolveReasoningEffortFromSettings(
+    settings: StoredSettings,
+    intent: ReasoningEffort
+  ): ResolvedReasoningEffort {
+    if (intent === DEFAULT_REASONING_EFFORT) return DEFAULT_REASONING_EFFORT
 
-    if (requested && available.includes(requested)) return requested
-    if (isCodexSubscriptionProvider(provider.type)) return undefined
-    // Prefer the provider's chosen default (custom's only model, or an official vendor's picked one).
-    if (provider.model && available.includes(provider.model)) return provider.model
+    const provider = settings.activeProviderId
+      ? settings.providers.find((candidate) => candidate.id === settings.activeProviderId)
+      : undefined
+    if (!provider) return DEFAULT_REASONING_EFFORT
 
-    return available[0] ?? provider.model
+    const profile = resolveProviderReasoningEffortProfile(
+      provider,
+      this.resolveActiveModel(provider, settings.activeModel)
+    )
+
+    return resolveReasoningEffortValue(intent, profile)
   }
 
   // Decrypts a stored provider into the spawn/validation shape (plaintext key held only transiently).
@@ -3803,6 +3817,7 @@ class SettingsService {
 
       return {
         type: 'custom',
+        vendorId: provider.vendorId,
         baseUrl: resolveVendorBaseUrl(provider.vendorId, provider.region),
         openaiBaseUrl: resolveVendorOpenAiBaseUrl(provider.vendorId, provider.region),
         model,
@@ -3828,7 +3843,10 @@ class SettingsService {
       ...(contextWindow === undefined ? {} : { contextWindow }),
       key,
       apiEndpoints: this.resolveProviderApiEndpoints(provider),
-      supportsImageInput: this.providerSupportsImageInput(provider, modelOverride)
+      supportsImageInput: this.providerSupportsImageInput(provider, modelOverride),
+      ...(provider.type === 'custom'
+        ? { reasoningEffortTransport: provider.reasoningEffortTransport }
+        : {})
     }
   }
 
@@ -3838,6 +3856,7 @@ class SettingsService {
     if (draft.type === 'official' && isOfficialVendorId(draft.vendorId)) {
       return {
         type: 'custom',
+        vendorId: draft.vendorId,
         baseUrl: resolveVendorBaseUrl(draft.vendorId, draft.region),
         openaiBaseUrl: resolveVendorOpenAiBaseUrl(draft.vendorId, draft.region),
         model: draft.model ?? defaultVendorModel(draft.vendorId),
@@ -3855,7 +3874,10 @@ class SettingsService {
         ? { contextWindow: resolveCustomModelContextWindow(draft.contextWindow ?? undefined) }
         : {}),
       key: draft.key,
-      apiEndpoints: draft.apiEndpoints ?? ['anthropic']
+      apiEndpoints: draft.apiEndpoints ?? ['anthropic'],
+      ...(draft.type === 'custom'
+        ? { reasoningEffortTransport: draft.reasoningEffortTransport }
+        : {})
     }
   }
 

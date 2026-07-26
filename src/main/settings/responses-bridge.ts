@@ -3,6 +3,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import { createLogger } from '../logger'
 import { appendChatCompletions } from './base-url'
+import { resolveChatReasoningTransport } from './reasoning-transport'
+import type { OfficialVendorId } from '../../shared/provider-registry'
+import type {
+  CustomReasoningEffortTransport,
+  ModelReasoningEffort
+} from '../../shared/reasoning-effort'
 
 // The bridge deliberately keeps protocol payloads open-ended; validation rejects unsupported shapes
 // at the boundary before values reach the upstream request.
@@ -18,15 +24,15 @@ const log = createLogger('acp-bridge')
 export type ResponsesBridgeTarget = {
   baseUrl: string
   key?: string
+  vendorId?: OfficialVendorId
+  reasoningEffortTransport?: CustomReasoningEffortTransport
   // Codex uses a catalog model for its local metadata; bridge providers may need a different
   // upstream model id (for example, DeepSeek's model name).
   model?: string
   namespacedTools?: ResponsesBridgeNamespacedTool[]
-  // Forward reasoning.effort upstream as reasoning_effort ONLY when the user explicitly picked a
-  // level. Codex emits its own default effort even when the app never configured one, so
-  // unconditional forwarding would change what existing bridged users send to their gateway —
-  // and gateways fronting non-OpenAI models often reject unknown parameters.
-  forwardReasoningEffort?: boolean
+  // The active model's resolved API value. This explicitly overrides Codex's transport-model effort,
+  // which may use a smaller vocabulary or emit its own default. Undefined strips the field.
+  reasoningEffort?: ModelReasoningEffort
   reviewerScope?: {
     namespacedTools: ResponsesBridgeNamespacedTool[]
   }
@@ -102,7 +108,16 @@ class BridgeHttpError extends Error {
 
 const ALLOWED_INCLUDE_VALUES = new Set(['reasoning.encrypted_content'])
 const ALLOWED_REASONING_KEYS = new Set(['effort', 'summary'])
-const ALLOWED_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
+const ALLOWED_REASONING_EFFORTS = new Set([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+])
 const ALLOWED_REASONING_SUMMARIES = new Set(['auto', 'concise', 'detailed'])
 const ALLOWED_IMAGE_DETAILS = new Set(['auto', 'low', 'high'])
 const UPSTREAM_IMAGE_TYPES = new Set(['image', 'image_url', 'input_image', 'output_image'])
@@ -557,7 +572,11 @@ export const responsesToChatRequest = (
   upstreamModel?: string,
   reasoningByCallId?: Map<string, string>,
   namespacedTools: readonly ResponsesBridgeNamespacedTool[] = [],
-  options?: { forwardReasoningEffort?: boolean }
+  options?: {
+    reasoningEffortOverride?: ModelReasoningEffort
+    vendorId?: OfficialVendorId
+    reasoningEffortTransport?: CustomReasoningEffortTransport
+  }
 ): JsonObject => {
   for (const field of UNSUPPORTED_FIELDS) {
     if (body[field] !== undefined && body[field] !== null) {
@@ -628,27 +647,18 @@ export const responsesToChatRequest = (
   const toolChoice = hasTools ? requestedToolChoice : undefined
   const stream = body.stream !== false
 
-  // Translate the Responses reasoning effort into the Chat Completions equivalent (validated above),
-  // but only when the app's user explicitly picked a level: Codex also emits its own default effort,
-  // and forwarding that would change what existing bridged users send upstream. OpenAI-shaped
-  // gateways take `reasoning_effort`; the Codex-only 'xhigh' clamps to 'high', and 'none' is
-  // omitted — Chat Completions has no "reasoning off" switch, so the upstream default stands.
-  const requestedEffort =
-    options?.forwardReasoningEffort &&
-    body.reasoning &&
-    typeof body.reasoning === 'object' &&
-    !Array.isArray(body.reasoning)
-      ? (body.reasoning as JsonObject).effort
-      : undefined
-  const chatReasoningEffort =
-    requestedEffort === 'xhigh'
-      ? 'high'
-      : requestedEffort === 'minimal' ||
-          requestedEffort === 'low' ||
-          requestedEffort === 'medium' ||
-          requestedEffort === 'high'
-        ? requestedEffort
-        : undefined
+  // The model profile already chose the upstream API value. Never derive it from Codex's request:
+  // Codex runs a catalog transport model and may omit, default, or clamp values that the real model
+  // supports. Undefined intentionally strips Codex's own effort from the Chat request.
+  const chatReasoningEffort = options?.reasoningEffortOverride
+  const reasoningTransport = chatReasoningEffort
+    ? resolveChatReasoningTransport(
+        options?.vendorId,
+        upstreamModel,
+        chatReasoningEffort,
+        options?.reasoningEffortTransport
+      )
+    : undefined
 
   return {
     model: upstreamModel ?? body.model,
@@ -663,7 +673,11 @@ export const responsesToChatRequest = (
     ...(body.max_output_tokens === undefined || body.max_output_tokens === null
       ? {}
       : { max_tokens: body.max_output_tokens }),
-    ...(chatReasoningEffort ? { reasoning_effort: chatReasoningEffort } : {}),
+    ...(reasoningTransport?.reasoningEffort
+      ? { reasoning_effort: reasoningTransport.reasoningEffort }
+      : {}),
+    ...(reasoningTransport?.thinking ? { thinking: reasoningTransport.thinking } : {}),
+    ...(reasoningTransport?.reasoning ? { reasoning: reasoningTransport.reasoning } : {}),
     stream,
     // Responses stream options are not Chat Completions options. Request final usage explicitly and
     // do not forward fields such as include_obfuscation that a Chat-compatible gateway may reject.
@@ -1189,16 +1203,17 @@ export class ResponsesBridge {
     const changed =
       this.target.baseUrl !== target.baseUrl ||
       this.target.model !== target.model ||
+      this.target.vendorId !== target.vendorId ||
+      this.target.reasoningEffortTransport !== target.reasoningEffortTransport ||
       this.target.key !== target.key
     this.target = target
     if (changed) this.reasoningByCallId.clear()
   }
 
-  // Updates only the effort-forwarding policy on the live target, for when the user's reasoning-effort
-  // setting changes without a reconnect (Codex applies level changes live over ACP). Deliberately not
-  // a setTarget: the upstream provider is unchanged, so the reasoning cache must be preserved.
-  setForwardReasoningEffort(forward: boolean): void {
-    this.target = { ...this.target, forwardReasoningEffort: forward }
+  // Updates only the resolved upstream effort on the live target. Deliberately not a setTarget: the
+  // provider is unchanged, so the reasoning cache must be preserved.
+  setReasoningEffort(effort?: ModelReasoningEffort): void {
+    this.target = { ...this.target, reasoningEffort: effort }
   }
 
   registerReviewerSession(promptCacheKey: string): void {
@@ -1311,7 +1326,11 @@ export class ResponsesBridge {
         this.target.model,
         this.reasoningByCallId,
         namespacedTools,
-        { forwardReasoningEffort: this.target.forwardReasoningEffort }
+        {
+          reasoningEffortOverride: this.target.reasoningEffort,
+          vendorId: this.target.vendorId,
+          reasoningEffortTransport: this.target.reasoningEffortTransport
+        }
       )
 
       // Reveals which real model actually serves the turn (Codex only ever sees the internal catalog
