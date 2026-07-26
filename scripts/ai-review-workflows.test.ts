@@ -1,6 +1,14 @@
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 import { load } from 'js-yaml'
@@ -17,6 +25,7 @@ type WorkflowStep = {
 }
 
 type WorkflowJob = {
+  concurrency?: { group: string; 'cancel-in-progress': boolean | string }
   steps?: WorkflowStep[]
   if?: string
   name?: string
@@ -30,7 +39,7 @@ type WorkflowJob = {
 }
 
 type Workflow = {
-  concurrency?: { group: string; 'cancel-in-progress': boolean }
+  concurrency?: { group: string; 'cancel-in-progress': boolean | string }
   jobs: Record<string, WorkflowJob>
 }
 
@@ -40,6 +49,7 @@ const publisherText = readFileSync(
   join(process.cwd(), '.github/workflows/ai-post-review.yml'),
   'utf8'
 )
+const reviewDocsText = readFileSync(join(process.cwd(), '.github/action/ai-review.md'), 'utf8')
 const mainWorkflow = load(mainText) as Workflow
 const codexWorkflow = load(codexText) as Workflow
 const publisherWorkflow = load(publisherText) as Workflow
@@ -82,6 +92,7 @@ function simpleOutputs(path: string): Record<string, string> {
 }
 
 type TargetOptions = {
+  authMode?: 'api-key' | 'subscription'
   event?: 'pull_request_target' | 'workflow_dispatch'
   dispatchReviewer?: string
   automaticMode?: 'both' | 'correctness' | 'architecture' | 'disabled'
@@ -132,6 +143,7 @@ printf '%s' "$PR_JSON"
         DISPATCH_PR_NUMBER: event === 'workflow_dispatch' ? '392' : '',
         EVENT_PR_NUMBER: event === 'pull_request_target' ? '392' : '',
         FORK_REVIEW_MODE: options.forkMode ?? 'manual',
+        CODEX_REVIEW_AUTH_MODE: options.authMode ?? 'api-key',
         ENABLE_CODEX_REVIEW: options.enabled ?? 'true',
         CODEX_REVIEW_MODE: options.automaticMode ?? 'correctness',
         DISPATCH_REVIEWER: options.dispatchReviewer ?? 'both',
@@ -144,6 +156,64 @@ printf '%s' "$PR_JSON"
     status: result.status,
     stderr: result.stderr,
     outputs: result.status === 0 ? simpleOutputs(output) : {}
+  }
+}
+
+type AuthOptions = {
+  authJson?: string
+  authMode?: 'api-key' | 'subscription'
+  baseUrl?: string
+  event?: 'pull_request_target' | 'workflow_dispatch'
+  isFork?: boolean
+  openAiApiKey?: string
+}
+
+function runAuth(options: AuthOptions = {}): {
+  authFile: string
+  codexHome: string
+  configFile: string
+  mode: number | undefined
+  outputs: Record<string, string>
+  status: number | null
+  stderr: string
+} {
+  const root = fixtureRoot('dual-codex-auth-')
+  const codexHome = join(root, 'codex-home')
+  const authFile = join(codexHome, 'auth.json')
+  const configFile = join(codexHome, 'config.toml')
+  const output = join(root, 'github-output')
+  const result = spawnSync(
+    'bash',
+    ['-c', getRun(codexWorkflow, 'review', 'Prepare Codex authentication')],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CODEX_AUTH_JSON: options.authJson ?? '',
+        CODEX_AUTH_MODE: options.authMode ?? 'api-key',
+        CODEX_BASE_URL: options.baseUrl ?? 'https://api.openai.com',
+        GITHUB_OUTPUT: output,
+        GITHUB_REPOSITORY: 'aipoch/open-science',
+        GITHUB_WORKSPACE: root,
+        IS_FORK: String(options.isFork ?? false),
+        OPENAI_API_KEY: options.openAiApiKey ?? 'sk-test',
+        REVIEW_EVENT: options.event ?? 'workflow_dispatch',
+        RUNNER_TEMP: root
+      }
+    }
+  )
+  return {
+    authFile,
+    codexHome,
+    configFile,
+    mode:
+      result.status === 0 && options.authMode === 'subscription'
+        ? statSync(authFile).mode
+        : undefined,
+    outputs: result.status === 0 ? simpleOutputs(output) : {},
+    status: result.status,
+    stderr: result.stderr
   }
 }
 
@@ -304,6 +374,15 @@ describe('dual Codex workflow contract', () => {
     expect(() => load(publisherText)).not.toThrow()
   })
 
+  it('documents subscription setup and credential refresh limitations', () => {
+    expect(reviewDocsText).toContain('gh secret set CODEX_AUTH_JSON')
+    expect(reviewDocsText).toContain('gh variable set CODEX_REVIEW_AUTH_MODE --body subscription')
+    expect(reviewDocsText).toContain('GitHub-hosted runners are ephemeral')
+    expect(reviewDocsText).toContain(
+      'manually dispatched review of a\n> same-repository pull request'
+    )
+  })
+
   it('removes Claude, Anthropic, and CodeGraph runtime configuration', () => {
     const all = `${mainText}\n${codexText}\n${publisherText}`
     expect(all).not.toMatch(/Claude|CLAUDE|Anthropic|ANTHROPIC|CodeGraph|CODEGRAPH/)
@@ -363,6 +442,27 @@ describe('dual Codex workflow contract', () => {
     expect(runTarget({ isFork: true, forkMode: 'automatic' }).outputs.review_allowed).toBe('true')
   })
 
+  it('uses subscription only for manual same-repository reviews and otherwise falls back to API auth', () => {
+    expect(runTarget({ authMode: 'subscription' }).outputs).toMatchObject({
+      auth_mode: 'api-key',
+      review_allowed: 'true'
+    })
+    expect(
+      runTarget({
+        authMode: 'subscription',
+        event: 'workflow_dispatch'
+      }).outputs
+    ).toMatchObject({ auth_mode: 'subscription', review_allowed: 'true' })
+    const fork = runTarget({
+      authMode: 'subscription',
+      event: 'workflow_dispatch',
+      isFork: true,
+      forkMode: 'automatic'
+    })
+    expect(fork.status, fork.stderr).toBe(0)
+    expect(fork.outputs).toMatchObject({ auth_mode: 'api-key', review_allowed: 'true' })
+  })
+
   it('rejects an invalid automatic review mode', () => {
     const root = fixtureRoot('dual-codex-invalid-mode-')
     const result = spawnSync(
@@ -374,6 +474,7 @@ describe('dual Codex workflow contract', () => {
         env: {
           ...process.env,
           FORK_REVIEW_MODE: 'manual',
+          CODEX_REVIEW_AUTH_MODE: 'api-key',
           CODEX_REVIEW_MODE: 'claude',
           ENABLE_CODEX_REVIEW: 'true'
         }
@@ -430,23 +531,144 @@ describe('dual Codex workflow contract', () => {
     expect(correctness.permissions).toEqual({ contents: 'read' })
     expect(architecture.permissions).toEqual({ contents: 'read' })
     expect(correctness.with).toMatchObject({
+      auth_mode: '${{ needs.review_target.outputs.auth_mode }}',
       scope: 'correctness',
       model: "${{ vars.CODEX_CORRECTNESS_MODEL || vars.CODEX_REVIEW_MODEL || 'gpt-5.6-sol' }}",
       effort: "${{ vars.CODEX_CORRECTNESS_EFFORT || vars.CODEX_REVIEW_EFFORT || 'high' }}"
     })
     expect(correctness.secrets).toEqual({
+      CODEX_AUTH_JSON:
+        "${{ needs.review_target.outputs.auth_mode == 'subscription' && secrets.CODEX_AUTH_JSON || '' }}",
       OPENAI_API_KEY: '${{ secrets.CODEX_CORRECTNESS_API_KEY || secrets.OPENAI_API_KEY }}',
       CODEX_BASE_URL: '${{ secrets.CODEX_CORRECTNESS_BASE_URL || secrets.CODEX_BASE_URL }}'
     })
     expect(architecture.with).toMatchObject({
+      auth_mode: '${{ needs.review_target.outputs.auth_mode }}',
       scope: 'architecture',
       model: "${{ vars.CODEX_ARCHITECTURE_MODEL || vars.CODEX_REVIEW_MODEL || 'gpt-5.6-sol' }}",
       effort: "${{ vars.CODEX_ARCHITECTURE_EFFORT || vars.CODEX_REVIEW_EFFORT || 'high' }}"
     })
     expect(architecture.secrets).toEqual({
+      CODEX_AUTH_JSON:
+        "${{ needs.review_target.outputs.auth_mode == 'subscription' && secrets.CODEX_AUTH_JSON || '' }}",
       OPENAI_API_KEY: '${{ secrets.CODEX_ARCHITECTURE_API_KEY || secrets.OPENAI_API_KEY }}',
       CODEX_BASE_URL: '${{ secrets.CODEX_ARCHITECTURE_BASE_URL || secrets.CODEX_BASE_URL }}'
     })
+  })
+
+  it('bootstraps managed subscription auth on a GitHub-hosted runner', () => {
+    const seed = JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: { refresh_token: 'refresh-seed' },
+      last_refresh: '2026-07-25T00:00:00Z'
+    })
+    const result = runAuth({ authJson: seed, authMode: 'subscription' })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.outputs).toMatchObject({
+      auth_mode: 'subscription',
+      codex_home: result.codexHome
+    })
+    expect(readFileSync(result.authFile, 'utf8')).toBe(seed)
+    expect(result.mode! & 0o777).toBe(0o600)
+    const config = readFileSync(result.configFile, 'utf8')
+    expect(config).toContain('default_permissions = "ai_review"')
+    expect(config).toContain('project_doc_max_bytes = 0')
+    expect(config).toContain(`[projects.${JSON.stringify(dirname(result.codexHome))}]`)
+    expect(config).toContain('trust_level = "untrusted"')
+    expect(config).toContain('extends = ":read-only"')
+    expect(config).toContain(`${JSON.stringify(result.codexHome)} = "deny"`)
+  })
+
+  it('ignores untrusted checkout configuration in API-key mode too', () => {
+    const result = runAuth({ authMode: 'api-key' })
+    expect(result.status, result.stderr).toBe(0)
+    const config = readFileSync(result.configFile, 'utf8')
+    expect(config).toContain('default_permissions = ":read-only"')
+    expect(config).toContain('project_doc_max_bytes = 0')
+    expect(config).toContain('trust_level = "untrusted"')
+  })
+
+  it('rejects a subscription secret that is not managed ChatGPT auth', () => {
+    const result = runAuth({
+      authJson: JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-wrong-mode' }),
+      authMode: 'subscription'
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain(
+      'Codex subscription auth must be a valid chatgpt auth.json with a refresh token.'
+    )
+  })
+
+  it('rejects subscription auth outside a manual same-repository review', () => {
+    const seed = JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: { refresh_token: 'refresh-seed' }
+    })
+    const automatic = runAuth({
+      authJson: seed,
+      authMode: 'subscription',
+      event: 'pull_request_target'
+    })
+    expect(automatic.status).not.toBe(0)
+    expect(automatic.stderr).toContain('manual workflow_dispatch reviews')
+
+    const fork = runAuth({ authJson: seed, authMode: 'subscription', isFork: true })
+    expect(fork.status).not.toBe(0)
+    expect(fork.stderr).toContain('same-repository pull requests')
+  })
+
+  it('uses the API action only for API-key auth and installs the CLI directly for subscription auth', () => {
+    const prepareRuntime = getStep(codexWorkflow, 'review', 'Prepare Codex review runtime')
+    expect(prepareRuntime.if).toBe("${{ inputs.auth_mode == 'api-key' }}")
+    expect(prepareRuntime.with).toMatchObject({
+      'codex-home': '${{ steps.codex_auth.outputs.codex_home }}',
+      'codex-version': '0.144.6',
+      'openai-api-key': "${{ inputs.auth_mode == 'api-key' && secrets.OPENAI_API_KEY || '' }}",
+      'responses-api-endpoint': '${{ steps.responses_endpoint.outputs.url }}'
+    })
+    expect(getStep(codexWorkflow, 'review', 'Resolve Responses API endpoint').if).toBe(
+      "${{ inputs.auth_mode == 'api-key' }}"
+    )
+    const setupNode = getStep(codexWorkflow, 'review', 'Set up Node.js for subscription auth')
+    expect(setupNode.if).toBe("${{ inputs.auth_mode == 'subscription' }}")
+    expect(setupNode.uses).toBe('actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f')
+    expect(setupNode.with).toEqual({ 'node-version': '24' })
+    const installCli = getStep(codexWorkflow, 'review', 'Install Codex CLI for subscription auth')
+    expect(installCli.if).toBe("${{ inputs.auth_mode == 'subscription' }}")
+    expect(installCli.env).toEqual({ CODEX_VERSION: '0.144.6' })
+    expect(installCli.run).toContain('npm install -g "@openai/codex@${CODEX_VERSION}"')
+    expect(installCli.run).toContain('codex --version')
+    const stepNames = codexWorkflow.jobs.review.steps?.map(({ name }) => name) ?? []
+    expect(stepNames.indexOf('Install Codex CLI for subscription auth')).toBeLessThan(
+      stepNames.indexOf('Prepare Codex authentication')
+    )
+    expect(stepNames.indexOf('Prepare Codex authentication')).toBeLessThan(
+      stepNames.indexOf('Checkout pull request review commit')
+    )
+  })
+
+  it('prepares the GitHub-hosted Linux sandbox when the action runs install-only', () => {
+    const sandbox = getStep(
+      codexWorkflow,
+      'review',
+      'Prepare GitHub-hosted sandbox for subscription auth'
+    )
+    expect(sandbox.if).toBe("${{ inputs.auth_mode == 'subscription' }}")
+    expect(sandbox.run).toContain('kernel.unprivileged_userns_clone')
+    expect(sandbox.run).toContain('kernel.apparmor_restrict_unprivileged_userns')
+  })
+
+  it('drops sudo and verifies the subscription credential is denied to sandboxed commands', () => {
+    const hardening = getStep(codexWorkflow, 'review', 'Harden subscription review runtime')
+    expect(hardening.if).toBe("${{ inputs.auth_mode == 'subscription' }}")
+    expect(hardening.run).toContain('/etc/sudoers.d/*')
+    expect(hardening.run).not.toContain('command -v bwrap')
+    expect(hardening.run).toContain('sudo -n true')
+    expect(hardening.run).toContain('codex sandbox --permission-profile ai_review')
+    expect(hardening.run).toContain('test -r "$CODEX_HOME/auth.json"')
+    expect(hardening.run).toContain('test -r "$GITHUB_WORKSPACE/package.json"')
+    const syntax = spawnSync('bash', ['-n'], { encoding: 'utf8', input: hardening.run })
+    expect(syntax.status, syntax.stderr).toBe(0)
   })
 
   it('gives each Codex reviewer a distinct, non-overlapping focus', () => {
@@ -468,7 +690,9 @@ describe('dual Codex workflow contract', () => {
     for (const command of ['install dependencies', 'lint', 'tests', 'typecheck', 'build']) {
       expect(inputs).toContain(command)
     }
-    expect(run).toContain('--config \'default_permissions=":read-only"\'')
+    expect(run).toContain('--strict-config')
+    expect(run).toContain('--config project_doc_max_bytes=0')
+    expect(run).toContain('--config "default_permissions=\\"${CODEX_PERMISSION_PROFILE}\\""')
     expect(run).toContain('--ephemeral')
     expect(run).toContain('--ignore-rules')
     expect(run).toContain('--output-schema "$CODEX_SCHEMA_FILE"')
@@ -526,6 +750,7 @@ printf '%s\n' \\
         CODEX_HOME: join(root, 'codex-home'),
         CODEX_INSTRUCTIONS_FILE: instructions,
         CODEX_MODEL: 'codex-auto-review',
+        CODEX_PERMISSION_PROFILE: ':read-only',
         CODEX_PROMPT_FILE: prompt,
         CODEX_SCHEMA_FILE: schema,
         GITHUB_OUTPUT: output,
@@ -540,6 +765,7 @@ printf '%s\n' \\
     )
     const args = JSON.parse(readFileSync(argsFile, 'utf8')) as string[]
     expect(args).toContain('--json')
+    expect(args).toContain('--strict-config')
     expect(args).toContain('default_permissions=":read-only"')
     expect(readFileSync(stdinFile, 'utf8')).toBe('Review this pull request.\n')
     expect(readFileSync(output, 'utf8')).toContain('"verdict":"mergeable"')
@@ -700,6 +926,10 @@ printf '%s\n' \\
     expect(mainWorkflow.concurrency).toEqual({
       group:
         "ai-pr-review-${{ github.event.inputs.pull_request_number || github.event.pull_request.number }}-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.reviewer || 'both' }}",
+      'cancel-in-progress': true
+    })
+    expect(codexWorkflow.jobs.review.concurrency).toEqual({
+      group: "${{ format('codex-{0}-review-{1}', inputs.scope, inputs.pull_request_number) }}",
       'cancel-in-progress': true
     })
     expect(mainWorkflow.jobs.codex_correctness_review.needs).toEqual([
