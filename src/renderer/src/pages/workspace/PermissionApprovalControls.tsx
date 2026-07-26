@@ -10,6 +10,12 @@ import { dialogTitleClassName } from '@/components/ui/dialog-chrome'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { resolveNotebookLanguage, resolveNotebookRunToolName } from './notebook-tool-names'
+import {
+  describePermissionRequest,
+  isArtifactWriteRequest,
+  isMcpPermissionRequest,
+  type NotebookRuntime
+} from './permission-request-presentation'
 import { WorkspaceToolCodeBlock } from './WorkspaceToolCodeBlock'
 
 type PermissionApprovalControlsProps = {
@@ -130,7 +136,7 @@ type PermissionCode = { code: string; language?: string }
 // providerToolName (notebook_execute); only the namespaced field carries the server segment the
 // identity check needs, so we return whichever field matches (or undefined for non-notebook tools).
 const resolveNotebookToolName = (request: AcpPermissionRequest): string | undefined =>
-  resolveNotebookRunToolName(request.providerToolName, request.title)
+  isMcpPermissionRequest(request) ? resolveNotebookRunToolName(request.mcpIdentity) : undefined
 
 // Derives displayable code and language from the tool's raw input.
 const extractPermissionCode = (request: AcpPermissionRequest): PermissionCode | undefined => {
@@ -162,11 +168,10 @@ const extractPermissionCode = (request: AcpPermissionRequest): PermissionCode | 
     return undefined
   }
 
-  // Shell execute (Bash tool): prefer the structured command field (verbatim), but fall back to
-  // the request title so the full command stays inspectable even when rawInput is absent (the
-  // command may live only in title). Only trust title-as-bash for providerToolName === 'Bash';
-  // other MCP execute tools (arbitrary servers, diverse semantics) must not assume shell syntax.
-  if (isExecute) {
+  // Shell execute: prefer the structured command field (verbatim), then use the title only for
+  // the known Bash provider. Other execute titles can be generic labels, not concrete commands.
+  // MCP execute inputs are arbitrary tool arguments and must not be reinterpreted as local shell.
+  if (isExecute && !isMcpPermissionRequest(request)) {
     const cmd = rawInput.command
     if (typeof cmd === 'string' && cmd.trim()) return { code: cmd, language: 'bash' }
     if (request.providerToolName === 'Bash' && request.title?.trim()) {
@@ -186,10 +191,12 @@ const extractPermissionCode = (request: AcpPermissionRequest): PermissionCode | 
 }
 
 // A friendly action title for the code card header, matching the transcript's activity phrasing.
-const getPermissionActionTitle = (request: AcpPermissionRequest): string => {
+const getPermissionActionTitle = (request: AcpPermissionRequest, fallback: string): string => {
   if (resolveNotebookToolName(request)) return 'Run notebook cell'
+  if (isArtifactWriteRequest(request)) return 'Artifact file input'
+  if (isMcpPermissionRequest(request)) return 'External service input'
   if (request.toolKind === 'execute' || request.providerToolName === 'Bash') return 'Run command'
-  return request.providerToolName ?? request.title
+  return fallback
 }
 
 // Activity-style collapsible card that shows the code about to run, defaulting to expanded.
@@ -233,37 +240,13 @@ const PermissionCodeSection = ({
   )
 }
 
-const getPermissionRiskLabel = (request: AcpPermissionRequest): string => {
-  // Route via the shared identity check (both fields) so the badge agrees with the code-card
-  // header for real requests — the server segment may live only in the namespaced title while
-  // providerToolName carries the bare leaf name.
-  if (resolveNotebookToolName(request)) return 'Notebook execution'
-  if (request.isMcp) return 'MCP tool access'
-
-  switch (request.toolKind) {
-    case 'execute':
-      return 'Command execution'
-    case 'edit':
-    case 'delete':
-    case 'move':
-      return 'File change'
-    case 'fetch':
-      return 'Network access'
-    case 'read':
-    case 'search':
-      return 'File access'
-    default:
-      return 'Tool access'
-  }
-}
-
 // Per-session env-name lookups, cached so every prompt in the same chat reuses a single read.
 // Keyed by sessionId + kernel kind so a python badge and an R badge never share a stale answer.
 const notebookEnvCache = new Map<string, Promise<string | undefined>>()
 
-// Resolves the environment a session's notebook kernels run in, best-known first: the live kernel
-// matching the requested kind, then any live env, then the most recent run's recorded env, and
-// finally the enabled runtime from Settings → Runtimes (what a kernel started now would bind).
+// Resolves the environment a session's notebook kernel of the requested kind runs in, best-known
+// first: the matching live kernel, then the latest matching run, and finally the enabled runtime
+// from Settings → Runtimes (what a kernel of that kind started now would bind).
 // Sessions with no notebook history and no bridge (tests) resolve to undefined — no badge.
 const lookupNotebookEnvironment = async (
   request: NotebookSessionRequest,
@@ -273,12 +256,13 @@ const lookupNotebookEnvironment = async (
   if (notebookApi) {
     try {
       const state = await notebookApi.state(request)
-      const live =
-        state.environments.find((e) => e.kind === kernelKind && e.environment)?.environment ??
-        state.environments.find((e) => e.environment)?.environment
+      const live = state.environments.find(
+        (environment) => environment.kind === kernelKind && environment.environment
+      )?.environment
       if (live) return live
       for (let i = state.runs.length - 1; i >= 0; i -= 1) {
-        const env = state.runs[i].environment
+        const run = state.runs[i]
+        const env = run.kernelKind === kernelKind ? run.environment : undefined
         if (env) return env
       }
     } catch {
@@ -306,75 +290,102 @@ const useNotebookEnvironment = (
   lookup: NotebookSessionRequest | undefined,
   kernelKind: 'python' | 'r' | undefined
 ): string | undefined => {
-  const [envName, setEnvName] = useState<string | undefined>()
+  const [environment, setEnvironment] = useState<{ key: string; name: string | undefined }>()
   const lookupKey = lookup ? `${lookup.projectName ?? ''}:${lookup.sessionId}` : undefined
+  const key = lookupKey && kernelKind ? `${lookupKey}:${kernelKind}` : undefined
   useEffect(() => {
-    if (!lookup || !lookupKey || !kernelKind) return
+    if (!lookup || !key || !kernelKind) return
     let cancelled = false
-    const key = `${lookupKey}:${kernelKind}`
     let cached = notebookEnvCache.get(key)
     if (!cached) {
       cached = lookupNotebookEnvironment(lookup, kernelKind)
       notebookEnvCache.set(key, cached)
     }
     void cached.then((name) => {
-      if (!cancelled) setEnvName(name)
+      if (!cancelled) setEnvironment({ key, name })
     })
     return () => {
       cancelled = true
     }
     // lookup is a fresh object per render; the primitive key is the real dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookupKey, kernelKind])
-  return kernelKind ? envName : undefined
+  }, [key, kernelKind])
+  if (!environment || environment.key !== key) return undefined
+  return environment.name
 }
 
-// Header cluster for notebook prompts: kernel-language badge, the session's bound environment
-// (once the runtime has spawned or recorded one), and an info tooltip explaining where the code
-// runs and what an approval covers, phrased for the current kernel language.
-const NotebookHeaderBadges = ({
+const PermissionImpactTip = ({
+  description,
+  detail
+}: {
+  description: string
+  detail?: string
+}): React.JSX.Element => (
+  <TooltipProvider delayDuration={200}>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="Permission impact information"
+          data-testid="permission-impact-info"
+          className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Info className="size-3.5" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-none whitespace-nowrap">
+        <div className="space-y-1">
+          {detail ? <p>{detail}</p> : null}
+          <p className={detail ? 'text-muted-foreground' : undefined}>{description}</p>
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  </TooltipProvider>
+)
+
+// Header cluster for permission prompts: a user-facing category, an available notebook environment,
+// and the authorization-scope information affordance.
+const PermissionHeaderBadges = ({
   lookup,
-  language,
-  rawIdentity
+  runtime,
+  categoryLabel,
+  scopeDescription
 }: {
   lookup: NotebookSessionRequest | undefined
-  language: string
-  rawIdentity: string | undefined
+  runtime?: NotebookRuntime
+  categoryLabel: string
+  scopeDescription: string
 }): React.JSX.Element => {
-  const kernelKind = language === 'python' ? 'python' : language === 'r' ? 'r' : undefined
+  const kernelKind = runtime === 'python' ? 'python' : runtime === 'r' ? 'r' : undefined
   const envName = useNotebookEnvironment(lookup, kernelKind)
-  // Display form for the tooltip sentence: javascript/r read better capitalized.
-  const languageLabel = language === 'javascript' ? 'JavaScript' : language === 'r' ? 'R' : language
 
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1.5">
-      <Badge variant="secondary" data-testid="permission-language-badge">
-        {language}
+      <Badge variant="secondary" data-testid="permission-category-badge">
+        {categoryLabel}
       </Badge>
       {envName ? (
         <Badge variant="secondary" data-testid="permission-env-badge">
           {envName}
         </Badge>
       ) : null}
-      {rawIdentity ? (
-        <TooltipProvider delayDuration={200}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label="Tool details"
-                data-testid="permission-tool-info"
-                className="flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <Info className="size-3.5" aria-hidden="true" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-72 whitespace-normal">
-              {`Runs in this session's notebook environment${envName ? ` (${envName})` : ''}. Grants cover any ${languageLabel} call until this chat ends.`}
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      ) : null}
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Permission information"
+              data-testid="permission-tool-info"
+              className="flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Info className="size-3.5" aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-none whitespace-nowrap">
+            {scopeDescription}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </span>
   )
 }
@@ -521,9 +532,23 @@ const PermissionApprovalControls = ({
   // Guard against a stale scope no longer offered by the current request.
   const effectiveScope = availableScopes.has(scope) ? scope : defaultScope
   const permCode = extractPermissionCode(request)
+  const presentation = describePermissionRequest(request)
   const allowOptionId = getAllowOptionId(request.options, effectiveScope)
   const denyOptionId = getDenyOptionId(request.options)
   const scopeLabel = effectiveScope === 'once' ? 'once' : 'for this conversation'
+  const notebookRuntimeLabel: Partial<Record<NotebookRuntime, string>> = {
+    python: 'Python',
+    r: 'R',
+    js: 'JavaScript REPL',
+    bash: 'notebook shell'
+  }
+  const scopeDescription = !allowOptionId
+    ? 'No approval scope is available for this request.'
+    : effectiveScope === 'once'
+      ? 'Approval applies to this call only.'
+      : presentation.notebookRuntime
+        ? `Approval covers later ${notebookRuntimeLabel[presentation.notebookRuntime]} calls in this conversation.`
+        : 'Approval applies until this conversation ends.'
   const hasScopePicker = availableScopes.size > 1
   const isSubmitting = submittingRequestId === request.requestId
   const respondOnce = (optionId?: string): void => {
@@ -556,69 +581,44 @@ const PermissionApprovalControls = ({
     denyOptionId
   )
 
-  // Header asks a friendly action question; raw tool identifiers (namespaced MCP names like
-  // mcp__open-science-notebook__notebook_execute) are illegible in a sentence, so notebook and
-  // shell runs get plain-language phrasing. The provider name only heads the prompt for other
-  // tools, where it is typically a short readable name (Write, Edit). MCP requests are never
-  // collapsed into the shell wording: the broker preserves MCP identity even for kind:'execute'
-  // tools (e.g. open-science-artifacts_write_artifact_file), and the provider/title is the only
-  // place that identity stays visible when there is no code preview.
-  const notebookToolName = resolveNotebookToolName(request)
-  const isNotebook = notebookToolName !== undefined
-  const isShell =
-    request.isMcp !== true &&
-    (request.toolKind === 'execute' || request.providerToolName === 'Bash')
-  const headerTitle = isNotebook
-    ? 'Run notebook code?'
-    : isShell
-      ? 'Run command?'
-      : `Run ${request.providerToolName ?? request.title}?`
+  const isMcp = isMcpPermissionRequest(request)
+  const isShell = !isMcp && (request.toolKind === 'execute' || request.providerToolName === 'Bash')
 
-  // The title often carries the actual target (e.g. provider "Write" with title
-  // "Write report.md"). Surface it as a detail line when it adds information the header
-  // doesn't, and isn't already shown verbatim by the code card. Skipped for notebook
-  // prompts: there the title is just the tool identifier. For shell prompts the header is
-  // generic ("Run command?"), so when no code preview renders the command — e.g. a non-Bash
-  // execute request whose command lives only in the title — the title must stay visible,
-  // otherwise the user approves an opaque execution request.
+  // Most identity details stay in the impact tip. When no path or preview exists, retain the only
+  // actionable target inline so the approval is reviewable without relying on hover.
   const headerName = request.providerToolName ?? request.title
   const titleDetail = ((): string | undefined => {
-    if (isNotebook || !request.title || request.title === permCode?.code) return undefined
+    if (presentation.hideToolIdentity) return undefined
+    if (isMcp) {
+      return presentation.actionDetail
+    }
+    if (!request.title || request.title === permCode?.code) return undefined
+    if (!request.providerToolName) return request.title
     if (isShell) {
       return !permCode && request.title !== request.providerToolName ? request.title : undefined
     }
-    return request.title !== headerName ? request.title : undefined
+    return request.title !== headerName ? request.title : request.providerToolName
   })()
-
-  // Kernel language for the notebook header badge: the code preview's language when there is one,
-  // otherwise resolved from the tool identity alone (repl/bash suffixes, python default), so the
-  // badge always agrees with what the code block would highlight.
-  const permLanguage = notebookToolName
-    ? (permCode?.language ?? resolveNotebookLanguage(notebookToolName, undefined, undefined))
-    : undefined
+  const showInlineDetail =
+    !isMcp && Boolean(titleDetail) && !permCode && !request.toolLocations?.length
 
   return (
-    <div className="mb-2 flex w-full max-w-full flex-col gap-4 rounded-xl border border-border bg-card p-5 text-xs leading-5 text-card-foreground shadow-dialog outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200">
-      {/* Header: action question + risk label (notebook prompts get language/env badges + tooltip) */}
+    <div className="mb-2 flex w-full max-w-full flex-col gap-3 rounded-xl border border-border bg-card p-5 text-xs leading-5 text-card-foreground shadow-dialog outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200">
+      {/* Header: plain-language action plus its classification and notebook context. */}
       <div className="flex min-w-0 items-center gap-2">
-        <span className={cn(dialogTitleClassName, 'min-w-0 truncate')}>{headerTitle}</span>
-        {notebookToolName && permLanguage ? (
-          <NotebookHeaderBadges
-            lookup={notebookLookup}
-            language={permLanguage}
-            rawIdentity={request.providerToolName ?? request.title}
-          />
-        ) : (
-          <Badge variant="secondary" className="ml-auto">
-            {getPermissionRiskLabel(request)}
-          </Badge>
-        )}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={cn(dialogTitleClassName, 'min-w-0 truncate')}>
+            {presentation.actionTitle}
+          </span>
+          <PermissionImpactTip description={presentation.description} detail={titleDetail} />
+        </div>
+        <PermissionHeaderBadges
+          lookup={notebookLookup}
+          runtime={presentation.notebookRuntime}
+          categoryLabel={presentation.categoryLabel}
+          scopeDescription={scopeDescription}
+        />
       </div>
-
-      {/* Full request title (the target being authorized) when the header alone doesn't show it. */}
-      {titleDetail ? (
-        <div className="break-all text-xs text-muted-foreground">{titleDetail}</div>
-      ) : null}
 
       {/* Affected file targets — the canonical location field, shown so read/edit/delete
           prompts always reveal the path being authorized. Wraps to keep full values readable. */}
@@ -630,12 +630,19 @@ const PermissionApprovalControls = ({
         </div>
       ) : null}
 
+      {showInlineDetail ? (
+        <p className="break-all text-xs text-muted-foreground">{titleDetail}</p>
+      ) : null}
+
       {/* Activity-style card showing the code that will run.
           Keyed by requestId so the collapsed/expanded state never carries over between prompts. */}
       {permCode && (
         <PermissionCodeSection
           key={requestId}
-          title={getPermissionActionTitle(request)}
+          title={getPermissionActionTitle(
+            request,
+            presentation.actionDetail ?? presentation.actionTitle
+          )}
           code={permCode.code}
           language={permCode.language}
         />

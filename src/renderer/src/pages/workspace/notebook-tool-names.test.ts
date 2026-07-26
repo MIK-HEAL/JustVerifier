@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { isNotebookExecuteToolName, matchNotebookRunTool } from './notebook-tool-names'
+import {
+  isNotebookExecuteToolName,
+  matchNotebookControlTool,
+  matchNotebookRunTool
+} from './notebook-tool-names'
 
 describe('isNotebookExecuteToolName', () => {
   it('matches the notebook server run tools in Claude Code mcp__ form', () => {
@@ -13,6 +17,7 @@ describe('isNotebookExecuteToolName', () => {
     expect(isNotebookExecuteToolName('open-science-notebook.notebook_execute')).toBe(true)
     // The exact broker-produced namespaced title.
     expect(isNotebookExecuteToolName('mcp.open-science-notebook.notebook_execute')).toBe(true)
+    expect(isNotebookExecuteToolName('open-science-notebook/notebook_execute')).toBe(true)
   })
 
   it('does not match the bare leaf name alone (no server segment to verify)', () => {
@@ -62,6 +67,16 @@ describe('isNotebookExecuteToolName', () => {
 
   it('rejects notebook server tools that are not kernel-run tools', () => {
     expect(isNotebookExecuteToolName('mcp__open-science-notebook__notebook_state')).toBe(false)
+  })
+
+  it('matches notebook controls with the same exact server boundary', () => {
+    expect(matchNotebookControlTool('mcp__open-science-notebook__notebook_restart')).toBe(
+      'notebook_restart'
+    )
+    expect(matchNotebookControlTool('open_science_notebook_notebook_shutdown')).toBe(
+      'notebook_shutdown'
+    )
+    expect(matchNotebookControlTool('mcp__acme-db__notebook_restart')).toBeUndefined()
   })
 
   it('rejects empty or missing names', () => {
