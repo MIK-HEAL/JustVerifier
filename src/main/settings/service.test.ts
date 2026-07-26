@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join, normalize } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execPath } from 'node:process'
@@ -127,6 +127,7 @@ const createService = (
     ) => Promise<void>
     userClaudeDir?: string
     userCodexDir?: string
+    userAgentsDir?: string
   } = {}
 ): InstanceType<typeof SettingsService> =>
   new SettingsService({
@@ -136,6 +137,7 @@ const createService = (
     // path is now used by claude-isolated skill-scanning; claude-default is gone.
     userClaudeDir: options.userClaudeDir ?? join(storageRoot, 'no-user-claude'),
     userCodexDir: options.userCodexDir ?? join(storageRoot, 'no-user-codex'),
+    userAgentsDir: options.userAgentsDir ?? join(storageRoot, 'no-user-agents'),
     executeClaudeProbe: options.executeClaudeProbe,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     installManagedClaudeImpl: options.installManagedClaudeImpl as any,
@@ -3963,10 +3965,8 @@ describe('SettingsService: app icon variant', () => {
 })
 
 describe('SettingsService: listAgentHomeSkills framework routing', () => {
-  // The agent-home skill import is framework-agnostic: claude-code scans `~/.claude/skills/`,
-  // codex scans `~/.codex/skills/`, and opencode (which has no global skills convention) returns
-  // an empty list. The active framework is read from settings on every call so switching the
-  // agent framework takes effect without restarting the service.
+  // The shared ~/.agents/skills directory is always scanned. The active framework contributes one
+  // additional source: ~/.claude/skills for Claude Code or ~/.codex/skills for Codex.
 
   // Seeds a fake skill at <agentHome>/skills/<slug>/SKILL.md so the scanner picks it up.
   const seedSkill = async (agentHome: string, slug: string): Promise<void> => {
@@ -3978,60 +3978,92 @@ describe('SettingsService: listAgentHomeSkills framework routing', () => {
     )
   }
 
-  it('scans the user Claude home when the active framework is claude-code', async () => {
+  it('scans shared and Claude homes when the active framework is claude-code', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-'))
     const userCodexDir = await mkdtemp(join(tmpdir(), 'os-list-agent-codex-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-'))
     await seedSkill(userClaudeDir, 'alpha')
-    // A Codex skill in the Codex home must not be picked up while the active framework is Claude.
-    await seedSkill(userCodexDir, 'should-not-appear')
-    const service = createService(undefined, { userClaudeDir, userCodexDir })
+    await seedSkill(userCodexDir, 'codex-only')
+    await seedSkill(userAgentsDir, 'shared')
+    const service = createService(undefined, { userClaudeDir, userCodexDir, userAgentsDir })
     await repository.setAgentFramework('claude-code')
 
     const items = await service.listAgentHomeSkills()
 
-    expect(items.map((item) => item.slug)).toEqual(['alpha'])
-    expect(items[0].path).toBe(join(userClaudeDir, 'skills', 'alpha'))
+    expect(items.map(({ source, slug }) => ({ source, slug }))).toEqual([
+      { source: 'agents', slug: 'shared' },
+      { source: 'claude', slug: 'alpha' }
+    ])
+    expect(items.every((item) => !('path' in item))).toBe(true)
   })
 
-  it('scans the user Codex home when the active framework is codex', async () => {
+  it('keeps framework-specific results when the shared source cannot be scanned', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-readable-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-unreadable-'))
+    await seedSkill(userClaudeDir, 'alpha')
+    await writeFile(join(userAgentsDir, 'skills'), 'not a directory')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    const items = await service.listAgentHomeSkills()
+
+    expect(items.map(({ source, slug }) => ({ source, slug }))).toEqual([
+      { source: 'claude', slug: 'alpha' }
+    ])
+  })
+
+  it('rejects when a missing shared source would mask an active-source failure', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-unreadable-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-missing-'))
+    await writeFile(join(userClaudeDir, 'skills'), 'not a directory')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    await expect(service.listAgentHomeSkills()).rejects.toMatchObject({ code: 'ENOTDIR' })
+  })
+
+  it('rejects the scan when every configured source fails', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-unreadable-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-unreadable-'))
+    await writeFile(join(userClaudeDir, 'skills'), 'not a directory')
+    await writeFile(join(userAgentsDir, 'skills'), 'not a directory')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    await expect(service.listAgentHomeSkills()).rejects.toMatchObject({ code: 'ENOTDIR' })
+  })
+
+  it('scans shared and Codex homes when the active framework is codex', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-'))
     const userCodexDir = await mkdtemp(join(tmpdir(), 'os-list-agent-codex-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-'))
     await seedSkill(userCodexDir, 'beta')
-    // A Claude skill in the Claude home must not be picked up while the active framework is Codex.
-    await seedSkill(userClaudeDir, 'should-not-appear')
-    const service = createService(undefined, { userClaudeDir, userCodexDir })
+    await seedSkill(userClaudeDir, 'claude-only')
+    await seedSkill(userAgentsDir, 'shared')
+    const service = createService(undefined, { userClaudeDir, userCodexDir, userAgentsDir })
     await repository.setAgentFramework('codex')
 
     const items = await service.listAgentHomeSkills()
 
-    expect(items.map((item) => item.slug)).toEqual(['beta'])
-    expect(items[0].path).toBe(join(userCodexDir, 'skills', 'beta'))
+    expect(items.map(({ source, slug }) => ({ source, slug }))).toEqual([
+      { source: 'agents', slug: 'shared' },
+      { source: 'codex', slug: 'beta' }
+    ])
   })
 
-  it('returns an empty list when the active framework is opencode (no global home)', async () => {
+  it('scans only the shared home for other frameworks', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-'))
     const userCodexDir = await mkdtemp(join(tmpdir(), 'os-list-agent-codex-'))
-    // Even with skills present, opencode's lack of a global skills convention must hide the source.
-    await seedSkill(userClaudeDir, 'hidden-1')
-    await seedSkill(userCodexDir, 'hidden-2')
-    const service = createService(undefined, { userClaudeDir, userCodexDir })
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-'))
+    await seedSkill(userClaudeDir, 'hidden-claude')
+    await seedSkill(userCodexDir, 'hidden-codex')
+    await seedSkill(userAgentsDir, 'visible-shared')
+    const service = createService(undefined, { userClaudeDir, userCodexDir, userAgentsDir })
     await repository.setAgentFramework('opencode')
 
-    expect(await service.listAgentHomeSkills()).toEqual([])
-  })
-
-  it('re-reads the active framework on every call (no cached home dir)', async () => {
-    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-'))
-    const userCodexDir = await mkdtemp(join(tmpdir(), 'os-list-agent-codex-'))
-    await seedSkill(userClaudeDir, 'claude-only')
-    await seedSkill(userCodexDir, 'codex-only')
-    const service = createService(undefined, { userClaudeDir, userCodexDir })
-
-    await repository.setAgentFramework('claude-code')
-    expect((await service.listAgentHomeSkills()).map((i) => i.slug)).toEqual(['claude-only'])
-
-    await repository.setAgentFramework('codex')
-    expect((await service.listAgentHomeSkills()).map((i) => i.slug)).toEqual(['codex-only'])
+    expect(
+      (await service.listAgentHomeSkills()).map(({ source, slug }) => ({ source, slug }))
+    ).toEqual([{ source: 'agents', slug: 'visible-shared' }])
   })
 })
 
@@ -4128,10 +4160,9 @@ describe('SettingsService: logoutIsolatedClaude error propagation', () => {
   })
 })
 
-describe('SettingsService: importAgentHomeSkill path containment', () => {
-  // P1 / Medium from the Codex + Claude reviews: path authority lives in main. The renderer
-  // supplies a slug; the service resolves it against the active agent's skills dir and refuses
-  // any slug that escapes the configured home directory.
+describe('SettingsService: importAgentHomeSkills', () => {
+  // Path authority lives in main. The renderer supplies a source id plus slug; the service resolves
+  // both against the currently available global sources and returns one result per selected skill.
 
   const seedSkill = async (agentHome: string, slug: string): Promise<string> => {
     const skillDir = join(agentHome, 'skills', slug)
@@ -4143,41 +4174,231 @@ describe('SettingsService: importAgentHomeSkill path containment', () => {
     return skillDir
   }
 
-  it('imports the skill that lives under the active agent home', async () => {
+  it('batch-imports selected shared and framework-specific skills', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-agent-ok-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-shared-'))
     await seedSkill(userClaudeDir, 'alpha')
-    const service = createService(undefined, { userClaudeDir })
+    await seedSkill(userAgentsDir, 'shared')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
     await repository.setAgentFramework('claude-code')
 
-    const result = await service.importAgentHomeSkill({ slug: 'alpha' })
+    const result = await service.importAgentHomeSkills({
+      skills: [
+        { source: 'agents', slug: 'shared' },
+        { source: 'claude', slug: 'alpha' }
+      ]
+    })
 
-    expect(result.status).toBe('imported')
-    expect(result.id).toBe('imported-alpha')
+    expect(result.results).toEqual([
+      { source: 'agents', slug: 'shared', status: 'imported', id: 'imported-shared' },
+      { source: 'claude', slug: 'alpha', status: 'imported', id: 'imported-alpha' }
+    ])
+    expect(result.skills.map((skill) => skill.id)).toEqual(
+      expect.arrayContaining(['imported-shared', 'imported-alpha'])
+    )
   })
 
-  it('rejects slugs that fail the SAFE_SLUG check before reaching the path resolver', async () => {
+  it('tracks imported state independently for same-slug skills from different sources', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-agent-duplicate-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-shared-'))
+    await seedSkill(userClaudeDir, 'duplicate')
+    await seedSkill(userAgentsDir, 'duplicate')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    const first = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'duplicate' }]
+    })
+
+    expect(first.results[0]).toMatchObject({
+      source: 'agents',
+      slug: 'duplicate',
+      status: 'imported',
+      id: 'imported-duplicate'
+    })
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'agents', slug: 'duplicate', alreadyImported: true }),
+        expect.objectContaining({ source: 'claude', slug: 'duplicate', alreadyImported: false })
+      ])
+    )
+
+    const second = await service.importAgentHomeSkills({
+      skills: [{ source: 'claude', slug: 'duplicate' }]
+    })
+
+    expect(second.results[0]).toMatchObject({
+      source: 'claude',
+      slug: 'duplicate',
+      status: 'imported',
+      id: 'imported-duplicate-2'
+    })
+  })
+
+  it('recognizes an installed skill imported before source metadata was recorded', async () => {
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-legacy-'))
+    await seedSkill(userAgentsDir, 'legacy')
+    const legacyDir = join(storageRoot, 'skills', 'imported', 'legacy')
+    await mkdir(legacyDir, { recursive: true })
+    await writeFile(
+      join(legacyDir, 'SKILL.md'),
+      '---\nname: legacy\ndescription: Test\n---\nBody.\n'
+    )
+    const service = createService(undefined, { userAgentsDir })
+
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'agents', slug: 'legacy', alreadyImported: true })
+      ])
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'legacy' }]
+    })
+    expect(result.results[0]).toEqual({
+      source: 'agents',
+      slug: 'legacy',
+      status: 'unchanged',
+      id: 'imported-legacy'
+    })
+  })
+
+  it('keeps a different same-slug GitHub import separate from an installed skill', async () => {
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-existing-'))
+    await seedSkill(userAgentsDir, 'existing')
+    const importedDir = join(storageRoot, 'skills', 'imported', 'existing')
+    await mkdir(importedDir, { recursive: true })
+    await writeFile(
+      join(importedDir, 'SKILL.md'),
+      '---\nname: existing\ndescription: GitHub import\n---\nBody.\n'
+    )
+    await writeFile(
+      join(importedDir, '.source.json'),
+      JSON.stringify({
+        url: 'https://github.com/example/skills/tree/main/existing',
+        signature: 'sig'
+      })
+    )
+    const service = createService(undefined, { userAgentsDir })
+
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'agents', slug: 'existing', alreadyImported: false })
+      ])
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'existing' }]
+    })
+    expect(result.results[0]).toMatchObject({
+      status: 'imported',
+      id: 'imported-existing-2'
+    })
+    expect(result.skills.map((skill) => skill.id)).toEqual(
+      expect.arrayContaining(['imported-existing', 'imported-existing-2'])
+    )
+  })
+
+  it('recognizes an identical same-slug GitHub import by content', async () => {
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-identical-'))
+    await seedSkill(userAgentsDir, 'identical')
+    const importedDir = join(storageRoot, 'skills', 'imported', 'identical')
+    await mkdir(importedDir, { recursive: true })
+    await writeFile(
+      join(importedDir, 'SKILL.md'),
+      '---\nname: identical\ndescription: Test\n---\nBody.\n'
+    )
+    await writeFile(
+      join(importedDir, '.source.json'),
+      JSON.stringify({
+        url: 'https://github.com/example/skills/tree/main/identical',
+        signature: 'github-signature'
+      })
+    )
+    const service = createService(undefined, { userAgentsDir })
+
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'agents', slug: 'identical', alreadyImported: true })
+      ])
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'identical' }]
+    })
+    expect(result.results[0]).toMatchObject({
+      status: 'unchanged',
+      id: 'imported-identical'
+    })
+  })
+
+  it('marks every identical same-slug source imported when legacy content matches', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-agent-legacy-claude-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-legacy-shared-'))
+    await seedSkill(userClaudeDir, 'duplicate')
+    await seedSkill(userAgentsDir, 'duplicate')
+    const legacyDir = join(storageRoot, 'skills', 'imported', 'duplicate')
+    await mkdir(legacyDir, { recursive: true })
+    await writeFile(
+      join(legacyDir, 'SKILL.md'),
+      '---\nname: duplicate\ndescription: Test\n---\nBody.\n'
+    )
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: 'agents', slug: 'duplicate', alreadyImported: true }),
+        expect.objectContaining({ source: 'claude', slug: 'duplicate', alreadyImported: true })
+      ])
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'duplicate' }]
+    })
+    expect(result.results[0]).toMatchObject({
+      status: 'unchanged',
+      id: 'imported-duplicate'
+    })
+  })
+
+  it('reports unsafe slugs and unavailable sources without aborting other selected skills', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-agent-escape-'))
-    const service = createService(undefined, { userClaudeDir })
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-shared-'))
+    await seedSkill(userAgentsDir, 'safe')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
     await repository.setAgentFramework('claude-code')
 
-    // Path-traversal payloads are caught by the SAFE_SLUG regex (no '/', '.', etc.), so the
-    // containment check downstream is defense-in-depth and is not exercised by valid slugs.
-    await expect(service.importAgentHomeSkill({ slug: '../../etc' })).rejects.toThrow(/unsafe slug/)
-    await expect(service.importAgentHomeSkill({ slug: '../sibling' })).rejects.toThrow(
-      /unsafe slug/
-    )
-    await expect(service.importAgentHomeSkill({ slug: 'has spaces' })).rejects.toThrow(
-      /unsafe slug/
-    )
+    const result = await service.importAgentHomeSkills({
+      skills: [
+        { source: 'agents', slug: 'safe' },
+        { source: 'claude', slug: '../../etc' },
+        { source: 'codex', slug: 'not-active' }
+      ]
+    })
+
+    expect(result.results[0]).toMatchObject({ status: 'imported', id: 'imported-safe' })
+    expect(result.results[1]).toMatchObject({ error: expect.stringMatching(/unsafe slug/) })
+    expect(result.results[2]).toMatchObject({ error: expect.stringMatching(/not available/) })
   })
 
-  it('rejects when the active framework has no global skills directory', async () => {
-    const service = createService()
-    await repository.setAgentFramework('opencode')
+  it('reports malformed batch entries without aborting valid selected skills', async () => {
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-malformed-'))
+    await seedSkill(userAgentsDir, 'safe')
+    const service = createService(undefined, { userAgentsDir })
 
-    await expect(service.importAgentHomeSkill({ slug: 'alpha' })).rejects.toThrow(
-      /no global skills directory/
-    )
+    const result = await service.importAgentHomeSkills({
+      skills: [null, { source: 'agents', slug: 'safe' }, undefined] as never
+    })
+
+    expect(result.results).toHaveLength(3)
+    expect(result.results[0]).toMatchObject({
+      error: expect.stringMatching(/valid source and slug/)
+    })
+    expect(result.results[1]).toMatchObject({ status: 'imported', id: 'imported-safe' })
+    expect(result.results[2]).toMatchObject({
+      error: expect.stringMatching(/valid source and slug/)
+    })
   })
 })
 
@@ -4564,7 +4785,7 @@ describe('SettingsService: claude-isolated edit preserves expiresAt + keyRef', (
   })
 })
 
-describe('SettingsService: importAgentHomeSkill realpath containment', () => {
+describe('SettingsService: importAgentHomeSkills realpath containment', () => {
   // Round 6 of the AI review: a symlink that points outside the agent home is a containment
   // escape even when `resolve()` (lexical) is satisfied. The realpath fallback closes the gap.
   const seedSkill = async (agentHome: string, slug: string): Promise<string> => {
@@ -4577,6 +4798,10 @@ describe('SettingsService: importAgentHomeSkill realpath containment', () => {
   it('rejects a symlink inside the agent home that points outside it', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-'))
     const outside = await mkdtemp(join(tmpdir(), 'os-import-outside-'))
+    await writeFile(
+      join(outside, 'SKILL.md'),
+      '---\nname: outside\ndescription: Test\n---\nBody.\n'
+    )
     // Create a symlink at `<home>/skills/payload -> <outside>` so the basename is a valid slug
     // and `resolve(home, slug)` would land at the symlink target.
     const linkPath = join(userClaudeDir, 'skills', 'payload')
@@ -4585,22 +4810,258 @@ describe('SettingsService: importAgentHomeSkill realpath containment', () => {
     const service = createService(undefined, { userClaudeDir })
     await repository.setAgentFramework('claude-code')
 
-    await expect(service.importAgentHomeSkill({ slug: 'payload' })).rejects.toThrow(
-      /outside its home/
+    expect((await service.listAgentHomeSkills()).map((skill) => skill.slug)).not.toContain(
+      'payload'
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'claude', slug: 'payload' }]
+    })
+
+    expect(result.results[0]).toMatchObject({
+      error: expect.stringMatching(/outside its source/)
+    })
+  })
+
+  it('rejects symlinks to an allowed skills root or a nested descendant', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-depth-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-shared-'))
+    const realSkill = await seedSkill(userAgentsDir, 'real-skill')
+    const nested = join(realSkill, 'references')
+    await mkdir(nested, { recursive: true })
+    await writeFile(join(nested, 'notes.md'), 'Nested content.')
+    await mkdir(join(userClaudeDir, 'skills'), { recursive: true })
+    await symlink(join(userAgentsDir, 'skills'), join(userClaudeDir, 'skills', 'root-alias'))
+    await symlink(nested, join(userClaudeDir, 'skills', 'nested-alias'))
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    const result = await service.importAgentHomeSkills({
+      skills: [
+        { source: 'claude', slug: 'root-alias' },
+        { source: 'claude', slug: 'nested-alias' }
+      ]
+    })
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ error: expect.stringMatching(/top-level skill directory/) }),
+      expect.objectContaining({ error: expect.stringMatching(/top-level skill directory/) })
+    ])
+    expect(result.skills.map((skill) => skill.id)).not.toEqual(
+      expect.arrayContaining(['imported-root-alias', 'imported-nested-alias'])
     )
   })
 
-  it('rejects a Skill-root symlink even when it stays within the agent home', async () => {
+  it('canonicalizes a framework symlink alias to the shared installed skill', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-benign-'))
-    const target = await seedSkill(userClaudeDir, 'real-skill')
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-shared-'))
+    const target = await seedSkill(userAgentsDir, 'real-skill')
     const linkDir = join(userClaudeDir, 'skills', 'linked-skill')
     await mkdir(join(userClaudeDir, 'skills'), { recursive: true })
     await symlink(target, linkDir)
-    const service = createService(undefined, { userClaudeDir })
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
     await repository.setAgentFramework('claude-code')
 
-    await expect(service.importAgentHomeSkill({ slug: 'linked-skill' })).rejects.toThrow(
-      /symbolic link/
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source: 'agents', slug: 'real-skill' })])
+    )
+    expect(await service.listAgentHomeSkills()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ source: 'claude', slug: 'linked-skill' })])
+    )
+
+    const canonical = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'real-skill' }]
+    })
+    expect(canonical.results[0]).toMatchObject({
+      status: 'imported',
+      id: 'imported-real-skill'
+    })
+
+    const alias = await service.importAgentHomeSkills({
+      skills: [{ source: 'claude', slug: 'linked-skill' }]
+    })
+
+    expect(alias.results[0]).toEqual({
+      source: 'claude',
+      slug: 'linked-skill',
+      status: 'unchanged',
+      id: 'imported-real-skill'
+    })
+  })
+
+  it('matches a legacy import recorded under a symlink alias after canonicalization', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-legacy-alias-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-legacy-shared-'))
+    const target = await seedSkill(userAgentsDir, 'real-skill')
+    await seedSkill(userAgentsDir, 'linked-skill')
+    await mkdir(join(userClaudeDir, 'skills'), { recursive: true })
+    await symlink(target, join(userClaudeDir, 'skills', 'linked-skill'))
+
+    const legacyDir = join(storageRoot, 'skills', 'imported', 'linked-skill')
+    await mkdir(legacyDir, { recursive: true })
+    await writeFile(
+      join(legacyDir, 'SKILL.md'),
+      '---\nname: real-skill\ndescription: Test\n---\nBody.\n'
+    )
+
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    const installed = await service.listAgentHomeSkills()
+    expect(installed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'agents',
+          slug: 'real-skill',
+          alreadyImported: true
+        })
+      ])
+    )
+    expect(installed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'agents',
+          slug: 'linked-skill',
+          alreadyImported: false
+        })
+      ])
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'real-skill' }]
+    })
+
+    expect(result.results[0]).toEqual({
+      source: 'agents',
+      slug: 'real-skill',
+      status: 'unchanged',
+      id: 'imported-linked-skill'
+    })
+    expect(result.skills.map((skill) => skill.id)).not.toContain('imported-real-skill')
+  })
+
+  it('updates an existing alias identity through its canonical installed-skill row', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-source-alias-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-source-shared-'))
+    const target = await seedSkill(userAgentsDir, 'real-skill')
+    await mkdir(join(userClaudeDir, 'skills'), { recursive: true })
+    await symlink(target, join(userClaudeDir, 'skills', 'linked-skill'))
+
+    const importedDir = join(storageRoot, 'skills', 'imported', 'linked-skill')
+    await mkdir(importedDir, { recursive: true })
+    await writeFile(
+      join(importedDir, 'SKILL.md'),
+      '---\nname: linked-skill\ndescription: Old alias import\n---\nOld body.\n'
+    )
+    await writeFile(
+      join(importedDir, '.source.json'),
+      JSON.stringify({
+        signature: 'stale-signature',
+        agentHome: { source: 'claude', slug: 'linked-skill' }
+      })
+    )
+
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'real-skill' }]
+    })
+
+    expect(result.results[0]).toEqual({
+      source: 'agents',
+      slug: 'real-skill',
+      status: 'updated',
+      id: 'imported-linked-skill'
+    })
+    expect(result.skills.map((skill) => skill.id)).not.toContain('imported-real-skill')
+    await expect(
+      readFile(join(importedDir, '.source.json'), 'utf8').then(JSON.parse)
+    ).resolves.toMatchObject({ agentHome: { source: 'agents', slug: 'real-skill' } })
+  })
+
+  it('recognizes unchanged alias metadata after the source moves behind a symlink', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-moved-alias-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-moved-shared-'))
+    const original = await seedSkill(userClaudeDir, 'linked-skill')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    expect(
+      (
+        await service.importAgentHomeSkills({
+          skills: [{ source: 'claude', slug: 'linked-skill' }]
+        })
+      ).results[0]
+    ).toMatchObject({ status: 'imported', id: 'imported-linked-skill' })
+
+    const canonical = join(userAgentsDir, 'skills', 'real-skill')
+    await mkdir(join(userAgentsDir, 'skills'), { recursive: true })
+    await rename(original, canonical)
+    await symlink(canonical, original)
+
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'agents',
+          slug: 'real-skill',
+          alreadyImported: true
+        })
+      ])
+    )
+
+    await repository.setAgentFramework('opencode')
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'agents',
+          slug: 'real-skill',
+          alreadyImported: true
+        })
+      ])
+    )
+  })
+
+  it('migrates alias metadata when the framework skills root becomes a shared-root symlink', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-root-alias-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-symlink-root-shared-'))
+    const original = await seedSkill(userClaudeDir, 'real-skill')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    expect(
+      (
+        await service.importAgentHomeSkills({
+          skills: [{ source: 'claude', slug: 'real-skill' }]
+        })
+      ).results[0]
+    ).toMatchObject({ status: 'imported', id: 'imported-real-skill' })
+
+    const sharedSkill = join(userAgentsDir, 'skills', 'real-skill')
+    await mkdir(join(userAgentsDir, 'skills'), { recursive: true })
+    await rename(original, sharedSkill)
+    await rm(join(userClaudeDir, 'skills'), { recursive: true })
+    await symlink(join(userAgentsDir, 'skills'), join(userClaudeDir, 'skills'))
+
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'agents',
+          slug: 'real-skill',
+          alreadyImported: true
+        })
+      ])
+    )
+
+    await repository.setAgentFramework('opencode')
+    expect(await service.listAgentHomeSkills()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: 'agents',
+          slug: 'real-skill',
+          alreadyImported: true
+        })
+      ])
     )
   })
 })
