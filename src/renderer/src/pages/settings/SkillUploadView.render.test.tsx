@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SkillUploadView } from './SkillUploadView'
 import { createInitialSettingsState, useSettingsStore } from '@/stores/settings-store'
+import { SKILL_IMPORT_LIMITS } from '../../../../shared/skill-import-limits'
 
 let container: HTMLDivElement
 let root: Root
@@ -68,6 +69,8 @@ beforeEach(() => {
           subPath: 'skills/one',
           name: 'One',
           description: 'First bundled skill',
+          metadata: { author: 'Ada' },
+          body: '# First bundle body',
           files: ['SKILL.md'],
           alreadyImported: false
         },
@@ -75,6 +78,9 @@ beforeEach(() => {
           subPath: 'skills/two',
           name: 'Two',
           description: 'Second bundled skill',
+          metadata: {},
+          body: '',
+          previewError: 'SKILL.md preview content exceeds the 4 MB cumulative limit.',
           files: ['SKILL.md'],
           alreadyImported: false
         }
@@ -149,6 +155,69 @@ describe('SkillUploadView (batch upload)', () => {
     expect(onUploaded).toHaveBeenCalled()
   })
 
+  it('opens bundle candidate content from the bounded parse result without changing selection', async () => {
+    act(() => {
+      root.render(<SkillUploadView onUploaded={vi.fn()} onWriteInstead={vi.fn()} />)
+    })
+    await dropFiles([
+      new File([new Uint8Array([1, 2, 3])], 'pack.zip', { type: 'application/zip' })
+    ])
+
+    const checkbox = document.body.querySelector<HTMLInputElement>('[aria-label="Select One"]')
+    expect(checkbox?.checked).toBe(false)
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Preview One"]')?.click()
+      await Promise.resolve()
+    })
+
+    expect(useSettingsStore.getState().previewSkillZip).toHaveBeenCalledTimes(1)
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain(
+      'First bundle body'
+    )
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Ada')
+    expect(checkbox?.checked).toBe(false)
+
+    act(() => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Close preview"]')?.click()
+    })
+    expect(checkbox?.checked).toBe(false)
+    act(() => checkbox?.click())
+    expect(checkbox?.checked).toBe(true)
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('keeps a bundle candidate importable when its preview body exceeds the cumulative cap', async () => {
+    act(() => {
+      root.render(<SkillUploadView onUploaded={vi.fn()} onWriteInstead={vi.fn()} />)
+    })
+    await dropFiles([
+      new File([new Uint8Array([1, 2, 3])], 'pack.zip', { type: 'application/zip' })
+    ])
+
+    const checkbox = document.body.querySelector<HTMLInputElement>('[aria-label="Select Two"]')
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Preview Two"]')?.click()
+      await Promise.resolve()
+    })
+
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')
+    expect(dialog?.querySelector('[role="alert"]')?.textContent).toMatch(
+      /preview content exceeds the 4 MB cumulative limit/i
+    )
+    expect(checkbox?.checked).toBe(false)
+
+    act(() => dialog?.querySelector<HTMLButtonElement>('[aria-label="Close preview"]')?.click())
+    act(() => checkbox?.click())
+    clickButton('Import selected')
+    await flush()
+
+    expect(useSettingsStore.getState().importSkillZipBatch).toHaveBeenCalledWith(
+      expect.any(String),
+      [{ subPath: 'skills/two', replaceId: undefined }]
+    )
+  })
+
   it('rejects an oversized markdown file on file.size, before reading its contents', async () => {
     act(() => {
       root.render(<SkillUploadView onUploaded={vi.fn()} onWriteInstead={vi.fn()} />)
@@ -204,9 +273,11 @@ describe('SkillUploadView (batch upload)', () => {
       root.render(<SkillUploadView onUploaded={vi.fn()} onWriteInstead={vi.fn()} />)
     })
 
-    const md = new File(['---\nname: Solo\ndescription: A solo skill\n---\n# Body'], 'solo.md', {
-      type: 'text/markdown'
-    })
+    const md = new File(
+      ['---\nname: Solo\ndescription: A solo skill\nauthor: Ada\nlicense: MIT\n---\n# Body'],
+      'solo.md',
+      { type: 'text/markdown' }
+    )
     await dropFiles([md])
 
     // A single markdown candidate appears, unchecked; the bundle preview path is not used.
@@ -223,7 +294,116 @@ describe('SkillUploadView (batch upload)', () => {
     expect(useSettingsStore.getState().createSkill).toHaveBeenCalledWith({
       name: 'Solo',
       description: 'A solo skill',
+      metadata: { author: 'Ada', license: 'MIT' },
       body: '# Body'
     })
+  })
+
+  it('preserves YAML lists and block scalars from a markdown candidate', async () => {
+    act(() => {
+      root.render(<SkillUploadView onUploaded={vi.fn()} onWriteInstead={vi.fn()} />)
+    })
+
+    const md = new File(
+      [
+        [
+          '---',
+          'name: Complex',
+          'description: >',
+          '  A folded',
+          '  description.',
+          'tags:',
+          '  - alpha',
+          '  - beta',
+          'notes: |',
+          '  line one',
+          '  line two',
+          '---',
+          '# Body'
+        ].join('\n')
+      ],
+      'complex.md',
+      { type: 'text/markdown' }
+    )
+    await dropFiles([md])
+
+    act(() =>
+      document.body.querySelector<HTMLInputElement>('[aria-label="Select Complex"]')?.click()
+    )
+    clickButton('Import selected')
+    await flush()
+
+    expect(useSettingsStore.getState().createSkill).toHaveBeenCalledWith({
+      name: 'Complex',
+      description: 'A folded description.\n',
+      metadata: { tags: 'alpha, beta', notes: 'line one\nline two\n' },
+      body: '# Body'
+    })
+  })
+
+  it('previews a bare Markdown candidate from its in-renderer body without changing selection', async () => {
+    act(() => {
+      root.render(<SkillUploadView onUploaded={vi.fn()} onWriteInstead={vi.fn()} />)
+    })
+    const md = new File(
+      ['---\nname: Solo\ndescription: A solo skill\nauthor: Ada\n---\n# Bare body'],
+      'solo.md',
+      { type: 'text/markdown' }
+    )
+    await dropFiles([md])
+
+    const checkbox = document.body.querySelector<HTMLInputElement>('[aria-label="Select Solo"]')
+    expect(checkbox?.checked).toBe(false)
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Preview Solo"]')?.click()
+      await Promise.resolve()
+    })
+
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')
+    expect(dialog?.textContent).toContain('Bare body')
+    expect(dialog?.textContent).toContain('Ada')
+    expect(dialog?.textContent).toContain('solo.md')
+    expect(checkbox?.checked).toBe(false)
+
+    act(() => dialog?.querySelector<HTMLButtonElement>('[aria-label="Close preview"]')?.click())
+    expect(checkbox?.checked).toBe(false)
+  })
+
+  it('blocks an oversized bare Markdown preview while keeping the candidate importable', async () => {
+    act(() => {
+      root.render(<SkillUploadView onUploaded={vi.fn()} onWriteInstead={vi.fn()} />)
+    })
+    const md = new File(
+      ['---\nname: Large\ndescription: Importable but not previewable\n---\n# Large body'],
+      'large.md',
+      { type: 'text/markdown' }
+    )
+    Object.defineProperty(md, 'size', {
+      value: SKILL_IMPORT_LIMITS.maxPreviewContentBytes + 1
+    })
+    await dropFiles([md])
+
+    const checkbox = document.body.querySelector<HTMLInputElement>('[aria-label="Select Large"]')
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Preview Large"]')?.click()
+      await Promise.resolve()
+    })
+
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')
+    expect(dialog?.querySelector('[role="alert"]')?.textContent).toMatch(
+      /preview exceeds the 4 MB limit/i
+    )
+    expect(dialog?.textContent).not.toContain('Large body')
+    expect(checkbox?.checked).toBe(false)
+
+    act(() => dialog?.querySelector<HTMLButtonElement>('[aria-label="Close preview"]')?.click())
+    act(() => checkbox?.click())
+    clickButton('Import selected')
+    await flush()
+
+    expect(useSettingsStore.getState().createSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Large', body: '# Large body' })
+    )
   })
 })

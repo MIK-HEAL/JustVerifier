@@ -8,6 +8,7 @@ import {
   rm,
   stat,
   symlink,
+  truncate,
   writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -336,6 +337,32 @@ describe('UserSkillRepository', () => {
     expect(await new UserSkillRepository(await makeStorage()).list()).toEqual([])
   })
 
+  it('previews one selected GitHub skill without importing it', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+    const preview = await repo.previewGitHubSkill(
+      SKILL_URL,
+      fakeFetch(
+        [
+          '---',
+          'name: Foo',
+          'description: A remote skill.',
+          'license: MIT',
+          '---',
+          '# Preview body'
+        ].join('\n')
+      )
+    )
+
+    expect(preview).toEqual({
+      name: 'Foo',
+      description: 'A remote skill.',
+      metadata: { license: 'MIT' },
+      body: '# Preview body',
+      files: ['SKILL.md']
+    })
+    expect(await repo.list()).toEqual([])
+  })
+
   it('imports a .zip bundle (SKILL.md + files) and dedups an identical re-import', async () => {
     const storage = await makeStorage()
     const repo = new UserSkillRepository(storage)
@@ -489,6 +516,8 @@ describe('UserSkillRepository', () => {
         {
           name: 'Bundled',
           description: 'A test bundle.',
+          metadata: {},
+          body: 'body',
           files: ['SKILL.md', 'scripts/run.py'],
           alreadyImported: false,
           replaceableId: undefined,
@@ -503,6 +532,69 @@ describe('UserSkillRepository', () => {
     // After importing, the same bundle previews as already imported.
     await repo.importFromZip(zip)
     expect((await repo.previewZip(zip)).previews[0].alreadyImported).toBe(true)
+  })
+
+  it('bounds cumulative preview content without making later bundle skills unimportable', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+    const largeBody = Buffer.alloc(3 * 1024 * 1024, 0x61)
+    const skillMd = (name: string): Buffer =>
+      Buffer.concat([
+        Buffer.from(`---\nname: ${name}\ndescription: Large preview\n---\n`),
+        largeBody
+      ])
+    const zip = buildZip([
+      { path: 'alpha/SKILL.md', content: skillMd('Alpha') },
+      { path: 'beta/SKILL.md', content: skillMd('Beta') }
+    ])
+
+    const { previews, skipped } = await repo.previewZip(zip)
+
+    expect(previews.map((preview) => preview.name)).toEqual(['Alpha', 'Beta'])
+    expect(previews[0]).toMatchObject({ previewError: undefined })
+    expect(previews[1]).toMatchObject({
+      body: '',
+      previewError: expect.stringMatching(/preview content.*limit/i)
+    })
+    expect(skipped).toEqual([])
+
+    await expect(
+      repo.importFromZipBatch(
+        zip,
+        previews.map((preview) => ({ subPath: preview.subPath }))
+      )
+    ).resolves.toMatchObject([
+      { subPath: 'alpha', outcome: { status: 'imported' } },
+      { subPath: 'beta', outcome: { status: 'imported' } }
+    ])
+  })
+
+  it('omits oversized frontmatter fields from a still-importable bundle preview', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+    const oversizedDescription = 'x'.repeat(SKILL_IMPORT_LIMITS.maxPreviewContentBytes)
+    const zip = buildZip([
+      {
+        path: 'large-frontmatter/SKILL.md',
+        content: Buffer.from(
+          `---\nname: Large frontmatter\ndescription: ${oversizedDescription}\nauthor: Ada\n---\n# Body`
+        )
+      }
+    ])
+
+    const { previews, skipped } = await repo.previewZip(zip)
+
+    expect(previews).toEqual([
+      expect.objectContaining({
+        name: 'Large frontmatter',
+        description: '',
+        metadata: {},
+        body: '',
+        previewError: expect.stringMatching(/preview content.*limit/i)
+      })
+    ])
+    expect(skipped).toEqual([])
+    await expect(
+      repo.importFromZipBatch(zip, [{ subPath: 'large-frontmatter' }])
+    ).resolves.toMatchObject([{ outcome: { status: 'imported' } }])
   })
 
   it('skips a preview whose SKILL.md has no name (instead of failing the bundle)', async () => {
@@ -1249,7 +1341,19 @@ describe('UserSkillRepository', () => {
   it('writes frontmatter that the reader can parse back', async () => {
     const storage = await makeStorage()
     const repo = new UserSkillRepository(storage)
-    const id = await repo.createPersonal({ name: 'Round Trip', description: 'desc', body: 'hello' })
+    const id = await repo.createPersonal({
+      name: 'Round Trip',
+      description: 'desc',
+      metadata: {
+        author: 'Ada',
+        license: 'MIT',
+        name: 'Untrusted override',
+        description: 'Untrusted override',
+        Name: 'Case-insensitive override',
+        DESCRIPTION: 'Case-insensitive override'
+      },
+      body: 'hello'
+    })
 
     const raw = await readFile(
       join(storage, 'skills', 'personal', 'round-trip', 'SKILL.md'),
@@ -1257,6 +1361,12 @@ describe('UserSkillRepository', () => {
     )
     expect(raw).toContain('name: Round Trip')
     expect(raw).toContain('description: desc')
+    expect(parseFrontmatter(raw).fields).toMatchObject({
+      name: 'Round Trip',
+      description: 'desc',
+      author: 'Ada',
+      license: 'MIT'
+    })
     expect(await repo.body(id)).toBe('hello')
   })
 })
@@ -1292,6 +1402,81 @@ describe('UserSkillRepository: agent-home import', () => {
     expect(items.every((i) => i.alreadyImported === false)).toBe(true)
     expect(items[0].path).toBe(join(home, 'skills', items[0].slug))
   })
+
+  it('previews an installed skill body, metadata, and file names without importing it', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+    const home = await mkdtemp(join(tmpdir(), 'os-preview-agent-'))
+    const source = await seedSkill(home, 'alpha')
+    await writeFile(
+      join(source, 'SKILL.md'),
+      [
+        '---',
+        'name: Alpha',
+        'description: Installed preview.',
+        'license: Apache-2.0',
+        '---',
+        '# Installed body'
+      ].join('\n')
+    )
+    await mkdir(join(source, 'references'))
+    await writeFile(join(source, 'references', 'guide.md'), 'Guide')
+
+    await expect(repo.previewAgentHomeSkill(source)).resolves.toEqual({
+      name: 'Alpha',
+      description: 'Installed preview.',
+      metadata: { license: 'Apache-2.0' },
+      body: '# Installed body',
+      files: ['SKILL.md', 'references/guide.md']
+    })
+    expect(await repo.list()).toEqual([])
+  })
+
+  it('bounds installed preview content without preventing import', async () => {
+    const storage = await makeStorage()
+    const repo = new UserSkillRepository(storage)
+    const home = await mkdtemp(join(tmpdir(), 'os-preview-agent-content-large-'))
+    const source = await seedSkill(home, 'alpha')
+    await writeFile(
+      join(source, 'SKILL.md'),
+      `---\nname: alpha\ndescription: Large preview\n---\n${'x'.repeat(SKILL_IMPORT_LIMITS.maxPreviewContentBytes)}`
+    )
+
+    const previewError = await repo.previewAgentHomeSkill(source).then(
+      () => null,
+      (error: unknown) => error
+    )
+    expect(previewError).toBeInstanceOf(Error)
+    expect((previewError as Error).message).toMatch(/preview exceeds the 4 MB limit/i)
+    await expect(
+      repo.importAgentHomeSkill(source, { source: 'agents', slug: 'alpha' })
+    ).resolves.toMatchObject({ status: 'imported', id: 'imported-alpha' })
+  })
+
+  it('rejects an installed preview whose declared file sizes exceed the skill cap', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+    const home = await mkdtemp(join(tmpdir(), 'os-preview-agent-large-'))
+    const source = await seedSkill(home, 'alpha')
+    const largeReference = join(source, 'large.bin')
+    await writeFile(largeReference, '')
+    await truncate(largeReference, SKILL_IMPORT_LIMITS.maxFileBytes + 1)
+
+    await expect(repo.previewAgentHomeSkill(source)).rejects.toThrow(/file over/)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a nested symlink while previewing an installed skill',
+    async () => {
+      const repo = new UserSkillRepository(await makeStorage())
+      const home = await mkdtemp(join(tmpdir(), 'os-preview-agent-link-'))
+      const source = await seedSkill(home, 'alpha')
+      const outside = join(home, 'outside.md')
+      await writeFile(outside, 'outside')
+      await mkdir(join(source, 'references'))
+      await symlink(outside, join(source, 'references', 'outside.md'))
+
+      await expect(repo.previewAgentHomeSkill(source)).rejects.toThrow(/symbolic link/)
+    }
+  )
 
   it('marks a skill as alreadyImported when the same source identity exists', async () => {
     // The renderer uses alreadyImported to flip the row to a "Imported" badge and hide the action

@@ -2882,7 +2882,8 @@ describe('SettingsService: skills', () => {
     let skills = await service.createSkill({
       name: 'My Skill',
       description: 'Mine.',
-      body: '# Mine'
+      body: '# Mine',
+      metadata: { author: 'Ada', license: 'MIT', category: 'research' }
     })
     // Featured (demo) + the new personal skill, both enabled by default.
     expect(skills.map((skill) => skill.id).sort()).toEqual(['demo', 'personal-my-skill'])
@@ -2891,14 +2892,19 @@ describe('SettingsService: skills', () => {
 
     const detail = await service.getSkillDetail('personal-my-skill')
     expect(detail.body).toContain('# Mine')
+    expect(detail.metadata).toEqual({ author: 'Ada', license: 'MIT', category: 'research' })
 
     skills = await service.updateSkill({
       id: 'personal-my-skill',
       name: 'My Skill',
       description: 'Edited.',
-      body: '# Edited'
+      body: '# Edited',
+      metadata: detail.metadata
     })
     expect(skills.find((skill) => skill.id === 'personal-my-skill')?.description).toBe('Edited.')
+    await expect(service.getSkillDetail('personal-my-skill')).resolves.toMatchObject({
+      metadata: { author: 'Ada', license: 'MIT', category: 'research' }
+    })
 
     skills = await service.deleteSkill({ id: 'personal-my-skill' })
     expect(skills.map((skill) => skill.id)).toEqual(['demo'])
@@ -3255,6 +3261,29 @@ describe('SettingsService: skills', () => {
     await service.scanRepoSkills({ repo: 'o/r' })
 
     expect(scanRepo).toHaveBeenCalledWith('o/r', netFetch)
+  })
+
+  it('previews a selected GitHub skill through the proxy-aware bounded repository path', async () => {
+    const previewGitHubSkill = vi.fn().mockResolvedValue({
+      name: 'Demo',
+      description: 'Remote skill',
+      metadata: { license: 'MIT' },
+      body: '# Demo',
+      files: ['SKILL.md']
+    })
+    const service = new SettingsService({
+      repository,
+      storageRoot,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      userSkills: { previewGitHubSkill } as any
+    })
+    const url = 'https://github.com/o/r/tree/main/skills/demo'
+
+    await expect(service.previewGitHubSkill({ url })).resolves.toMatchObject({
+      sourceLabel: 'github.com/o/r@main/skills/demo',
+      body: '# Demo'
+    })
+    expect(previewGitHubSkill).toHaveBeenCalledWith(url, netFetch)
   })
 })
 
@@ -4022,6 +4051,17 @@ describe('SettingsService: listAgentHomeSkills framework routing', () => {
     await expect(service.listAgentHomeSkills()).rejects.toMatchObject({ code: 'ENOTDIR' })
   })
 
+  it('surfaces a source failure when the remaining installed-skill sources are empty', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-empty-'))
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-unreadable-'))
+    await mkdir(join(userClaudeDir, 'skills'))
+    await writeFile(join(userAgentsDir, 'skills'), 'not a directory')
+    const service = createService(undefined, { userClaudeDir, userAgentsDir })
+    await repository.setAgentFramework('claude-code')
+
+    await expect(service.listAgentHomeSkills()).rejects.toMatchObject({ code: 'ENOTDIR' })
+  })
+
   it('rejects the scan when every configured source fails', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-unreadable-'))
     const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-unreadable-'))
@@ -4031,6 +4071,54 @@ describe('SettingsService: listAgentHomeSkills framework routing', () => {
     await repository.setAgentFramework('claude-code')
 
     await expect(service.listAgentHomeSkills()).rejects.toMatchObject({ code: 'ENOTDIR' })
+  })
+
+  it('previews an installed candidate through its trusted source and slug without exposing host paths', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-preview-agent-claude-'))
+    await seedSkill(userClaudeDir, 'alpha')
+    await writeFile(
+      join(userClaudeDir, 'skills', 'alpha', 'SKILL.md'),
+      '---\nname: Alpha\ndescription: Preview me\nauthor: Ada\n---\n# Safe body\n'
+    )
+    const service = createService(undefined, { userClaudeDir })
+    await repository.setAgentFramework('claude-code')
+
+    const preview = await service.previewAgentHomeSkill({ source: 'claude', slug: 'alpha' })
+
+    expect(preview).toEqual({
+      name: 'Alpha',
+      description: 'Preview me',
+      sourceLabel: '~/.claude/skills/alpha',
+      metadata: { author: 'Ada' },
+      body: '# Safe body\n',
+      files: ['SKILL.md']
+    })
+    expect(JSON.stringify(preview)).not.toContain(userClaudeDir)
+  })
+
+  it('redacts the installed skill host path from preview errors', async () => {
+    const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-preview-agent-error-'))
+    await seedSkill(userClaudeDir, 'alpha')
+    const hostSkillPath = join(userClaudeDir, 'skills', 'alpha')
+    const previewAgentHomeSkill = vi
+      .fn()
+      .mockRejectedValue(new Error(`EACCES: ${join(hostSkillPath, 'SKILL.md')}`))
+    const service = new SettingsService({
+      repository,
+      storageRoot,
+      userClaudeDir,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      userSkills: { previewAgentHomeSkill } as any
+    })
+    await repository.setAgentFramework('claude-code')
+
+    const error = await service
+      .previewAgentHomeSkill({ source: 'claude', slug: 'alpha' })
+      .catch((reason: unknown) => reason)
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).not.toContain(userClaudeDir)
+    expect((error as Error).message).toContain('~/.claude/skills/alpha/SKILL.md')
   })
 
   it('scans shared and Codex homes when the active framework is codex', async () => {
@@ -4051,7 +4139,7 @@ describe('SettingsService: listAgentHomeSkills framework routing', () => {
     ])
   })
 
-  it('scans only the shared home for other frameworks', async () => {
+  it('scans only the shared home when the active framework is OpenCode', async () => {
     const userClaudeDir = await mkdtemp(join(tmpdir(), 'os-list-agent-claude-'))
     const userCodexDir = await mkdtemp(join(tmpdir(), 'os-list-agent-codex-'))
     const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-list-agent-shared-'))
@@ -4260,6 +4348,58 @@ describe('SettingsService: importAgentHomeSkills', () => {
       slug: 'legacy',
       status: 'unchanged',
       id: 'imported-legacy'
+    })
+  })
+
+  it('keeps legacy slug dedup when the preparatory installed-source scan fails', async () => {
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-scan-failure-'))
+    await seedSkill(userAgentsDir, 'legacy')
+    const legacyDir = join(storageRoot, 'skills', 'imported', 'legacy')
+    await mkdir(legacyDir, { recursive: true })
+    await writeFile(
+      join(legacyDir, 'SKILL.md'),
+      '---\nname: legacy\ndescription: Test\n---\nBody.\n'
+    )
+    const service = createService(undefined, { userAgentsDir })
+    vi.spyOn(service, 'listAgentHomeSkills').mockRejectedValueOnce(
+      new Error('An unrelated installed source became unreadable.')
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'legacy' }]
+    })
+
+    expect(result.results[0]).toEqual({
+      source: 'agents',
+      slug: 'legacy',
+      status: 'unchanged',
+      id: 'imported-legacy'
+    })
+  })
+
+  it('does not deduplicate different same-slug content when the installed-source scan fails', async () => {
+    const userAgentsDir = await mkdtemp(join(tmpdir(), 'os-import-agent-scan-failure-'))
+    await seedSkill(userAgentsDir, 'legacy')
+    const legacyDir = join(storageRoot, 'skills', 'imported', 'legacy')
+    await mkdir(legacyDir, { recursive: true })
+    await writeFile(
+      join(legacyDir, 'SKILL.md'),
+      '---\nname: legacy\ndescription: Earlier import\n---\nDifferent body.\n'
+    )
+    const service = createService(undefined, { userAgentsDir })
+    vi.spyOn(service, 'listAgentHomeSkills').mockRejectedValueOnce(
+      new Error('An unrelated installed source became unreadable.')
+    )
+
+    const result = await service.importAgentHomeSkills({
+      skills: [{ source: 'agents', slug: 'legacy' }]
+    })
+
+    expect(result.results[0]).toEqual({
+      source: 'agents',
+      slug: 'legacy',
+      status: 'imported',
+      id: 'imported-legacy-2'
     })
   })
 
@@ -4817,6 +4957,10 @@ describe('SettingsService: importAgentHomeSkills realpath containment', () => {
     const result = await service.importAgentHomeSkills({
       skills: [{ source: 'claude', slug: 'payload' }]
     })
+
+    await expect(
+      service.previewAgentHomeSkill({ source: 'claude', slug: 'payload' })
+    ).rejects.toThrow(/outside its source/)
 
     expect(result.results[0]).toMatchObject({
       error: expect.stringMatching(/outside its source/)
