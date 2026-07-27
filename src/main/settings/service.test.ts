@@ -89,6 +89,18 @@ const validAnthropicResponse = (): Response =>
     { status: 200, headers: { 'content-type': 'application/json' } }
   )
 
+const validBridgeToolCallResponse = (): Response =>
+  new Response(
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"open_science_bridge_probe","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } }
+  )
+
+const validNativeCompatibilityToolCallResponse = (): Response =>
+  new Response(
+    'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"open_science__bridge_probe","arguments":"{}"}}\n\ndata: {"type":"response.completed","response":{"output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"open_science__bridge_probe","arguments":"{}"}]}}\n\n',
+    { status: 200, headers: { 'content-type': 'text/event-stream' } }
+  )
+
 type ManagedInstallImpl = (options: {
   installId: string
   onEvent: (event: { kind: string; installId: string }) => void
@@ -1246,9 +1258,9 @@ describe('SettingsService: validation', () => {
     expect(stored.lastValidationFailure).toBeUndefined()
   })
 
-  it('runs a plain connectivity probe under Codex without a per-model capability check', async () => {
+  it('requires the streaming tool-call contract for a provider Codex reaches through the bridge', async () => {
     const service = createService()
-    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    const fetchMock = vi.fn().mockResolvedValue(validBridgeToolCallResponse())
     vi.stubGlobal('fetch', fetchMock)
     const created = (
       await service.upsertProvider({
@@ -1261,20 +1273,22 @@ describe('SettingsService: validation', () => {
       })
     ).providers[0]
 
-    // Under Codex a provider test stays a connectivity/key check: a basic non-streaming ping on the
-    // provider's endpoint, not a strict streaming function-tool probe. Per-model bridge support is a
-    // static registry mark (bridgeUnsupportedModels), so there is no runtime capability to record.
+    // Codex will translate Responses requests through this provider's Chat Completions endpoint, so
+    // validation must exercise the same streaming function-call contract before recording success.
     await repository.setAgentFramework('codex')
-    await service.validateProvider({ providerId: created.id })
+    const result = await service.validateProvider({ providerId: created.id })
 
+    expect(result).toMatchObject({ ok: true, category: 'ok' })
     const stored = (await repository.getSettings()).providers[0]
     expect(stored.lastValidatedAt).toBeGreaterThan(0)
     expect(stored.lastValidationFailure).toBeUndefined()
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(fetchMock.mock.calls[0][0]).toBe('https://g/v1/chat/completions')
-    expect(body).toMatchObject({ stream: false, messages: [{ role: 'user', content: 'ping' }] })
-    expect(body).not.toHaveProperty('tools')
+    expect(body).toMatchObject({
+      stream: true,
+      tools: [{ type: 'function', function: { name: 'open_science_bridge_probe' } }]
+    })
   })
 })
 
@@ -2819,10 +2833,10 @@ describe('SettingsService: official vendors', () => {
     })
   })
 
-  it('probes DeepSeek on its OpenAI route as a plain connectivity check under Codex', async () => {
+  it('probes DeepSeek with the bridge tool-call contract under Codex', async () => {
     const service = createService()
     await repository.setAgentFramework('codex')
-    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    const fetchMock = vi.fn().mockResolvedValue(validBridgeToolCallResponse())
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await service.validateProvider({
@@ -2830,11 +2844,32 @@ describe('SettingsService: official vendors', () => {
     })
 
     expect(result.ok).toBe(true)
-    // The dual-endpoint vendor is probed on its OpenAI /v1/chat/completions route, but with a basic
-    // non-streaming ping — not a strict streaming function-tool probe. Bridge compatibility is static.
+    // The dual-endpoint vendor reaches Codex through the Chat Completions bridge, so the probe must
+    // prove streaming function calls on the same OpenAI route before validation succeeds.
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
-    expect(body).toMatchObject({ stream: false, messages: [{ role: 'user', content: 'ping' }] })
-    expect(body).not.toHaveProperty('tools')
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.deepseek.com/v1/chat/completions')
+    expect(body).toMatchObject({
+      stream: true,
+      tools: [{ type: 'function', function: { name: 'open_science_bridge_probe' } }]
+    })
+  })
+
+  it('probes native Responses vendors through the Codex namespace compatibility contract', async () => {
+    const service = createService()
+    await repository.setAgentFramework('codex')
+    const fetchMock = vi.fn().mockResolvedValue(validNativeCompatibilityToolCallResponse())
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await service.validateProvider({
+      draft: { type: 'official', vendorId: 'xai', key: 'sk-xai' }
+    })
+
+    expect(result).toMatchObject({ ok: true, category: 'ok' })
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.x.ai/v1/responses')
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      stream: true,
+      tools: [{ type: 'function', name: 'open_science__bridge_probe' }]
+    })
   })
 
   it('validates an anthropic-only official draft against its /v1/messages route', async () => {
