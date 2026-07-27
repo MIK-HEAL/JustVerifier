@@ -24,6 +24,22 @@ export const SETTINGS_FILE_VERSION = 2
 export type ProviderType =
   'custom' | 'claude-shared' | 'claude-isolated' | 'official' | 'codex-shared' | 'codex-isolated'
 
+// The stored Codex subscription always uses the app-owned runtime type. This discriminator preserves
+// which setup choice produced it so editing an imported profile does not masquerade as an isolated
+// sign-in and accidentally discard its imported loopback route.
+export type CodexSubscriptionAuthMode = 'imported' | 'isolated'
+
+// Stored Codex subscriptions share one runtime type, while renderer surfaces still need the setup
+// choice. Legacy codex-shared views have no discriminator, so their type remains the fallback.
+export const resolveCodexSubscriptionType = (provider: {
+  type: ProviderType
+  codexAuthMode?: CodexSubscriptionAuthMode
+}): 'codex-shared' | 'codex-isolated' =>
+  provider.codexAuthMode === 'imported' ||
+  (provider.codexAuthMode === undefined && provider.type === 'codex-shared')
+    ? 'codex-shared'
+    : 'codex-isolated'
+
 export const CODEX_SHARED_PROVIDER_ID = 'builtin-codex-shared'
 export const CODEX_ISOLATED_PROVIDER_ID = 'builtin-codex-isolated'
 export const CODEX_SUBSCRIPTION_PROVIDER_ID = 'builtin-codex-subscription'
@@ -223,6 +239,7 @@ export type ProviderValidationFailure = {
 export type ProviderView = {
   id: string
   type: ProviderType
+  codexAuthMode?: CodexSubscriptionAuthMode
   name: string
   // Which chat APIs this provider's endpoint speaks; drives per-framework availability. Absent ⇒
   // treat as ['anthropic'] (every legacy provider).
@@ -458,6 +475,9 @@ export type ProviderDraft = {
 // Create/update request: an existing `id` edits in place, otherwise a new provider is created.
 export type UpsertProviderRequest = ProviderDraft & {
   id?: string
+  // Explicitly refreshes an existing imported Codex subscription from the user's CLI profile.
+  // Ordinary edits remain app-owned and never cross that external profile boundary.
+  reimportCodexAuthentication?: boolean
 }
 
 export type DeleteProviderRequest = {

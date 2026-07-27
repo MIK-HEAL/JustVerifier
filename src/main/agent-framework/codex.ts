@@ -27,6 +27,7 @@ import type {
 } from './types'
 import { isCodexSubscriptionProvider } from '../../shared/settings'
 import { CODEX_VERSION } from '../settings/managed-codex'
+import { clearSystemProxyEnvironment } from '../settings/system-proxy'
 import codexNativeModelInstructions from './codex-native-model-instructions.md?raw'
 
 const CODEX_PROVIDER_ID = 'open-science'
@@ -275,6 +276,11 @@ const buildSpawnEnvironment = (
   const env = augmentedPathEnv(sourceEnv)
 
   for (const key of CODEX_ENV_KEYS) delete env[key]
+  // A resolved proxy or DIRECT decision is authoritative. A resolver failure uses `inherit` so a
+  // working proxy supplied by the process launcher remains available as the fallback.
+  if (input.proxyEnvironmentMode === 'replace') {
+    clearSystemProxyEnvironment(env)
+  }
 
   return {
     ...env,
