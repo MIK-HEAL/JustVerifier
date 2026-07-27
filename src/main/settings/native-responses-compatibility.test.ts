@@ -1,0 +1,372 @@
+import { describe, expect, it, vi } from 'vitest'
+
+import {
+  NativeResponsesCompatibilityProxy,
+  flattenNativeResponsesRequest,
+  restoreNativeResponsesPayload
+} from './native-responses-compatibility'
+
+describe('native Responses compatibility', () => {
+  it('flattens namespace tools and matching history without changing plain functions', () => {
+    const { request, aliases } = flattenNativeResponsesRequest({
+      model: 'MiniMax-M3',
+      tools: [
+        {
+          type: 'namespace',
+          name: 'mcp__open_science_notebook',
+          description: 'Open Science notebook tools.',
+          tools: [
+            {
+              type: 'function',
+              name: 'repl_execute',
+              description: 'Run control-plane JavaScript.',
+              parameters: { type: 'object' },
+              strict: false
+            }
+          ]
+        },
+        {
+          type: 'function',
+          name: 'shell_command',
+          description: 'Run a shell command.',
+          parameters: { type: 'object' }
+        }
+      ],
+      tool_choice: {
+        type: 'function',
+        namespace: 'mcp__open_science_notebook',
+        name: 'repl_execute'
+      },
+      input: [
+        {
+          type: 'function_call',
+          namespace: 'mcp__open_science_notebook',
+          name: 'repl_execute',
+          call_id: 'call-1',
+          arguments: '{}'
+        },
+        { type: 'function_call_output', call_id: 'call-1', output: 'ok' }
+      ]
+    })
+
+    expect(request.tools).toEqual([
+      {
+        type: 'function',
+        name: 'mcp__open_science_notebook__repl_execute',
+        description: 'Open Science notebook tools.\n\nRun control-plane JavaScript.',
+        parameters: { type: 'object' },
+        strict: false
+      },
+      {
+        type: 'function',
+        name: 'shell_command',
+        description: 'Run a shell command.',
+        parameters: { type: 'object' }
+      }
+    ])
+    expect(request.tool_choice).toEqual({
+      type: 'function',
+      name: 'mcp__open_science_notebook__repl_execute'
+    })
+    expect(request.input[0]).toMatchObject({
+      type: 'function_call',
+      name: 'mcp__open_science_notebook__repl_execute'
+    })
+    expect(request.input[0]).not.toHaveProperty('namespace')
+    expect(aliases.get('mcp__open_science_notebook__repl_execute')).toEqual({
+      namespace: 'mcp__open_science_notebook',
+      name: 'repl_execute'
+    })
+  })
+
+  it('rejects an alias collision instead of routing a tool ambiguously', () => {
+    expect(() =>
+      flattenNativeResponsesRequest({
+        tools: [
+          {
+            type: 'namespace',
+            name: 'mcp__server',
+            tools: [{ type: 'function', name: 'echo', parameters: { type: 'object' } }]
+          },
+          {
+            type: 'function',
+            name: 'mcp__server__echo',
+            parameters: { type: 'object' }
+          }
+        ]
+      })
+    ).toThrow('duplicate native Responses tool alias')
+  })
+
+  it('restores namespace identity in streamed and completed response items', () => {
+    const aliases = new Map([
+      [
+        'mcp__open_science_notebook__repl_execute',
+        { namespace: 'mcp__open_science_notebook', name: 'repl_execute' }
+      ]
+    ])
+
+    expect(
+      restoreNativeResponsesPayload(
+        {
+          type: 'response.output_item.done',
+          item: {
+            type: 'function_call',
+            name: 'mcp__open_science_notebook__repl_execute',
+            arguments: '{}',
+            call_id: 'call-1'
+          }
+        },
+        aliases
+      )
+    ).toMatchObject({
+      item: {
+        type: 'function_call',
+        namespace: 'mcp__open_science_notebook',
+        name: 'repl_execute'
+      }
+    })
+
+    expect(
+      restoreNativeResponsesPayload(
+        {
+          id: 'resp-1',
+          output: [
+            {
+              type: 'function_call',
+              name: 'mcp__open_science_notebook__repl_execute',
+              arguments: '{}',
+              call_id: 'call-1'
+            }
+          ]
+        },
+        aliases
+      )
+    ).toMatchObject({
+      output: [
+        {
+          namespace: 'mcp__open_science_notebook',
+          name: 'repl_execute'
+        }
+      ]
+    })
+  })
+
+  it('selects matching Skills through the native Responses endpoint', async () => {
+    const fetchImpl = vi.fn(
+      async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        void url
+        void init
+        return new Response(
+          JSON.stringify({
+            id: 'resp-skills',
+            output: [
+              {
+                type: 'function_call',
+                name: 'select_skills',
+                call_id: 'call-skills',
+                arguments: '{"skill_names":["mcp-pubmed"]}'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+    )
+    const proxy = new NativeResponsesCompatibilityProxy(
+      {
+        baseUrl: 'https://api.minimaxi.com/v1',
+        key: 'secret',
+        model: 'MiniMax-M3'
+      },
+      fetchImpl
+    )
+    const catalog = [
+      { name: 'mcp-pubmed', description: 'Search PubMed.', path: '/skills/pubmed/SKILL.md' },
+      { name: 'mcp-chemistry', description: 'Search chemistry.', path: '/skills/chem/SKILL.md' }
+    ]
+
+    await expect(proxy.selectSkills('用 PubMed 搜索肿瘤免疫文章', catalog)).resolves.toEqual([
+      { name: 'mcp-pubmed', path: '/skills/pubmed/SKILL.md' }
+    ])
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe('https://api.minimaxi.com/v1/responses')
+    expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' })
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      model: 'MiniMax-M3',
+      stream: false,
+      tool_choice: { type: 'function', name: 'select_skills' },
+      tools: [expect.objectContaining({ type: 'function', name: 'select_skills' })]
+    })
+  })
+
+  it('continues scanning for smaller Skills after a candidate exceeds the catalog byte budget', async () => {
+    const fetchImpl = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const request = JSON.parse(String(init?.body)) as {
+          tools: Array<{
+            parameters: { properties: { skill_names: { items: { enum: string[] } } } }
+          }>
+        }
+        expect(request.tools[0].parameters.properties.skill_names.items.enum).toContain('mcp-late')
+        return new Response(
+          JSON.stringify({
+            output: [
+              {
+                type: 'function_call',
+                name: 'select_skills',
+                arguments: '{"skill_names":["mcp-late"]}'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      }
+    )
+    const proxy = new NativeResponsesCompatibilityProxy(
+      { baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M3' },
+      fetchImpl
+    )
+    const catalog = [
+      ...Array.from({ length: 125 }, (_, index) => ({
+        name: `mcp-filler-${index}`,
+        description: 'x'.repeat(2_048),
+        path: `/skills/filler-${index}/SKILL.md`
+      })),
+      {
+        name: 'mcp-over-budget',
+        description: 'x'.repeat(2_048),
+        path: '/skills/over-budget/SKILL.md'
+      },
+      { name: 'mcp-late', description: 'Relevant small Skill.', path: '/skills/late/SKILL.md' }
+    ]
+
+    await expect(proxy.selectSkills('use the late Skill', catalog)).resolves.toEqual([
+      { name: 'mcp-late', path: '/skills/late/SKILL.md' }
+    ])
+  })
+
+  it('replaces reviewer-session tools with only the scope-bounded reviewer surface', async () => {
+    const upstreamRequests: Record<string, unknown>[] = []
+    const fetchImpl = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        upstreamRequests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        return new Response(JSON.stringify({ id: 'review-response', output: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      }
+    )
+    const proxy = new NativeResponsesCompatibilityProxy(
+      {
+        baseUrl: 'https://api.minimaxi.com/v1',
+        model: 'MiniMax-M3',
+        reviewerScope: {
+          namespacedTools: [
+            {
+              namespace: 'mcp__open_science_reviewer',
+              name: 'submit_findings',
+              description: 'Submit review findings.',
+              parameters: { type: 'object' }
+            }
+          ]
+        }
+      },
+      fetchImpl
+    )
+    const connection = await proxy.start()
+    try {
+      expect(proxy.unregisterReviewerSession('never-observed')).toBe(false)
+      proxy.registerReviewerSession('reviewer-session')
+      const response = await fetch(`${connection.baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'MiniMax-M3',
+          prompt_cache_key: 'reviewer-session',
+          stream: false,
+          tools: [
+            { type: 'function', name: 'shell_command', parameters: { type: 'object' } },
+            {
+              type: 'namespace',
+              name: 'mcp__open_science_notebook',
+              tools: [{ type: 'function', name: 'repl_execute', parameters: { type: 'object' } }]
+            }
+          ]
+        })
+      })
+      expect(response.ok).toBe(true)
+      expect(upstreamRequests).toHaveLength(1)
+      expect(upstreamRequests[0]).toMatchObject({
+        prompt_cache_key: 'reviewer-session',
+        tool_choice: 'auto',
+        tools: [
+          {
+            type: 'function',
+            name: 'mcp__open_science_reviewer__submit_findings',
+            description: 'Submit review findings.',
+            parameters: { type: 'object' }
+          }
+        ]
+      })
+      expect(JSON.stringify(upstreamRequests[0])).not.toContain('shell_command')
+      expect(JSON.stringify(upstreamRequests[0])).not.toContain('repl_execute')
+      expect(proxy.unregisterReviewerSession('reviewer-session')).toBe(true)
+    } finally {
+      await proxy.close()
+    }
+  })
+
+  it('forwards a near-limit multimodal request larger than 32 MiB', async () => {
+    const upstreamBodies: string[] = []
+    const fetchImpl = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        upstreamBodies.push(String(init?.body))
+        return new Response(JSON.stringify({ id: 'large-response', output: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+      }
+    )
+    const proxy = new NativeResponsesCompatibilityProxy(
+      { baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M3' },
+      fetchImpl
+    )
+    const connection = await proxy.start()
+    try {
+      const response = await fetch(`${connection.baseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'MiniMax-M3',
+          stream: false,
+          input: [
+            {
+              role: 'user',
+              content: [
+                { type: 'input_text', text: 'p'.repeat(8 * 1024 * 1024) },
+                {
+                  type: 'input_image',
+                  image_url: `data:image/png;base64,${'a'.repeat(24 * 1024 * 1024)}`
+                }
+              ]
+            }
+          ]
+        })
+      })
+
+      expect(response.ok, await response.text()).toBe(true)
+      expect(upstreamBodies).toHaveLength(1)
+      expect(Buffer.byteLength(upstreamBodies[0], 'utf8')).toBeGreaterThan(32 * 1024 * 1024)
+    } finally {
+      await proxy.close()
+    }
+  })
+})

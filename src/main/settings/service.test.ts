@@ -18,6 +18,7 @@ import type {
 import type { ClaudeSharedAuthControllerPort } from './claude-shared-auth'
 import type { UserSkillRepository } from '../skills/user-skill-repository'
 import type { ResponsesBridge } from './responses-bridge'
+import type { NativeResponsesCompatibilityProxy } from './native-responses-compatibility'
 
 // Reversible fake safeStorage so provider keys can be encrypted/decrypted without an OS keychain.
 vi.mock('electron', () => ({
@@ -55,6 +56,16 @@ let repository: InstanceType<typeof SettingsRepository>
 const CODEX_SHARED_PROVIDER_ID = CODEX_SUBSCRIPTION_PROVIDER_ID
 const CODEX_ISOLATED_PROVIDER_ID = CODEX_SUBSCRIPTION_PROVIDER_ID
 const MANAGED_CODEX_ADAPTER_FIXTURE = [
+  'function startCodexConnection(codexPath, env) {',
+  '  const spawnEnv = env ?? process.env;',
+  '  let codex;',
+  '  if (codexPath) {',
+  '    codex = process.platform === "win32" ? spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv }) : spawn(codexPath, ["app-server"], { env: spawnEnv });',
+  '  } else {',
+  '    const bundledCodexPath = createRequire(import.meta.url).resolve("@openai/codex/bin/codex.js");',
+  '    codex = spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv });',
+  '  }',
+  '}',
   'function buildPromptItems(prompt) {',
   '  return prompt.map((block) => {',
   '    switch (block.type) {',
@@ -1749,6 +1760,81 @@ describe('SettingsService: preflight & spawn config', () => {
     })
   })
 
+  it('trusts bundled model metadata only after a live native version probe', async () => {
+    const adapterPath = join(storageRoot, 'bin', 'codex-acp')
+    const nativePath = join(storageRoot, 'bin', 'codex')
+    await mkdir(dirname(adapterPath), { recursive: true })
+    await writeFile(adapterPath, MANAGED_CODEX_ADAPTER_FIXTURE, 'utf8')
+    await writeFile(nativePath, '#!/usr/bin/env node\n', 'utf8')
+    await chmod(adapterPath, 0o755)
+    await chmod(nativePath, 0o755)
+    const service = createService(undefined, {
+      codexDetected: {
+        path: adapterPath,
+        version: 'codex-acp 1.1.4',
+        nativePath,
+        nativeVersion: 'codex-cli 0.144.6'
+      }
+    })
+    await repository.setCodexInfo({
+      resolvedPath: adapterPath,
+      version: '1.1.4',
+      nativePath
+    })
+    const provider = (
+      await service.upsertProvider({
+        type: 'official',
+        name: 'OpenAI',
+        vendorId: 'openai',
+        key: 'test-key'
+      })
+    ).providers[0]
+    await service.setActiveProvider(provider.id, 'gpt-5.4')
+    vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'codex')
+
+    const backend = await service.resolveActiveAgentBackend()
+
+    expect(JSON.parse(backend.env.CODEX_CONFIG ?? '{}')).not.toHaveProperty('model_catalog_json')
+  })
+
+  it('ignores a stale trusted native version when the live probe is unrecognized', async () => {
+    const adapterPath = join(storageRoot, 'bin', 'codex-acp')
+    const nativePath = join(storageRoot, 'bin', 'codex')
+    await mkdir(dirname(adapterPath), { recursive: true })
+    await writeFile(adapterPath, MANAGED_CODEX_ADAPTER_FIXTURE, 'utf8')
+    await writeFile(nativePath, '#!/usr/bin/env node\n', 'utf8')
+    await chmod(adapterPath, 0o755)
+    await chmod(nativePath, 0o755)
+    const service = createService(undefined, {
+      codexDetected: {
+        path: adapterPath,
+        version: 'codex-acp 1.1.4',
+        nativePath,
+        nativeVersion: 'codex-cli 0.144.2'
+      }
+    })
+    await repository.setCodexInfo({
+      resolvedPath: adapterPath,
+      version: '1.1.4',
+      nativePath,
+      nativeVersion: '0.144.6'
+    })
+    const provider = (
+      await service.upsertProvider({
+        type: 'official',
+        name: 'OpenAI',
+        vendorId: 'openai',
+        key: 'test-key'
+      })
+    ).providers[0]
+    await service.setActiveProvider(provider.id, 'gpt-5.4')
+    vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'codex')
+
+    const backend = await service.resolveActiveAgentBackend()
+
+    expect(JSON.parse(backend.env.CODEX_CONFIG ?? '{}')).toHaveProperty('model_catalog_json')
+  })
+
   it('patches an existing app-managed Codex adapter before returning the backend', async () => {
     const { managedCodexAdapterEntry } = await import('./managed-codex')
     const adapterPath = managedCodexAdapterEntry(storageRoot)
@@ -2394,10 +2480,9 @@ describe('SettingsService: preflight & spawn config', () => {
     closeSpy.mockRestore()
   })
 
-  it('drives a native-Responses official vendor directly, without starting the bridge', async () => {
-    // MiniMax advertises anthropic + openai + responses. Codex must drive native Responses on the
-    // vendor's own OpenAI /v1 base with the vendor key — NOT spin up the Chat Completions bridge and
-    // post to its local URL (which would authenticate with the vendor key instead of the bridge token).
+  it('routes a native-Responses vendor through the protocol-preserving compatibility proxy', async () => {
+    // MiniMax advertises anthropic + openai + responses. It must stay on native Responses while the
+    // local proxy flattens Codex namespace tools and restores their namespace on returned calls.
     const adapterPath = join(storageRoot, 'bin', 'codex-acp')
     await mkdir(dirname(adapterPath), { recursive: true })
     await writeFile(adapterPath, MANAGED_CODEX_ADAPTER_FIXTURE, 'utf8')
@@ -2428,22 +2513,70 @@ describe('SettingsService: preflight & spawn config', () => {
     vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'codex')
     const backend = await service.resolveActiveAgentBackend()
 
-    // No bridge: no local provider-configuration, no bridge session model.
-    expect(backend.providerConfiguration).toBeUndefined()
+    expect(backend.providerConfiguration).toEqual({
+      providerId: 'custom-gateway',
+      apiType: 'openai',
+      baseUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/),
+      headers: { authorization: expect.stringMatching(/^Bearer [a-f0-9]+$/) }
+    })
+    // This is not the Chat Completions bridge: preserve the provider model and native catalog.
     expect(backend.sessionModel).toBe('MiniMax-M3')
-    // Codex posts native Responses to the vendor's own /v1 base with the vendor key.
     const codexConfig = JSON.parse(backend.env.CODEX_CONFIG ?? '{}')
+    expect(codexConfig.model_catalog_json).toMatch(
+      new RegExp(
+        `^${join(storageRoot, 'codex', 'model-catalog-').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[a-f0-9]{64}\\.json$`
+      )
+    )
     expect(codexConfig.model_providers['open-science']).toMatchObject({
-      base_url: 'https://api.minimax.io/v1',
-      wire_api: 'responses',
-      requires_openai_auth: true
+      base_url: backend.providerConfiguration?.baseUrl,
+      wire_api: 'responses'
     })
-    expect(backend.authentication).toEqual({
-      methodId: 'api-key',
-      _meta: { 'api-key': { apiKey: 'mm-secret' } }
-    })
-    expect(backend.env.CODEX_CONFIG).not.toContain('127.0.0.1')
+    expect(codexConfig.model_providers['open-science']).not.toHaveProperty('requires_openai_auth')
+    const modelCatalog = JSON.parse(await readFile(codexConfig.model_catalog_json, 'utf8'))
+    expect(modelCatalog.models).toEqual([
+      expect.objectContaining({
+        slug: 'MiniMax-M3',
+        context_window: 1_000_000,
+        max_context_window: 1_000_000,
+        supported_in_api: true,
+        default_reasoning_level: null,
+        supported_reasoning_levels: [
+          { effort: 'none', description: 'None reasoning effort' },
+          { effort: 'high', description: 'High reasoning effort' }
+        ]
+      })
+    ])
+    expect(backend.authentication).toBeUndefined()
     expect(backend.env.CODEX_CONFIG).not.toContain('mm-secret')
+
+    const proxies = Array.from(
+      (
+        service as unknown as {
+          nativeResponsesCompatibilityProxies: Map<
+            string,
+            { proxy: NativeResponsesCompatibilityProxy }
+          >
+        }
+      ).nativeResponsesCompatibilityProxies.values(),
+      (entry) => entry.proxy
+    )
+    expect(proxies).toHaveLength(1)
+    const skillCatalog = [
+      { name: 'mcp-pubmed', description: 'Search PubMed.', path: '/skills/pubmed/SKILL.md' }
+    ]
+    const selectSkills = vi
+      .spyOn(proxies[0], 'selectSkills')
+      .mockResolvedValue([{ name: 'mcp-pubmed', path: '/skills/pubmed/SKILL.md' }])
+    await expect(
+      backend.responsesBridgeLease?.selectSkills('用 PubMed 搜索肿瘤免疫文章', skillCatalog)
+    ).resolves.toEqual([{ name: 'mcp-pubmed', path: '/skills/pubmed/SKILL.md' }])
+    expect(selectSkills).toHaveBeenCalledWith('用 PubMed 搜索肿瘤免疫文章', skillCatalog, undefined)
+
+    await backend.responsesBridgeLease?.release()
+    expect(
+      (service as unknown as { nativeResponsesCompatibilityProxies: Map<string, unknown> })
+        .nativeResponsesCompatibilityProxies.size
+    ).toBe(0)
   })
 
   it('builds spawn env from the active provider with the decrypted key', async () => {

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { access, chmod, mkdir, readdir, realpath, writeFile } from 'node:fs/promises'
+import { access, readdir, realpath } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -146,7 +146,12 @@ import {
   type InstallManagedOpencodeOptions
 } from './managed-opencode'
 import { opencodeConfigDir } from '../agent-framework/opencode'
-import { codexStorageDir, codexSubscriptionStorageDir } from '../agent-framework/codex'
+import {
+  codexStorageDir,
+  codexSubscriptionStorageDir,
+  isOfficialOpenAiResponsesBase,
+  normalizeResponsesBaseUrl
+} from '../agent-framework/codex'
 import { ClaudeCodeSkillMaterializer, OS_SKILL_PREFIX } from '../skills/materializer'
 import { provisionAppClaudeConfigDir } from './claude-config-provision'
 import { detectNpmAvailable, runInstallWithFallback, type InstallTarget } from './claude-install'
@@ -161,6 +166,7 @@ import {
   type ManagedCodexInstallOutcome
 } from './managed-codex'
 import { runEnvironmentCheck } from './environment-check'
+import { writeAgentConfigFiles } from './agent-config-files'
 import {
   DEFAULT_REGISTRIES,
   installManagedClaude,
@@ -185,6 +191,7 @@ import {
   type ResponsesBridgeConnection,
   type ResponsesBridgeNamespacedTool
 } from './responses-bridge'
+import { NativeResponsesCompatibilityProxy } from './native-responses-compatibility'
 import { SettingsRepository } from './repository'
 import { sanitizeCustomMcpServer } from './repository'
 import { CONNECTOR_CATALOG } from '../connectors/catalog'
@@ -247,6 +254,11 @@ export type AgentBackendResolutionContext = {
 
 type ResponsesBridgeEntry = {
   bridge: ResponsesBridge
+  connection: Promise<ResponsesBridgeConnection>
+}
+
+type NativeResponsesCompatibilityEntry = {
+  proxy: NativeResponsesCompatibilityProxy
   connection: Promise<ResponsesBridgeConnection>
 }
 
@@ -521,6 +533,10 @@ class SettingsService {
   // replay). Track each backend generation separately so an overlapping reconnect cannot mutate the
   // bridge still serving the retiring generation.
   private readonly responsesBridges = new Map<string, ResponsesBridgeEntry>()
+  private readonly nativeResponsesCompatibilityProxies = new Map<
+    string,
+    NativeResponsesCompatibilityEntry
+  >()
   private providerSequence = 0
   private readonly providerValidationGenerations = new Map<string, number>()
 
@@ -3443,15 +3459,19 @@ class SettingsService {
     // make the effort belong to one model while the request is sent to another.
     const effectiveModel = this.resolveActiveModel(activeProvider, settings.activeModel)
     const effortIntent = settings.reasoningEffort ?? DEFAULT_REASONING_EFFORT
+    const reasoningEffortProfile = resolveProviderReasoningEffortProfile(
+      activeProvider,
+      effectiveModel
+    )
     const resolvedEffort =
       effortIntent === DEFAULT_REASONING_EFFORT
         ? DEFAULT_REASONING_EFFORT
-        : resolveReasoningEffortValue(
-            effortIntent,
-            resolveProviderReasoningEffortProfile(activeProvider, effectiveModel)
-          )
+        : resolveReasoningEffortValue(effortIntent, reasoningEffortProfile)
     const sessionEffort: ModelReasoningEffort | undefined =
       resolvedEffort === 'default' ? undefined : resolvedEffort
+    const supportedReasoningEfforts = reasoningEffortProfile.supported
+      ? [...new Set(reasoningEffortProfile.slots)]
+      : undefined
 
     if (
       !isProviderUsableByFramework(
@@ -3495,6 +3515,13 @@ class SettingsService {
             settings.codex?.nativePath
           )
         : await this.resolveOpencodeExecutable(settings.opencodePath)
+    // Model metadata is a compatibility contract with the native Codex binary that is about to
+    // start. Probe that exact executable now instead of trusting a cached version from detection;
+    // a missing or stale cache must only make us choose the conservative generated catalog.
+    const codexNativeVersion =
+      framework.id === 'codex'
+        ? await this.probeCodexNativeVersion(settings.codex?.nativePath)
+        : undefined
     const provider = this.resolveProvider(activeProvider, effectiveModel)
     // `codex-shared` is accepted only as a legacy/provider-time import request. Every runtime
     // subscription record converges on the same app-owned backend and profile boundary.
@@ -3509,30 +3536,40 @@ class SettingsService {
           : codexStorageDir(this.storageRoot)
         : opencodeConfigDir(this.storageRoot)
     await this.materializeAgentSkills(settings, skillsRoot, forcedSkillIds)
-    // The Chat Completions bridge only exists to let Codex (a Responses-only client) drive an
-    // OpenAI Chat provider. A provider that also speaks native Responses is driven directly, so
-    // starting the bridge for it would be dead weight — and worse, Codex would post to the bridge's
-    // local URL with the provider key instead of the bridge token. Bridge openai-only providers.
-    const needsResponsesBridge =
+    // Chat-only providers require protocol translation. Non-OpenAI native Responses providers keep
+    // their protocol, but use a narrow compatibility proxy because Codex emits namespace tools while
+    // several compatible APIs accept only flat function names. Official OpenAI and subscriptions
+    // already implement Codex's native wire contract and remain direct.
+    const needsChatResponsesBridge =
       framework.id === 'codex' &&
       (provider.apiEndpoints?.includes('openai') ?? false) &&
       !(provider.apiEndpoints?.includes('responses') ?? false)
+    const needsNativeResponsesCompatibility =
+      framework.id === 'codex' &&
+      (provider.apiEndpoints?.includes('responses') ?? false) &&
+      !isCodexSubscriptionProvider(provider.type) &&
+      provider.vendorId !== 'openai' &&
+      !isOfficialOpenAiResponsesBase(provider.openaiBaseUrl ?? provider.baseUrl)
     // A bridge may still serve a live Codex runtime from an earlier framework generation. Do not stop
     // or retarget it merely because the newly selected framework/provider does not need one.
-    const responsesBridge = needsResponsesBridge
+    const responsesBridge = needsChatResponsesBridge
       ? await this.ensureResponsesBridge(provider, sessionEffort)
-      : undefined
+      : needsNativeResponsesCompatibility
+        ? await this.ensureNativeResponsesCompatibility(provider)
+        : undefined
     try {
       const modelConfig = framework.prepareModelConfig(provider, {
         storageRoot: this.storageRoot,
         executablePath,
+        ...(codexNativeVersion ? { nativeVersion: codexNativeVersion } : {}),
         responsesBridge,
         reasoningEffort: sessionEffort,
+        reasoningEfforts: supportedReasoningEfforts,
         // Keep only connector calling conventions in OpenCode's baseline. Detailed tools are already
         // materialized as on-demand `mcp-*` skills above, avoiding a full catalog in every request.
         instructions: connectorInstructions
       })
-      await this.writeAgentConfigFiles(modelConfig.configFiles)
+      await writeAgentConfigFiles(modelConfig.configFiles)
 
       // Protocol-driven frameworks apply an explicit model through the ACP session configOption. A Codex
       // subscription with no explicit selection leaves this undefined so Codex uses the account default.
@@ -3627,6 +3664,55 @@ class SettingsService {
     }
   }
 
+  private async ensureNativeResponsesCompatibility(
+    provider: ResolvedProvider
+  ): Promise<LeasedResponsesBridgeConnection> {
+    const targetBaseUrl = normalizeResponsesBaseUrl(provider.openaiBaseUrl ?? provider.baseUrl)
+    if (!targetBaseUrl) throw new Error('The native Responses provider has no base URL.')
+
+    const proxyId = randomUUID()
+    const proxy = new NativeResponsesCompatibilityProxy({
+      baseUrl: targetBaseUrl,
+      key: provider.key,
+      model: provider.model,
+      reviewerScope: { namespacedTools: REVIEWER_BRIDGE_NAMESPACED_TOOLS }
+    })
+    const entry = { proxy, connection: proxy.start() }
+    this.nativeResponsesCompatibilityProxies.set(proxyId, entry)
+
+    let connection: ResponsesBridgeConnection
+    try {
+      connection = await entry.connection
+    } catch (error) {
+      if (this.nativeResponsesCompatibilityProxies.get(proxyId) === entry) {
+        this.nativeResponsesCompatibilityProxies.delete(proxyId)
+      }
+      await entry.proxy.close().catch(() => undefined)
+      throw error
+    }
+
+    let released = false
+    const leasedEntry = entry
+    return {
+      ...connection,
+      lease: {
+        selectSkills: (text, catalog, signal) =>
+          leasedEntry.proxy.selectSkills(text, catalog, signal),
+        registerReviewerSession: (promptCacheKey) =>
+          leasedEntry.proxy.registerReviewerSession(promptCacheKey),
+        unregisterReviewerSession: (promptCacheKey) =>
+          leasedEntry.proxy.unregisterReviewerSession(promptCacheKey),
+        release: async () => {
+          if (released) return
+          released = true
+          if (this.nativeResponsesCompatibilityProxies.get(proxyId) !== leasedEntry) return
+          this.nativeResponsesCompatibilityProxies.delete(proxyId)
+          await leasedEntry.proxy.close()
+        }
+      }
+    }
+  }
+
   // Locates the opencode binary: an explicitly stored path wins, else a best-effort PATH lookup.
   private async resolveOpencodeExecutable(storedPath: string | undefined): Promise<string> {
     // Trust the stored path only if it still exists. A user who uninstalled opencode leaves a stale
@@ -3667,15 +3753,13 @@ class SettingsService {
     return adapterPath
   }
 
-  // Writes a framework's generated config files (e.g. opencode.json) to disk ahead of spawn.
-  private async writeAgentConfigFiles(
-    files: { path: string; content: string; mode?: number }[] | undefined
-  ): Promise<void> {
-    for (const file of files ?? []) {
-      await mkdir(dirname(file.path), { recursive: true })
-      await writeFile(file.path, file.content, { encoding: 'utf8', mode: file.mode })
-      if (file.mode !== undefined) await chmod(file.path, file.mode)
-    }
+  private async probeCodexNativeVersion(
+    nativePath: string | undefined
+  ): Promise<string | undefined> {
+    if (!nativePath) return undefined
+
+    const output = await this.codexDetectDeps.getCodexVersion(nativePath).catch(() => undefined)
+    return output ? parseCodexVersion(output) : undefined
   }
 
   // The chat APIs a provider speaks: official providers come from the registry, custom gateways from

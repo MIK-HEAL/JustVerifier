@@ -22,6 +22,9 @@ export type AgentConfigFile = {
   path: string
   content: string
   mode?: number
+  // The path is derived from the content. Publish it atomically and reuse an existing byte-identical
+  // file so concurrent framework starts can safely share it.
+  contentAddressed?: boolean
 }
 
 // Authentication is sent over ACP after initialize. Keeping it out of the child environment avoids
@@ -59,6 +62,9 @@ export type ModelConfigContext = {
   storageRoot: string
   // Absolute path to the detected framework executable (claude / opencode).
   executablePath: string
+  // Detected version of the native CLI behind an adapter. Codex uses this to trust bundled model
+  // metadata only when the model/version pair is explicitly known.
+  nativeVersion?: string
   responsesBridge?: ResponsesBridgeConnection
   // Compact connector conventions for frameworks that need host.mcp guidance in their baseline
   // instructions. Detailed connector schemas live in on-demand `mcp-*` skills. Empty ⇒ omitted.
@@ -66,6 +72,10 @@ export type ModelConfigContext = {
   // The active model's already-resolved API effort. Undefined means don't override. Frameworks encode
   // this into their valid transport vocabulary without changing the persisted user intent.
   reasoningEffort?: ModelReasoningEffort
+  // Distinct model-native effort values advertised by the active model profile. Frameworks that
+  // register custom model metadata use this to keep their capability catalog consistent with the
+  // selected effort above.
+  reasoningEfforts?: readonly ModelReasoningEffort[]
 }
 
 // System-prompt guidance the runtime wants appended for a session (artifact routing, notebook, skill
