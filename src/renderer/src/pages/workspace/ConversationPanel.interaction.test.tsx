@@ -235,6 +235,16 @@ describe('ConversationPanel composer intake', () => {
     expect(onCancelAttachmentTransfer).toHaveBeenCalledWith(transfer)
   })
 
+  it('uses a flat border without a card shadow', () => {
+    renderPanel()
+
+    const composerForm = getComposerForm()
+
+    expect(composerForm.classList.contains('border')).toBe(true)
+    expect(composerForm.classList.contains('border-border-200')).toBe(true)
+    expect(composerForm.classList.contains('shadow-card-opaque')).toBe(false)
+  })
+
   it('stages a pasted non-image file', () => {
     renderPanel()
     const pdf = new File(['%PDF'], 'report.pdf', { type: 'application/pdf' })
@@ -545,6 +555,16 @@ describe('ConversationPanel notebook bar', () => {
     createdAt: Date.now(),
     updatedAt: Date.now()
   }
+  const notebookReference = {
+    notebookId: 'nb-1',
+    sessionId: 'session-bar',
+    projectName: 'proj',
+    workspaceCwd: '/workspace',
+    notebookSessionRoot: '/nb',
+    dataRoot: '/data',
+    runtimeRoot: '/rt',
+    runJsonPath: '/run.json'
+  }
 
   it('hides the notebook bar when there is no notebookReference and no running job', () => {
     mockHasRunningJobs = false
@@ -556,20 +576,28 @@ describe('ConversationPanel notebook bar', () => {
 
   it('shows only the Notebook button when notebookReference exists and no running job', () => {
     mockHasRunningJobs = false
-    const ref = {
-      notebookId: 'nb-1',
-      sessionId: 'session-bar',
-      projectName: 'proj',
-      workspaceCwd: '/workspace',
-      notebookSessionRoot: '/nb',
-      dataRoot: '/data',
-      runtimeRoot: '/rt',
-      runJsonPath: '/run.json'
-    }
-    renderPanel({ activeSession: session, notebookReference: ref })
+    renderPanel({ activeSession: session, notebookReference })
 
     expect(container.querySelector('[aria-label="Open notebook"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="remote-job-badge"]')).toBeNull()
+  })
+
+  it('animates the notebook bar upward when it appears', () => {
+    renderPanel({ activeSession: session, notebookReference })
+
+    const notebookBar = container.querySelector('[aria-label="Open notebook"]')?.parentElement
+
+    expect(notebookBar?.className).toContain('motion-safe:animate-in')
+    expect(notebookBar?.className).toContain('motion-safe:fade-in-0')
+    expect(notebookBar?.className).toContain('motion-safe:slide-in-from-bottom-1')
+  })
+
+  it('shows a pointer cursor over the Notebook button', () => {
+    renderPanel({ activeSession: session, notebookReference })
+
+    const notebookButton = container.querySelector('[aria-label="Open notebook"]')
+
+    expect(notebookButton?.className).toContain('cursor-pointer')
   })
 
   it('shows only the job badge when there is no notebookReference but there are running jobs', () => {
@@ -581,20 +609,43 @@ describe('ConversationPanel notebook bar', () => {
     expect(container.querySelector('[data-testid="remote-job-badge"]')).not.toBeNull()
   })
 
+  it('keeps the job-only bar compact and static', () => {
+    mockAllJobs = [{ job_id: 'job-1', status: 'running', created_at: Date.now() }]
+    renderPanel({ activeSession: session, notebookReference: undefined })
+
+    const jobBar = container.querySelector('[data-testid="remote-job-badge"]')?.parentElement
+
+    expect(jobBar?.classList.contains('min-h-9')).toBe(true)
+    expect(jobBar?.classList.contains('bg-bg-000')).toBe(true)
+    expect(jobBar?.classList.contains('motion-safe:animate-in')).toBe(false)
+  })
+
+  it('remounts the bar when a Notebook appears after jobs', () => {
+    mockAllJobs = [{ job_id: 'job-1', status: 'running', created_at: Date.now() }]
+    renderPanel({ activeSession: session, notebookReference: undefined })
+    const jobBar = container.querySelector('[data-testid="remote-job-badge"]')?.parentElement
+
+    renderPanel({ activeSession: session, notebookReference })
+    const notebookBar = container.querySelector('[aria-label="Open notebook"]')?.parentElement
+
+    expect(notebookBar).not.toBe(jobBar)
+    expect(notebookBar?.classList.contains('motion-safe:animate-in')).toBe(true)
+  })
+
+  it('does not layer card shadows behind the composer border', () => {
+    renderPanel({ activeSession: session, notebookReference })
+
+    const notebookBar = container.querySelector('[aria-label="Open notebook"]')?.parentElement
+    const composerBackdrop = getComposerForm().previousElementSibling
+
+    expect(notebookBar?.classList.contains('shadow-card')).toBe(false)
+    expect(composerBackdrop?.classList.contains('shadow-card')).toBe(false)
+  })
+
   it('shows both the Notebook button and the job badge when both are present', () => {
     mockHasRunningJobs = true
     mockAllJobs = [{ job_id: 'job-1', status: 'running', created_at: Date.now() }]
-    const ref = {
-      notebookId: 'nb-1',
-      sessionId: 'session-bar',
-      projectName: 'proj',
-      workspaceCwd: '/workspace',
-      notebookSessionRoot: '/nb',
-      dataRoot: '/data',
-      runtimeRoot: '/rt',
-      runJsonPath: '/run.json'
-    }
-    renderPanel({ activeSession: session, notebookReference: ref })
+    renderPanel({ activeSession: session, notebookReference })
 
     expect(container.querySelector('[aria-label="Open notebook"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="remote-job-badge"]')).not.toBeNull()
@@ -605,8 +656,8 @@ describe('ConversationPanel notebook bar', () => {
     mockAllJobs = [{ job_id: 'job-1', status: 'done', created_at: Date.now() }]
     renderPanel({ activeSession: session, notebookReference: undefined })
 
-    // Bar should be visible (the container that wraps badge/notebook button)
-    const notebookBar = container.querySelector('.mb-2.flex.min-h-9')
+    // The badge's parent is the shared notebook/job bar.
+    const notebookBar = container.querySelector('[data-testid="remote-job-badge"]')?.parentElement
     expect(notebookBar).not.toBeNull()
     // Badge should be visible even though no jobs are running
     expect(container.querySelector('[data-testid="remote-job-badge"]')).not.toBeNull()

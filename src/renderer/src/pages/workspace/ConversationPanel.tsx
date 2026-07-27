@@ -357,12 +357,22 @@ const ConversationPanel = ({
                   }
                 />
 
+                {/* Switching between a compact job bar and Notebook chrome remounts this layer so a
+                    Notebook that becomes available after jobs still receives its entrance animation. */}
                 {notebookReference || hasAnyJobs ? (
-                  <div className="mb-2 flex min-h-9 items-center rounded-lg border border-border-200 bg-bg-000 px-2 shadow-card">
+                  <div
+                    key={notebookReference ? `notebook-${notebookReference.sessionId}` : 'jobs'}
+                    className={cn(
+                      'flex px-2',
+                      notebookReference
+                        ? 'relative -mb-8 min-h-[68px] items-start rounded-2xl bg-bg-200 pt-1 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200 motion-safe:ease-out'
+                        : 'mb-2 min-h-9 items-center rounded-lg border border-border-200 bg-bg-000 shadow-card'
+                    )}
+                  >
                     {notebookReference ? (
                       <button
                         type="button"
-                        className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium text-text-100 transition-colors duration-200 ease-out hover:bg-bg-200 hover:text-text-000"
+                        className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-normal text-text-100 transition-colors duration-200 ease-out hover:bg-bg-300 hover:text-text-000"
                         aria-label="Open notebook"
                         aria-controls="right-panel"
                         onClick={() => onOpenNotebook(notebookReference)}
@@ -384,15 +394,12 @@ const ConversationPanel = ({
                 ) : null}
 
                 <div className="relative">
-                  <div
-                    aria-hidden="true"
-                    className="relative -mb-8 rounded-2xl bg-bg-200 pb-8 shadow-card"
-                  />
+                  <div aria-hidden="true" className="relative -mb-8 rounded-2xl bg-bg-200 pb-8" />
 
                   {/* Composer keeps draft input local until submit delegates to the session store.
                       Enter-to-send is owned by ComposerEditor; the form only guards native submit. */}
                   <form
-                    className="relative z-10 flex flex-col gap-2 rounded-2xl bg-bg-000 px-3 py-2 shadow-card-opaque transition-shadow duration-[180ms] ease-out"
+                    className="relative z-10 flex flex-col gap-2 rounded-2xl border border-border-200 bg-bg-000 px-3 py-2"
                     onSubmit={(event) => event.preventDefault()}
                     {...dropZoneProps}
                   >
