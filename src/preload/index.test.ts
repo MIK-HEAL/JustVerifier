@@ -10,14 +10,16 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-const { invokeMock, sendMock, exposeMock } = vi.hoisted(() => ({
+const { invokeMock, sendMock, exposeMock, getPathForFileMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   sendMock: vi.fn(),
-  exposeMock: vi.fn()
+  exposeMock: vi.fn(),
+  getPathForFileMock: vi.fn()
 }))
 
 vi.mock('electron', () => ({
   contextBridge: { exposeInMainWorld: exposeMock },
+  webUtils: { getPathForFile: getPathForFileMock },
   ipcRenderer: {
     invoke: invokeMock,
     on: vi.fn(),
@@ -81,6 +83,10 @@ type PreloadApi = {
     attachFrame: (sessionId: string) => Promise<unknown>
     reportState: (sessionId: string, state: unknown) => void
   }
+  uploads: {
+    stageLocalFile: (file: File, request: unknown) => Promise<unknown>
+    claimLocalFile: (request: unknown) => Promise<void>
+  }
 }
 
 let api: PreloadApi
@@ -101,6 +107,7 @@ beforeAll(async () => {
 afterEach(() => {
   invokeMock.mockClear()
   sendMock.mockClear()
+  getPathForFileMock.mockReset()
 })
 
 // Each case: invoke a bridge method with sample args, then assert the exact channel + forwarded args.
@@ -376,5 +383,31 @@ describe('preload bridge — sessions + agent-framework IPC channels', () => {
       sessionId: 'office-session-1',
       phase: 'ready'
     })
+  })
+
+  it('resolves native upload paths in preload and sends only metadata to main', async () => {
+    const file = { name: 'large.csv', size: 1024, type: 'text/csv' } as File
+    const attachment = { path: '/managed/.pending/large.csv' }
+    const request = {
+      transferId: 'transfer-1',
+      name: 'large.csv',
+      size: 1024,
+      mimeType: 'text/csv'
+    }
+    getPathForFileMock.mockReturnValue('/data/large.csv')
+    invokeMock.mockResolvedValueOnce(attachment)
+
+    await expect(api.uploads.stageLocalFile(file, request)).resolves.toBe(attachment)
+    await api.uploads.claimLocalFile({ transferId: request.transferId })
+
+    expect(getPathForFileMock).toHaveBeenCalledWith(file)
+    expect(invokeMock).toHaveBeenCalledWith('uploads:stage-local-file', {
+      ...request,
+      sourcePath: '/data/large.csv'
+    })
+    expect(invokeMock).toHaveBeenCalledWith('uploads:claim-local-file', {
+      transferId: request.transferId
+    })
+    expect(invokeMock).toHaveBeenCalledTimes(2)
   })
 })

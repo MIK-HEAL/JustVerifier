@@ -11,7 +11,7 @@ import {
 
 type MessageArtifact = NonNullable<ChatSession['artifacts']>[number]
 type MessageUploadAttachment = NonNullable<ChatSession['messages'][number]['uploads']>[number]
-type ArtifactMentionPart = Extract<MessagePart, { type: 'artifact' }>
+type ArtifactMentionPart = Extract<MessagePart, { type: 'artifact'; source: 'upload' | 'artifact' }>
 
 const createManagedArtifact = (overrides: Partial<MessageArtifact> = {}): MessageArtifact => ({
   id: 'artifact-1',
@@ -175,6 +175,24 @@ describe('preview file item helpers', () => {
       source: 'upload',
       name: 'scan.png',
       format: 'image'
+    })
+  })
+
+  it('uses mention mime type when the file name has no previewable extension', () => {
+    expect(
+      createPreviewFileItemFromMention(
+        createMentionPart({
+          id: 'extensionless-pdf',
+          name: 'research-paper',
+          path: '/workspace/results/research-paper',
+          mimeType: 'application/pdf'
+        }),
+        'session-1'
+      )
+    ).toMatchObject({
+      name: 'research-paper',
+      mimeType: 'application/pdf',
+      format: 'pdf'
     })
   })
 })

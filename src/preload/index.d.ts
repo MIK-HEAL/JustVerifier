@@ -185,9 +185,13 @@ import type {
 import type { CliLauncherStatus } from '../shared/cli'
 import type { AppInfo, DownloadProgress, UpdateStatus } from '../shared/update'
 import type {
+  AppendUploadTransferRequest,
+  BeginUploadTransferRequest,
   DeleteUploadRequest,
   FinalizeUploadSessionRequest,
-  StageUploadFilesRequest,
+  UploadTransferProgress,
+  UploadTransferRequest,
+  UploadTransferStatus,
   UploadedAttachment
 } from '../shared/uploads'
 import type {
@@ -438,8 +442,19 @@ interface OpenScienceAPI {
     readPreview(request: ReadArtifactPreviewRequest): Promise<ArtifactPreviewResult>
   }
   uploads: {
-    // Stages files selected or pasted in the renderer into app-managed upload storage.
-    stageFiles(request: StageUploadFilesRequest): Promise<UploadedAttachment[]>
+    // Desktop-only path fast path; omitted by the Web capability map.
+    stageLocalFile?(
+      file: File,
+      request: BeginUploadTransferRequest
+    ): Promise<UploadedAttachment | null>
+    // Acknowledges that the renderer committed a native-path upload into its draft state.
+    claimLocalFile?(request: UploadTransferRequest): Promise<void>
+    beginTransfer(request: BeginUploadTransferRequest): Promise<UploadTransferStatus>
+    appendTransfer(request: AppendUploadTransferRequest): Promise<UploadTransferStatus>
+    getTransferStatus(request: UploadTransferRequest): Promise<UploadTransferStatus | null>
+    finishTransfer(request: UploadTransferRequest): Promise<UploadedAttachment>
+    abortTransfer(request: UploadTransferRequest): Promise<void>
+    onTransferProgress(listener: AcpListener<UploadTransferProgress>): RemoveListener
     // Deletes a staged upload when the composer chip is removed or the draft is abandoned.
     deleteUpload(request: DeleteUploadRequest): Promise<void>
     // Moves pending uploads into the durable session directory once a session id exists.

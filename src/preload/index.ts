@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 
 import type {
   AcpCancelPromptRequest,
@@ -194,9 +194,13 @@ import type {
 import type { CliLauncherStatus } from '../shared/cli'
 import type { AppInfo, DownloadProgress, UpdateStatus } from '../shared/update'
 import type {
+  AppendUploadTransferRequest,
+  BeginUploadTransferRequest,
   DeleteUploadRequest,
   FinalizeUploadSessionRequest,
-  StageUploadFilesRequest,
+  UploadTransferProgress,
+  UploadTransferRequest,
+  UploadTransferStatus,
   UploadedAttachment
 } from '../shared/uploads'
 import type {
@@ -484,8 +488,19 @@ type OpenScienceAPI = {
     readPreview: (request: ReadArtifactPreviewRequest) => Promise<ArtifactPreviewResult>
   }
   uploads: {
-    // Stages files selected or pasted in the renderer into app-managed upload storage.
-    stageFiles: (request: StageUploadFilesRequest) => Promise<UploadedAttachment[]>
+    // Desktop-only path fast path. A null result means this File has no native path.
+    stageLocalFile?: (
+      file: File,
+      request: BeginUploadTransferRequest
+    ) => Promise<UploadedAttachment | null>
+    // Acknowledges that the renderer committed a native-path upload into its draft state.
+    claimLocalFile?: (request: UploadTransferRequest) => Promise<void>
+    beginTransfer: (request: BeginUploadTransferRequest) => Promise<UploadTransferStatus>
+    appendTransfer: (request: AppendUploadTransferRequest) => Promise<UploadTransferStatus>
+    getTransferStatus: (request: UploadTransferRequest) => Promise<UploadTransferStatus | null>
+    finishTransfer: (request: UploadTransferRequest) => Promise<UploadedAttachment>
+    abortTransfer: (request: UploadTransferRequest) => Promise<void>
+    onTransferProgress: (listener: AcpListener<UploadTransferProgress>) => RemoveListener
     // Deletes a staged upload when the composer chip is removed or the draft is abandoned.
     deleteUpload: (request: DeleteUploadRequest) => Promise<void>
     // Moves pending uploads into the durable session directory once a session id exists.
@@ -1018,8 +1033,30 @@ const api: OpenScienceAPI = {
   },
   uploads: {
     // Upload IPC remains behind the preload bridge so renderer code never receives raw fs access.
-    stageFiles: (request) =>
-      ipcRenderer.invoke('uploads:stage-files', request) as Promise<UploadedAttachment[]>,
+    stageLocalFile: async (file, request) => {
+      const sourcePath = webUtils.getPathForFile(file)
+      if (!sourcePath) return null
+      return (await ipcRenderer.invoke('uploads:stage-local-file', {
+        ...request,
+        sourcePath
+      })) as UploadedAttachment
+    },
+    claimLocalFile: (request) =>
+      ipcRenderer.invoke('uploads:claim-local-file', request) as Promise<void>,
+    beginTransfer: (request) =>
+      ipcRenderer.invoke('uploads:begin-transfer', request) as Promise<UploadTransferStatus>,
+    appendTransfer: (request) =>
+      ipcRenderer.invoke('uploads:append-transfer', request) as Promise<UploadTransferStatus>,
+    getTransferStatus: (request) =>
+      ipcRenderer.invoke(
+        'uploads:transfer-status',
+        request
+      ) as Promise<UploadTransferStatus | null>,
+    finishTransfer: (request) =>
+      ipcRenderer.invoke('uploads:finish-transfer', request) as Promise<UploadedAttachment>,
+    abortTransfer: (request) =>
+      ipcRenderer.invoke('uploads:abort-transfer', request) as Promise<void>,
+    onTransferProgress: (listener) => onIpcMessage('uploads:transfer-progress', listener),
     deleteUpload: (request) => ipcRenderer.invoke('uploads:delete', request) as Promise<void>,
     finalizeSession: (request) =>
       ipcRenderer.invoke('uploads:finalize-session', request) as Promise<UploadedAttachment[]>,
