@@ -57,6 +57,8 @@ type ProviderFormProps = {
   // showCodexSubscriptions: claude-isolated is only meaningful while Claude Code is the active
   // framework, so the wizard/settings page toggles this rather than showing it unconditionally.
   showClaudeIsolated?: boolean
+  // Preferred protocol for a newly selected Custom Gateway, derived from the active framework.
+  defaultCustomApiEndpoint?: ProviderFormValue['apiEndpoint']
 }
 
 const fieldLabelClassName = 'text-xs font-medium text-muted-foreground'
@@ -123,7 +125,8 @@ const ProviderForm = ({
   disabled = false,
   encryptionAvailable = true,
   showCodexSubscriptions = false,
-  showClaudeIsolated = false
+  showClaudeIsolated = false,
+  defaultCustomApiEndpoint = 'anthropic'
 }: ProviderFormProps): React.JSX.Element => {
   const isCustom = value.type === 'custom'
   const isOfficial = value.type === 'official'
@@ -189,7 +192,10 @@ const ProviderForm = ({
           <span className={fieldLabelClassName}>Provider type</span>
           {selectedKind ? <FieldHelp content={selectedKind.description} /> : null}
         </div>
-        <Select value={selectedKey} onValueChange={(key) => onChange(providerKindPatch(key))}>
+        <Select
+          value={selectedKey}
+          onValueChange={(key) => onChange(providerKindPatch(key, defaultCustomApiEndpoint))}
+        >
           <SelectTrigger aria-label="Provider type">
             <span className="flex items-center gap-2">
               <ProviderKindIcon kindKey={selectedKey} />
