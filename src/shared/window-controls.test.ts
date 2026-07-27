@@ -7,7 +7,9 @@ import {
   WINDOW_FIND_READY_CHANNEL,
   WINDOW_FIND_UNREADY_CHANNEL,
   announceWindowFindReady,
+  isWindowFindAppearance,
   isCloseWindowChord,
+  isFindInPageChord,
   subscribeCloseActivePane,
   type KeyChordInput
 } from './window-controls'
@@ -73,6 +75,44 @@ describe('isCloseWindowChord', () => {
 
   it('ignores auto-repeat so a held chord cannot close the window after the pane closes', () => {
     expect(isCloseWindowChord(chord({ meta: true, isAutoRepeat: true }), 'darwin')).toBe(false)
+  })
+})
+
+describe('isFindInPageChord', () => {
+  it('matches Cmd+F on macOS and Ctrl+F on Windows and Linux', () => {
+    expect(isFindInPageChord(chord({ key: 'f', meta: true }), 'darwin')).toBe(true)
+    expect(isFindInPageChord(chord({ key: 'f', control: true }), 'win32')).toBe(true)
+    expect(isFindInPageChord(chord({ key: 'F', control: true }), 'linux')).toBe(true)
+  })
+
+  it('rejects the wrong primary modifier and chords with extra modifiers', () => {
+    expect(isFindInPageChord(chord({ key: 'f', control: true }), 'darwin')).toBe(false)
+    expect(isFindInPageChord(chord({ key: 'f', meta: true }), 'linux')).toBe(false)
+    expect(isFindInPageChord(chord({ key: 'f', meta: true, control: true }), 'darwin')).toBe(false)
+    expect(isFindInPageChord(chord({ key: 'f', meta: true, shift: true }), 'darwin')).toBe(false)
+    expect(isFindInPageChord(chord({ key: 'f', control: true, alt: true }), 'linux')).toBe(false)
+  })
+
+  it('rejects bare, unrelated, key-up, and auto-repeat input', () => {
+    expect(isFindInPageChord(chord({ key: 'f' }), 'darwin')).toBe(false)
+    expect(isFindInPageChord(chord({ key: 'q', meta: true }), 'darwin')).toBe(false)
+    expect(isFindInPageChord(chord({ key: 'f', meta: true, type: 'keyUp' }), 'darwin')).toBe(false)
+    expect(isFindInPageChord(chord({ key: 'f', control: true, isAutoRepeat: true }), 'linux')).toBe(
+      false
+    )
+  })
+})
+
+describe('isWindowFindAppearance', () => {
+  it('accepts the typed light/dark appearance contract', () => {
+    expect(isWindowFindAppearance({ theme: 'light', followsSystem: false })).toBe(true)
+    expect(isWindowFindAppearance({ theme: 'dark', followsSystem: true })).toBe(true)
+  })
+
+  it('rejects malformed appearance payloads received over IPC', () => {
+    expect(isWindowFindAppearance(null)).toBe(false)
+    expect(isWindowFindAppearance({ theme: 'sepia', followsSystem: false })).toBe(false)
+    expect(isWindowFindAppearance({ theme: 'dark', followsSystem: 'yes' })).toBe(false)
   })
 })
 

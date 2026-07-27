@@ -1,4 +1,8 @@
-import { WINDOW_FIND_SHOW_CHANNEL } from '../shared/window-controls'
+import {
+  WINDOW_FIND_APPEARANCE_CHANNEL,
+  WINDOW_FIND_SHOW_CHANNEL,
+  type WindowFindAppearance
+} from '../shared/window-controls'
 import type { FindOverlayOwner } from './find-overlay-registry'
 
 // Preferred geometry for the find overlay, in CSS pixels. 420px ~ 26rem at the app's 16px base.
@@ -25,13 +29,14 @@ export const computeOverlayBounds = (
 // arrow properties) makes these bivariant, so a real Electron BrowserWindow / WebContentsView satisfies
 // the shape without manual casts.
 type OverlayWebContents = {
-  loadFile(path: string): void
+  loadFile(path: string): Promise<void>
   send(channel: string, payload?: unknown): void
   focus(): void
 }
 type OverlayView = {
   webContents: OverlayWebContents
   setBounds(bounds: { x: number; y: number; width: number; height: number }): void
+  setBackgroundColor(color: string): void
   destroy?(): void
 }
 
@@ -63,9 +68,13 @@ export type FindOverlayManager = {
   close: () => void
   destroy: () => void
   isOpen: () => boolean
+  updateAppearance: (appearance: WindowFindAppearance) => void
 }
 
 const ZERO_BOUNDS = { x: 0, y: 0, width: 0, height: 0 }
+const FALLBACK_APPEARANCE: WindowFindAppearance = { theme: 'light', followsSystem: true }
+const LIGHT_BACKGROUND = '#fafaf8'
+const DARK_BACKGROUND = '#1a1a18'
 
 // Owns the find overlay WebContentsView for one main window. The view is created lazily on first open
 // and stays attached for the life of the window: open/close toggle its bounds (real vs. zero) rather
@@ -74,7 +83,12 @@ const ZERO_BOUNDS = { x: 0, y: 0, width: 0, height: 0 }
 // query text is never part of the main window's page search.
 export const createFindOverlayManager = (deps: FindOverlayDeps): FindOverlayManager => {
   let view: OverlayView | null = null
+  let loadPromise: Promise<void> | null = null
   let opened = false
+  let cachedAppearance = FALLBACK_APPEARANCE
+
+  const backgroundFor = (appearance: WindowFindAppearance): string =>
+    appearance.theme === 'dark' ? DARK_BACKGROUND : LIGHT_BACKGROUND
 
   const position = (): void => {
     if (!view) return
@@ -83,7 +97,7 @@ export const createFindOverlayManager = (deps: FindOverlayDeps): FindOverlayMana
   }
 
   const onResize = (): void => {
-    if (opened) position()
+    if (opened && !loadPromise) position()
   }
   deps.mainWindow.on('resize', onResize)
 
@@ -95,6 +109,17 @@ export const createFindOverlayManager = (deps: FindOverlayDeps): FindOverlayMana
     deps.mainWindow.webContents.focus()
   }
 
+  const appearancesEqual = (left: WindowFindAppearance, right: WindowFindAppearance): boolean =>
+    left.theme === right.theme && left.followsSystem === right.followsSystem
+
+  const showLoadedView = (): void => {
+    if (!opened || !view || loadPromise) return
+    // Keep the shortcut path synchronous once the static overlay page is loaded so keystrokes
+    // immediately following Cmd/Ctrl+F land in the query field.
+    view.webContents.focus()
+    view.webContents.send(WINDOW_FIND_SHOW_CHANNEL, cachedAppearance)
+  }
+
   return {
     isOpen: () => opened,
 
@@ -103,23 +128,53 @@ export const createFindOverlayManager = (deps: FindOverlayDeps): FindOverlayMana
         view = deps.createView({
           webPreferences: { preload: deps.preloadPath, sandbox: true, contextIsolation: true }
         })
-        view.webContents.loadFile(deps.overlayHtmlPath)
+        const pendingView = view
+        pendingView.setBounds(ZERO_BOUNDS)
+        pendingView.setBackgroundColor(backgroundFor(cachedAppearance))
+        const firstLoad = view.webContents.loadFile(deps.overlayHtmlPath)
+        loadPromise = firstLoad
+        void firstLoad.then(
+          () => {
+            if (loadPromise !== firstLoad) return
+            loadPromise = null
+            if (opened) position()
+            showLoadedView()
+          },
+          () => {
+            if (loadPromise !== firstLoad) return
+            loadPromise = null
+            close()
+            pendingView.destroy?.()
+            if (view === pendingView) view = null
+          }
+        )
         deps.mainWindow.contentView.addChildView(view)
         // Register the owner with the close handle so the find-IPC close channel can hide this overlay.
         deps.registerOwner?.(view.webContents, { mainWindow: deps.mainWindow, closeOverlay: close })
       }
       opened = true
-      position()
-      view.webContents.focus()
-      view.webContents.send(WINDOW_FIND_SHOW_CHANNEL)
+      if (!loadPromise) {
+        position()
+        showLoadedView()
+      }
     },
 
     close,
+
+    updateAppearance: (appearance) => {
+      if (appearancesEqual(appearance, cachedAppearance)) return
+      cachedAppearance = appearance
+      view?.setBackgroundColor(backgroundFor(appearance))
+      if (opened && view && !loadPromise) {
+        view.webContents.send(WINDOW_FIND_APPEARANCE_CHANNEL, appearance)
+      }
+    },
 
     destroy: () => {
       ;(deps.mainWindow.removeListener ?? deps.mainWindow.off)?.('resize', onResize)
       view?.destroy?.()
       view = null
+      loadPromise = null
       opened = false
     }
   }

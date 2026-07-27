@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createFindOverlay, LAST_QUERY_STORAGE_KEY } from './findOverlay.js'
+
+const overlayHtml = readFileSync(resolve('resources/find-overlay/index.html'), 'utf8')
 
 function setup() {
   const input = document.createElement('input')
@@ -13,6 +17,7 @@ function setup() {
 
   const resultListeners = new Set()
   const showListeners = new Set()
+  const appearanceListeners = new Set()
   const api = {
     findInPage: vi.fn(),
     clearFind: vi.fn(),
@@ -24,6 +29,10 @@ function setup() {
     onShowWindowFind: vi.fn((listener) => {
       showListeners.add(listener)
       return () => showListeners.delete(listener)
+    }),
+    onWindowFindAppearance: vi.fn((listener) => {
+      appearanceListeners.add(listener)
+      return () => appearanceListeners.delete(listener)
     })
   }
 
@@ -35,33 +44,104 @@ function setup() {
     })
   }
 
+  let systemDark = false
+  const systemThemeListeners = new Set()
+  const mediaQuery = {
+    get matches() {
+      return systemDark
+    },
+    addEventListener: vi.fn((_event, listener) => systemThemeListeners.add(listener)),
+    removeEventListener: vi.fn((_event, listener) => systemThemeListeners.delete(listener))
+  }
+  Object.defineProperty(document.defaultView, 'matchMedia', {
+    configurable: true,
+    value: vi.fn(() => mediaQuery)
+  })
+
   const deps = { input, count, prev, next, close, api, storage }
   const emitResult = (r) => resultListeners.forEach((l) => l(r))
-  const emitShow = () => showListeners.forEach((l) => l())
-  return { deps, api, storage, store, input, count, prev, next, close, emitResult, emitShow }
+  const emitShow = (appearance = { theme: 'light', followsSystem: false }) =>
+    showListeners.forEach((l) => l(appearance))
+  const emitAppearance = (appearance) => appearanceListeners.forEach((l) => l(appearance))
+  const emitSystemTheme = (matches) => {
+    systemDark = matches
+    systemThemeListeners.forEach((listener) => listener({ matches }))
+  }
+  return {
+    deps,
+    api,
+    storage,
+    store,
+    input,
+    count,
+    prev,
+    next,
+    close,
+    emitResult,
+    emitShow,
+    emitAppearance,
+    emitSystemTheme,
+    mediaQuery
+  }
 }
 
 describe('createFindOverlay', () => {
   let ctx
   beforeEach(() => {
     document.body.innerHTML = ''
+    document.documentElement.classList.remove('dark')
     ctx = setup()
   })
 
-  it('subscribes to api events and returns a destroy() that unsubscribes both', () => {
+  it('subscribes to api events and returns a destroy() that unsubscribes all', () => {
     const overlay = createFindOverlay(ctx.deps)
     expect(ctx.api.onShowWindowFind).toHaveBeenCalledTimes(1)
     expect(ctx.api.onFindInPageResult).toHaveBeenCalledTimes(1)
+    expect(ctx.api.onWindowFindAppearance).toHaveBeenCalledTimes(1)
 
     overlay.destroy()
 
     // After destroy, emitted events must not reach handlers (no throw, no find calls).
     expect(() => ctx.emitShow()).not.toThrow()
-    expect(() => ctx.emitResult({ requestId: 1, activeMatchOrdinal: 1, matches: 1, finalUpdate: true })).not.toThrow()
+    expect(() => ctx.emitAppearance({ theme: 'dark', followsSystem: false })).not.toThrow()
+    expect(() =>
+      ctx.emitResult({ requestId: 1, activeMatchOrdinal: 1, matches: 1, finalUpdate: true })
+    ).not.toThrow()
   })
 
   it('exports the storage key constant', () => {
     expect(LAST_QUERY_STORAGE_KEY).toBe('open-science:window-find:last-query')
+  })
+
+  it('provides an accessible tooltip for every icon button', () => {
+    const markup = new DOMParser().parseFromString(overlayHtml, 'text/html')
+    const buttons = [...markup.querySelectorAll('button')]
+
+    expect(buttons).toHaveLength(3)
+    for (const button of buttons) {
+      const tooltipId = button.getAttribute('aria-describedby')
+      expect(button.hasAttribute('aria-label')).toBe(true)
+      expect(button.hasAttribute('title')).toBe(false)
+      expect(tooltipId).toBeTruthy()
+      expect(markup.getElementById(tooltipId)?.getAttribute('role')).toBe('tooltip')
+    }
+  })
+
+  it('uses app semantic tokens and visible keyboard focus styles', () => {
+    expect(overlayHtml).not.toMatch(/--(?:bg|text|hover):/)
+    expect(overlayHtml).toContain('--background:')
+    expect(overlayHtml).toContain('--foreground:')
+    expect(overlayHtml).toContain('--muted-foreground:')
+    expect(overlayHtml).toContain('--ring:')
+    expect(overlayHtml).toContain('.dark {')
+    expect(overlayHtml).toContain('input:focus-visible')
+    expect(overlayHtml).toContain('.btn:focus-visible')
+    expect(overlayHtml).toMatch(/\.btn\s*\{[^}]*outline:\s*none/s)
+    expect(overlayHtml).toMatch(/\.btn\s*\{[^}]*border-radius:\s*6px/s)
+    expect(overlayHtml).toMatch(/\.btn\s*\{[^}]*transition:\s*(?:background-color|color)/s)
+    expect(overlayHtml).toContain('@media (prefers-reduced-motion: reduce)')
+    expect(overlayHtml).toContain("matchMedia?.('(prefers-color-scheme: dark)')")
+    expect(overlayHtml.indexOf('matchMedia?.')).toBeLessThan(overlayHtml.indexOf('<style>'))
   })
 
   it('on show: focuses input and restores remembered query, searching with requestId 1', () => {
@@ -90,6 +170,56 @@ describe('createFindOverlay', () => {
 
     expect(focusSpy).toHaveBeenCalledTimes(1)
     expect(ctx.input.value).toBe('')
+    expect(ctx.api.findInPage).not.toHaveBeenCalled()
+  })
+
+  it('applies the renderer-resolved app theme whenever the overlay is shown', () => {
+    createFindOverlay(ctx.deps)
+
+    ctx.emitShow({ theme: 'dark', followsSystem: false })
+
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+  })
+
+  it('lets an explicit light appearance override the dark-system startup fallback', () => {
+    createFindOverlay(ctx.deps)
+    ctx.emitSystemTheme(true)
+    document.documentElement.classList.add('dark')
+
+    ctx.emitShow({ theme: 'light', followsSystem: false })
+
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+  })
+
+  it('live-follows OS theme changes while the app preference is system', () => {
+    createFindOverlay(ctx.deps)
+    ctx.emitShow({ theme: 'light', followsSystem: true })
+
+    ctx.emitSystemTheme(true)
+
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+  })
+
+  it('uses the current OS theme instead of a stale renderer snapshot in system mode', () => {
+    createFindOverlay(ctx.deps)
+
+    ctx.emitShow({ theme: 'dark', followsSystem: true })
+
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+  })
+
+  it('applies an asynchronous appearance update without refocusing or rerunning the query', () => {
+    const focusSpy = vi.spyOn(ctx.input, 'focus')
+    ctx.store.set(LAST_QUERY_STORAGE_KEY, 'protein')
+    createFindOverlay(ctx.deps)
+    ctx.emitShow({ theme: 'light', followsSystem: false })
+    focusSpy.mockClear()
+    ctx.api.findInPage.mockClear()
+
+    ctx.emitAppearance({ theme: 'dark', followsSystem: false })
+
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(focusSpy).not.toHaveBeenCalled()
     expect(ctx.api.findInPage).not.toHaveBeenCalled()
   })
 
@@ -179,7 +309,12 @@ describe('createFindOverlay', () => {
     ctx.input.value = 'protein'
     ctx.input.dispatchEvent(new Event('input', { bubbles: true })) // requestId 1
 
-    const evt = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: false, bubbles: true, cancelable: true })
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: false,
+      bubbles: true,
+      cancelable: true
+    })
     ctx.input.dispatchEvent(evt)
 
     expect(evt.defaultPrevented).toBe(true)
@@ -211,7 +346,12 @@ describe('createFindOverlay', () => {
     ctx.input.value = 'protein'
     ctx.input.dispatchEvent(new Event('input', { bubbles: true })) // requestId 1
 
-    const evt = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true
+    })
     ctx.input.dispatchEvent(evt)
 
     expect(evt.defaultPrevented).toBe(true)
@@ -221,6 +361,23 @@ describe('createFindOverlay', () => {
       findNext: false,
       forward: false
     })
+  })
+
+  it('does not hijack Enter from a focused action button', () => {
+    createFindOverlay(ctx.deps)
+    ctx.input.value = 'protein'
+    ctx.input.dispatchEvent(new Event('input', { bubbles: true }))
+    ctx.api.findInPage.mockClear()
+
+    const evt = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true
+    })
+    ctx.prev.dispatchEvent(evt)
+
+    expect(evt.defaultPrevented).toBe(false)
+    expect(ctx.api.findInPage).not.toHaveBeenCalled()
   })
 
   it('next/prev do nothing when the query is empty', () => {
@@ -251,6 +408,17 @@ describe('createFindOverlay', () => {
     expect(ctx.storage.setItem).not.toHaveBeenCalledWith(LAST_QUERY_STORAGE_KEY, '')
   })
 
+  it('Escape closes the overlay after a navigation button receives focus', () => {
+    createFindOverlay(ctx.deps)
+    ctx.next.focus()
+
+    const evt = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    ctx.next.dispatchEvent(evt)
+
+    expect(evt.defaultPrevented).toBe(true)
+    expect(ctx.api.closeFind).toHaveBeenCalledTimes(1)
+  })
+
   it('destroy() detaches all DOM listeners so later events are inert', () => {
     const overlay = createFindOverlay(ctx.deps)
     ctx.input.value = 'protein'
@@ -263,14 +431,21 @@ describe('createFindOverlay', () => {
 
     ctx.input.value = 'variant'
     ctx.input.dispatchEvent(new Event('input', { bubbles: true }))
-    ctx.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    ctx.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    ctx.input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    )
+    ctx.input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    )
     ctx.next.dispatchEvent(new Event('click', { bubbles: true }))
     ctx.prev.dispatchEvent(new Event('click', { bubbles: true }))
     ctx.close.dispatchEvent(new Event('click', { bubbles: true }))
+    ctx.emitAppearance({ theme: 'dark', followsSystem: false })
 
     expect(ctx.api.findInPage).not.toHaveBeenCalled()
     expect(ctx.api.closeFind).not.toHaveBeenCalled()
     expect(ctx.storage.setItem).not.toHaveBeenCalled()
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+    expect(ctx.mediaQuery.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function))
   })
 })

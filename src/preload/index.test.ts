@@ -92,7 +92,16 @@ type PreloadApi = {
     findInPage?: (request: unknown) => void
     clearFind?: () => void
     closeFind?: () => void
-    onShowWindowFind?: (listener: () => void) => unknown
+    onShowWindowFind?: (
+      listener: (appearance: { theme: 'light' | 'dark'; followsSystem: boolean }) => void
+    ) => unknown
+    onWindowFindAppearance?: (
+      listener: (appearance: { theme: 'light' | 'dark'; followsSystem: boolean }) => void
+    ) => unknown
+    announceWindowFindAppearance?: (appearance: {
+      theme: 'light' | 'dark'
+      followsSystem: boolean
+    }) => void
     announceWindowFindReady?: () => unknown
   }
 }
@@ -116,6 +125,7 @@ afterEach(() => {
   invokeMock.mockClear()
   sendMock.mockClear()
   getPathForFileMock.mockReset()
+  onMock.mockClear()
 })
 
 describe('preload bridge — window find IPC channels', () => {
@@ -129,18 +139,43 @@ describe('preload bridge — window find IPC channels', () => {
     expect(sendMock).toHaveBeenNthCalledWith(2, 'window:clear-find-in-page')
   })
 
-  it('forwards the overlay close request and subscribes to the show event from main', () => {
+  it('forwards the overlay close request and both appearance-bearing events from main', () => {
+    const showListener = vi.fn()
+    const appearanceListener = vi.fn()
     api.window.closeFind?.()
-    api.window.onShowWindowFind?.(() => undefined)
+    api.window.onShowWindowFind?.(showListener)
+    api.window.onWindowFindAppearance?.(appearanceListener)
 
     expect(sendMock).toHaveBeenCalledWith('window:find-close')
     expect(onMock).toHaveBeenCalledWith('window:find-show', expect.any(Function))
+    expect(onMock).toHaveBeenCalledWith('window:find-appearance', expect.any(Function))
+
+    const wrappedListener = onMock.mock.calls.find(
+      ([channel]) => channel === 'window:find-show'
+    )?.[1] as ((event: unknown, appearance: unknown) => void) | undefined
+    const wrappedAppearanceListener = onMock.mock.calls.find(
+      ([channel]) => channel === 'window:find-appearance'
+    )?.[1] as ((event: unknown, appearance: unknown) => void) | undefined
+    const appearance = { theme: 'dark' as const, followsSystem: false }
+    wrappedListener?.({}, appearance)
+    wrappedAppearanceListener?.({}, appearance)
+
+    expect(showListener).toHaveBeenCalledWith(appearance)
+    expect(appearanceListener).toHaveBeenCalledWith(appearance)
   })
 
   it('announces Workspace find readiness to main on mount', () => {
     api.window.announceWindowFindReady?.()
 
     expect(sendMock).toHaveBeenCalledWith('shortcut:window-find-ready')
+  })
+
+  it('forwards renderer theme changes to main as a typed appearance payload', () => {
+    const appearance = { theme: 'dark' as const, followsSystem: false }
+
+    api.window.announceWindowFindAppearance?.(appearance)
+
+    expect(sendMock).toHaveBeenCalledWith('window:find-appearance-changed', appearance)
   })
 })
 

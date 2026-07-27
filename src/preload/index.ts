@@ -218,11 +218,14 @@ import {
   WINDOW_CLOSE_CONFIRM_RESPONSE_CHANNEL,
   WINDOW_FIND_CLEAR_CHANNEL,
   WINDOW_FIND_CLOSE_CHANNEL,
+  WINDOW_FIND_APPEARANCE_CHANNEL,
+  WINDOW_FIND_APPEARANCE_CHANGED_CHANNEL,
   WINDOW_FIND_REQUEST_CHANNEL,
   WINDOW_FIND_RESULT_CHANNEL,
   WINDOW_FIND_SHOW_CHANNEL,
   type CloseConfirmRequest,
   type CloseConfirmResponse,
+  type WindowFindAppearance,
   type WindowFindRequest,
   type WindowFindResult
 } from '../shared/window-controls'
@@ -645,7 +648,9 @@ type OpenScienceAPI = {
     clearFind?: () => void
     announceWindowFindReady?: () => RemoveListener
     onFindInPageResult?: (listener: AcpListener<WindowFindResult>) => RemoveListener
-    onShowWindowFind?: (listener: () => void) => RemoveListener
+    onShowWindowFind?: (listener: AcpListener<WindowFindAppearance>) => RemoveListener
+    onWindowFindAppearance?: (listener: AcpListener<WindowFindAppearance>) => RemoveListener
+    announceWindowFindAppearance?: (appearance: WindowFindAppearance) => void
     closeFind?: () => void
     // Fires when main asks to confirm a close/quit; the renderer renders the modal and replies.
     onCloseConfirmRequest?: (listener: (payload: CloseConfirmRequest) => void) => RemoveListener
@@ -1235,6 +1240,9 @@ const api: OpenScienceAPI = {
     // Overlay-only surface: main signals the bar was shown (focus + restore remembered query), and the
     // overlay asks main to hide it. The localhost Web UI never loads this overlay, so both stay optional.
     onShowWindowFind: (listener) => onIpcMessage(WINDOW_FIND_SHOW_CHANNEL, listener),
+    onWindowFindAppearance: (listener) => onIpcMessage(WINDOW_FIND_APPEARANCE_CHANNEL, listener),
+    announceWindowFindAppearance: (appearance) =>
+      ipcRenderer.send(WINDOW_FIND_APPEARANCE_CHANGED_CHANNEL, appearance),
     closeFind: () => ipcRenderer.send(WINDOW_FIND_CLOSE_CHANNEL),
     onCloseConfirmRequest: (listener) =>
       onIpcMessage(WINDOW_CLOSE_CONFIRM_REQUEST_CHANNEL, listener),

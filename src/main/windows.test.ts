@@ -5,6 +5,8 @@ import {
   CLOSE_ACTIVE_PANE_READY_CHANNEL,
   CLOSE_ACTIVE_PANE_UNREADY_CHANNEL,
   WINDOW_FIND_READY_CHANNEL,
+  WINDOW_FIND_UNREADY_CHANNEL,
+  WINDOW_FIND_APPEARANCE_CHANGED_CHANNEL,
   type KeyChordInput
 } from '../shared/window-controls'
 
@@ -22,6 +24,7 @@ const { findOverlayMock } = vi.hoisted(() => ({
     open: vi.fn(),
     close: vi.fn(),
     destroy: vi.fn(),
+    updateAppearance: vi.fn(),
     isOpen: vi.fn(() => false)
   }
 }))
@@ -256,6 +259,7 @@ describe('close chord interception', () => {
     findOverlayMock.open.mockClear()
     findOverlayMock.close.mockClear()
     findOverlayMock.destroy.mockClear()
+    findOverlayMock.updateAppearance.mockClear()
     findOverlayMock.isOpen.mockReturnValue(false)
   })
 
@@ -268,6 +272,14 @@ describe('close chord interception', () => {
     handler!({ sender: window.webContents })
   }
 
+  const fireAppearance = (sender: unknown, appearance: unknown): void => {
+    const handler = ipcMainOnMock.mock.calls.find(
+      ([registered]) => registered === WINDOW_FIND_APPEARANCE_CHANGED_CHANNEL
+    )?.[1] as ((event: { sender: unknown }, payload: unknown) => void) | undefined
+    expect(handler).toBeDefined()
+    handler!({ sender }, appearance)
+  }
+
   const signalRendererReady = (window: FakeBrowserWindow): void =>
     fireHandshake(window, CLOSE_ACTIVE_PANE_READY_CHANNEL)
 
@@ -276,6 +288,9 @@ describe('close chord interception', () => {
 
   const signalWindowFindReady = (window: FakeBrowserWindow): void =>
     fireHandshake(window, WINDOW_FIND_READY_CHANNEL)
+
+  const signalWindowFindGone = (window: FakeBrowserWindow): void =>
+    fireHandshake(window, WINDOW_FIND_UNREADY_CHANNEL)
 
   // Drives one of the captured webContents lifecycle handlers (render-process-gone, unresponsive, ...).
   const fireWebContentsEvent = (
@@ -337,6 +352,56 @@ describe('close chord interception', () => {
     expect(window.closeMock).not.toHaveBeenCalled()
   })
 
+  it('forwards valid theme changes from this renderer to the overlay manager', () => {
+    createMainWindow()
+    const window = currentWindow!
+    const appearance = { theme: 'dark', followsSystem: false }
+
+    fireAppearance(window.webContents, appearance)
+
+    expect(findOverlayMock.updateAppearance).toHaveBeenCalledWith(appearance)
+  })
+
+  it('rejects malformed theme changes and messages from another renderer', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    fireAppearance(window.webContents, { theme: 'sepia', followsSystem: false })
+    fireAppearance({}, { theme: 'dark', followsSystem: false })
+
+    expect(findOverlayMock.updateAppearance).not.toHaveBeenCalled()
+  })
+
+  it('unregisters the window-scoped theme listener with the same handler on close', () => {
+    createMainWindow()
+    const window = currentWindow!
+    const registeredHandler = ipcMainOnMock.mock.calls.find(
+      ([registered]) => registered === WINDOW_FIND_APPEARANCE_CHANGED_CHANNEL
+    )?.[1]
+    const closedHandler = window.handlers.get('closed')?.[0]
+
+    expect(registeredHandler).toBeDefined()
+    expect(closedHandler).toBeDefined()
+    closedHandler!({ preventDefault: vi.fn(), defaultPrevented: false })
+
+    expect(ipcMainRemoveListenerMock).toHaveBeenCalledWith(
+      WINDOW_FIND_APPEARANCE_CHANGED_CHANNEL,
+      registeredHandler
+    )
+  })
+
+  it('closes the find overlay when the searchable Workspace unmounts', () => {
+    createMainWindow()
+    const window = currentWindow!
+    signalWindowFindReady(window)
+    fireInput(window, findChord())
+    findOverlayMock.close.mockClear()
+
+    signalWindowFindGone(window)
+
+    expect(findOverlayMock.close).toHaveBeenCalledTimes(1)
+  })
+
   it('closes the find overlay on Escape while it is open, regardless of input focus', () => {
     createMainWindow()
     const window = currentWindow!
@@ -368,6 +433,18 @@ describe('close chord interception', () => {
 
     expect(window.closeMock).toHaveBeenCalledTimes(1)
     expect(window.sendMock).not.toHaveBeenCalled()
+  })
+
+  it('closes the find overlay before a top-level document navigation', () => {
+    createMainWindow()
+    const window = currentWindow!
+    signalWindowFindReady(window)
+    fireInput(window, findChord())
+    findOverlayMock.close.mockClear()
+
+    fireWebContentsEvent(window, 'did-start-navigation', mainFrameNavigation)
+
+    expect(findOverlayMock.close).toHaveBeenCalledTimes(1)
   })
 
   it('keeps forwarding when a subframe or same-document navigation fires', () => {
@@ -420,6 +497,18 @@ describe('close chord interception', () => {
     expect(window.sendMock).not.toHaveBeenCalled()
   })
 
+  it('closes the find overlay when the renderer process is gone', () => {
+    createMainWindow()
+    const window = currentWindow!
+    signalWindowFindReady(window)
+    fireInput(window, findChord())
+    findOverlayMock.close.mockClear()
+
+    fireWebContentsEvent(window, 'render-process-gone')
+
+    expect(findOverlayMock.close).toHaveBeenCalledTimes(1)
+  })
+
   it('closes directly while the renderer is unresponsive, then forwards again once responsive', () => {
     createMainWindow()
     const window = currentWindow!
@@ -437,6 +526,18 @@ describe('close chord interception', () => {
     fireInput(window, closeChord())
     expect(window.sendMock).toHaveBeenCalledWith(CLOSE_ACTIVE_PANE_CHANNEL)
     expect(window.closeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes the find overlay when the renderer becomes unresponsive', () => {
+    createMainWindow()
+    const window = currentWindow!
+    signalWindowFindReady(window)
+    fireInput(window, findChord())
+    findOverlayMock.close.mockClear()
+
+    fireWebContentsEvent(window, 'unresponsive')
+
+    expect(findOverlayMock.close).toHaveBeenCalledTimes(1)
   })
 
   it('forwards again after unresponsive -> crash -> reload -> ready, with no responsive event', () => {

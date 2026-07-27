@@ -5,7 +5,7 @@ import {
   createFindOverlayManager,
   type FindOverlayManager
 } from './find-overlay'
-import { WINDOW_FIND_SHOW_CHANNEL } from '../shared/window-controls'
+import { WINDOW_FIND_APPEARANCE_CHANNEL, WINDOW_FIND_SHOW_CHANNEL } from '../shared/window-controls'
 
 describe('computeOverlayBounds', () => {
   it('anchors the bar to the top-right of the content area with a margin', () => {
@@ -29,6 +29,7 @@ type FindOverlayTestFakes = {
   view: {
     webContents: { loadFile: Mock; send: Mock; focus: Mock }
     setBounds: Mock
+    setBackgroundColor: Mock
     destroy: Mock
   }
   mainWindow: {
@@ -45,8 +46,9 @@ type FindOverlayTestFakes = {
 
 const createFakes = (): FindOverlayTestFakes => {
   const view = {
-    webContents: { loadFile: vi.fn(), send: vi.fn(), focus: vi.fn() },
+    webContents: { loadFile: vi.fn(() => Promise.resolve()), send: vi.fn(), focus: vi.fn() },
     setBounds: vi.fn(),
+    setBackgroundColor: vi.fn(),
     destroy: vi.fn()
   }
   const mainWindow = {
@@ -69,19 +71,50 @@ const createFakes = (): FindOverlayTestFakes => {
 }
 
 describe('find overlay manager', () => {
-  it('open() creates, loads, attaches, positions, focuses the overlay and signals show', () => {
+  it('waits for the overlay page to load, then focuses and shows without waiting for appearance', async () => {
+    const { view, manager } = createFakes()
+    let finishLoad: (() => void) | undefined
+    view.webContents.loadFile.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishLoad = resolve
+      })
+    )
+
+    manager.open()
+
+    expect(view.setBounds).toHaveBeenCalledWith({ x: 0, y: 0, width: 0, height: 0 })
+    expect(view.setBounds).not.toHaveBeenCalledWith({ x: 572, y: 8, width: 420, height: 40 })
+    expect(view.webContents.focus).not.toHaveBeenCalled()
+    expect(view.webContents.send).not.toHaveBeenCalled()
+
+    finishLoad?.()
+    await Promise.resolve()
+
+    expect(view.webContents.focus).toHaveBeenCalledTimes(1)
+    expect(view.webContents.send).toHaveBeenCalledWith(WINDOW_FIND_SHOW_CHANNEL, {
+      theme: 'light',
+      followsSystem: true
+    })
+  })
+
+  it('open() creates, loads, attaches, positions, focuses the overlay and signals show', async () => {
     const { view, mainWindow, createView, registerOwner, manager } = createFakes()
 
     manager.open()
+    await vi.waitFor(() => expect(view.webContents.send).toHaveBeenCalledTimes(1))
 
     expect(createView).toHaveBeenCalledWith({
       webPreferences: { preload: PRELOAD_PATH, sandbox: true, contextIsolation: true }
     })
     expect(view.webContents.loadFile).toHaveBeenCalledWith(HTML_PATH)
     expect(mainWindow.contentView.addChildView).toHaveBeenCalledWith(view)
+    expect(view.setBackgroundColor).toHaveBeenCalledWith('#fafaf8')
     expect(view.setBounds).toHaveBeenCalledWith({ x: 572, y: 8, width: 420, height: 40 })
     expect(view.webContents.focus).toHaveBeenCalledTimes(1)
-    expect(view.webContents.send).toHaveBeenCalledWith(WINDOW_FIND_SHOW_CHANNEL)
+    expect(view.webContents.send).toHaveBeenCalledWith(WINDOW_FIND_SHOW_CHANNEL, {
+      theme: 'light',
+      followsSystem: true
+    })
     expect(registerOwner).toHaveBeenCalledWith(view.webContents, {
       mainWindow,
       closeOverlay: expect.any(Function)
@@ -105,16 +138,74 @@ describe('find overlay manager', () => {
     expect(manager.isOpen()).toBe(false)
   })
 
-  it('reuses the same view across repeated opens and re-signals show each time', () => {
+  it('reuses the view and synchronously focuses/shows it with the cached appearance', async () => {
     const { view, mainWindow, createView, manager } = createFakes()
 
     manager.open()
+    await vi.waitFor(() => expect(view.webContents.send).toHaveBeenCalledTimes(1))
+    manager.close()
+    manager.updateAppearance({ theme: 'dark', followsSystem: false })
+    view.webContents.send.mockClear()
+    view.webContents.focus.mockClear()
+
     manager.open()
 
     expect(createView).toHaveBeenCalledTimes(1)
     expect(mainWindow.contentView.addChildView).toHaveBeenCalledTimes(1)
-    expect(view.webContents.send).toHaveBeenCalledTimes(2)
-    expect(view.webContents.focus).toHaveBeenCalledTimes(2)
+    expect(view.webContents.focus).toHaveBeenCalledTimes(1)
+    expect(view.webContents.send).toHaveBeenCalledTimes(1)
+    expect(view.webContents.send).toHaveBeenCalledWith(WINDOW_FIND_SHOW_CHANNEL, {
+      theme: 'dark',
+      followsSystem: false
+    })
+    expect(view.setBackgroundColor).toHaveBeenLastCalledWith('#1a1a18')
+  })
+
+  it('updates an open overlay appearance without refocusing or signaling show', async () => {
+    const { view, manager } = createFakes()
+    manager.open()
+    await vi.waitFor(() => expect(view.webContents.send).toHaveBeenCalledTimes(1))
+    view.webContents.send.mockClear()
+    view.webContents.focus.mockClear()
+
+    manager.updateAppearance({ theme: 'dark', followsSystem: false })
+
+    expect(view.webContents.focus).not.toHaveBeenCalled()
+    expect(view.webContents.send).toHaveBeenCalledTimes(1)
+    expect(view.webContents.send).toHaveBeenCalledWith(WINDOW_FIND_APPEARANCE_CHANNEL, {
+      theme: 'dark',
+      followsSystem: false
+    })
+    expect(view.setBackgroundColor).toHaveBeenLastCalledWith('#1a1a18')
+  })
+
+  it('caches appearance updates while hidden without sending to the overlay', () => {
+    const { view, manager } = createFakes()
+
+    manager.updateAppearance({ theme: 'dark', followsSystem: false })
+
+    expect(view.webContents.send).not.toHaveBeenCalled()
+    manager.open()
+    expect(view.setBackgroundColor).toHaveBeenCalledWith('#1a1a18')
+  })
+
+  it('disposes a view whose page fails to load and creates a fresh view on retry', async () => {
+    const { view, createView, manager } = createFakes()
+    let failLoad: ((reason: Error) => void) | undefined
+    view.webContents.loadFile.mockReturnValueOnce(
+      new Promise<void>((_resolve, reject) => {
+        failLoad = reject
+      })
+    )
+
+    manager.open()
+    failLoad?.(new Error('load failed'))
+    await vi.waitFor(() => expect(manager.isOpen()).toBe(false))
+
+    expect(view.destroy).toHaveBeenCalledTimes(1)
+    manager.open()
+
+    expect(createView).toHaveBeenCalledTimes(2)
   })
 
   it('close() hides the overlay, clears the main selection, and returns focus to the main window', () => {
@@ -140,7 +231,7 @@ describe('find overlay manager', () => {
     expect(mainWindow.webContents.focus).not.toHaveBeenCalled()
   })
 
-  it('repositions on resize while open and ignores resize while hidden', () => {
+  it('repositions on resize only after the page is loaded and while open', async () => {
     const { view, mainWindow, manager } = createFakes()
     const resizeListener = mainWindow.on.mock.calls.find(([event]) => event === 'resize')?.[1] as
       (() => void) | undefined
@@ -152,6 +243,7 @@ describe('find overlay manager', () => {
     resizeListener!()
 
     manager.open()
+    await Promise.resolve()
     view.setBounds.mockClear()
     resizeListener!()
 
