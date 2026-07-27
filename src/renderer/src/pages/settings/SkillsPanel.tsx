@@ -26,7 +26,7 @@ import { SkillEditor, SkillEditLoader } from './SkillEditor'
 import { SkillImportView } from './SkillImportView'
 import { SkillUploadView } from './SkillUploadView'
 import { AgentHomeImportView } from './AgentHomeImportView'
-import { SettingsIconAction, SettingsToggle } from './SettingsLayout'
+import { SettingsIconAction, SettingsRow, SettingsSection, SettingsToggle } from './SettingsLayout'
 
 // The skills panel sub-view, driven by the settings navigation history so each is a breadcrumb page.
 export type SkillsView =
@@ -69,6 +69,12 @@ const SkillsPanel = ({
   const setSkillEnabled = useSettingsStore((state) => state.setSkillEnabled)
   const createSkill = useSettingsStore((state) => state.createSkill)
   const deleteSkill = useSettingsStore((state) => state.deleteSkill)
+  const conversationSkillImportEnabled = useSettingsStore(
+    (state) => state.conversationSkillImportEnabled
+  )
+  const setConversationSkillImportEnabled = useSettingsStore(
+    (state) => state.setConversationSkillImportEnabled
+  )
   const agentFrameworkId = useSettingsStore((state) => state.agentFrameworkId)
   const [filter, setFilter] = useState<SourceFilter>('all')
   const [query, setQuery] = useState('')
@@ -139,6 +145,34 @@ const SkillsPanel = ({
 
   return (
     <div className="p-5">
+      <SettingsSection
+        title="Conversation imports"
+        description="Choose what conversations can import into Open Science."
+        aria-label="Conversation imports"
+        className="mb-4 border-b border-border pb-4"
+        contentClassName="mt-1"
+      >
+        <SettingsRow
+          label="Skill packages"
+          description={
+            <span className="line-clamp-2">
+              Let the agent detect attached .zip and .skill packages and ask before importing them.
+            </span>
+          }
+          className="min-h-0 py-1.5"
+        >
+          <div className="flex justify-end">
+            <SettingsToggle
+              enabled={conversationSkillImportEnabled}
+              aria-label="Toggle conversation Skill imports"
+              onToggle={() =>
+                void setConversationSkillImportEnabled(!conversationSkillImportEnabled)
+              }
+            />
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
       <div className="mb-4 flex items-center gap-2">
         <Select value={filter} onValueChange={(value) => setFilter(value as SourceFilter)}>
           <SelectTrigger aria-label="Filter skills by source" className="w-36">

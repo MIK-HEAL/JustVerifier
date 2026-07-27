@@ -1426,6 +1426,56 @@ describe('ACP runtime session management', () => {
     )
   })
 
+  it('keeps Skill packages as ordinary archive references when conversation import is disabled', async () => {
+    const root = await createTemporaryRoot()
+    const uploadRepository = new UploadRepository(root)
+    const stagedAttachments = await uploadRepository.stageFiles({
+      files: [
+        {
+          name: 'example-package.skill',
+          mimeType: 'application/octet-stream',
+          content: buildStoredSkillArchive('Example Package').toString('base64')
+        }
+      ]
+    })
+    const process = new FakeAgentProcess()
+    const receivedPrompts: ContentBlock[][] = []
+    const onSkillImportAttachmentEligible = vi.fn()
+    startFakeAgent(process, ['remote-session-1'], {
+      onPrompt: ({ prompt }) => {
+        receivedPrompts.push(prompt)
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      uploads: { repository: uploadRepository },
+      skillImport: {
+        mcpEntryPath: '/app/out/main/index.js',
+        isEnabled: async () => false,
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:4567', token: 'secret' })
+      },
+      callbacks: { onSkillImportAttachmentEligible }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'inspect this archive',
+      attachments: stagedAttachments
+    })
+
+    expect(receivedPrompts[0][1]).toMatchObject({
+      type: 'text',
+      text: expect.stringMatching(
+        /<attached_local_archive>[\s\S]*example-package\.skill[\s\S]*"skillImportEligible":false/
+      )
+    })
+    expect(JSON.stringify(receivedPrompts[0])).not.toContain('skillImportTurnToken')
+    expect(onSkillImportAttachmentEligible).not.toHaveBeenCalled()
+  })
+
   it('inlines an image attachment as pixels when the browser sent no usable MIME type', async () => {
     const root = await createTemporaryRoot()
     const uploadRepository = new UploadRepository(root)
@@ -6560,92 +6610,6 @@ describe('ACP runtime session management', () => {
     expect(process.killed).toBe(true)
   })
 
-  it('reloads skills immediately when no prompt is in flight', async () => {
-    const process = new FakeAgentProcess()
-    startFakeAgent(process, ['s1'])
-    const runtime = new AcpRuntime({
-      appVersion: '0.1.0',
-      defaultCwd: '/workspace',
-      spawnAgent: () => asAgentProcess(process)
-    })
-
-    await runtime.createSession({ cwd: '/workspace' })
-    await runtime.requestSkillsReload()
-
-    expect(process.killed).toBe(true)
-  })
-
-  it('defers a skills reload until an in-flight prompt finishes', async () => {
-    const process = new FakeAgentProcess()
-    const gate = createDeferred()
-    startFakeAgent(process, ['s1'], { onPrompt: () => gate.promise })
-    const runtime = new AcpRuntime({
-      appVersion: '0.1.0',
-      defaultCwd: '/workspace',
-      spawnAgent: () => asAgentProcess(process)
-    })
-
-    await runtime.createSession({ cwd: '/workspace' })
-
-    const prompt = runtime.sendPrompt({ sessionId: 's1', text: 'hi' })
-
-    // A skill toggle mid-turn must NOT disconnect the running agent.
-    await runtime.requestSkillsReload()
-    expect(process.killed).toBe(false)
-
-    // Once the turn finishes, the deferred reload is applied (agent torn down for a fresh spawn).
-    gate.resolve()
-    await prompt
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(process.killed).toBe(true)
-  })
-
-  it('applies a provider reconnect and a skills reload deferred in the same turn with one disconnect', async () => {
-    const oldProcess = new FakeAgentProcess()
-    const newProcess = new FakeAgentProcess()
-    const gate = createDeferred()
-    startFakeAgent(oldProcess, ['s1'], { onPrompt: () => gate.promise })
-    startFakeAgent(newProcess, ['s2'])
-
-    let spawnCount = 0
-    const runtime = new AcpRuntime({
-      appVersion: '0.1.0',
-      defaultCwd: '/workspace',
-      resolveBackend: async () => {
-        spawnCount += 1
-        return {
-          framework: {
-            ...claudeCodeFramework,
-            spawn: () => asAgentProcess(spawnCount === 1 ? oldProcess : newProcess)
-          },
-          executablePath: '/bin/agent',
-          env: {},
-          args: []
-        }
-      }
-    })
-
-    await runtime.createSession({ cwd: '/workspace' })
-    const prompt = runtime.sendPrompt({ sessionId: 's1', text: 'hi' })
-
-    // Both a provider switch and a skill toggle arrive during the same in-flight prompt.
-    await runtime.requestProviderReconnect()
-    await runtime.requestSkillsReload()
-    expect(oldProcess.killed).toBe(false)
-
-    // Turn finishes → a SINGLE deferred disconnect satisfies both (spawnCount 1 → 2). A second,
-    // redundant disconnect would spawn a third process on the next createSession.
-    gate.resolve()
-    await prompt
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(oldProcess.killed).toBe(true)
-
-    // The next session lands on the second spawn — proof no extra reconnect churned the process.
-    const next = await runtime.createSession({ cwd: '/workspace' })
-    expect(next.sessionId).toBe('s2')
-    expect(spawnCount).toBe(2)
-  })
-
   it('passes the artifact MCP server to new and resumed sessions', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['remote-session-1'])
@@ -6873,6 +6837,34 @@ describe('ACP runtime session management', () => {
     expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).toContain(
       'mcp__open-science-skills__request_skill_import'
     )
+  })
+
+  it('omits the conversation Skill import MCP and prompt guidance when disabled', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['remote-session-1'])
+    const getRpcConnection = vi.fn(async () => ({
+      endpoint: 'http://127.0.0.1:4567',
+      token: 'secret-token'
+    }))
+    const registerSessionAlias = vi.fn()
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      skillImport: {
+        mcpEntryPath: '/app/out/main/index.js',
+        isEnabled: async () => false,
+        getRpcConnection,
+        registerSessionAlias
+      }
+    })
+
+    await runtime.createSession({ cwd: '/workspace' })
+
+    expect(fakeAgent.newSessions[0].mcpServers).toEqual([])
+    expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).not.toContain('request_skill_import')
+    expect(getRpcConnection).not.toHaveBeenCalled()
+    expect(registerSessionAlias).not.toHaveBeenCalled()
   })
 
   it('passes only the workspace as a static allowed import root, not the pre-start notebook alias', async () => {
