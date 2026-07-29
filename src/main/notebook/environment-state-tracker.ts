@@ -4,20 +4,26 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
-import type {
-  NotebookEnvironmentManifest,
-  NotebookEnvironmentOperation,
-  NotebookEnvironmentPackageChange,
-  NotebookEnvironmentPackage,
-  NotebookInventoryRefreshAttempt,
-  NotebookLiveEnvironmentOverlay,
-  NotebookLanguage,
-  NotebookPackageInstallerAttempt
+import {
+  isNotebookEnvironmentOperationLogTruncation,
+  type NotebookEnvironmentManifest,
+  type NotebookEnvironmentOperation,
+  type NotebookEnvironmentOperationLogTruncation,
+  type NotebookEnvironmentPackageChange,
+  type NotebookEnvironmentPackage,
+  type NotebookInventoryRefreshAttempt,
+  type NotebookLiveEnvironmentOverlay,
+  type NotebookLanguage,
+  type NotebookPackageInstallerAttempt
 } from '../../shared/notebook'
 
 const execFileAsync = promisify(execFile)
 const INSPECTION_TIMEOUT_MS = 30_000
 const MAX_INVENTORY_CACHE_AGE_MS = 24 * 60 * 60 * 1_000
+// The mutable binding cache is read on every run, so keep completed operation history bounded by
+// both shape and serialized size. Recovery-critical entries may temporarily exceed these limits.
+const MAX_OPERATION_LOG_ENTRIES = 200
+const MAX_ENVIRONMENT_BINDING_BYTES = 256 * 1_024
 
 type EnvironmentCaptureTarget = {
   language: NotebookLanguage
@@ -63,6 +69,7 @@ type EnvironmentInventoryBindingCache = {
   dirtyReason?: 'package-mutation' | 'fingerprint-changed' | 'recovery'
   verifiedAt?: string
   operationLog: NotebookEnvironmentOperation[]
+  operationLogTruncation?: NotebookEnvironmentOperationLogTruncation
 }
 
 type EnvironmentRunCaptureStart = {
@@ -102,6 +109,10 @@ type EnvironmentStateTrackerOptions = {
   inspectInstalled?: (target: EnvironmentCaptureTarget) => Promise<InstalledEnvironmentInventory>
   captureFingerprint?: (target: EnvironmentCaptureTarget) => Promise<string | undefined>
   now?: () => Date
+  operationLogLimits?: {
+    maxEntries: number
+    maxBytes: number
+  }
 }
 
 class EnvironmentManifestPublicationError extends Error {
@@ -117,6 +128,90 @@ const sha256 = (value: string): string => createHash('sha256').update(value).dig
 
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
+
+const serializedBindingBytes = (cache: EnvironmentInventoryBindingCache): number =>
+  Buffer.byteLength(`${JSON.stringify(cache, null, 2)}\n`, 'utf8')
+
+const operationLogTruncationFor = (
+  retained: NotebookEnvironmentOperation[],
+  omittedCount: number
+): NotebookEnvironmentOperationLogTruncation | undefined => {
+  if (omittedCount <= 0) return undefined
+  const earliestRetainedAt = retained
+    .map((operation) => operation.timestamp)
+    .filter((timestamp) => timestamp.length > 0)
+    .sort()[0]
+  return {
+    omittedCount,
+    ...(earliestRetainedAt ? { earliestRetainedAt } : {})
+  }
+}
+
+const bindingWithOperationLog = (
+  cache: EnvironmentInventoryBindingCache,
+  operationLog: NotebookEnvironmentOperation[],
+  operationLogTruncation: NotebookEnvironmentOperationLogTruncation | undefined
+): EnvironmentInventoryBindingCache => {
+  const candidate = { ...cache, operationLog }
+  if (operationLogTruncation) candidate.operationLogTruncation = operationLogTruncation
+  else delete candidate.operationLogTruncation
+  return candidate
+}
+
+const compactOperationLog = (
+  cache: EnvironmentInventoryBindingCache,
+  limits: { maxEntries: number; maxBytes: number }
+): boolean => {
+  const protectedOperationIds = new Set(cache.dirtyOperationId ? [cache.dirtyOperationId] : [])
+  const retainedIndexes = new Set<number>()
+
+  cache.operationLog.forEach((operation, index) => {
+    if (!protectedOperationIds.has(operation.operationId)) return
+    retainedIndexes.add(index)
+  })
+
+  // Retain a contiguous suffix of completed operations, plus any recovery-critical entry.
+  for (let index = cache.operationLog.length - 1; index >= 0; index -= 1) {
+    if (retainedIndexes.has(index)) continue
+    if (retainedIndexes.size >= limits.maxEntries) break
+    retainedIndexes.add(index)
+  }
+
+  let retained = cache.operationLog.filter((_operation, index) => retainedIndexes.has(index))
+  const previouslyOmitted = cache.operationLogTruncation?.omittedCount ?? 0
+  const originalLength = cache.operationLog.length
+  let nextTruncation = operationLogTruncationFor(
+    retained,
+    previouslyOmitted + originalLength - retained.length
+  )
+
+  // Enforce the byte budget against the exact pretty-printed binding representation written below.
+  // A recovery-critical operation is retained even when it makes the binding temporarily exceed it.
+  while (
+    serializedBindingBytes(bindingWithOperationLog(cache, retained, nextTruncation)) >
+    limits.maxBytes
+  ) {
+    const removableIndex = retained.findIndex(
+      (operation) => !protectedOperationIds.has(operation.operationId)
+    )
+    if (removableIndex < 0) break
+    retained = retained.filter((_operation, index) => index !== removableIndex)
+    nextTruncation = operationLogTruncationFor(
+      retained,
+      previouslyOmitted + originalLength - retained.length
+    )
+  }
+
+  const newlyOmitted = originalLength - retained.length
+  const changed =
+    newlyOmitted > 0 ||
+    cache.operationLogTruncation?.omittedCount !== nextTruncation?.omittedCount ||
+    cache.operationLogTruncation?.earliestRetainedAt !== nextTruncation?.earliestRetainedAt
+
+  cache.operationLog = retained
+  cache.operationLogTruncation = nextTruncation
+  return changed
+}
 
 const packageKey = (value: string): string => value.normalize('NFC').toLocaleLowerCase('und')
 
@@ -447,12 +542,17 @@ class EnvironmentStateTracker {
     target: EnvironmentCaptureTarget
   ) => Promise<string | undefined>
   private readonly now: () => Date
+  private readonly operationLogLimits: { maxEntries: number; maxBytes: number }
   private readonly targetQueues = new Map<string, Promise<void>>()
 
   constructor(private readonly options: EnvironmentStateTrackerOptions) {
     this.inspectInstalled = options.inspectInstalled ?? inspectInstalledDefault
     this.captureFingerprint = options.captureFingerprint ?? captureFingerprintDefault
     this.now = options.now ?? (() => new Date())
+    this.operationLogLimits = options.operationLogLimits ?? {
+      maxEntries: MAX_OPERATION_LOG_ENTRIES,
+      maxBytes: MAX_ENVIRONMENT_BINDING_BYTES
+    }
   }
 
   async prepareRun(target: EnvironmentCaptureTarget): Promise<EnvironmentRunCaptureStart> {
@@ -519,6 +619,9 @@ class EnvironmentStateTracker {
     return this.serializeTarget(target, async () => {
       const capturedAt = this.now().toISOString()
       const cache = await this.readBinding(target)
+      if (compactOperationLog(cache, this.operationLogLimits)) {
+        await this.writeBinding(target, cache)
+      }
       let inventory: StoredInventory | undefined
       let inventorySource: NotebookEnvironmentManifest['installedInventory']['source'] =
         runStart.inventoryRefreshed ? 'full-scan' : 'cache-reused'
@@ -591,6 +694,9 @@ class EnvironmentStateTracker {
         ],
         packages,
         ...(cache.operationLog.length > 0 ? { operationLog: cache.operationLog } : {}),
+        ...(cache.operationLogTruncation
+          ? { operationLogTruncation: cache.operationLogTruncation }
+          : {}),
         complete,
         captureStatus: complete ? 'complete' : 'partial',
         ...(warnings.length > 0 ? { warnings } : {})
@@ -972,6 +1078,12 @@ class EnvironmentStateTracker {
         inventoryRefresh: operation.inventoryRefresh ?? 'published',
         inventoryRefreshAttempts: operation.inventoryRefreshAttempts ?? []
       }))
+      if (
+        parsed.operationLogTruncation !== undefined &&
+        !isNotebookEnvironmentOperationLogTruncation(parsed.operationLogTruncation)
+      ) {
+        throw new Error('Invalid environment operation log truncation metadata.')
+      }
       return parsed
     } catch (error) {
       if (
@@ -990,6 +1102,7 @@ class EnvironmentStateTracker {
     target: EnvironmentCaptureTarget,
     cache: EnvironmentInventoryBindingCache
   ): Promise<void> {
+    compactOperationLog(cache, this.operationLogLimits)
     const path = join(this.targetDirectory(target), 'binding.json')
     await mkdir(dirname(path), { recursive: true })
     const temporary = `${path}.${process.pid}.tmp`
