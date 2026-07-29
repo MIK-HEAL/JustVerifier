@@ -4,9 +4,11 @@ import type { ChatSession } from '@/stores/session-store'
 import type { MessagePart } from '../../../../shared/session-persistence'
 
 import {
+  createPreviewFileItem,
   createPreviewFileItemFromArtifact,
   createPreviewFileItemFromMention,
-  createPreviewFileItemFromUpload
+  createPreviewFileItemFromUpload,
+  resolveArtifactVersionDescriptor
 } from './preview-file-item'
 
 type MessageArtifact = NonNullable<ChatSession['artifacts']>[number]
@@ -48,6 +50,59 @@ const createMentionPart = (overrides: Partial<ArtifactMentionPart> = {}): Artifa
 })
 
 describe('preview file item helpers', () => {
+  it('does not replace an explicitly missing Artifact Version with the latest Version', () => {
+    const latest = {
+      id: 'artifact-version-2',
+      artifactId: 'artifact-lineage-1',
+      versionId: 'artifact-version-2',
+      versionNumber: 2,
+      checksum: 'checksum-2',
+      createdAt: '2026-07-27T20:00:00.000Z',
+      state: 'finalized' as const,
+      projectName: 'project-1',
+      sessionId: 'session-1',
+      runId: 'artifact-run-2',
+      name: 'result.png',
+      path: '/managed/result-v2.png',
+      fileUrl: 'file:///managed/result-v2.png',
+      size: 20,
+      mtimeMs: 2,
+      updatedAt: 2
+    }
+    const lineage = {
+      artifactId: 'artifact-lineage-1',
+      filename: 'result.png',
+      originSession: { sessionId: 'session-1', state: 'active' as const },
+      versions: [latest]
+    }
+
+    expect(resolveArtifactVersionDescriptor(lineage, undefined)).toBe(latest)
+    expect(resolveArtifactVersionDescriptor(lineage, 'missing-version')).toBeUndefined()
+  })
+
+  it('preserves a deleted origin notice on Project File previews', () => {
+    expect(
+      createPreviewFileItem({
+        id: 'artifact-lineage-1',
+        sessionId: 'session-deleted',
+        path: '/managed/result.png',
+        name: 'result.png',
+        artifactId: 'artifact-lineage-1',
+        selectedVersionId: 'artifact-version-2',
+        originSession: {
+          state: 'deleted',
+          title: 'Retained analysis',
+          deletedAt: '2026-07-27T12:00:00.000Z'
+        }
+      })
+    ).toMatchObject({
+      id: 'artifact-lineage-1',
+      artifactId: 'artifact-lineage-1',
+      selectedVersionId: 'artifact-version-2',
+      originSession: { state: 'deleted', title: 'Retained analysis' }
+    })
+  })
+
   it('creates artifact preview items without an explicit source', () => {
     expect(createPreviewFileItemFromArtifact(createManagedArtifact(), 'session-1')).toEqual({
       id: 'artifact-1',
@@ -60,6 +115,25 @@ describe('preview file item helpers', () => {
       mimeType: 'image/png',
       size: 4096,
       mtimeMs: 1710000001000
+    })
+  })
+
+  it('uses a relocatable Version locator instead of an absolute path for native Artifacts', () => {
+    expect(
+      createPreviewFileItemFromArtifact(
+        createManagedArtifact({
+          artifactId: 'artifact-lineage-1',
+          versionId: 'artifact-version-2',
+          versionNumber: 2
+        }),
+        'session-1',
+        'project-1'
+      )
+    ).toMatchObject({
+      id: 'artifact-lineage-1',
+      artifactId: 'artifact-lineage-1',
+      selectedVersionId: 'artifact-version-2',
+      path: 'artifact-version:project-1/session-1/artifact-lineage-1/artifact-version-2'
     })
   })
 
@@ -156,6 +230,26 @@ describe('preview file item helpers', () => {
       path: '/workspace/results/summary.md',
       name: 'summary.md',
       format: 'markdown'
+    })
+  })
+
+  it('preserves native Artifact Version identity from a cross-session mention locator', () => {
+    expect(
+      createPreviewFileItemFromMention(
+        createMentionPart({
+          id: 'artifact-lineage-2',
+          versionId: 'artifact-version-4',
+          path: 'artifact-version:project-1/source-session/artifact-lineage-2/artifact-version-4'
+        }),
+        'current-session',
+        'project-1'
+      )
+    ).toMatchObject({
+      id: 'artifact-lineage-2',
+      projectId: 'project-1',
+      sessionId: 'source-session',
+      artifactId: 'artifact-lineage-2',
+      selectedVersionId: 'artifact-version-4'
     })
   })
 

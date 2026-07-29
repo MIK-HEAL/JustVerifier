@@ -2,10 +2,13 @@ import { stat } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 
 import type { FileReference } from '../../shared/artifacts'
+import { parseArtifactVersionLocator } from '../../shared/artifact-provenance'
 import type { ArtifactRepository } from '../artifacts/repository'
+import type { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
 import type { UploadRepository } from '../uploads/repository'
 
 export type FileReferenceContext = {
+  projectId: string
   sessionId: string
 }
 
@@ -57,25 +60,30 @@ export class FileReferenceResolver {
 export const createManagedFileReferenceResolver = (dependencies: {
   uploads?: UploadRepository
   artifacts?: ArtifactRepository
+  artifactVersions?: Partial<Pick<ArtifactProvenanceRepository, 'resolveVersionContent'>>
 }): FileReferenceResolver => {
   const adapters: FileReferenceAdapter[] = []
 
   if (dependencies.uploads) {
     adapters.push({
       source: 'upload',
-      resolve: async ({ sessionId }, reference) => {
+      resolve: async ({ projectId, sessionId }, reference) => {
         if (reference.source !== 'upload') throw new Error('Invalid upload reference.')
         let absolutePath: string
         try {
-          absolutePath = await dependencies.uploads!.resolveSessionUploadPath(sessionId, {
-            path: reference.path
-          })
+          absolutePath = await dependencies.uploads!.resolveSessionUploadPath(
+            sessionId,
+            { path: reference.path },
+            projectId
+          )
         } catch {
-          // A turn-scoped `@` selection may intentionally refer to a managed upload from an older
-          // session in the same project. It still has to pass canonical managed-root validation.
-          absolutePath = await dependencies.uploads!.resolveManagedUploadPath({
-            path: reference.path
-          })
+          // A turn-scoped `@` selection is an explicit user capability and may intentionally refer
+          // to a managed upload from another Session. Project ownership remains an app-issued
+          // boundary: native Versions and trusted legacy mappings must still belong to this Project.
+          absolutePath = await dependencies.uploads!.resolveManagedUploadPath(
+            { path: reference.path },
+            { projectId }
+          )
         }
         return {
           absolutePath,
@@ -90,8 +98,25 @@ export const createManagedFileReferenceResolver = (dependencies: {
   if (dependencies.artifacts) {
     adapters.push({
       source: 'artifact',
-      resolve: async (_context, reference) => {
+      resolve: async ({ projectId }, reference) => {
         if (reference.source !== 'artifact') throw new Error('Invalid artifact reference.')
+        const versionIdentity = parseArtifactVersionLocator(reference.path)
+        if (versionIdentity) {
+          if (versionIdentity.projectId !== projectId) {
+            throw new Error('Artifact Version belongs to a different project.')
+          }
+          if (!dependencies.artifactVersions?.resolveVersionContent) {
+            throw new Error('Artifact Provenance is not configured.')
+          }
+          const resolved =
+            await dependencies.artifactVersions.resolveVersionContent(versionIdentity)
+          return {
+            absolutePath: resolved.path,
+            name: resolved.filename,
+            mimeType: resolved.contentType ?? reference.mimeType,
+            allowSkillImportReference: false
+          }
+        }
         return {
           absolutePath: await dependencies.artifacts!.resolveManagedFilePath({
             path: reference.path
