@@ -493,7 +493,7 @@ describe('ProjectFilesView', () => {
     ])
 
     expect(container.textContent).toContain('Your uploads')
-    expect(container.textContent).toContain('iso621_bridg...inase.fasta')
+    expect(container.textContent).toContain('iso621_bridge_recombinase.fasta')
     expect(container.querySelector('[title="iso621_bridge_recombinase.fasta"]')).not.toBeNull()
     expect(container.textContent).not.toContain('Hidden session title')
     expect(
@@ -1503,6 +1503,9 @@ describe('ProjectFilesView', () => {
     const generatedMeta = generatedButton?.querySelector('[data-testid="project-file-meta"]')
 
     expect(generatedMeta?.className).toContain('flex-col')
+    expect(generatedMeta?.querySelector('[data-testid="file-name-extension"]')?.textContent).toBe(
+      '.png'
+    )
     expect(generatedButton?.textContent).toContain('4 KB')
     expect(generatedButton?.textContent).toContain('2 hours ago')
   })
@@ -2167,8 +2170,8 @@ describe('ProjectFilesView', () => {
       })
     ])
 
-    expect(container.textContent).toContain('denovo_desig...orklist.csv')
-    expect(container.textContent).not.toContain('denovo_design_worklist.csv')
+    expect(container.textContent).toContain('denovo_design_worklist.csv')
+    expect(container.querySelector('[data-testid="file-name-extension"]')?.textContent).toBe('.csv')
   })
 
   it('uses taller file cards and preview thumbnails', async () => {

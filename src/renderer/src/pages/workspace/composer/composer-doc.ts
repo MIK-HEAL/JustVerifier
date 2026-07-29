@@ -2,6 +2,8 @@
 // chips, and artifact chips. These functions are DOM-free except domToDoc/applyDocToDom, which
 // bridge the model to the contenteditable editor.
 
+import { getExtensionPreservingFileNameParts } from '../extension-preserving-file-name'
+
 import type { FileReference } from '../../../../../shared/artifacts'
 import type { MessagePart } from '../../../../../shared/session-persistence'
 
@@ -185,6 +187,8 @@ export const domToDoc = (root: HTMLElement): ComposerDoc => {
 // domToDoc still reads the full name back from textContent / the stored filename attribute.
 const CHIP_BASE_CLASS =
   'inline-block max-w-[220px] truncate align-middle rounded px-1.5 py-0.5 mx-0.5 text-sm font-medium select-all'
+const ARTIFACT_CHIP_BASE_CLASS =
+  'inline-flex max-w-[220px] align-middle rounded px-1.5 py-0.5 mx-0.5 text-sm font-medium select-all'
 
 // Render a skill chip span: an atomic, non-editable blue mention token. Exported so the mention hook
 // inserts the exact same markup it re-renders here, and the styling can never drift between the two.
@@ -219,8 +223,21 @@ export const createArtifactChip = (node: ComposerArtifactNode): HTMLSpanElement 
     span.setAttribute('data-mention-version-id', node.versionId)
   }
   // Green mention pill, distinct from the blue skill chip.
-  span.className = `${CHIP_BASE_CLASS} bg-mention-chip text-mention-chip-foreground`
-  span.textContent = `@${node.name}`
+  span.className = `${ARTIFACT_CHIP_BASE_CLASS} bg-mention-chip text-mention-chip-foreground`
+  span.title = node.name
+  const { head, tail, extension } = getExtensionPreservingFileNameParts(node.name)
+  const headSpan = document.createElement('span')
+  headSpan.className = 'min-w-0 flex-1 truncate'
+  headSpan.textContent = `@${head}`
+  span.append(headSpan)
+
+  for (const segment of [tail, extension]) {
+    if (!segment) continue
+    const segmentSpan = document.createElement('span')
+    segmentSpan.className = 'shrink-0'
+    segmentSpan.textContent = segment
+    span.append(segmentSpan)
+  }
   return span
 }
 

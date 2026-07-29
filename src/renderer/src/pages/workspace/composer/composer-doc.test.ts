@@ -310,6 +310,24 @@ describe('applyDocToDom + domToDoc round-trip', () => {
     expect(domToDoc(root)).toEqual(doc)
   })
 
+  it('keeps the tail and extension visible in a long artifact chip without changing its stored name', () => {
+    const name = 'very_long_experiment_analysis_result_2025.csv'
+    const root = document.createElement('div')
+    const doc: ComposerDoc = {
+      nodes: [{ type: 'artifact', id: 'a1', name, path: `/p/${name}`, source: 'artifact' }]
+    }
+
+    applyDocToDom(root, doc)
+
+    const chip = root.querySelector('span[data-mention-type="artifact"]')
+    expect(chip?.getAttribute('data-mention-filename')).toBe(name)
+    expect(chip?.querySelector('.truncate')?.textContent).toBe(
+      '@very_long_experiment_analysis_result'
+    )
+    expect(chip?.textContent).toBe(`@very_long_experiment_analysis_result_2025.csv`)
+    expect(domToDoc(root)).toEqual(doc)
+  })
+
   it('renders an artifact chip with the green mention attributes and @ label', () => {
     const root = document.createElement('div')
     applyDocToDom(root, {

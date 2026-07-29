@@ -54,6 +54,7 @@ import { PermissionApprovalControls } from './PermissionApprovalControls'
 import { normalizeRunFailureError } from './error-report'
 import { ReportErrorDialog } from './ReportErrorDialog'
 import { SessionInterruptedBanner } from './SessionInterruptedBanner'
+import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
 
 const composerInteractiveTransitionClassName = 'transition-colors duration-200 ease-out'
@@ -431,9 +432,10 @@ const ConversationPanel = ({
                                   aria-hidden="true"
                                 />
                                 <div className="min-w-0 flex-1">
-                                  <div className="truncate text-[12px] leading-4">
-                                    {attachmentName}
-                                  </div>
+                                  <ExtensionPreservingFileName
+                                    name={attachmentName}
+                                    className="text-[12px] leading-4"
+                                  />
                                   <div className="truncate text-[11px] leading-3 text-text-300">
                                     {formatAttachmentSize(attachment.size)}
                                   </div>
@@ -481,9 +483,10 @@ const ConversationPanel = ({
                                   aria-hidden="true"
                                 />
                                 <div className="min-w-0 flex-1">
-                                  <div className="truncate text-[12px] leading-4">
-                                    {transfer.name}
-                                  </div>
+                                  <ExtensionPreservingFileName
+                                    name={transfer.name}
+                                    className="text-[12px] leading-4"
+                                  />
                                   <div
                                     className={`truncate text-[11px] leading-3 ${
                                       transfer.status === 'error' ? 'text-red-600' : 'text-text-300'

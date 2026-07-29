@@ -4,6 +4,9 @@ import { formatByteSize } from '@/lib/utils'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useSessionStore } from '@/stores/session-store'
 
+import { ExtensionPreservingFileName } from '../ExtensionPreservingFileName'
+import { getExtensionPreservingFileNameParts } from '../extension-preserving-file-name'
+
 import { ArtifactFileIcon } from './artifact-file-icon'
 import { fuzzyScore, type FuzzyMatch } from './fuzzy-match'
 import { HighlightedText } from './HighlightedText'
@@ -143,6 +146,19 @@ export const ArtifactMentionPopup = ({
   const renderRow = (row: ArtifactRow, index: number): React.JSX.Element => {
     const isActive = index === safeIndex
     const size = formatByteSize(row.size)
+    const parts = getExtensionPreservingFileNameParts(row.name)
+    const basenameLength = row.name.length - parts.extension.length
+    const tailStart = basenameLength - parts.tail.length
+    const visiblePositions = row.positions ?? []
+    // Re-map fuzzy-match offsets after the middle is replaced, preserving query highlights.
+    const headPositions = visiblePositions.filter((position) => position < parts.head.length)
+    const tailPositions = visiblePositions
+      .filter((position) => position >= tailStart && position < basenameLength)
+      .map((position) => position - tailStart)
+    const extensionPositions = visiblePositions
+      .filter((position) => position >= basenameLength)
+      .map((position) => position - basenameLength)
+
     return (
       <li
         key={`${row.source}:${row.id}`}
@@ -163,8 +179,22 @@ export const ArtifactMentionPopup = ({
           path={row.path}
           source={row.source}
         />
-        <span className="flex-1 min-w-0 truncate font-medium">
-          <HighlightedText text={row.name} positions={row.positions ?? []} />
+        <span className="flex min-w-0 flex-1 font-medium">
+          {row.positions?.length ? (
+            <>
+              <span className="min-w-0 flex-1 truncate">
+                <HighlightedText text={parts.head} positions={headPositions} />
+              </span>
+              <span className="shrink-0">
+                <HighlightedText text={parts.tail} positions={tailPositions} />
+              </span>
+              <span className="shrink-0">
+                <HighlightedText text={parts.extension} positions={extensionPositions} />
+              </span>
+            </>
+          ) : (
+            <ExtensionPreservingFileName name={row.name} />
+          )}
         </span>
         {size ? <span className="text-xs text-text-300 shrink-0">{size}</span> : null}
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent text-accent-foreground shrink-0">

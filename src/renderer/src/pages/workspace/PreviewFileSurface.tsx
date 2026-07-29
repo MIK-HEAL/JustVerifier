@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
 
+import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { ManagedFileDownloadButton } from './ManagedFileDownloadButton'
 import { PreviewFileContent } from './previews/PreviewFileContent'
 
@@ -14,26 +15,6 @@ type PreviewFileSurfaceProps = {
   tooltipClassName?: string
   onClose: () => void
   onOpenFullScreen?: () => void
-}
-
-// Keeps the identifying tail and extension visible while the flexible prefix owns the ellipsis.
-const MiddleEllipsisFileName = ({ name }: { name: string }): React.JSX.Element => {
-  const extensionIndex = name.lastIndexOf('.')
-  const extensionLength = extensionIndex > 0 ? name.length - extensionIndex : 0
-  const trailingLength = Math.min(name.length, Math.max(extensionLength + 10, 18))
-  const splitIndex = Math.max(1, name.length - trailingLength)
-
-  return (
-    <span className="flex min-w-0 max-w-full flex-1 items-center overflow-hidden whitespace-nowrap">
-      <span className="min-w-0 truncate">{name.slice(0, splitIndex)}</span>
-      <span
-        data-testid="preview-title-tail"
-        className="min-w-0 max-w-[65%] shrink overflow-hidden text-ellipsis [direction:rtl] [unicode-bidi:plaintext]"
-      >
-        {name.slice(splitIndex)}
-      </span>
-    </span>
-  )
 }
 
 // The optional callback makes the maximize action available only in the compact workbench panel;
@@ -55,7 +36,7 @@ const PreviewFileHeader = ({
       <Tooltip>
         <TooltipTrigger asChild>
           <span className="min-w-0 flex-1 text-[12px] font-medium text-text-000">
-            <MiddleEllipsisFileName name={item.name} />
+            <ExtensionPreservingFileName name={item.name} className="flex-1" />
           </span>
         </TooltipTrigger>
         <TooltipContent className={tooltipClassName}>{item.title}</TooltipContent>
@@ -129,4 +110,4 @@ const PreviewFileSurface = ({
   </div>
 )
 
-export { MiddleEllipsisFileName, PreviewFileSurface }
+export { PreviewFileSurface }

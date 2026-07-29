@@ -126,6 +126,35 @@ describe('ArtifactMentionPopup', () => {
     expect(text).toContain('output')
   })
 
+  it('uses the preview-tab abbreviation for a long filename while preserving its extension', () => {
+    const longName = 'very_long_experiment_analysis_result_2025.csv'
+    useSessionStore.setState({
+      ...createInitialSessionState(),
+      sessions: [
+        createSession({
+          artifacts: [
+            {
+              id: 'long-artifact',
+              kind: 'managed-file',
+              path: `/workspace/${longName}`,
+              fileUrl: `file:///workspace/${longName}`,
+              name: longName,
+              mimeType: 'text/csv',
+              size: 4096,
+              mtimeMs: 1710000002000
+            }
+          ]
+        })
+      ]
+    })
+
+    act(() => {
+      root.render(<ArtifactMentionPopup query="" onSelect={vi.fn()} onClose={vi.fn()} />)
+    })
+
+    expect(options()[0]?.querySelector('[data-testid="file-name-tail"]')?.textContent).toBe('_2025')
+  })
+
   it('filters rows by a case-insensitive filename query', () => {
     act(() => {
       root.render(<ArtifactMentionPopup query="REPORT" onSelect={vi.fn()} onClose={vi.fn()} />)
@@ -212,8 +241,12 @@ describe('ArtifactMentionPopup', () => {
     })
 
     const marks = Array.from(document.body.querySelectorAll('mark'))
-    expect(marks).toHaveLength(1)
-    expect(marks[0].textContent?.toLowerCase()).toBe('report')
+    expect(
+      marks
+        .map((mark) => mark.textContent)
+        .join('')
+        .toLowerCase()
+    ).toContain('report')
   })
 
   it('ranks a closer fuzzy match first within a section', () => {

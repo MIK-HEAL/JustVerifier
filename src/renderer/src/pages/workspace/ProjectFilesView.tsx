@@ -24,6 +24,7 @@ import type {
   ProjectFilesChangedEvent
 } from '../../../../shared/project-files'
 
+import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { ArtifactPreview } from './artifact-preview'
 import {
   ARTIFACT_IMAGE_PREVIEW_BYTES,
@@ -322,17 +323,6 @@ const useInfiniteLoad = (
   return sentinelRef
 }
 
-const formatMiddleEllipsisName = (name: string): string => {
-  if (name.length < 26) return name
-
-  const headLength = 12
-  const tailLength = 11
-
-  if (name.length < headLength + tailLength + 3) return name
-
-  return `${name.slice(0, headLength)}...${name.slice(-tailLength)}`
-}
-
 const formatRelativeFileTime = (timestamp: number | undefined): string | undefined => {
   if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) return undefined
 
@@ -466,7 +456,6 @@ const FileTile = ({
   onPreview: () => void
 }): React.JSX.Element => {
   const sizeLabel = formatByteSize(size)
-  const displayName = formatMiddleEllipsisName(name)
   const relativeTimeLabel = formatRelativeFileTime(timestamp)
   const [setTileElement, isNearViewport] = useNearViewport<HTMLButtonElement>()
   const missing = useUnavailablePreviewProbe({
@@ -503,9 +492,10 @@ const FileTile = ({
           data-testid="project-file-meta"
           className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-2 py-1.5"
         >
-          <span className="block min-w-0 truncate text-[11px] leading-5 text-text-000">
-            {displayName}
-          </span>
+          <ExtensionPreservingFileName
+            name={name}
+            className="text-[11px] leading-5 text-text-000"
+          />
           {sizeLabel || relativeTimeLabel ? (
             <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0 text-[10px] leading-3 text-text-300">
               {sizeLabel ? <span className="shrink-0">{sizeLabel}</span> : null}
