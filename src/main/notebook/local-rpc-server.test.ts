@@ -1,13 +1,20 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { NotebookRunInputFile } from '../../shared/notebook'
 import { NotebookLocalRpcServer } from './local-rpc-server'
 import { NotebookRuntimeService } from './runtime-service'
-import { NotebookRunRepository } from './repository'
+import { NotebookRunRepository, getRuntimeRoot } from './repository'
 import type { NotebookInputRunLease } from './input-registry'
+import {
+  DEFAULT_ENV_VERSION,
+  DEFAULT_PY_ENV,
+  envPrefix,
+  pythonBin,
+  writeReadyMarker
+} from './runtime-paths'
 
 let storageRoot: string | undefined
 
@@ -116,6 +123,71 @@ describe('notebook local RPC server', () => {
           stdout: '2\n'
         }
       })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('dispatches read-only package inspection calls to the runtime service', async () => {
+    const root = await createStorageRoot()
+    const runtimeRoot = getRuntimeRoot(root)
+    const interpreter = pythonBin(envPrefix(runtimeRoot, DEFAULT_PY_ENV))
+    await mkdir(dirname(interpreter), { recursive: true })
+    await writeFile(interpreter, '', 'utf8')
+    writeReadyMarker(runtimeRoot, DEFAULT_ENV_VERSION, 'ready')
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      environmentStateTracker: {
+        prepareRun: vi.fn(),
+        captureCompletedRun: vi.fn(),
+        inspectPackages: vi.fn().mockResolvedValue({
+          inventory: { source: 'full-scan', validation: 'full-scan' },
+          packages: [
+            {
+              requested: 'numpy',
+              name: 'numpy',
+              status: 'installed',
+              version: '2.2.0',
+              versionStatus: 'known'
+            }
+          ]
+        }),
+        markPackageMutationDirty: vi.fn(),
+        refreshAfterPackageMutation: vi.fn()
+      }
+    })
+    const server = new NotebookLocalRpcServer(service, { token: 'secret-token' })
+    const connection = await server.ensureStarted()
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer secret-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'inspectPackages',
+          params: {
+            projectName: 'default-project',
+            sessionId: 'session-1',
+            workspaceCwd: root,
+            language: 'python',
+            packages: ['numpy']
+          }
+        })
+      })
+      const payload = (await response.json()) as {
+        result: { packages: Array<{ name: string; status: string; version?: string }> }
+      }
+
+      expect(response.status).toBe(200)
+      expect(payload.result.packages).toEqual([
+        expect.objectContaining({ name: 'numpy', status: 'installed', version: '2.2.0' })
+      ])
     } finally {
       await server.close()
     }
@@ -662,6 +734,7 @@ describe('notebook local RPC server', () => {
       environmentStateTracker: {
         prepareRun: vi.fn(),
         captureCompletedRun: vi.fn(),
+        inspectPackages: vi.fn(),
         markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
         refreshAfterPackageMutation: vi.fn().mockResolvedValue({ result: 'success' })
       },

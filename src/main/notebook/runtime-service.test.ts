@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { NotebookExecutionRequest, NotebookExecutionResult } from './runtime-service'
@@ -45,6 +45,7 @@ import {
   DEFAULT_R_ENV,
   envPrefix,
   pythonBin,
+  writeReadyMarker,
   writeRReadyMarker
 } from './runtime-paths'
 
@@ -73,6 +74,21 @@ beforeAll(async () => {
       throw new Error('no network in tests')
     }
   })
+})
+
+const verifiedPackageMutationTracker = (): Pick<
+  EnvironmentStateTracker,
+  | 'prepareRun'
+  | 'captureCompletedRun'
+  | 'inspectPackages'
+  | 'markPackageMutationDirty'
+  | 'refreshAfterPackageMutation'
+> => ({
+  prepareRun: vi.fn(),
+  captureCompletedRun: vi.fn(),
+  inspectPackages: vi.fn(),
+  markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
+  refreshAfterPackageMutation: vi.fn().mockResolvedValue({ result: 'success' })
 })
 
 describe('resolveShellInvocation', () => {
@@ -234,6 +250,7 @@ describe('notebook runtime service', () => {
           warnings: []
         }),
         captureCompletedRun,
+        inspectPackages: vi.fn(),
         markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
         refreshAfterPackageMutation: vi.fn().mockResolvedValue(undefined)
       },
@@ -442,6 +459,7 @@ describe('notebook runtime service', () => {
         captureCompletedRun: vi
           .fn()
           .mockRejectedValue(new EnvironmentManifestPublicationError(new Error('disk full'))),
+        inspectPackages: vi.fn(),
         markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
         refreshAfterPackageMutation: vi.fn().mockResolvedValue(undefined)
       },
@@ -1726,6 +1744,7 @@ describe('notebook runtime service', () => {
             warnings: []
           }),
           captureCompletedRun: vi.fn().mockRejectedValue(new Error('not under test')),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockResolvedValue(undefined)
         },
@@ -1846,6 +1865,7 @@ describe('notebook runtime service', () => {
             warnings: []
           }),
           captureCompletedRun: vi.fn().mockRejectedValue(new Error('not under test')),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockResolvedValue(undefined)
         },
@@ -1907,6 +1927,7 @@ describe('notebook runtime service', () => {
             warnings: []
           }),
           captureCompletedRun: vi.fn().mockRejectedValue(new Error('not under test')),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockResolvedValue(undefined)
         },
@@ -1961,6 +1982,7 @@ describe('notebook runtime service', () => {
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
+        environmentStateTracker: verifiedPackageMutationTracker(),
         executorFactory: () => ({
           execute: async (request): Promise<NotebookExecutionResult> => {
             events.push(`run:${request.language}`)
@@ -2223,7 +2245,245 @@ describe('notebook runtime service', () => {
     errorSpy.mockRestore()
   })
 
+  describe('inspectPackages', () => {
+    it('reads package metadata from the session-bound runtime without invoking the installer', async () => {
+      const root = await createStorageRoot()
+      const runtimeRoot = getRuntimeRoot(root)
+      const interpreter = pythonBin(envPrefix(runtimeRoot, DEFAULT_PY_ENV))
+      await mkdir(dirname(interpreter), { recursive: true })
+      await writeFile(interpreter, '', 'utf8')
+      writeReadyMarker(runtimeRoot, DEFAULT_ENV_VERSION, 'ready')
+      const inspectPackages = vi.fn().mockResolvedValue({
+        inventory: { source: 'full-scan', validation: 'full-scan' },
+        packages: [
+          {
+            requested: 'numpy',
+            name: 'numpy',
+            status: 'installed',
+            version: '2.2.0',
+            versionStatus: 'known'
+          }
+        ]
+      })
+      const installPackagesImpl = vi.fn()
+      const provisionPython = vi.fn(async () => undefined)
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        repository: new NotebookRunRepository(root),
+        environmentStateTracker: {
+          prepareRun: vi.fn(),
+          captureCompletedRun: vi.fn(),
+          inspectPackages,
+          markPackageMutationDirty: vi.fn(),
+          refreshAfterPackageMutation: vi.fn()
+        },
+        executorFactory: () => ({
+          execute: async () => {
+            throw new Error('not used')
+          },
+          shutdown: async () => ({ reaped: true })
+        }),
+        installPackagesImpl
+      })
+      service.setDefaultEnvProvisioner({
+        provisionPython,
+        provisionR: vi.fn(async () => undefined)
+      })
+
+      const result = await service.inspectPackages({
+        language: 'python',
+        packages: ['numpy'],
+        projectName: 'default-project',
+        sessionId: 'session-1',
+        workspaceCwd: root
+      })
+
+      expect(result).toMatchObject({
+        language: 'python',
+        environmentName: 'default-python',
+        runtimeSource: 'managed',
+        packages: [{ name: 'numpy', status: 'installed', version: '2.2.0' }]
+      })
+      expect(inspectPackages).toHaveBeenCalledWith(
+        expect.objectContaining({
+          language: 'python',
+          environmentName: 'default-python',
+          runtimeSource: 'managed'
+        }),
+        ['numpy']
+      )
+      expect(provisionPython).not.toHaveBeenCalled()
+      expect(installPackagesImpl).not.toHaveBeenCalled()
+    })
+
+    it('refuses to provision a missing default runtime under read-only inspection permission', async () => {
+      const root = await createStorageRoot()
+      const inspectPackages = vi.fn()
+      const provisionPython = vi.fn(async () => undefined)
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        repository: new NotebookRunRepository(root),
+        environmentStateTracker: {
+          prepareRun: vi.fn(),
+          captureCompletedRun: vi.fn(),
+          inspectPackages,
+          markPackageMutationDirty: vi.fn(),
+          refreshAfterPackageMutation: vi.fn()
+        },
+        executorFactory: () => ({
+          execute: async () => {
+            throw new Error('not used')
+          },
+          shutdown: async () => ({ reaped: true })
+        })
+      })
+      service.setDefaultEnvProvisioner({
+        provisionPython,
+        provisionR: vi.fn(async () => undefined)
+      })
+
+      await expect(
+        service.inspectPackages({
+          language: 'python',
+          packages: ['numpy'],
+          projectName: 'default-project',
+          sessionId: 'session-1',
+          workspaceCwd: root
+        })
+      ).rejects.toThrow(/DEFAULT_RUNTIME_NOT_READY.*notebook_execute/)
+      expect(provisionPython).not.toHaveBeenCalled()
+      expect(inspectPackages).not.toHaveBeenCalled()
+    })
+
+    it('refuses package inspection for an external runtime so interpreter execution uses notebook approval', async () => {
+      const root = await createStorageRoot()
+      const runtimeId = '/opt/external-python/bin/python'
+      const inspectPackages = vi.fn().mockResolvedValue({
+        inventory: { source: 'full-scan', validation: 'full-scan' },
+        packages: []
+      })
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        repository: new NotebookRunRepository(root),
+        discoverRuntimes: async (language) =>
+          language === 'python'
+            ? [
+                {
+                  language: 'python',
+                  provenance: 'user-own',
+                  envId: runtimeId,
+                  interpreterPath: runtimeId,
+                  label: 'External Python',
+                  version: '3.13.2',
+                  runnable: true
+                }
+              ]
+            : [],
+        getRuntimeEnablement: async () => ({
+          enabled: { [runtimeId]: true },
+          installAuthorized: {}
+        }),
+        environmentStateTracker: {
+          prepareRun: vi.fn(),
+          captureCompletedRun: vi.fn(),
+          inspectPackages,
+          markPackageMutationDirty: vi.fn(),
+          refreshAfterPackageMutation: vi.fn()
+        },
+        executorFactory: () => ({
+          execute: async () => {
+            throw new Error('not used')
+          },
+          shutdown: async () => ({ reaped: true })
+        })
+      })
+      await service.bindRuntime({
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        language: 'python',
+        runtimeId
+      })
+
+      await expect(
+        service.inspectPackages({
+          language: 'python',
+          packages: ['numpy'],
+          projectName: 'default-project',
+          sessionId: 'session-1',
+          workspaceCwd: root
+        })
+      ).rejects.toThrow(/EXTERNAL_RUNTIME_INSPECTION_REQUIRES_EXECUTION.*notebook_execute/)
+      expect(inspectPackages).not.toHaveBeenCalled()
+    })
+  })
+
   describe('managePackages', () => {
+    it('returns verified version changes for requested packages without transitive inventory noise', async () => {
+      const root = await createStorageRoot()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        repository: new NotebookRunRepository(root),
+        environmentStateTracker: {
+          prepareRun: vi.fn(),
+          captureCompletedRun: vi.fn(),
+          inspectPackages: vi.fn(),
+          markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
+          refreshAfterPackageMutation: vi.fn().mockResolvedValue({
+            result: 'success',
+            packageChanges: [
+              {
+                name: 'numpy',
+                ecosystem: 'python',
+                relationship: 'requested',
+                change: 'updated',
+                beforeVersion: '2.1.0',
+                afterVersion: '2.2.0'
+              },
+              {
+                name: 'packaging',
+                ecosystem: 'python',
+                relationship: 'unattributed',
+                change: 'updated',
+                beforeVersion: '24.0',
+                afterVersion: '25.0'
+              }
+            ]
+          })
+        },
+        executorFactory: () => ({
+          execute: async () => {
+            throw new Error('not used')
+          },
+          shutdown: async () => ({ reaped: true })
+        }),
+        installPackagesImpl: vi.fn().mockResolvedValue({
+          ok: true,
+          needsRestart: false,
+          log: 'installer succeeded',
+          method: 'conda'
+        })
+      })
+
+      const result = await service.managePackages({ language: 'python', packages: ['numpy'] })
+
+      expect(result.packageChanges).toEqual([
+        expect.objectContaining({
+          name: 'numpy',
+          change: 'updated',
+          beforeVersion: '2.1.0',
+          afterVersion: '2.2.0'
+        })
+      ])
+    })
+
     it('does not start an installer when the durable Environment dirty marker cannot be written', async () => {
       const root = await createStorageRoot()
       const installPackagesImpl = vi.fn().mockResolvedValue({
@@ -2240,6 +2500,7 @@ describe('notebook runtime service', () => {
         environmentStateTracker: {
           prepareRun: vi.fn(),
           captureCompletedRun: vi.fn(),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockRejectedValue(dirtyFailure),
           refreshAfterPackageMutation: vi.fn()
         },
@@ -2268,6 +2529,7 @@ describe('notebook runtime service', () => {
         environmentStateTracker: {
           prepareRun: vi.fn(),
           captureCompletedRun: vi.fn(),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockResolvedValue({
             result: 'failure',
@@ -2309,6 +2571,7 @@ describe('notebook runtime service', () => {
         environmentStateTracker: {
           prepareRun: vi.fn(),
           captureCompletedRun: vi.fn(),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockRejectedValue(new Error('scan failed'))
         },
@@ -2344,6 +2607,7 @@ describe('notebook runtime service', () => {
         environmentStateTracker: {
           prepareRun: vi.fn(),
           captureCompletedRun: vi.fn(),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockResolvedValue({ result: 'success' })
         },
@@ -2392,6 +2656,7 @@ describe('notebook runtime service', () => {
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
+        environmentStateTracker: verifiedPackageMutationTracker(),
         executorFactory: () => ({
           execute: async () => {
             throw new Error('not used')
@@ -2430,6 +2695,7 @@ describe('notebook runtime service', () => {
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
+        environmentStateTracker: verifiedPackageMutationTracker(),
         executorFactory: () => ({
           execute: async () => {
             throw new Error('not used')
@@ -2630,6 +2896,7 @@ describe('notebook runtime service', () => {
             warnings: []
           }),
           captureCompletedRun: vi.fn().mockRejectedValue(new Error('not under test')),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockResolvedValue(undefined)
         },
@@ -2687,6 +2954,7 @@ describe('notebook runtime service', () => {
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
+        environmentStateTracker: verifiedPackageMutationTracker(),
         // Surface the named agent-created env so the installer session can bind it.
         discoverRuntimes: async (language) =>
           language === 'python'
@@ -3058,6 +3326,7 @@ describe('notebook runtime service', () => {
         environmentStateTracker: {
           prepareRun: vi.fn(),
           captureCompletedRun: vi.fn(),
+          inspectPackages: vi.fn(),
           markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
           refreshAfterPackageMutation: vi.fn().mockResolvedValue({ result: 'success' })
         },
@@ -3104,6 +3373,7 @@ describe('notebook runtime service', () => {
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
+        environmentStateTracker: verifiedPackageMutationTracker(),
         executorFactory: () => ({
           execute: async (request): Promise<NotebookExecutionResult> => ({
             status: 'completed',
@@ -3178,19 +3448,6 @@ describe('v4 runtime bindings & agent tools', () => {
 
   // Service with injected discovery + enablement + a recording executor, so the tools run without any
   // real interpreter and executions can be inspected for the resolved interpreter.
-  const verifiedPackageMutationTracker = (): Pick<
-    EnvironmentStateTracker,
-    | 'prepareRun'
-    | 'captureCompletedRun'
-    | 'markPackageMutationDirty'
-    | 'refreshAfterPackageMutation'
-  > => ({
-    prepareRun: vi.fn(),
-    captureCompletedRun: vi.fn(),
-    markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
-    refreshAfterPackageMutation: vi.fn().mockResolvedValue({ result: 'success' })
-  })
-
   const bindingService = (
     root: string,
     options: {
