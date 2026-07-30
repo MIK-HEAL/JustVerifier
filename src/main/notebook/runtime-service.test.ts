@@ -3011,11 +3011,14 @@ describe('notebook runtime service', () => {
 
     it('reports failure when the post-install inventory refresh throws', async () => {
       const root = await createStorageRoot()
+      const info = vi.fn()
+      const warn = vi.fn()
       const service = new NotebookRuntimeService({
         configRoot: root,
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
+        logger: { info, warn, error: vi.fn() },
         environmentStateTracker: {
           prepareRun: vi.fn(),
           captureCompletedRun: vi.fn(),
@@ -3041,6 +3044,64 @@ describe('notebook runtime service', () => {
 
       expect(result).toMatchObject({ ok: false, needsRestart: false, method: 'conda' })
       expect(result.error).toMatch(/inventory refresh failed/i)
+      expect(info).not.toHaveBeenCalledWith('package installer completed', expect.anything())
+      expect(warn).toHaveBeenCalledWith(
+        'package installer completed',
+        expect.objectContaining({
+          ok: false,
+          error: expect.stringMatching(/inventory refresh failed/i)
+        })
+      )
+    })
+
+    it('writes bounded redacted installer diagnostics to the main-process logger', async () => {
+      const root = await createStorageRoot()
+      const info = vi.fn()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        repository: new NotebookRunRepository(root),
+        logger: { info, warn: vi.fn(), error: vi.fn() },
+        environmentStateTracker: {
+          prepareRun: vi.fn(),
+          captureCompletedRun: vi.fn(),
+          inspectPackages: vi.fn(),
+          markPackageMutationDirty: vi.fn().mockResolvedValue(undefined),
+          refreshAfterPackageMutation: vi.fn().mockResolvedValue({ result: 'success' })
+        },
+        executorFactory: () => ({
+          execute: async () => {
+            throw new Error('not used')
+          },
+          shutdown: async () => ({ reaped: true })
+        }),
+        installPackagesImpl: vi.fn().mockResolvedValue({
+          ok: true,
+          needsRestart: true,
+          method: 'conda',
+          log:
+            'FETCH https://user:password@example.test/channel?token=secret\n' +
+            `${'x'.repeat(20_000)}\ntransaction-tail-marker`
+        })
+      })
+
+      await service.managePackages({ language: 'r', packages: ['ggplot2'] })
+
+      expect(info).toHaveBeenCalledWith(
+        'package installer completed',
+        expect.objectContaining({
+          language: 'r',
+          environmentName: 'default-r',
+          packages: ['ggplot2'],
+          method: 'conda',
+          installerLog: expect.objectContaining({ truncated: true })
+        })
+      )
+      const serialized = JSON.stringify(info.mock.calls)
+      expect(serialized).not.toContain('password')
+      expect(serialized).not.toContain('token=secret')
+      expect(serialized).toContain('transaction-tail-marker')
     })
 
     it('resolves the effective mirror from the injected getPackageMirror + locale and forwards it as installPackages deps', async () => {
