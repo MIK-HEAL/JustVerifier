@@ -160,6 +160,7 @@ const WorkspacePage = ({
     permissionGrants,
     contextUsageBySession,
     promptInFlightSessionIds = [],
+    sendPreparationInFlightSessionIds = [],
     nativeContextCompactionSessionIds,
     compactContext,
     sendMessage,
@@ -235,6 +236,9 @@ const WorkspacePage = ({
       }
     >
   >({})
+  // Closes the synchronous gap before the hook's reactive preparation state re-renders this page.
+  // A second submit for the same draft key returns without clearing its possibly newer local draft.
+  const sendRequestsInFlightRef = useRef(new Set<string>())
   // Mutable cleanup ledgers bridge the async runtime-deletion window. Uploads that finish or queue
   // after confirmation are added here so a successful deletion cannot strand staged files.
   const sessionDeletionCleanupRef = useRef<
@@ -247,6 +251,17 @@ const WorkspacePage = ({
     >
   >({})
   const previousDraftKeyRef = useRef<string>(selectedSessionId ?? NEW_CONVERSATION_DRAFT_KEY)
+  // Tracks user-authored mutations separately from optimistic send clearing and conversation switches.
+  // A failed prepared send may restore its captured draft only if this version has not advanced.
+  const composerDraftVersionsRef = useRef<Record<string, number>>({})
+  const markComposerDraftChanged = (draftKey = previousDraftKeyRef.current): void => {
+    composerDraftVersionsRef.current[draftKey] =
+      (composerDraftVersionsRef.current[draftKey] ?? 0) + 1
+  }
+  const changeComposerDraftDoc = (doc: ComposerDoc): void => {
+    markComposerDraftChanged()
+    setDraftDoc(doc)
+  }
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
   const [attachmentTransfers, setAttachmentTransfers] = useState<ComposerUploadTransfer[]>([])
   const attachmentTransfersRef = useRef<ComposerUploadTransfer[]>([])
@@ -291,8 +306,11 @@ const WorkspacePage = ({
     () => sessions.find((session) => session.id === selectedSessionId),
     [selectedSessionId, sessions]
   )
+  const activeSessionHasSendPreparation = activeSession
+    ? sendPreparationInFlightSessionIds.includes(activeSession.id)
+    : false
   const activeSessionHasRuntimeInteraction = activeSession
-    ? promptInFlightSessionIds.includes(activeSession.id)
+    ? promptInFlightSessionIds.includes(activeSession.id) || activeSessionHasSendPreparation
     : false
   const visiblePermissionRequests = useMemo(
     () => getVisiblePermissionRequests(pendingPermissions, activeSession?.id),
@@ -360,7 +378,7 @@ const WorkspacePage = ({
   })
   const handleReviewUpdate = useReviewStore((state) => state.handleReviewUpdate)
   // Composer controls follow only the selected session and persistence readiness.
-  const canEditDraft = isSessionPersistenceReady
+  const canEditDraft = isSessionPersistenceReady && !activeSessionHasSendPreparation
   const isUploadingAttachments = attachmentTransfers.some(
     (transfer) =>
       transfer.status === 'queued' ||
@@ -788,6 +806,7 @@ const WorkspacePage = ({
     if (accepted.length === 0) return
 
     const draftKey = previousDraftKeyRef.current
+    markComposerDraftChanged(draftKey)
     const pending = accepted.map(
       (file, index): { file: File; transfer: ComposerUploadTransfer } => {
         const name = getUploadFilename(file, index)
@@ -881,6 +900,7 @@ const WorkspacePage = ({
 
   const cancelAttachmentTransfer = (transfer: ComposerUploadTransfer): void => {
     const draftKey = previousDraftKeyRef.current
+    markComposerDraftChanged(draftKey)
     cancelledAttachmentTransfersRef.current.add(transfer.transferId)
     attachmentTransferControllersRef.current[transfer.transferId]?.abort()
     updateDraftTransfers(draftKey, (transfers) =>
@@ -902,6 +922,7 @@ const WorkspacePage = ({
 
   // Removes one staged attachment from both local UI state and managed upload storage.
   const removeComposerAttachment = (attachment: UploadedAttachment): void => {
+    markComposerDraftChanged()
     setAttachments((currentAttachments) =>
       currentAttachments.filter((item) => item.id !== attachment.id)
     )
@@ -973,6 +994,11 @@ const WorkspacePage = ({
       }
     }
 
+    const sendRequestKey = activeSession?.id ?? NEW_CONVERSATION_DRAFT_KEY
+    if (sendRequestsInFlightRef.current.has(sendRequestKey)) return
+    sendRequestsInFlightRef.current.add(sendRequestKey)
+    const sendDraftVersion = composerDraftVersionsRef.current[sendRequestKey] ?? 0
+
     const doc = draftDoc
     const attachmentsForSend = attachments
     // Capture new-conversation intent before send: auto-review defaults off, so only an explicit
@@ -1006,31 +1032,50 @@ const WorkspacePage = ({
         forcedSkillIds,
         // New-conversation only: the UUID is forwarded to createSession; main process reads latest Profile.
         specialistId: draftSpecialistId
-      }).then((result) => {
-        if (!result) {
-          setDraftDoc(doc)
-          setAttachments(attachmentsForSend)
-          return
-        }
-
-        // Carry the composer's auto-review choice onto the freshly created session. bindPendingSession
-        // preserves the field, so stamping the (pending) session id here survives the durable-id swap.
-        if (wasNewConversation && draftAutoReviewEnabled) {
-          setAutoReviewEnabled(result.sessionId, true)
-        }
-        // Carry the draft compute host selection onto the newly created session.
-        if (wasNewConversation && draftEnabledComputeHosts.length > 0) {
-          setEnabledComputeHosts(result.sessionId, draftEnabledComputeHosts)
-          void window.api.compute
-            .enabledHostsSet(result.sessionId, draftEnabledComputeHosts)
-            .catch((err: unknown) => {
-              console.warn('Failed to sync draft compute hosts to registry for new session', err)
-            })
-        }
-        setNewConversationAutoReviewEnabled(false)
-        setNewConversationEnabledComputeHosts([])
-        setNewConversationSpecialistId(undefined)
       })
+        .then((result) => {
+          if (!result) {
+            // A newer edit on the same draft key wins over this failed request. Otherwise restore the
+            // captured draft either to the active composer or to its inactive conversation slot.
+            if ((composerDraftVersionsRef.current[sendRequestKey] ?? 0) === sendDraftVersion) {
+              if (previousDraftKeyRef.current === sendRequestKey) {
+                setDraftDoc(doc)
+                setAttachments(attachmentsForSend)
+              } else {
+                composerDraftsRef.current[sendRequestKey] = {
+                  doc,
+                  attachments: attachmentsForSend,
+                  attachmentTransfers:
+                    composerDraftsRef.current[sendRequestKey]?.attachmentTransfers ?? []
+                }
+              }
+            } else {
+              // The user replaced this draft while preparation was pending. Keep that newer intent and
+              // discard staged files that now belong only to the superseded failed request.
+              deleteAttachmentFiles(attachmentsForSend)
+            }
+            return
+          }
+
+          // Carry the composer's auto-review choice onto the freshly created session. bindPendingSession
+          // preserves the field, so stamping the (pending) session id here survives the durable-id swap.
+          if (wasNewConversation && draftAutoReviewEnabled) {
+            setAutoReviewEnabled(result.sessionId, true)
+          }
+          // Carry the draft compute host selection onto the newly created session.
+          if (wasNewConversation && draftEnabledComputeHosts.length > 0) {
+            setEnabledComputeHosts(result.sessionId, draftEnabledComputeHosts)
+            void window.api.compute
+              .enabledHostsSet(result.sessionId, draftEnabledComputeHosts)
+              .catch((err: unknown) => {
+                console.warn('Failed to sync draft compute hosts to registry for new session', err)
+              })
+          }
+          setNewConversationAutoReviewEnabled(false)
+          setNewConversationEnabledComputeHosts([])
+          setNewConversationSpecialistId(undefined)
+        })
+        .finally(() => sendRequestsInFlightRef.current.delete(sendRequestKey))
     }
 
     // Runs the reconfigure barrier then dispatches the send on success. Extracted so that both the
@@ -1071,6 +1116,7 @@ const WorkspacePage = ({
           next.delete(sessionId)
           return next
         })
+        sendRequestsInFlightRef.current.delete(sendRequestKey)
         return
       }
 
@@ -1436,7 +1482,7 @@ const WorkspacePage = ({
             onCompactContext={compactActiveContext}
             canChangePermissionProfile={canChangePermissionProfile}
             autoReviewEnabled={activeAutoReviewEnabled}
-            onDraftDocChange={setDraftDoc}
+            onDraftDocChange={changeComposerDraftDoc}
             onSendMessage={sendCurrentMessage}
             onStageAttachmentFiles={stageAttachmentFiles}
             onRemoveAttachment={removeComposerAttachment}
