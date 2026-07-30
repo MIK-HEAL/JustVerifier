@@ -2,14 +2,240 @@
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\windows-runtime-cache-uninstall.ps1"'
 !macroend
 
+!ifndef BUILD_UNINSTALLER
+!define MUI_CUSTOMFUNCTION_ABORT restorePreservedOnAbort
+
+Var perMachineInstallDirCache
+Var perUserInstallDirCache
+Var perMachineDataBackup
+Var perUserDataBackup
+Var dataProtectionFailed
+Var dataRestoreFailed
+
+# Registry values that identify the same Windows directory may differ only in letter case or a
+# trailing separator. LogicLib's == comparison is already case-insensitive; trim separators here
+# so every later shared-path decision uses one canonical form. Keep drive roots such as C:\ intact.
+Function normalizeRegisteredInstallPath
+  Exch $R0
+  Push $R1
+
+  normalizeRegisteredInstallPath_loop:
+    StrLen $R1 $R0
+    IntCmp $R1 3 normalizeRegisteredInstallPath_done normalizeRegisteredInstallPath_done
+    StrCpy $R1 $R0 1 -1
+    StrCmp $R1 "\" normalizeRegisteredInstallPath_trim
+    StrCmp $R1 "/" normalizeRegisteredInstallPath_trim normalizeRegisteredInstallPath_done
+
+  normalizeRegisteredInstallPath_trim:
+    StrCpy $R0 $R0 -1
+    Goto normalizeRegisteredInstallPath_loop
+
+  normalizeRegisteredInstallPath_done:
+    Pop $R1
+    Exch $R0
+FunctionEnd
+
+# Move a data root outside the installation before the OLD uninstaller sees it. A deterministic
+# sibling path lets an elevated inner installer or a later retry recover data left by an
+# interrupted outer installer without relying on process-local registers.
+!macro preserveNestedDataRoot DIR BACKUP SLOT
+  StrCpy ${BACKUP} ""
+  ${if} "${DIR}" != ""
+    ClearErrors
+    GetFullPathName $R2 "${DIR}\.."
+    ${if} ${Errors}
+      DetailPrint `Could not safely preserve "${DIR}\OpenScience"; its parent path could not be resolved.`
+      MessageBox MB_OK|MB_ICONSTOP "Open Science could not safely protect its data folder before updating.$\r$\nThe existing data was left untouched."
+      StrCpy $dataProtectionFailed "1"
+    ${else}
+      StrCpy ${BACKUP} "$R2\.open-science-update-data-${SLOT}"
+      ${if} ${FileExists} "${DIR}\OpenScience\*.*"
+        ${if} ${FileExists} "${BACKUP}\*.*"
+          DetailPrint `Could not safely preserve "${DIR}\OpenScience" because the backup path already exists: ${BACKUP}`
+          MessageBox MB_OK|MB_ICONSTOP "Open Science found both the current data folder and an earlier update backup.$\r$\nNo data was changed. Please inspect:$\r$\n${BACKUP}"
+          StrCpy ${BACKUP} ""
+          StrCpy $dataProtectionFailed "1"
+        ${else}
+          ClearErrors
+          Rename "${DIR}\OpenScience" "${BACKUP}"
+          ${if} ${Errors}
+            DetailPrint `Could not safely preserve "${DIR}\OpenScience"; leaving the existing installation untouched.`
+            MessageBox MB_OK|MB_ICONSTOP "Open Science could not safely protect its data folder before updating.$\r$\nThe existing data was left untouched."
+            StrCpy ${BACKUP} ""
+            StrCpy $dataProtectionFailed "1"
+          ${else}
+            DetailPrint `Protected the data folder at: ${BACKUP}`
+          ${endif}
+        ${endif}
+      ${elseif} ${FileExists} "${BACKUP}\*.*"
+        # A previous installer exited before it could restore. Adopt that deterministic backup
+        # and restore it through the normal post-uninstall path.
+        DetailPrint `Found data preserved by an interrupted update at: ${BACKUP}`
+      ${else}
+        StrCpy ${BACKUP} ""
+      ${endif}
+    ${endif}
+  ${endif}
+!macroend
+
+!macro restoreNestedDataRoot DIR BACKUP
+  ${if} "${DIR}" != ""
+  ${andIf} "${BACKUP}" != ""
+    ${if} ${FileExists} "${BACKUP}\*.*"
+      ${if} ${FileExists} "${DIR}\OpenScience\*.*"
+        DetailPrint `The preserved data remains at: ${BACKUP}`
+        MessageBox MB_OK|MB_ICONSTOP "Open Science could not restore its data folder because the destination already exists.$\r$\nThe preserved data remains at:$\r$\n${BACKUP}"
+        StrCpy $dataRestoreFailed "1"
+      ${else}
+        CreateDirectory "${DIR}"
+        ClearErrors
+        Rename "${BACKUP}" "${DIR}\OpenScience"
+        ${if} ${Errors}
+          DetailPrint `The preserved data remains at: ${BACKUP}`
+          MessageBox MB_OK|MB_ICONSTOP "Open Science could not restore its data folder after updating.$\r$\nThe preserved data remains at:$\r$\n${BACKUP}"
+          StrCpy $dataRestoreFailed "1"
+        ${else}
+          DetailPrint `Restored the data folder to: ${DIR}\OpenScience`
+          StrCpy ${BACKUP} ""
+        ${endif}
+      ${endif}
+    ${else}
+      # Another installer instance may already have restored the deterministic backup.
+      StrCpy ${BACKUP} ""
+    ${endif}
+  ${endif}
+!macroend
+
+!macro restoreAllNestedDataRoots
+  StrCpy $dataRestoreFailed "0"
+  !insertmacro restoreNestedDataRoot $perMachineInstallDirCache $perMachineDataBackup
+  !insertmacro restoreNestedDataRoot $perUserInstallDirCache $perUserDataBackup
+!macroend
+
+!macro quitIfDataRestoreFailed
+  ${if} $dataRestoreFailed != "0"
+    SetErrorLevel 2
+    Quit
+  ${endif}
+!macroend
+
+# Run only after installMode is final. Interactive assisted installers reach this from the
+# instfiles-page preflight; silent installs have no page callbacks, so customInit calls it after
+# initMultiUser has resolved the command-line/previous-install mode. A distinct HKLM tree must not
+# be touched for a current-user install merely because the process already has admin rights.
+!macro protectMachineDataRootForSelectedMode
+  ${if} $dataProtectionFailed == "0"
+  ${andIf} $installMode == "all"
+    ${if} $perMachineInstallDirCache == $perUserInstallDirCache
+      StrCpy $perMachineDataBackup $perUserDataBackup
+    ${elseif} ${UAC_IsAdmin}
+      !insertmacro preserveNestedDataRoot $perMachineInstallDirCache $perMachineDataBackup machine
+    ${elseif} $perMachineInstallDirCache != ""
+      # The unelevated assisted outer process stops on the install-mode page while its elevated
+      # inner process completes the install. The inner process runs this same protection path.
+      DetailPrint `Deferring machine data-folder protection to the elevated installer.`
+    ${endif}
+  ${endif}
+  ${if} $dataProtectionFailed != "0"
+    # Undo any earlier successful move before refusing to start either old uninstaller.
+    !insertmacro restoreAllNestedDataRoots
+    SetErrorLevel 2
+    Quit
+  ${endif}
+!macroend
+
+# electron-builder already installs an instfiles PRE callback that sanitizes the selected install
+# directory. Preserve that callback and chain the final-mode data preflight after it.
+!macro customPageAfterChangeDir
+  !ifdef MUI_PAGE_CUSTOMFUNCTION_PRE
+    !define openScienceOriginalInstFilesPre ${MUI_PAGE_CUSTOMFUNCTION_PRE}
+    !undef MUI_PAGE_CUSTOMFUNCTION_PRE
+  !endif
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE protectNestedDataRootsForInstall
+!macroend
+
 !macro customInit
-  # Cache any stray per-user install location NOW (install start), BEFORE any uninstall pass
-  # runs: the HKCU uninstall pass deletes this value on success, so customUnInstallCheckCurrentUser
-  # — which runs after that pass — could never read it there. Declared inside this macro (rather
-  # than at file scope) because customInit only expands into the installer build; a file-scope
-  # Var would be declared-but-unused in the uninstaller build, and makensis fails that warning.
-  Var /GLOBAL perUserInstallDirCache
+  # Cache both registered locations before either uninstall pass can delete their registry data.
+  # More importantly, move any nested OpenScience data root OUTSIDE the install directory before
+  # the first old uninstaller runs. Its /KEEP_APP_DATA flag only protects the normal OS app-data
+  # directory; its update algorithm otherwise moves every child of the install directory into a
+  # disposable $PLUGINSDIR and deletes it on success.
+  StrCpy $perMachineInstallDirCache ""
+  StrCpy $perUserInstallDirCache ""
+  StrCpy $perMachineDataBackup ""
+  StrCpy $perUserDataBackup ""
+  StrCpy $dataProtectionFailed "0"
+  StrCpy $dataRestoreFailed "0"
+  ReadRegStr $perMachineInstallDirCache HKEY_LOCAL_MACHINE "${INSTALL_REGISTRY_KEY}" InstallLocation
   ReadRegStr $perUserInstallDirCache HKEY_CURRENT_USER "${INSTALL_REGISTRY_KEY}" InstallLocation
+  Push $perMachineInstallDirCache
+  Call normalizeRegisteredInstallPath
+  Pop $perMachineInstallDirCache
+  Push $perUserInstallDirCache
+  Call normalizeRegisteredInstallPath
+  Pop $perUserInstallDirCache
+
+  # Protect HKCU independently of the mode selected during .onInit: the user can still switch to
+  # all-users on the assisted install-mode page, so that early mode is not the uninstall verdict.
+  # One exception needs a non-destructive write probe: both registry entries may point at the
+  # same machine-owned Program Files tree. An unelevated outer process must defer that shared path
+  # to the inner installer instead of failing before the user has a chance to approve UAC.
+  StrCpy $R8 "1"
+  ${if} $perUserInstallDirCache != ""
+  ${andIf} $perMachineInstallDirCache == $perUserInstallDirCache
+  ${andIfNot} ${UAC_IsAdmin}
+    StrCpy $R8 "0"
+    StrCpy $R9 ""
+    ClearErrors
+    GetFullPathName $R2 "$perUserInstallDirCache\.."
+    ${ifNot} ${Errors}
+      GetTempFileName $R9 "$R2"
+      ${ifNot} ${Errors}
+        ClearErrors
+        Delete "$R9"
+        ${ifNot} ${Errors}
+          StrCpy $R8 "1"
+        ${endif}
+      ${endif}
+    ${endif}
+    ${if} $R8 == "0"
+      DetailPrint `Deferring shared data-folder protection to the elevated installer.`
+      ClearErrors
+    ${endif}
+  ${endif}
+  ${if} $R8 == "1"
+    !insertmacro preserveNestedDataRoot $perUserInstallDirCache $perUserDataBackup per-user
+  ${endif}
+
+  ${if} $dataProtectionFailed != "0"
+    !insertmacro restoreAllNestedDataRoots
+    SetErrorLevel 2
+    Quit
+  ${endif}
+  # Page callbacks do not run in silent mode. There is no later user choice in that mode, so the
+  # installMode selected by initMultiUser is already final and machine protection can run now.
+  ${if} ${Silent}
+    !insertmacro protectMachineDataRootForSelectedMode
+  ${endif}
+!macroend
+
+# These callbacks cover cancellation or an installer failure before the post-uninstall hooks run.
+# The normal path restores each directory immediately after its matching old-uninstaller pass.
+!macro customHeader
+  Function protectNestedDataRootsForInstall
+    !ifdef openScienceOriginalInstFilesPre
+      Call ${openScienceOriginalInstFilesPre}
+    !endif
+    !insertmacro protectMachineDataRootForSelectedMode
+  FunctionEnd
+
+  Function restorePreservedOnAbort
+    !insertmacro restoreAllNestedDataRoots
+  FunctionEnd
+
+  Function .onInstFailed
+    !insertmacro restoreAllNestedDataRoots
+  FunctionEnd
 !macroend
 
 # Resilient replacement for handleUninstallResult's default failure handling, installed via
@@ -31,7 +257,7 @@
 # CHECK_APP_RUNNING declare their globals ($installationDir, $PowerShellPath, ...), and makensis
 # treats unknown variables as errors — so this stays self-contained: registers, built-in
 # constants, and the literal temp-uninstaller path uninstallOldVersion uses.
-!macro uninstallFailureRecoveryAt DIR
+!macro uninstallFailureRecoveryAt DIR REGISTERED_BACKUP
   ${ifNot} ${FileExists} "${DIR}\${APP_EXECUTABLE_FILENAME}"
     DetailPrint `Old uninstaller exited with $R0 but the previous installation is already removed; continuing.`
   ${else}
@@ -59,20 +285,138 @@
     ${endif}
     ClearErrors
     Sleep 1000
+    # A custom data root may live inside the installation itself (the issue reporter uses
+    # <install>\OpenScience). The updated uninstaller moves EVERY child of ${DIR} into its
+    # disposable $PLUGINSDIR, so making that move reliable without protecting the data root
+    # would turn an update failure into silent data loss. Move the directory to a unique sibling
+    # on the same volume before retrying, then restore it regardless of the retry's exit code.
+    # A failed preserve leaves the original directory in place and aborts before the retry.
+    StrCpy $R7 ""
+    ${if} ${FileExists} "${DIR}\OpenScience\*.*"
+      ClearErrors
+      GetFullPathName $R2 "${DIR}\.."
+      GetTempFileName $R7 "$R2"
+      ${ifNot} ${Errors}
+        Delete "$R7"
+        ClearErrors
+        Rename "${DIR}\OpenScience" "$R7"
+      ${endif}
+      ${if} ${Errors}
+        Delete "$R7"
+        DetailPrint `Could not safely preserve "${DIR}\OpenScience"; leaving the existing installation untouched.`
+        MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
+        !insertmacro restoreAllNestedDataRoots
+        SetErrorLevel 2
+        Quit
+      ${endif}
+    ${endif}
+
+    # During an update, electron-builder's old uninstaller moves every installed file into its
+    # $PLUGINSDIR before deleting the old tree. Windows cannot atomically rename across volumes:
+    # for a custom D: install and the usual C: TEMP this becomes a slow, failure-prone copy of the
+    # whole installation. Give only the recovery child a unique temp directory beside the old
+    # install so its plugin directory stays on the same volume. If that directory cannot be
+    # created, retain the existing default-TEMP retry rather than turning recovery setup into a
+    # new fatal path. $R3/$R4 preserve this installer's environment across the child process.
+    StrCpy $R5 ""
+    ClearErrors
+    GetFullPathName $R2 "${DIR}\.."
+    GetTempFileName $R5 "$R2"
+    ${ifNot} ${Errors}
+      Delete "$R5"
+      ClearErrors
+      CreateDirectory "$R5"
+    ${endif}
+    ${ifNot} ${Errors}
+      ReadEnvStr $R3 "TEMP"
+      ReadEnvStr $R4 "TMP"
+      System::Call 'Kernel32::SetEnvironmentVariable(t, t)i ("TEMP", "$R5").rR6'
+      ${if} $R6 != 0
+        System::Call 'Kernel32::SetEnvironmentVariable(t, t)i ("TMP", "$R5").rR6'
+      ${endif}
+      ${if} $R6 == 0
+        # A partial environment update must not leak into the rest of the new installer.
+        System::Call 'Kernel32::SetEnvironmentVariable(t, t)i ("TEMP", "$R3").rR6'
+        System::Call 'Kernel32::SetEnvironmentVariable(t, t)i ("TMP", "$R4").rR6'
+        RMDir /r "$R5"
+        StrCpy $R5 ""
+      ${endif}
+    ${else}
+      StrCpy $R5 ""
+    ${endif}
+
     ExecWait '"$PLUGINSDIR\old-uninstaller.exe" /S /KEEP_APP_DATA $0 _?=${DIR}' $R0
+    ${if} $R5 != ""
+      System::Call 'Kernel32::SetEnvironmentVariable(t, t)i ("TEMP", "$R3").rR6'
+      System::Call 'Kernel32::SetEnvironmentVariable(t, t)i ("TMP", "$R4").rR6'
+      RMDir /r "$R5"
+      ClearErrors
+    ${endif}
+    ${if} $R7 != ""
+      ${if} "${REGISTERED_BACKUP}" != ""
+      ${andIf} ${FileExists} "${REGISTERED_BACKUP}\*.*"
+        # customInit already holds the authoritative registered data outside the install tree.
+        # Do not overwrite either copy if the old process recreated data before it was killed;
+        # retain that additional directory at its unique sibling path for manual reconciliation.
+        DetailPrint `Additional data created during the update remains at: $R7`
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Open Science found additional data created while closing the previous version.$\r$\nYour original data will be restored; the additional data remains at:$\r$\n$R7"
+      ${else}
+        # No registered backup exists (recovery can also be used independently). The retry may
+        # have removed ${DIR}; recreate only the parent and put the retry-local data back before
+        # deciding whether the retry's exit code represents success or failure.
+        CreateDirectory "${DIR}"
+        ClearErrors
+        Rename "$R7" "${DIR}\OpenScience"
+        ${if} ${Errors}
+          DetailPrint `The preserved data remains at: $R7`
+          MessageBox MB_OK|MB_ICONSTOP "Open Science could not restore its data folder after updating.$\r$\nYour data remains at:$\r$\n$R7"
+          !insertmacro restoreAllNestedDataRoots
+          SetErrorLevel 2
+          Quit
+        ${endif}
+        StrCpy $R7 ""
+      ${endif}
+    ${endif}
     ${if} $R0 != 0
-      MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
-      DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
-      SetErrorLevel 2
-      Quit
+      ${ifNot} ${FileExists} "${DIR}\${APP_EXECUTABLE_FILENAME}"
+        DetailPrint `Retry exited with $R0 but the previous installation is already removed; continuing.`
+      ${else}
+        MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
+        DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+        !insertmacro restoreAllNestedDataRoots
+        SetErrorLevel 2
+        Quit
+      ${endif}
     ${endif}
   ${endif}
 !macroend
 
 !macro customUnInstallCheck
+  # SHELL_CONTEXT resolves from the FINAL install-mode page selection, not the mode seen by
+  # customInit. Keep registered data outside the install tree through any non-zero-exit recovery:
+  # a live old process can recreate OpenScience, and restoring first would make the recovery path
+  # abort on that destination conflict. $R8 selects the authoritative backup for this pass.
   ${if} $R0 != 0
+    StrCpy $R8 $perUserDataBackup
+    ${if} $installMode == "all"
+      StrCpy $R8 $perMachineDataBackup
+    ${endif}
     # SHELL_CONTEXT pass: the old installation sits at $INSTDIR (an update installs over it).
-    !insertmacro uninstallFailureRecoveryAt $INSTDIR
+    !insertmacro uninstallFailureRecoveryAt $INSTDIR $R8
+  ${endif}
+
+  # A current-user install has no second pass, so restore every cached root. An all-users install
+  # restores HKLM here and keeps HKCU protected for the following explicit pass.
+  ${if} $installMode == "all"
+    ${if} $perMachineInstallDirCache == $perUserInstallDirCache
+      DetailPrint `Keeping the shared data folder protected for the matching per-user uninstall pass.`
+    ${else}
+      !insertmacro restoreNestedDataRoot $perMachineInstallDirCache $perMachineDataBackup
+      !insertmacro quitIfDataRestoreFailed
+    ${endif}
+  ${else}
+    !insertmacro restoreAllNestedDataRoots
+    !insertmacro quitIfDataRestoreFailed
   ${endif}
 !macroend
 
@@ -87,9 +431,17 @@
     ${if} $perUserInstallDirCache == ""
       MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
       DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+      !insertmacro restoreAllNestedDataRoots
       SetErrorLevel 2
       Quit
     ${endif}
-    !insertmacro uninstallFailureRecoveryAt $perUserInstallDirCache
+    !insertmacro uninstallFailureRecoveryAt $perUserInstallDirCache $perUserDataBackup
   ${endif}
+  # The old uninstall may have removed its registry key, so restore using the path cached before
+  # either pass rather than reading InstallLocation here. Recovery must finish first because the
+  # still-preserved backup is what keeps a recreated data directory from short-circuiting retry.
+  !insertmacro restoreNestedDataRoot $perUserInstallDirCache $perUserDataBackup
+  !insertmacro quitIfDataRestoreFailed
 !macroend
+
+!endif
