@@ -1004,17 +1004,19 @@ describe('notebook runtime service', () => {
       expect(state.runs[0]).toMatchObject({ status: 'failed', script: 'micromamba install --help' })
     })
 
-    it.each([
-      ['R install.packages', `Rscript -e 'install.packages()'`],
-      ['Python pip', 'python -m pip install --help'],
-      ['Python venv', 'python -m venv --help'],
+    it.each(
       [
-        'dynamic Python venv',
-        'tool=python3; mode=-m; action=venv; "$tool" "$mode" "$action" analysis-env'
-      ],
-      ['uv', 'uv venv --help'],
-      ['Poetry', 'poetry add --help']
-    ])('rejects %s package/environment mutation through bash_execute', async (_label, command) => {
+        ['R install.packages', `Rscript -e 'install.packages()'`],
+        ['Python pip', 'python -m pip install --help'],
+        ['Python venv', 'python -m venv --help'],
+        [
+          'dynamic Python venv',
+          'tool=python3; mode=-m; action=venv; "$tool" "$mode" "$action" analysis-env'
+        ],
+        ['uv', 'uv venv --help'],
+        ['Poetry', 'poetry add --help']
+      ].filter(([label]) => process.platform !== 'win32' || label !== 'dynamic Python venv')
+    )('rejects %s package/environment mutation through bash_execute', async (_label, command) => {
       const root = await createStorageRoot()
       const service = createShellService(root)
 
@@ -1174,13 +1176,13 @@ describe('notebook runtime service', () => {
       await service.executeShell({
         sessionId: 'session-1',
         workspaceCwd: root,
-        command: 'FOO=bar'
+        command: process.platform === 'win32' ? "$env:FOO='bar'" : 'FOO=bar'
       })
       // A persistent shell would remember FOO from the previous call; a fresh process never does.
       const result = await service.executeShell({
         sessionId: 'session-1',
         workspaceCwd: root,
-        command: 'echo "[$FOO]"'
+        command: process.platform === 'win32' ? 'Write-Output "[$env:FOO]"' : 'echo "[$FOO]"'
       })
 
       expect(result.stdout).toContain('[]')
@@ -3321,7 +3323,7 @@ describe('notebook runtime service', () => {
       expect(provisionPython).not.toHaveBeenCalled()
 
       // An already-materialized default env is not re-provisioned.
-      const rBinPath = join(root, 'runtime', 'envs', 'default-r', 'bin', 'R')
+      const rBinPath = rBin(envPrefix(join(root, 'runtime'), DEFAULT_R_ENV))
       await mkdir(join(rBinPath, '..'), { recursive: true })
       await writeFile(rBinPath, '')
       writeRReadyMarker(join(root, 'runtime'), DEFAULT_ENV_VERSION, 'now')
@@ -4801,11 +4803,20 @@ describe('v4 runtime bindings & agent tools', () => {
     const root = await createStorageRoot()
     const runtimeRoot = getRuntimeRoot(root)
     const prefix = envPrefix(runtimeRoot, DEFAULT_PY_ENV)
+    const cachePath = join(runtimeRoot, 'pkgs')
     const provisioner = new DefaultRuntimeProvisioner({
       root: runtimeRoot,
       mm: '/mm',
       channel: 'conda-forge',
-      fetchBundle: async (spec) => ({ lockPath: join(runtimeRoot, `${spec.name}.lock`) }),
+      // Cache selection and Windows ACL hardening are covered separately. Keep this integration test
+      // focused on the provisioner-to-recovery journal boundary and independent of host ACL latency.
+      cache: { path: cachePath, lockKey: cachePath },
+      fetchBundle: async (spec) => ({
+        lockPath: join(runtimeRoot, `${spec.name}.lock`),
+        // This fake lock has no package paths. Avoid applying the production bundle's worst-case
+        // Windows path budget to the deliberately long temporary test root.
+        pathBudget: { maxCacheRelativePath: 1, maxEnvRelativePath: 1 }
+      }),
       // Real runMicromamba calls onBeforeSpawn right before spawning; mimic that (write the intent) then
       // hang, modelling a crash after spawn but before the PID is recorded.
       runArgv: (_argv, _signal, _onChild, onBeforeSpawn) => {
