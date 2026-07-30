@@ -74,7 +74,8 @@ type PreloadApi = {
     compactSession: (request: unknown) => unknown
   }
   notifications: {
-    takePendingOpenSession: () => unknown
+    peekPendingOpenSession: () => unknown
+    takePendingOpenSession: (expectedToken: number) => unknown
     syncViewState: (state: unknown) => void
     onViewProbe: (listener: (challengeId: number) => void) => () => void
   }
@@ -420,12 +421,18 @@ const cases: ForwardingCase[] = [
     channel: 'acp:compact-session',
     args: [{ sessionId: 's-1' }]
   },
-  // Notification click target: the renderer pulls it once sessions are hydrated.
+  // Notification click target: inspect first so partial hydration can retain an omitted session.
+  {
+    name: 'notifications.peekPendingOpenSession → notifications:peek-pending-open-session',
+    invoke: (a) => a.notifications.peekPendingOpenSession(),
+    channel: 'notifications:peek-pending-open-session',
+    args: []
+  },
   {
     name: 'notifications.takePendingOpenSession → notifications:take-pending-open-session',
-    invoke: (a) => a.notifications.takePendingOpenSession(),
+    invoke: (a) => a.notifications.takePendingOpenSession(7),
     channel: 'notifications:take-pending-open-session',
-    args: []
+    args: [7]
   }
 ]
 

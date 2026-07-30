@@ -356,7 +356,10 @@ interface OpenScienceAPI {
   }
   notifications: {
     onOpenSession(listener: () => void): RemoveListener
-    takePendingOpenSession(): Promise<OpenSessionFromNotificationRequest | null>
+    peekPendingOpenSession(): Promise<OpenSessionFromNotificationRequest | null>
+    takePendingOpenSession(
+      expectedToken: number
+    ): Promise<OpenSessionFromNotificationRequest | null>
     // Electron-only. The Web bridge intentionally omits native unread acknowledgement.
     syncViewState?(state: UnreadTaskViewState): void
     onViewProbe?(listener: AcpListener<number>): RemoveListener

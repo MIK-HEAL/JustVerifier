@@ -81,6 +81,7 @@ import { registerReviewerIpcHandlers } from './reviewer/ipc'
 import {
   createDefaultReviewRepository,
   createDefaultSessionRepository,
+  loadSessionsAfterProjectRecovery,
   registerSessionPersistenceIpcHandlers
 } from './session-persistence/ipc'
 import { registerProjectFilesIpcHandlers } from './project-files/ipc'
@@ -306,10 +307,8 @@ const registerIpcHandlers = async ({
     artifactProvenanceRepository
   )
   const sessionPersistenceBackend: SessionPersistenceBackend = {
-    loadAll: async () => {
-      await projectDeletionCoordinator.recoverPendingDeletions()
-      return sessionPersistenceCoordinator.loadAll()
-    },
+    loadAll: () =>
+      loadSessionsAfterProjectRecovery(projectDeletionCoordinator, sessionPersistenceCoordinator),
     saveSession: async (session) => {
       await projectDeletionCoordinator.recoverPendingDeletions()
       const created =
@@ -358,10 +357,16 @@ const registerIpcHandlers = async ({
     onUnreadError: (error) =>
       notificationsLog.warn('unread task handler failed', errorLogFields(error))
   })
-  // The renderer pulls the notification click target once its sessions are hydrated (a push sent
-  // before the listener exists would be lost); consume-once semantics live in the service.
-  ipcMain.handle('notifications:take-pending-open-session', () =>
-    taskNotifications.takePendingOpenSession()
+  // The renderer peeks once sessions are hydrated, then conditionally consumes the same target.
+  // This lets partial recovery open an already-loaded conversation while retaining an omitted one
+  // for retry, without an older IPC round trip clearing a newer click target.
+  ipcMain.handle('notifications:peek-pending-open-session', () =>
+    taskNotifications.peekPendingOpenSession()
+  )
+  ipcMain.handle('notifications:take-pending-open-session', (_event, expectedToken: unknown) =>
+    typeof expectedToken === 'number' && Number.isSafeInteger(expectedToken) && expectedToken > 0
+      ? taskNotifications.takePendingOpenSession(expectedToken)
+      : null
   )
   // One MCP client manager backs both dispatch (ConnectorService.call → custom server) and skill-doc
   // generation (listTools) for user-added custom MCP servers (stdio + remote). It lazily connects per

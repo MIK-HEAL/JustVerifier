@@ -28,6 +28,8 @@ const renderSidebar = async (sessions: ChatSession[]): Promise<string> => {
       sessions={sessions}
       activeSessionId={sessions[0]?.id}
       canCreateConversation
+      canMutateConversations
+      canDeleteConversations
       onGoHome={vi.fn()}
       onNewConversation={vi.fn()}
       isFilesOpen={false}
@@ -109,6 +111,8 @@ describe('WorkspaceSidebar accessible render', () => {
       sessions,
       activeSessionId: sessions[0].id,
       canCreateConversation: true,
+      canMutateConversations: true,
+      canDeleteConversations: true,
       onGoHome: vi.fn(),
       onNewConversation: vi.fn(),
       isFilesOpen: false,
@@ -151,6 +155,8 @@ describe('WorkspaceSidebar accessible render', () => {
       sessions: [createSession({ id: 'session-a', title: 'Notebook review' })],
       activeSessionId: 'session-a',
       canCreateConversation: true,
+      canMutateConversations: true,
+      canDeleteConversations: true,
       onGoHome: vi.fn(),
       onNewConversation: vi.fn(),
       isFilesOpen: true,
@@ -188,6 +194,8 @@ describe('WorkspaceSidebar accessible render', () => {
       sessions,
       activeSessionId: sessions[0].id,
       canCreateConversation: true,
+      canMutateConversations: true,
+      canDeleteConversations: true,
       onGoHome: vi.fn(),
       onNewConversation: vi.fn(),
       isFilesOpen: false,
@@ -234,6 +242,8 @@ describe('WorkspaceSidebar accessible render', () => {
       sessions,
       activeSessionId: sessions[0].id,
       canCreateConversation: true,
+      canMutateConversations: true,
+      canDeleteConversations: true,
       onGoHome: vi.fn(),
       onNewConversation: vi.fn(),
       isFilesOpen: false,
@@ -258,5 +268,36 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(unpinItem?.props.onSelect).toBeTypeOf('function')
     ;(unpinItem?.props.onSelect as () => void)()
     expect(onTogglePin).toHaveBeenCalledWith(sessions[1])
+  })
+
+  it('keeps target-validated deletion available while other mutations are recovering', async () => {
+    const { WorkspaceSidebar } = await import('./WorkspaceSidebar')
+    const session = createSession({ id: 'session-a', title: 'Notebook review' })
+    const tree = WorkspaceSidebar({
+      projectName: 'Example project',
+      sessions: [session],
+      activeSessionId: session.id,
+      canCreateConversation: false,
+      canMutateConversations: false,
+      canDeleteConversations: true,
+      onGoHome: vi.fn(),
+      onNewConversation: vi.fn(),
+      isFilesOpen: false,
+      onOpenFiles: vi.fn(),
+      onOpenSession: vi.fn(),
+      onRenameSession: vi.fn(),
+      onViewNotebook: vi.fn(),
+      onTogglePin: vi.fn(),
+      onDeleteSession: vi.fn(),
+      onOpenSettings: vi.fn()
+    })
+    const elements = collectElements(tree)
+    const pinItem = elements.find((element) => getTextContent(element).trim() === 'Pin')
+    const renameItem = elements.find((element) => getTextContent(element).trim() === 'Rename…')
+    const deleteItem = elements.find((element) => getTextContent(element).trim() === 'Delete')
+
+    expect(pinItem?.props.disabled).toBe(true)
+    expect(renameItem?.props.disabled).toBe(true)
+    expect(deleteItem?.props.disabled).toBe(false)
   })
 })

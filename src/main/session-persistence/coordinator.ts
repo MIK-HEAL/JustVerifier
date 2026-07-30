@@ -5,7 +5,9 @@ import type {
   LoadAllSessionsResult,
   PersistedArtifact,
   PersistedChatSession,
-  SaveSessionManifestRequest
+  SaveSessionManifestRequest,
+  SessionLoadFailure,
+  SessionLoadWarning
 } from '../../shared/session-persistence'
 import type { ManagedFileSoftDeleteToken } from '../project-files/repository'
 import type { ProjectSessionDeletionState } from './repository'
@@ -21,9 +23,11 @@ type ProjectSessionDeletionResult =
   { status: 'completed' } | { status: 'orphan-retained'; reason: 'missing-upload-authority' }
 
 type SessionMutationRepository = {
-  loadAllWithDiagnostics(): Promise<{
+  loadAllWithDiagnostics(options?: { mode?: 'repair' | 'read-only' }): Promise<{
     result: LoadAllSessionsResult
     isComplete: boolean
+    warnings?: SessionLoadWarning[]
+    failure?: SessionLoadFailure
   }>
   loadProjectWithDiagnostics(projectId: string): Promise<{
     sessions: PersistedChatSession[]
@@ -243,6 +247,30 @@ class SessionPersistenceCoordinator {
   }
 
   /**
+   * Reads the Session authority without running recovery or derived-state reconciliation. This is
+   * the degraded path used when an earlier startup prerequisite failed: healthy transcripts remain
+   * navigable, while the incomplete marker keeps writes blocked until a full retry succeeds.
+   */
+  loadAllReadOnly(): Promise<LoadAllSessionsResult> {
+    return this.enqueue(async () => {
+      // Once any renderer has observed a degraded snapshot, later loads are no longer allowed to
+      // treat the process as an untouched startup boundary for destructive cleanup.
+      this.destructiveStartupWindowOpen = false
+      this.fileIndex.markReconciliationIncomplete()
+      const scan = await this.repository.loadAllWithDiagnostics({ mode: 'read-only' })
+
+      return {
+        ...scan.result,
+        diagnostics: {
+          isComplete: false,
+          warnings: scan.warnings ?? [],
+          failure: 'startup-reconciliation-failed'
+        }
+      }
+    })
+  }
+
+  /**
    * Loads durable sessions, reconciles Upload storage, and backfills the file projection only after a
    * complete scan has restored active ownership. Chat hydration remains available on any failure.
    */
@@ -254,6 +282,11 @@ class SessionPersistenceCoordinator {
       const mayRunDestructiveStartupCleanup = this.destructiveStartupWindowOpen
       this.destructiveStartupWindowOpen = false
       const scan = await this.repository.loadAllWithDiagnostics()
+      scan.result.diagnostics = {
+        isComplete: scan.isComplete,
+        warnings: scan.warnings ?? [],
+        failure: scan.failure
+      }
       let result = scan.result
       let sessions = scan.result.sessions
 
@@ -345,15 +378,19 @@ class SessionPersistenceCoordinator {
         // Reconciliation restores active owners left soft-deleted by an interrupted delete before any
         // scan-order-dependent sync can offer their canonical rows to another session.
         await this.fileIndex.reconcileActiveSessions(sessions)
+        for (const session of sessions) {
+          await this.fileIndex.syncSession(session)
+        }
       } catch (error) {
         this.fileIndex.markReconciliationIncomplete()
         console.error('[session-persistence] startup reconciliation failed', error)
         // Keep chat hydration available while Files remains explicitly incomplete and retryable.
+        result.diagnostics = {
+          isComplete: false,
+          warnings: scan.warnings ?? [],
+          failure: 'startup-reconciliation-failed'
+        }
         return result
-      }
-
-      for (const session of sessions) {
-        await this.fileIndex.syncSession(session).catch(() => undefined)
       }
 
       return result

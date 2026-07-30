@@ -468,6 +468,58 @@ describe('SessionPersistenceCoordinator', () => {
     expect(fileIndex.reconcileActiveSessions).toHaveBeenCalledWith([session])
   })
 
+  it('hydrates a read-only snapshot without running startup reconciliation', async () => {
+    const session = createSession()
+    const result = { sessions: [session], manifest: { version: 1 as const } }
+    const repository = createSessionRepository({
+      loadAllWithDiagnostics: vi.fn().mockResolvedValue({
+        result,
+        isComplete: true,
+        warnings: []
+      })
+    })
+    const fileIndex = createFileIndex()
+    const provenance = {
+      captureFinalizedMessages: vi.fn().mockResolvedValue(undefined),
+      reconcileSessionDeletions: vi.fn().mockResolvedValue(undefined),
+      prepareSessionDeletion: vi.fn(),
+      completeSessionDeletion: vi.fn(),
+      abortSessionDeletion: vi.fn()
+    }
+    const uploads = { upgradeLegacySessionUploads: vi.fn() }
+    const artifactStorage = {
+      prepareProjectReconciliation: vi.fn(),
+      reconcileSession: vi.fn()
+    }
+    const coordinator = new SessionPersistenceCoordinator(
+      repository,
+      fileIndex,
+      undefined,
+      provenance,
+      uploads,
+      artifactStorage
+    )
+
+    await expect(coordinator.loadAllReadOnly()).resolves.toEqual({
+      ...result,
+      diagnostics: {
+        isComplete: false,
+        warnings: [],
+        failure: 'startup-reconciliation-failed'
+      }
+    })
+
+    expect(fileIndex.markReconciliationIncomplete).toHaveBeenCalledOnce()
+    expect(repository.loadAllWithDiagnostics).toHaveBeenCalledWith({ mode: 'read-only' })
+    expect(fileIndex.reconcileActiveSessions).not.toHaveBeenCalled()
+    expect(fileIndex.syncSession).not.toHaveBeenCalled()
+    expect(repository.saveSession).not.toHaveBeenCalled()
+    expect(provenance.reconcileSessionDeletions).not.toHaveBeenCalled()
+    expect(uploads.upgradeLegacySessionUploads).not.toHaveBeenCalled()
+    expect(artifactStorage.prepareProjectReconciliation).not.toHaveBeenCalled()
+    expect(artifactStorage.reconcileSession).not.toHaveBeenCalled()
+  })
+
   it('reconciles path-free Upload copies only on the first complete load from multiple clients', async () => {
     const root = await mkdtemp(join(tmpdir(), 'open-science-upload-startup-reconcile-'))
     const client = createProjectDbClient(root)
@@ -748,7 +800,8 @@ describe('SessionPersistenceCoordinator', () => {
     await expect(coordinator.loadAll()).resolves.toBe(incomplete.result)
     await expect(coordinator.loadAll()).resolves.toEqual({
       sessions: [upgradedSession],
-      manifest: complete.result.manifest
+      manifest: complete.result.manifest,
+      diagnostics: { isComplete: true, warnings: [] }
     })
 
     expect(uploads.upgradeLegacySessionUploads).toHaveBeenCalledOnce()
@@ -1282,6 +1335,28 @@ describe('SessionPersistenceCoordinator', () => {
     expect(syncSession).toHaveBeenCalledOnce()
   })
 
+  it('marks startup reconciliation incomplete when a Session file-index sync fails', async () => {
+    const session = createSession()
+    const result = { sessions: [session], manifest: { version: 1 as const } }
+    const repository = createSessionRepository({
+      loadAllWithDiagnostics: vi.fn().mockResolvedValue({ result, isComplete: true })
+    })
+    const markReconciliationIncomplete = vi.fn()
+    const fileIndex = createFileIndex({
+      markReconciliationIncomplete,
+      syncSession: vi.fn().mockRejectedValue(new Error('file index database is locked'))
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, fileIndex)
+
+    await expect(coordinator.loadAll()).resolves.toMatchObject({
+      diagnostics: {
+        isComplete: false,
+        failure: 'startup-reconciliation-failed'
+      }
+    })
+    expect(markReconciliationIncomplete).toHaveBeenCalledOnce()
+  })
+
   it('retries surviving project sessions after deleting a collision owner', async () => {
     const owner = createSession()
     const survivor = createSession({ id: 'session-2' })
@@ -1323,8 +1398,16 @@ describe('SessionPersistenceCoordinator', () => {
   it('marks the index incomplete when the sessions scan is partial', async () => {
     const session = createSession()
     const result = { sessions: [session], manifest: { version: 1 as const } }
+    const warnings = [
+      {
+        kind: 'unreadable' as const,
+        projectId: 'project-1',
+        fileName: 'session-2.json',
+        recovered: false
+      }
+    ]
     const repository = createSessionRepository({
-      loadAllWithDiagnostics: vi.fn().mockResolvedValue({ result, isComplete: false })
+      loadAllWithDiagnostics: vi.fn().mockResolvedValue({ result, isComplete: false, warnings })
     })
     const markReconciliationIncomplete = vi.fn()
     const fileIndex = createFileIndex({ markReconciliationIncomplete })
@@ -1335,6 +1418,7 @@ describe('SessionPersistenceCoordinator', () => {
     const loaded = await coordinator.loadAll()
 
     expect(loaded).toBe(result)
+    expect(result).toMatchObject({ diagnostics: { isComplete: false, warnings } })
     expect(markReconciliationIncomplete).toHaveBeenCalledOnce()
     expect(fileIndex.reconcileActiveSessions).not.toHaveBeenCalled()
     expect(reconcile).not.toHaveBeenCalled()
@@ -1363,6 +1447,12 @@ describe('SessionPersistenceCoordinator', () => {
     )
 
     await expect(coordinator.loadAll()).resolves.toBe(result)
+    expect(result).toMatchObject({
+      diagnostics: {
+        isComplete: false,
+        failure: 'startup-reconciliation-failed'
+      }
+    })
     expect(markReconciliationIncomplete).toHaveBeenCalledOnce()
     expect(fileIndex.reconcileActiveSessions).not.toHaveBeenCalled()
   })

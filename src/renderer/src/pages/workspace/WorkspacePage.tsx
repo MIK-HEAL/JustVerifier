@@ -50,7 +50,9 @@ import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { useJobAnalysisEffect } from '@/lib/compute/useJobAnalysisEffect'
 
 type WorkspacePageProps = {
+  isSessionPersistenceHydrated: boolean
   isSessionPersistenceReady: boolean
+  canDeleteConversations: boolean
 }
 
 // Converts unknown async failures into composer-visible text.
@@ -84,7 +86,11 @@ const getUploadFilename = (file: File, index: number): string => {
 }
 
 // Renders the workspace shell and bridges the chat surface to the session store.
-const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React.JSX.Element => {
+const WorkspacePage = ({
+  isSessionPersistenceHydrated,
+  isSessionPersistenceReady,
+  canDeleteConversations
+}: WorkspacePageProps): React.JSX.Element => {
   // The page owns the imperative panel handle because open requests come from outside PreviewPanel.
   const previewPanelRef = useRef<PanelImperativeHandle | null>(null)
   const previewPanelAnimationRef = useRef<{ stop: () => void } | null>(null)
@@ -114,7 +120,6 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   // Session data lives in zustand while draft/new-conversation state stays local to the chat surface.
   const allSessions = useSessionStore((state) => state.sessions)
   const selectedSessionId = useSessionStore((state) => state.selectedSessionId)
-  const selectSession = useSessionStore((state) => state.selectSession)
   const clearSelection = useSessionStore((state) => state.clearSelection)
   const renameSession = useSessionStore((state) => state.renameSession)
   const togglePinned = useSessionStore((state) => state.togglePinned)
@@ -160,7 +165,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   } = useWorkspaceAgentRuntime()
 
   // Auto-trigger an analysis turn when a remote job finishes (design §11).
-  useJobAnalysisEffect({ sendMessage })
+  useJobAnalysisEffect({ enabled: isSessionPersistenceReady, sendMessage })
   const [draftDoc, setDraftDoc] = useState<ComposerDoc>(emptyDoc)
   const [newConversationPermissionProfile, setNewConversationPermissionProfile] =
     useState<PermissionProfileId>(DEFAULT_PERMISSION_PROFILE)
@@ -448,7 +453,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
 
   // The workspace requires an active project; if none is set (e.g. after a project delete), go home.
   useEffect(() => {
-    if (!activeProjectId) goHome()
+    if (!activeProjectId) goHome('automatic')
   }, [activeProjectId, goHome])
 
   // Switches the preview panel to the active project's own tabs (never another project's stale
@@ -704,6 +709,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     setNewConversationPermissionProfile(DEFAULT_PERMISSION_PROFILE)
     setNewConversationAutoReviewEnabled(false)
     setNewConversationEnabledComputeHosts([])
+    useNavigationStore.getState().recordUserNavigation()
     clearSelection()
   }
 
@@ -711,7 +717,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const openSession = (sessionId: string): void => {
     // The draft effect saves the outgoing doc/attachments and restores the target session's state.
     setAttachmentError(null)
-    selectSession(sessionId)
+    useNavigationStore.getState().openSession(scopedProjectId, sessionId, 'user')
   }
 
   // Converts selected or pasted files into app-managed uploads before they appear in the composer.
@@ -946,6 +952,8 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
 
   // Opens the rename dialog with the current title prefilled.
   const openRenameDialog = (session: ChatSession): void => {
+    if (!isSessionPersistenceReady) return
+
     setSessionToRename(session)
     setRenameDraft(session.title)
   }
@@ -960,16 +968,27 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const confirmRenameSession = (event: React.FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
 
-    if (!sessionToRename || renameDraft.trim().length === 0) return
+    if (!isSessionPersistenceReady || !sessionToRename || renameDraft.trim().length === 0) return
 
     renameSession(sessionToRename.id, renameDraft)
     closeRenameDialog()
   }
 
+  // Explicit deletion is target-validated and may remain available after a partial Session scan, but
+  // main requires Project deletion-journal recovery before either deletion IPC can safely run.
+  const openDeleteDialog = (session: ChatSession): void => {
+    if (!isSessionPersistenceHydrated || !canDeleteConversations) return
+
+    setSessionToDelete(session)
+  }
+
   // Deletes the selected session and repairs the chat surface if it was showing that session.
   const confirmDeleteSession = (): void => {
-    if (!sessionToDelete) return
+    if (!isSessionPersistenceHydrated || !canDeleteConversations || !sessionToDelete) return
 
+    // Cancel deferred notification/deep-link navigation before the asynchronous authoritative
+    // deletion begins. The user's destructive action owns the view even if the target is unrelated.
+    useNavigationStore.getState().recordUserNavigation()
     const deletedSessionId = sessionToDelete.id
     const isActiveSession = deletedSessionId === selectedSessionId
     if (sessionDeletionCleanupRef.current[deletedSessionId]) {
@@ -1036,9 +1055,11 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     void cancelRun(sessionId)
   }
 
-  // Re-attaches the visible interrupted session so the user can keep chatting; awaited by the banner.
+  // Re-attaches the visible interrupted session only after durable Session writes are available;
+  // awaited by the banner so it can keep duplicate clicks disabled while reconnecting.
   const resumeActiveSession = async (): Promise<void> => {
-    if (activeSession) await resumeInterruptedSession(activeSession.id)
+    if (!isSessionPersistenceReady || !activeSession) return
+    await resumeInterruptedSession(activeSession.id)
   }
 
   // Forwards visible permission decisions to the runtime bridge.
@@ -1144,15 +1165,19 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
           sessions={sessions}
           activeSessionId={selectedSessionId}
           canCreateConversation={isSessionPersistenceReady}
-          onGoHome={goHome}
+          canMutateConversations={isSessionPersistenceReady}
+          canDeleteConversations={canDeleteConversations}
+          onGoHome={() => goHome('user')}
           onNewConversation={openNewConversation}
           isFilesOpen={activePreviewItemId === PROJECT_FILES_PREVIEW_ID}
           onOpenFiles={openFilesPreview}
           onOpenSession={openSession}
           onRenameSession={openRenameDialog}
           onViewNotebook={setSessionToViewNotebook}
-          onTogglePin={(session) => togglePinned(session.id)}
-          onDeleteSession={setSessionToDelete}
+          onTogglePin={(session) => {
+            if (isSessionPersistenceReady) togglePinned(session.id)
+          }}
+          onDeleteSession={openDeleteDialog}
           onOpenSettings={openSettings}
         />
 
@@ -1166,6 +1191,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
             draftDoc={draftDoc}
             canSendMessage={canSendMessage}
             canEditDraft={canEditDraft}
+            canResumeSession={isSessionPersistenceReady}
             actionError={visibleActionError}
             isPreviewPanelCollapsed={previewPanelState === 'collapsed'}
             attachments={attachments}
@@ -1237,6 +1263,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
 
       <DeleteSessionDialog
         session={sessionToDelete}
+        canDelete={canDeleteConversations}
         onCancel={closeDeleteDialog}
         onConfirmDelete={confirmDeleteSession}
       />

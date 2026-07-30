@@ -40,6 +40,11 @@ type ProjectSummary = {
 
 type ProjectFormState = { mode: 'create' } | { mode: 'edit'; projectId: string }
 
+type HomePageProps = {
+  canDeleteProjects: boolean
+  hasCompleteSessionCatalog: boolean
+}
+
 // Optional warnings (currently Python and reduced key protection) never create a Home alert. Only a
 // failed check that blocks the core flow asks an existing user to revisit environment setup.
 const getRequiredEnvironmentFailures = (
@@ -71,10 +76,13 @@ const menuItemClassName =
   'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-text-100 transition-colors duration-150 ease-out outline-none data-[highlighted]:bg-bg-200 data-[highlighted]:text-text-000'
 
 const menuDangerItemClassName =
-  'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-danger-000 transition-colors duration-150 ease-out outline-none data-[highlighted]:bg-danger-900'
+  'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-danger-000 transition-colors duration-150 ease-out outline-none data-[highlighted]:bg-danger-900 data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
 
 // Landing screen: pick a project or jump back into a recent session.
-const HomePage = (): React.JSX.Element => {
+const HomePage = ({
+  canDeleteProjects,
+  hasCompleteSessionCatalog
+}: HomePageProps): React.JSX.Element => {
   const projects = useProjectStore((state) => state.projects)
   const loadError = useProjectStore((state) => state.loadError)
   const createProject = useProjectStore((state) => state.createProject)
@@ -149,6 +157,12 @@ const HomePage = (): React.JSX.Element => {
     setFormError(undefined)
   }
 
+  const openDeleteDialog = (project: Project): void => {
+    if (!canDeleteProjects) return
+
+    setProjectToDelete(project)
+  }
+
   const closeFormDialog = (): void => {
     if (isSubmitting) return
 
@@ -180,7 +194,7 @@ const HomePage = (): React.JSX.Element => {
 
         setFormState(null)
 
-        if (isCreate) openProject(project.id)
+        if (isCreate) openProject(project.id, 'user')
       })
       .catch((error: unknown) => {
         setFormError(error instanceof Error ? error.message : 'Could not save project.')
@@ -192,10 +206,14 @@ const HomePage = (): React.JSX.Element => {
 
   // Main coordinates durable project/session/index cleanup; renderer state changes only after it succeeds.
   const confirmDeleteProject = (): void => {
-    if (!projectToDelete) return
+    if (!canDeleteProjects || !projectToDelete) return
 
     const projectId = projectToDelete.id
 
+    // Deletion is an explicit user takeover even though it does not immediately navigate. Advance
+    // the navigation revision before the async mutation so deferred startup intents cannot reopen a
+    // conversation after the post-delete view has settled.
+    useNavigationStore.getState().recordUserNavigation()
     setProjectToDelete(undefined)
 
     void deleteProject(projectId)
@@ -297,7 +315,7 @@ const HomePage = (): React.JSX.Element => {
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-                      onClick={() => openProject(project.id)}
+                      onClick={() => openProject(project.id, 'user')}
                     >
                       <span className="truncate font-semibold text-text-000">{project.name}</span>
                       {project.isExample ? (
@@ -307,7 +325,9 @@ const HomePage = (): React.JSX.Element => {
                       ) : null}
                     </button>
                     <span className="shrink-0 text-xs text-text-100">
-                      {sessionCount} {sessionCount === 1 ? 'session' : 'sessions'}
+                      {hasCompleteSessionCatalog
+                        ? `${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'}`
+                        : 'Session count unavailable'}
                     </span>
                     <span className="w-8 shrink-0 text-right text-xs text-text-300">
                       {formatRelativeTime(lastActivityAt)}
@@ -339,7 +359,8 @@ const HomePage = (): React.JSX.Element => {
                           <DropdownMenu.Separator className="mx-1 my-1 h-px bg-border-300" />
                           <DropdownMenu.Item
                             className={menuDangerItemClassName}
-                            onSelect={() => setProjectToDelete(project)}
+                            disabled={!canDeleteProjects}
+                            onSelect={() => openDeleteDialog(project)}
                           >
                             <Trash2 className="size-4" strokeWidth={2} aria-hidden="true" />
                             Delete
@@ -372,7 +393,7 @@ const HomePage = (): React.JSX.Element => {
                       key={session.id}
                       type="button"
                       className={cn(rowClassName, 'cursor-pointer items-start')}
-                      onClick={() => openSession(session.projectId, session.id)}
+                      onClick={() => openSession(session.projectId, session.id, 'user')}
                       title={session.title}
                     >
                       <span
@@ -419,6 +440,8 @@ const HomePage = (): React.JSX.Element => {
       <DeleteProjectDialog
         project={projectToDelete}
         sessionCount={deleteTargetSessionCount}
+        hasCompleteSessionCatalog={hasCompleteSessionCatalog}
+        canDelete={canDeleteProjects}
         onCancel={() => setProjectToDelete(undefined)}
         onConfirmDelete={confirmDeleteProject}
       />

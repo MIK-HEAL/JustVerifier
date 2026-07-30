@@ -86,6 +86,9 @@ type RuntimeInstallState = {
 
 type SettingsStoreData = {
   isLoaded: boolean
+  isLoading: boolean
+  loadError: string | undefined
+  settingsLoadGeneration: number
   claude: ClaudeInfo
   activeProviderId: string | undefined
   claudeSubscriptionProviderId: ClaudeSubscriptionProviderId | undefined
@@ -157,7 +160,7 @@ type SettingsStoreData = {
 }
 
 type SettingsStore = SettingsStoreData & {
-  load: () => Promise<void>
+  load: (options?: { force?: boolean }) => Promise<boolean>
   refreshPreflight: () => Promise<Preflight>
   checkEnvironment: (options?: { force?: boolean }) => Promise<EnvironmentCheckResult | undefined>
   detectClaude: () => Promise<ClaudeDetectResult>
@@ -328,6 +331,9 @@ const createInitialPreflight = (): Preflight => ({
 
 export const createInitialSettingsState = (): SettingsStoreData => ({
   isLoaded: false,
+  isLoading: false,
+  loadError: undefined,
+  settingsLoadGeneration: 0,
   claude: {},
   activeProviderId: undefined,
   claudeSubscriptionProviderId: undefined,
@@ -574,27 +580,67 @@ const resolveUpsertedProviderId = (
   return after.find((provider) => !beforeIds.has(provider.id))?.id
 }
 
+let settingsLoadPromise: Promise<boolean> | undefined
+const SAFE_SETTINGS_LOAD_ERROR = 'Open Science could not load settings. Retry to continue.'
+
+// Keep raw IPC diagnostics in the developer channel while renderer state remains path-safe.
+const reportSettingsLoadError = (error: unknown): void => {
+  console.warn('Settings startup loading failed', error)
+}
+
 // Renderer cache of the main-process settings service. The main process stays the source of truth
 // for secrets; this store only ever holds masked provider views.
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   ...createInitialSettingsState(),
 
   // Loads settings, preflight, and encryption availability in one startup pass.
-  load: async () => {
-    const [snapshot, preflight, encryptionAvailable, npmAvailable] = await Promise.all([
-      window.api.settings.getSettings(),
-      window.api.settings.getPreflight(),
-      window.api.settings.isEncryptionAvailable(),
-      window.api.settings.isNpmAvailable()
-    ])
+  load: (options) => {
+    // StrictMode replays the startup effect. Reuse that identical in-flight pass so a duplicate
+    // request cannot supersede its successful result; an explicit user retry still starts a new
+    // generation and remains authoritative over any older request.
+    if (!options?.force && settingsLoadPromise) return settingsLoadPromise
 
-    set({
-      ...applySnapshot(snapshot),
-      preflight,
-      encryptionAvailable,
-      npmAvailable,
-      isLoaded: true
+    const generation = get().settingsLoadGeneration + 1
+    set({ settingsLoadGeneration: generation, isLoading: true, loadError: undefined })
+
+    const loadPromise = (async (): Promise<boolean> => {
+      try {
+        const [snapshot, preflight, encryptionAvailable, npmAvailable] = await Promise.all([
+          window.api.settings.getSettings(),
+          window.api.settings.getPreflight(),
+          window.api.settings.isEncryptionAvailable(),
+          window.api.settings.isNpmAvailable()
+        ])
+
+        if (get().settingsLoadGeneration !== generation) return false
+
+        set({
+          ...applySnapshot(snapshot),
+          preflight,
+          encryptionAvailable,
+          npmAvailable,
+          isLoaded: true,
+          isLoading: false,
+          loadError: undefined
+        })
+        return true
+      } catch (error) {
+        if (get().settingsLoadGeneration !== generation) return false
+
+        reportSettingsLoadError(error)
+        set({
+          isLoading: false,
+          loadError: SAFE_SETTINGS_LOAD_ERROR
+        })
+        return false
+      }
+    })()
+
+    settingsLoadPromise = loadPromise
+    void loadPromise.then(() => {
+      if (settingsLoadPromise === loadPromise) settingsLoadPromise = undefined
     })
+    return loadPromise
   },
 
   // Re-checks the two startup gates without reloading the whole snapshot.

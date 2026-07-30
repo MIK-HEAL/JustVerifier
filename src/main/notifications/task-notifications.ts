@@ -244,6 +244,7 @@ export class TaskNotificationService {
   // (window just recreated, React not mounted yet) is lost, so the payload lives here until the
   // renderer — once its sessions are hydrated — takes it. Consume-once.
   private pendingOpenSession: OpenSessionFromNotificationRequest | undefined
+  private pendingOpenSessionToken = 0
 
   // Active user-initiated turn for a session. Its display snippet is optional for attachment-only
   // prompts; entry existence, not text content, is the notification eligibility signal.
@@ -288,17 +289,26 @@ export class TaskNotificationService {
   // Records the conversation a notification click should open, so a renderer that misses the push
   // nudge (still loading, sessions not yet hydrated) can pull it when ready.
   setPendingOpenSession(sessionId: string): void {
-    this.pendingOpenSession = { sessionId }
+    this.pendingOpenSession = { sessionId, token: ++this.pendingOpenSessionToken }
   }
 
-  // Returns and clears the pending click target; the renderer calls this once its session store is
-  // hydrated (and on every push nudge). Null when there is nothing to open.
-  takePendingOpenSession(): OpenSessionFromNotificationRequest | null {
+  // Lets the renderer check whether the target already exists in a partially hydrated store without
+  // losing it when the remaining persistence scan still needs to be retried.
+  peekPendingOpenSession(): OpenSessionFromNotificationRequest | null {
+    return this.pendingOpenSession ?? null
+  }
+
+  // Clears the pending click target only when it is still the one the renderer inspected. A newer
+  // notification may replace it while the renderer awaits IPC, and must not be consumed by the
+  // older attempt.
+  takePendingOpenSession(expectedToken: number): OpenSessionFromNotificationRequest | null {
     const pending = this.pendingOpenSession
+
+    if (!pending || pending.token !== expectedToken) return null
 
     this.pendingOpenSession = undefined
 
-    return pending ?? null
+    return pending
   }
 
   // Records every renderer-originated prompt, including attachment-only turns. A first-line snippet

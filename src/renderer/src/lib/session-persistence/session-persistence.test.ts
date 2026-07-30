@@ -125,7 +125,7 @@ describe('renderer session persistence bridge', () => {
   it('hydrates the store from the per-session load result', async () => {
     const api = createApi()
 
-    await expect(loadPersistedSessions(api)).resolves.toBeUndefined()
+    await loadPersistedSessions(api)
 
     expect(api.loadAll).toHaveBeenCalledOnce()
     expect(useSessionStore.getState().sessions).toHaveLength(1)
@@ -142,6 +142,27 @@ describe('renderer session persistence bridge', () => {
     await load
 
     expect(useSessionStore.getState().sessions).toEqual([])
+  })
+
+  it('keeps selection empty when a retry target no longer exists', async () => {
+    const manifestSession = createPersistedSession({ id: 'manifest-session' })
+    const observedSelections: Array<string | undefined> = []
+    const unsubscribe = useSessionStore.subscribe((state) => {
+      observedSelections.push(state.selectedSessionId)
+    })
+    const api = createApi({
+      loadAll: vi.fn().mockResolvedValue(createLoadResult([manifestSession], manifestSession.id))
+    })
+
+    try {
+      await loadPersistedSessions(api, () => true, { sessionId: 'deleted-session' })
+    } finally {
+      unsubscribe()
+    }
+
+    expect(useSessionStore.getState().sessions).toHaveLength(1)
+    expect(useSessionStore.getState().selectedSessionId).toBeUndefined()
+    expect(observedSelections).toEqual([undefined])
   })
 
   it('does not echo an externally hydrated session back to persistence', async () => {
@@ -568,6 +589,25 @@ describe('renderer session persistence bridge', () => {
     secondSave.resolve(saveSession.mock.calls[1][0])
     await flushMicrotasks()
   })
+
+  it('reports an earlier failed write even when a later queued write succeeds', async () => {
+    const api = createApi({
+      saveSession: vi.fn().mockRejectedValue(new Error('disk full')),
+      saveManifest: vi.fn().mockResolvedValue(undefined)
+    })
+    const save = createStoreSaver(api)
+
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Persist me',
+      cwd: '/workspace/project',
+      projectId: 'project-a'
+    })
+
+    await expect(save(useSessionStore.getState())).rejects.toThrow('disk full')
+    expect(api.saveSession).toHaveBeenCalledOnce()
+    expect(api.saveManifest).toHaveBeenCalledOnce()
+  })
 })
 
 type Deferred<T> = {
@@ -585,6 +625,7 @@ const createDeferred = <T>(): Deferred<T> => {
 }
 
 const flushMicrotasks = async (): Promise<void> => {
+  await Promise.resolve()
   await Promise.resolve()
   await Promise.resolve()
 }

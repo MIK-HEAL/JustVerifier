@@ -601,15 +601,36 @@ describe('TaskNotificationService', () => {
     await handling
   })
 
-  it('holds the notification click target until the renderer takes it (consume-once)', () => {
+  it('peeks without consuming and only takes the expected notification target', () => {
     const { service } = createService({})
 
-    expect(service.takePendingOpenSession()).toBeNull()
+    expect(service.peekPendingOpenSession()).toBeNull()
 
     service.setPendingOpenSession('session-7')
 
-    expect(service.takePendingOpenSession()).toEqual({ sessionId: 'session-7' })
-    expect(service.takePendingOpenSession()).toBeNull()
+    expect(service.peekPendingOpenSession()).toEqual({ sessionId: 'session-7', token: 1 })
+    expect(service.peekPendingOpenSession()).toEqual({ sessionId: 'session-7', token: 1 })
+    expect(service.takePendingOpenSession(2)).toBeNull()
+    expect(service.peekPendingOpenSession()).toEqual({ sessionId: 'session-7', token: 1 })
+    expect(service.takePendingOpenSession(1)).toEqual({ sessionId: 'session-7', token: 1 })
+    expect(service.peekPendingOpenSession()).toBeNull()
+  })
+
+  it('does not let an older same-session click consume a newer target', () => {
+    const { service } = createService({})
+
+    service.setPendingOpenSession('session-7')
+    const older = service.peekPendingOpenSession()
+
+    service.setPendingOpenSession('session-7')
+    const newer = service.peekPendingOpenSession()
+
+    expect(older?.sessionId).toBe('session-7')
+    expect(newer?.sessionId).toBe('session-7')
+    expect(newer?.token).not.toBe(older?.token)
+    expect(service.takePendingOpenSession(older!.token)).toBeNull()
+    expect(service.peekPendingOpenSession()).toEqual(newer)
+    expect(service.takePendingOpenSession(newer!.token)).toEqual(newer)
   })
 
   it('surfaces the window on click even without a session (degraded connector approval)', async () => {

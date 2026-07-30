@@ -25,21 +25,29 @@ let conversationProps: {
   draftDoc: ComposerDoc
   attachments: UploadedAttachment[]
   attachmentTransfers: ComposerUploadTransfer[]
+  canResumeSession: boolean
   onDraftDocChange: (doc: ComposerDoc) => void
   onSendMessage: (forcedSkillIds: string[]) => void
   onStageAttachmentFiles: (files: File[]) => void
+  onResumeSession: () => Promise<void>
 }
 let sidebarProps: {
+  canDeleteConversations: boolean
   onOpenSession: (id: string) => void
   onNewConversation: () => void
   onDeleteSession: (session: ChatSession) => void
 }
-let deleteDialogProps: { session: ChatSession | undefined; onConfirmDelete: () => void }
+let deleteDialogProps: {
+  session: ChatSession | undefined
+  canDelete: boolean
+  onConfirmDelete: () => void
+}
 
 // The runtime bridge is stubbed; sendMessage resolves truthy so the success path clears the composer.
 const runtime = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   cancelRun: vi.fn(),
+  resumeInterruptedSession: vi.fn(),
   deleteRuntimeSession: vi.fn(),
   respondToPermission: vi.fn()
 }))
@@ -57,6 +65,7 @@ vi.mock('@/lib/acp/useWorkspaceAgentRuntime', () => ({
     pendingPermissions: [],
     sendMessage: runtime.sendMessage,
     cancelRun: runtime.cancelRun,
+    resumeInterruptedSession: runtime.resumeInterruptedSession,
     deleteRuntimeSession: runtime.deleteRuntimeSession,
     respondToPermission: runtime.respondToPermission
   })
@@ -135,7 +144,12 @@ describe('WorkspacePage draft preservation', () => {
   beforeEach(() => {
     usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
     useProjectStore.setState({ projects: [] })
-    useNavigationStore.setState({ view: 'workspace', activeProjectId: 'proj-1' })
+    useNavigationStore.setState({
+      view: 'workspace',
+      activeProjectId: 'proj-1',
+      userNavigationRevision: 0,
+      explicitNavigationRevision: 0
+    })
     useSessionStore.setState({
       ...createInitialSessionState(),
       sessions: [createSession('sess-a', 'proj-1'), createSession('sess-b', 'proj-1')],
@@ -204,10 +218,19 @@ describe('WorkspacePage draft preservation', () => {
     container.remove()
   })
 
-  const renderPage = async (): Promise<void> => {
+  const renderPage = async (
+    isSessionPersistenceReady = true,
+    canDeleteConversations = true
+  ): Promise<void> => {
     root = createRoot(container)
     await act(async () => {
-      root.render(<WorkspacePage isSessionPersistenceReady={true} />)
+      root.render(
+        <WorkspacePage
+          isSessionPersistenceHydrated={true}
+          isSessionPersistenceReady={isSessionPersistenceReady}
+          canDeleteConversations={canDeleteConversations}
+        />
+      )
     })
   }
 
@@ -370,6 +393,115 @@ describe('WorkspacePage draft preservation', () => {
     expect(deleteUpload).toHaveBeenCalledWith({ path: attachmentB.path })
     expect(runtime.deleteRuntimeSession).toHaveBeenCalledWith('sess-b')
     expect(conversationProps.draftDoc).toEqual(emptyDoc)
+  })
+
+  it('allows target-validated session deletion while other persistence is recovering', async () => {
+    await renderPage(false, true)
+
+    const sessionB = useSessionStore.getState().sessions.find((session) => session.id === 'sess-b')!
+    await act(async () => {
+      sidebarProps.onDeleteSession(sessionB)
+    })
+    await act(async () => {
+      deleteDialogProps.onConfirmDelete()
+    })
+
+    expect(runtime.deleteRuntimeSession).toHaveBeenCalledWith('sess-b')
+    expect(useSessionStore.getState().sessions).not.toContainEqual(
+      expect.objectContaining({ id: 'sess-b' })
+    )
+  })
+
+  it('blocks interrupted-session resume while Session persistence is recovering', async () => {
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'sess-a' ? { ...session, interrupted: true } : session
+      )
+    }))
+
+    await renderPage(false)
+
+    expect(conversationProps.canResumeSession).toBe(false)
+    await act(async () => {
+      await conversationProps.onResumeSession()
+    })
+    expect(runtime.resumeInterruptedSession).not.toHaveBeenCalled()
+
+    await act(async () => {
+      root.render(
+        <WorkspacePage
+          isSessionPersistenceHydrated={true}
+          isSessionPersistenceReady={true}
+          canDeleteConversations={true}
+        />
+      )
+    })
+
+    expect(conversationProps.canResumeSession).toBe(true)
+    await act(async () => {
+      await conversationProps.onResumeSession()
+    })
+    expect(runtime.resumeInterruptedSession).toHaveBeenCalledWith('sess-a')
+  })
+
+  it('blocks session deletion when Project deletion recovery is incomplete', async () => {
+    await renderPage(false, false)
+
+    const sessionB = useSessionStore.getState().sessions.find((session) => session.id === 'sess-b')!
+    await act(async () => {
+      sidebarProps.onDeleteSession(sessionB)
+    })
+    await act(async () => {
+      deleteDialogProps.onConfirmDelete()
+    })
+
+    expect(sidebarProps.canDeleteConversations).toBe(false)
+    expect(deleteDialogProps.session).toBeUndefined()
+    expect(deleteDialogProps.canDelete).toBe(false)
+    expect(runtime.deleteRuntimeSession).not.toHaveBeenCalled()
+  })
+
+  it('disables an open delete dialog when Project deletion recovery becomes incomplete', async () => {
+    await renderPage(false, true)
+
+    const sessionB = useSessionStore.getState().sessions.find((session) => session.id === 'sess-b')!
+    await act(async () => {
+      sidebarProps.onDeleteSession(sessionB)
+    })
+    expect(deleteDialogProps.session?.id).toBe('sess-b')
+    expect(deleteDialogProps.canDelete).toBe(true)
+
+    await act(async () => {
+      root.render(
+        <WorkspacePage
+          isSessionPersistenceHydrated={true}
+          isSessionPersistenceReady={false}
+          canDeleteConversations={false}
+        />
+      )
+    })
+    expect(deleteDialogProps.session?.id).toBe('sess-b')
+    expect(deleteDialogProps.canDelete).toBe(false)
+
+    await act(async () => {
+      deleteDialogProps.onConfirmDelete()
+    })
+    expect(runtime.deleteRuntimeSession).not.toHaveBeenCalled()
+  })
+
+  it('records explicit user takeover before starting Session deletion', async () => {
+    await renderPage(false)
+
+    const sessionB = useSessionStore.getState().sessions.find((session) => session.id === 'sess-b')!
+    await act(async () => {
+      sidebarProps.onDeleteSession(sessionB)
+    })
+    await act(async () => {
+      deleteDialogProps.onConfirmDelete()
+    })
+
+    expect(useNavigationStore.getState().userNavigationRevision).toBe(1)
+    expect(runtime.deleteRuntimeSession).toHaveBeenCalledWith('sess-b')
   })
 
   it('cancels in-flight and queued transfers before deleting their session draft', async () => {

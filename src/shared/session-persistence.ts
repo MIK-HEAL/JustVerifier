@@ -1156,6 +1156,13 @@ export const normalizeSessionFile = (
 
   const rawSession = isRecord(value.session) ? value.session : value
 
+  // A persisted Session needs one authoritative conversation representation. The compatibility
+  // message list may be absent or malformed only when a canonical graph can replace it; otherwise
+  // accepting the file would turn deterministic structural corruption into a valid empty Session.
+  if (rawSession.conversationGraph === undefined && !Array.isArray(rawSession.messages)) {
+    return undefined
+  }
+
   return sanitizeSession(rawSession, options)
 }
 
@@ -1185,10 +1192,36 @@ export const normalizeSessionManifest = (value: unknown): PersistedSessionManife
   return manifest
 }
 
+// Renderer-safe diagnostics for durable Session files omitted during startup hydration.
+export type SessionLoadWarning =
+  | {
+      kind: 'corrupt' | 'unreadable'
+      projectId: string
+      fileName: string
+      recovered: boolean
+    }
+  | {
+      kind: 'manifest-corrupt' | 'manifest-unreadable'
+      fileName: string
+      recovered: boolean
+    }
+
+export type SessionLoadFailure = 'startup-reconciliation-failed'
+
+export type SessionLoadDiagnostics = {
+  isComplete: boolean
+  warnings: SessionLoadWarning[]
+  failure?: SessionLoadFailure
+  // The outer startup boundary stamps this after replaying pending Project deletions. Session and
+  // Project deletion IPC both enforce the same prerequisite, independently of scan completeness.
+  isProjectDeletionRecoveryComplete?: boolean
+}
+
 // IPC payloads for the per-session persistence surface.
 export type LoadAllSessionsResult = {
   sessions: PersistedChatSession[]
   manifest: PersistedSessionManifest
+  diagnostics?: SessionLoadDiagnostics
 }
 
 export type DeleteSessionRequest = {
