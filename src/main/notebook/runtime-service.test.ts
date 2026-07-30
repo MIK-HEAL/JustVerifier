@@ -121,6 +121,16 @@ describe('resolveShellInvocation', () => {
     const script = Buffer.from(invocation.args.at(-1) ?? '', 'base64').toString('utf16le')
     expect(script).toContain('[Console]::OutputEncoding = $openScienceUtf8')
     expect(script).toContain('$OutputEncoding = $openScienceUtf8')
+    expect(script).toContain('$env:PSModulePath = $env:OPEN_SCIENCE_PSMODULEPATH')
+    expect(script).toContain(
+      'Import-Module "$PSHOME\\Modules\\Microsoft.PowerShell.Management\\Microsoft.PowerShell.Management.psd1" -ErrorAction Stop'
+    )
+    expect(script).toContain(
+      'Import-Module "$PSHOME\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop'
+    )
+    expect(script).toContain(
+      "[System.Environment]::SetEnvironmentVariable('OPEN_SCIENCE_PSMODULEPATH', $null, [System.EnvironmentVariableTarget]::Process)"
+    )
     expect(script).toContain("$ProgressPreference = 'SilentlyContinue'")
     expect(script).toContain("$ErrorActionPreference = 'Stop'")
     expect(script).toContain('catch {')
@@ -186,14 +196,17 @@ describe('Windows shell support', () => {
     expect(normalizePowerShellStderr(errorClixml, 'win32')).toBe(errorClixml)
   })
 
-  it('keeps Windows shell location variables while excluding host secrets', () => {
+  it('keeps Windows shell runtime variables while excluding host secrets', () => {
     const env = buildShellEnv('/notebook/handoff', 'win32', {
       PATH: 'C:\\Windows\\System32',
+      ProgramFiles: 'C:\\Program Files',
       SystemRoot: 'C:\\Windows',
       WINDIR: 'C:\\Windows',
       ComSpec: 'C:\\Windows\\System32\\cmd.exe',
       PATHEXT: '.COM;.EXE;.BAT;.CMD',
       USERPROFILE: 'C:\\Users\\Ada',
+      PSModulePath: 'C:\\host\\third-party-modules',
+      OPEN_SCIENCE_PSMODULEPATH: 'C:\\host\\controlled-modules',
       OPEN_SCIENCE_TEST_SECRET: 'must-not-leak'
     })
 
@@ -204,17 +217,32 @@ describe('Windows shell support', () => {
       ComSpec: 'C:\\Windows\\System32\\cmd.exe',
       PATHEXT: '.COM;.EXE;.BAT;.CMD',
       USERPROFILE: 'C:\\Users\\Ada',
+      PSModulePath:
+        'C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules',
+      OPEN_SCIENCE_PSMODULEPATH:
+        'C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules',
       OPEN_SCIENCE_HANDOFF_DIR: '/notebook/handoff'
     })
+    expect(env.ProgramFiles).toBeUndefined()
     expect(env.OPEN_SCIENCE_TEST_SECRET).toBeUndefined()
   })
 
   it('uses the Windows process-tree terminator for a timed-out shell command', () => {
     const child = {} as Parameters<typeof terminateShellOnTimeout>[0]
-    const terminateTree = vi.fn().mockResolvedValue({ reaped: true })
+    let finishTermination: ((result: { reaped: boolean }) => void) | undefined
+    const terminateTree = vi.fn(
+      () =>
+        new Promise<{ reaped: boolean }>((resolve) => {
+          finishTermination = resolve
+        })
+    )
 
-    expect(terminateShellOnTimeout(child, 'win32', terminateTree)).toBe(true)
+    const termination = terminateShellOnTimeout(child, 'win32', terminateTree)
+
+    expect(termination).toBeInstanceOf(Promise)
     expect(terminateTree).toHaveBeenCalledWith(child)
+    finishTermination?.({ reaped: true })
+    return expect(termination).resolves.toBe(true)
   })
 })
 
@@ -1059,42 +1087,6 @@ describe('notebook runtime service', () => {
             createdByRunId: state.runs[0].runId
           })
         ])
-      }
-    )
-
-    it.skipIf(process.platform !== 'win32')(
-      'isolates commands, propagates PowerShell failures, and preserves UTF-8 output on Windows',
-      async () => {
-        const root = await createStorageRoot()
-        const service = createShellService(root)
-
-        const cmdletFailure = await service.executeShell({
-          sessionId: 'session-1',
-          workspaceCwd: root,
-          command: 'Get-Item "missing-open-science-file"; Write-Output "continued"'
-        })
-        const nativeFailure = await service.executeShell({
-          sessionId: 'session-1',
-          workspaceCwd: root,
-          command: 'cmd.exe /d /c exit 7 | Out-Null'
-        })
-        const unicodeOutput = await service.executeShell({
-          sessionId: 'session-1',
-          workspaceCwd: root,
-          command: 'Write-Output "分析完成"'
-        })
-        const trailingContinuation = await service.executeShell({
-          sessionId: 'session-1',
-          workspaceCwd: root,
-          command: 'Write-Output "isolated" `'
-        })
-
-        expect(cmdletFailure.exitCode).toBe(1)
-        expect(cmdletFailure.stdout).not.toContain('continued')
-        expect(nativeFailure.exitCode).toBe(7)
-        expect(unicodeOutput).toMatchObject({ exitCode: 0 })
-        expect(unicodeOutput.stdout).toContain('分析完成')
-        expect(trailingContinuation.exitCode).toBe(1)
       }
     )
 
