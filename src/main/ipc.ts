@@ -312,11 +312,11 @@ const registerIpcHandlers = async ({
   const sessionPersistenceBackend: SessionPersistenceBackend = {
     loadAll: () =>
       loadSessionsAfterProjectRecovery(projectDeletionCoordinator, sessionPersistenceCoordinator),
-    saveSession: async (session) => {
+    saveSession: async (session, options) => {
       await projectDeletionCoordinator.recoverPendingDeletions()
       const created =
         (await sessionRepository.loadSession(session.projectId, session.id)) === undefined
-      const durableSession = await sessionPersistenceCoordinator.saveSession(session)
+      const durableSession = await sessionPersistenceCoordinator.saveSession(session, options)
       return { created, session: durableSession }
     },
     deleteSession: async (projectId, sessionId) => {
@@ -692,7 +692,7 @@ const registerIpcHandlers = async ({
         )
         return
       }
-      await sessionPersistenceCoordinator.saveSession({ ...session, specialistId })
+      await sessionPersistenceCoordinator.saveSessionSpecialistBinding(session, specialistId)
     },
     // Apply the switch to the live agent runtime. `runtime` is assigned above (registerAcpIpcHandlers),
     // but the closure is invoked per-request so a late-bound reference is unnecessary.
