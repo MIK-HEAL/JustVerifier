@@ -25,7 +25,6 @@
 - [Quick Start](#-quick-start)
 - [Product Tour](#product-tour)
 - [Why Open Science](#why-open-science)
-- [Vision](#vision)
 - [Design Principles](#design-principles)
 - [Core Capabilities](#core-capabilities)
 - [Model Providers](#model-providers)
@@ -151,14 +150,6 @@ Open Science brings those pieces into one inspectable desktop workspace:
 - **No seat license.** Open Science is Apache-2.0 software. You pay only for the model or infrastructure you choose to use.
 
 Open Science is an independent product built from scratch. It is not a proxy, unofficial client, or reskin of another AI research application.
-
-## Vision
-
-<img width="1920" height="1140" alt="Open Science vision: an open, traceable AI research loop connecting literature, data, computation, artifacts, and review" src="https://github.com/user-attachments/assets/5e3eea29-61b2-49b8-ac16-e4d9b43a4693" />
-
-Our goal is to make the AI research workbench a piece of open infrastructure rather than a rented product surface. A student with a laptop, a lab using a regional model provider, and an institution running its own gateway should be able to use the same research workspace while keeping control of their models, tools, and data boundaries.
-
-The long-term destination is a traceable loop connecting literature, data, computation, artifacts, review, and reusable scientific skills. Immutable artifact versions and provenance evidence now establish the audit layer for that loop; portable environment restoration, full-fidelity session replay, and deterministic reconstruction remain ahead.
 
 ## Design Principles
 
