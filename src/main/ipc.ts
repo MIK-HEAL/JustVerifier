@@ -86,6 +86,10 @@ import {
   loadSessionsAfterProjectRecovery,
   registerSessionPersistenceIpcHandlers
 } from './session-persistence/ipc'
+import {
+  createConversationExportService,
+  registerConversationExportIpcHandler
+} from './session-persistence/conversation-export'
 import { registerProjectFilesIpcHandlers } from './project-files/ipc'
 import { createManagedFileIndexRepository } from './project-files/repository'
 import { ProjectDeletionCoordinator } from './projects/deletion-coordinator'
@@ -882,6 +886,11 @@ const registerIpcHandlers = async ({
     notebookInputRegistry.readPreview(request)
   )
   registerSessionPersistenceIpcHandlers(sessionPersistenceBackend, reviewRepository)
+  registerConversationExportIpcHandler(
+    createConversationExportService({
+      loadSession: (projectId, sessionId) => sessionRepository.loadSession(projectId, sessionId)
+    })
+  )
   registerProjectFilesIpcHandlers(
     projectFilesRepository,
     sessionPersistenceCoordinator,

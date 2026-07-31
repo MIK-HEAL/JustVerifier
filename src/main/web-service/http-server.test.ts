@@ -32,6 +32,7 @@ describe('startWebHttpServer', () => {
     const rpc = {
       channels: () => [
         'test:echo',
+        'sessions:export-conversation',
         'file:save-session-artifacts',
         'uploads:stage-local-file',
         'settings:list-agent-home-skills',
@@ -107,6 +108,7 @@ describe('startWebHttpServer', () => {
     for (const channel of [
       'file:save-session-artifacts',
       'window:close',
+      'sessions:export-conversation',
       'uploads:stage-local-file',
       'settings:list-agent-home-skills',
       'settings:import-agent-home-skills'

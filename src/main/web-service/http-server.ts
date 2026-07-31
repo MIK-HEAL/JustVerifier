@@ -23,6 +23,7 @@ const MAX_RPC_BODY_BYTES = 64 * 1024 * 1024
 const WEB_UNAVAILABLE_RPC_CHANNELS = new Set([
   'file:save-blob',
   'file:save-managed',
+  'sessions:export-conversation',
   'file:save-session-artifacts',
   'uploads:stage-local-file',
   'window:close',
