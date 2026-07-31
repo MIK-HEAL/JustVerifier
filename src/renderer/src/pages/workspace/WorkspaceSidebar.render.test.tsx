@@ -36,6 +36,8 @@ const renderSidebar = async (sessions: ChatSession[]): Promise<string> => {
       onOpenFiles={vi.fn()}
       onOpenSession={vi.fn()}
       onRenameSession={vi.fn()}
+      canDownloadArtifacts
+      onDownloadArtifacts={vi.fn()}
       onViewNotebook={vi.fn()}
       onTogglePin={vi.fn()}
       onDeleteSession={vi.fn()}
@@ -105,6 +107,7 @@ describe('WorkspaceSidebar accessible render', () => {
     ]
     const onOpenSession = vi.fn()
     const onRenameSession = vi.fn()
+    const onDownloadArtifacts = vi.fn()
     const onDeleteSession = vi.fn()
     const tree = WorkspaceSidebar({
       projectName: 'Example project',
@@ -119,6 +122,8 @@ describe('WorkspaceSidebar accessible render', () => {
       onOpenFiles: vi.fn(),
       onOpenSession,
       onRenameSession,
+      canDownloadArtifacts: true,
+      onDownloadArtifacts,
       onViewNotebook: vi.fn(),
       onTogglePin: vi.fn(),
       onDeleteSession,
@@ -132,6 +137,9 @@ describe('WorkspaceSidebar accessible render', () => {
         typeof element.props.onClick === 'function'
     )
     const renameItems = elements.filter((element) => getTextContent(element).trim() === 'Rename…')
+    const downloadItems = elements.filter(
+      (element) => getTextContent(element).trim() === 'Download all artifacts'
+    )
     const deleteItems = elements.filter((element) => getTextContent(element).trim() === 'Delete')
 
     expect(notebookButton?.props.onClick).toBeTypeOf('function')
@@ -141,6 +149,10 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(renameItems[1]?.props.onSelect).toBeTypeOf('function')
     ;(renameItems[1]?.props.onSelect as () => void)()
     expect(onRenameSession).toHaveBeenCalledWith(sessions[1])
+
+    expect(downloadItems[1]?.props.onSelect).toBeTypeOf('function')
+    ;(downloadItems[1]?.props.onSelect as () => void)()
+    expect(onDownloadArtifacts).toHaveBeenCalledWith(sessions[1])
 
     expect(deleteItems[0]?.props.onSelect).toBeTypeOf('function')
     ;(deleteItems[0]?.props.onSelect as () => void)()
@@ -163,6 +175,8 @@ describe('WorkspaceSidebar accessible render', () => {
       onOpenFiles,
       onOpenSession: vi.fn(),
       onRenameSession: vi.fn(),
+      canDownloadArtifacts: true,
+      onDownloadArtifacts: vi.fn(),
       onViewNotebook: vi.fn(),
       onTogglePin: vi.fn(),
       onDeleteSession: vi.fn(),
@@ -202,6 +216,8 @@ describe('WorkspaceSidebar accessible render', () => {
       onOpenFiles: vi.fn(),
       onOpenSession: vi.fn(),
       onRenameSession: vi.fn(),
+      canDownloadArtifacts: true,
+      onDownloadArtifacts: vi.fn(),
       onTogglePin: vi.fn(),
       onDeleteSession: vi.fn(),
       onViewNotebook,
@@ -250,6 +266,8 @@ describe('WorkspaceSidebar accessible render', () => {
       onOpenFiles: vi.fn(),
       onOpenSession: vi.fn(),
       onRenameSession: vi.fn(),
+      canDownloadArtifacts: true,
+      onDownloadArtifacts: vi.fn(),
       onViewNotebook: vi.fn(),
       onTogglePin,
       onDeleteSession: vi.fn(),
@@ -286,6 +304,8 @@ describe('WorkspaceSidebar accessible render', () => {
       onOpenFiles: vi.fn(),
       onOpenSession: vi.fn(),
       onRenameSession: vi.fn(),
+      canDownloadArtifacts: true,
+      onDownloadArtifacts: vi.fn(),
       onViewNotebook: vi.fn(),
       onTogglePin: vi.fn(),
       onDeleteSession: vi.fn(),
@@ -299,5 +319,36 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(pinItem?.props.disabled).toBe(true)
     expect(renameItem?.props.disabled).toBe(true)
     expect(deleteItem?.props.disabled).toBe(false)
+  })
+
+  it('hides artifact downloads when the runtime does not provide the desktop save capability', async () => {
+    const { WorkspaceSidebar } = await import('./WorkspaceSidebar')
+    const session = createSession({ id: 'session-a', title: 'Notebook review' })
+    const tree = WorkspaceSidebar({
+      projectName: 'Example project',
+      sessions: [session],
+      activeSessionId: session.id,
+      canCreateConversation: true,
+      canMutateConversations: true,
+      canDeleteConversations: true,
+      onGoHome: vi.fn(),
+      onNewConversation: vi.fn(),
+      isFilesOpen: false,
+      onOpenFiles: vi.fn(),
+      onOpenSession: vi.fn(),
+      onRenameSession: vi.fn(),
+      canDownloadArtifacts: false,
+      onDownloadArtifacts: vi.fn(),
+      onViewNotebook: vi.fn(),
+      onTogglePin: vi.fn(),
+      onDeleteSession: vi.fn(),
+      onOpenSettings: vi.fn()
+    })
+
+    const downloadItem = collectElements(tree).find(
+      (element) => getTextContent(element).trim() === 'Download all artifacts'
+    )
+
+    expect(downloadItem).toBeUndefined()
   })
 })

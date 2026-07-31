@@ -37,7 +37,9 @@ import type {
   SaveBlobFileRequest,
   SaveBlobFileResult,
   SaveManagedFileRequest,
-  SaveManagedFileResult
+  SaveManagedFileResult,
+  SaveSessionArtifactsRequest,
+  SaveSessionArtifactsResult
 } from '../shared/file-save'
 import type {
   ComputeApprovalDecision,
@@ -245,6 +247,7 @@ type AcpListener<Payload> = (payload: Payload) => void
 interface OpenScienceAPI {
   saveBlobFile(request: SaveBlobFileRequest): Promise<SaveBlobFileResult>
   saveManagedFile(request: SaveManagedFileRequest): Promise<SaveManagedFileResult>
+  saveSessionArtifacts(request: SaveSessionArtifactsRequest): Promise<SaveSessionArtifactsResult>
   // Host platform (process.platform), e.g. 'win32' | 'darwin' | 'linux'.
   platform: string
   getRuntimeVersions(): {

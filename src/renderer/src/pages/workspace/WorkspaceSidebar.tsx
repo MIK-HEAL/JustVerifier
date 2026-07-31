@@ -1,4 +1,5 @@
 import {
+  Archive,
   BookOpen,
   ChevronLeft,
   Files,
@@ -14,6 +15,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 
@@ -35,6 +37,8 @@ type WorkspaceSidebarProps = {
   onOpenFiles: () => void
   onOpenSession: (sessionId: string) => void
   onRenameSession: (session: ChatSession) => void
+  canDownloadArtifacts: boolean
+  onDownloadArtifacts: (session: ChatSession) => void
   onViewNotebook: (session: ChatSession) => void
   onTogglePin: (session: ChatSession) => void
   onDeleteSession: (session: ChatSession) => void
@@ -83,6 +87,8 @@ const WorkspaceSidebar = ({
   onOpenFiles,
   onOpenSession,
   onRenameSession,
+  canDownloadArtifacts,
+  onDownloadArtifacts,
   onViewNotebook,
   onTogglePin,
   onDeleteSession,
@@ -254,6 +260,18 @@ const WorkspaceSidebar = ({
                               </span>
                               Rename…
                             </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            {canDownloadArtifacts ? (
+                              <DropdownMenuItem
+                                className="gap-2"
+                                onSelect={() => onDownloadArtifacts(session)}
+                              >
+                                <span className={sessionMenuIconClassName}>
+                                  <Archive className="size-4" strokeWidth={2} aria-hidden="true" />
+                                </span>
+                                Download all artifacts
+                              </DropdownMenuItem>
+                            ) : null}
                             <DropdownMenuItem
                               className="gap-2"
                               onSelect={() => onViewNotebook(session)}
@@ -263,6 +281,7 @@ const WorkspaceSidebar = ({
                               </span>
                               View notebook
                             </DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             {/* Delete uses the project's danger token pair for light surfaces. */}
                             <DropdownMenuItem
                               className="gap-2 text-danger-000 data-[highlighted]:bg-danger-900 data-[highlighted]:text-danger-000"
