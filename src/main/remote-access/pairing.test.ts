@@ -1,0 +1,348 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { RemoteSessionPairingManager } from './pairing'
+import { RemoteAccessRepository } from './repository'
+import type { RemotePairingDecision } from '../../shared/remote-access'
+
+const roots: string[] = []
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+const request = (
+  pathname: string,
+  headers: Record<string, string> = {},
+  method = 'GET'
+): IncomingMessage =>
+  ({
+    method,
+    url: pathname,
+    headers: {
+      host: 'home.example.ts.net',
+      'user-agent':
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1',
+      ...headers
+    },
+    socket: { remoteAddress: '203.0.113.10' }
+  }) as unknown as IncomingMessage
+
+type CapturedResponse = {
+  response: ServerResponse
+  headers: Map<string, string | string[]>
+  body: () => string
+}
+
+const response = (): CapturedResponse => {
+  const headers = new Map<string, string | string[]>()
+  let body = ''
+  const value = {
+    setHeader: (name: string, headerValue: string | string[]) => {
+      headers.set(name.toLowerCase(), headerValue)
+      return value
+    },
+    writeHead: (_status: number, responseHeaders?: Record<string, string>) => {
+      for (const [name, headerValue] of Object.entries(responseHeaders ?? {})) {
+        headers.set(name.toLowerCase(), headerValue)
+      }
+      return value
+    },
+    end: (chunk?: string) => {
+      body = chunk ?? ''
+      return value
+    }
+  }
+  return { response: value as unknown as ServerResponse, headers, body: () => body }
+}
+
+const cookiePair = (header: string): string => header.split(';', 1)[0]
+
+describe('RemoteSessionPairingManager', () => {
+  it('grants one-time access without allowing the browser to manage pairing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'open-science-remote-pairing-'))
+    roots.push(root)
+    const changed = vi.fn()
+    const manager = await RemoteSessionPairingManager.create({
+      repository: new RemoteAccessRepository(root),
+      isAllowedRemoteHost: (hostname) => hostname === 'home.example.ts.net',
+      isEnabled: () => true,
+      onChanged: changed
+    })
+
+    const firstResponse = response()
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request('/'),
+        firstResponse.response,
+        new URL('https://home.example.ts.net/')
+      )
+    ).resolves.toBe('handled')
+    expect(firstResponse.body()).toContain('<html lang="en">')
+    expect(firstResponse.body()).toContain('class="brand-logo"')
+    expect(firstResponse.body()).toContain('fill="currentColor"')
+    expect(firstResponse.body()).toContain('<div class="brand-name">Open Science</div>')
+    expect(firstResponse.body()).not.toContain('>Beta<')
+    expect(firstResponse.body()).not.toContain('class="mark"')
+    expect(firstResponse.body()).toContain('Approve this browser')
+    const pendingCookie = cookiePair(firstResponse.headers.get('set-cookie') as string)
+    const [pending] = manager.pendingViews()
+    expect(pending).toMatchObject({ browser: 'Safari', platform: 'iOS/iPadOS' })
+    expect(pending.code).toMatch(/^\d{6}$/)
+
+    await manager.approve(pending.id, 'once')
+    const statusResponse = response()
+    await manager.webAccess.authorizeHttp(
+      request('/__open_science_remote/pair/status', { cookie: pendingCookie }),
+      statusResponse.response,
+      new URL('https://home.example.ts.net/__open_science_remote/pair/status')
+    )
+    expect(JSON.parse(statusResponse.body())).toEqual({ status: 'approved' })
+    const setCookies = statusResponse.headers.get('set-cookie') as string[]
+    const sessionCookie = cookiePair(setCookies[0])
+
+    const authorizedResponse = response()
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request('/api/bootstrap', { cookie: sessionCookie }),
+        authorizedResponse.response,
+        new URL('https://home.example.ts.net/api/bootstrap')
+      )
+    ).resolves.toMatchObject({ kind: 'authorized' })
+    expect(manager.trustedViews()).toHaveLength(0)
+    expect(changed).toHaveBeenCalled()
+  })
+
+  it('persists always-trusted browsers and rejects the wrong public host or origin', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'open-science-remote-pairing-'))
+    roots.push(root)
+    const repository = new RemoteAccessRepository(root)
+    const manager = await RemoteSessionPairingManager.create({
+      repository,
+      isAllowedRemoteHost: (hostname) => hostname === 'home.example.ts.net',
+      isEnabled: () => true,
+      onChanged: vi.fn()
+    })
+
+    const firstResponse = response()
+    await manager.webAccess.authorizeHttp(
+      request('/'),
+      firstResponse.response,
+      new URL('https://home.example.ts.net/')
+    )
+    const pendingCookie = cookiePair(firstResponse.headers.get('set-cookie') as string)
+    await manager.approve(manager.pendingViews()[0].id, 'always')
+    expect((await repository.load()).trustedBrowsers).toHaveLength(1)
+
+    const statusResponse = response()
+    await manager.webAccess.authorizeHttp(
+      request('/__open_science_remote/pair/status', { cookie: pendingCookie }),
+      statusResponse.response,
+      new URL('https://home.example.ts.net/__open_science_remote/pair/status')
+    )
+    const setCookies = statusResponse.headers.get('set-cookie') as string[]
+    const sessionCookie = cookiePair(setCookies[0])
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request(
+          '/rpc/remote-access%3Aget-snapshot',
+          { cookie: sessionCookie, origin: 'https://home.example.ts.net' },
+          'POST'
+        ),
+        response().response,
+        new URL('https://home.example.ts.net/rpc/remote-access%3Aget-snapshot')
+      )
+    ).resolves.toMatchObject({ kind: 'authorized-pairing-manager' })
+
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request(
+          '/rpc/test',
+          { host: 'attacker.example.com', origin: 'https://attacker.example.com' },
+          'POST'
+        ),
+        response().response,
+        new URL('https://attacker.example.com/rpc/test')
+      )
+    ).resolves.toBe('denied')
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request('/rpc/test', { origin: 'https://attacker.example.com' }, 'POST'),
+        response().response,
+        new URL('https://home.example.ts.net/rpc/test')
+      )
+    ).resolves.toBe('denied')
+  })
+
+  it('rejects an invalid pairing decision without granting or persisting access', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'open-science-remote-pairing-'))
+    roots.push(root)
+    const repository = new RemoteAccessRepository(root)
+    const manager = await RemoteSessionPairingManager.create({
+      repository,
+      isAllowedRemoteHost: (hostname) => hostname === 'home.example.ts.net',
+      isEnabled: () => true,
+      onChanged: vi.fn()
+    })
+
+    await manager.webAccess.authorizeHttp(
+      request('/'),
+      response().response,
+      new URL('https://home.example.ts.net/')
+    )
+    const [pending] = manager.pendingViews()
+
+    await expect(
+      manager.approve(pending.id, 'unexpected' as RemotePairingDecision)
+    ).rejects.toThrow('Pairing decision must be once or always.')
+    expect(manager.pendingViews()).toHaveLength(1)
+    expect(manager.trustedViews()).toHaveLength(0)
+    expect((await repository.load()).trustedBrowsers).toHaveLength(0)
+  })
+
+  it('rejects an authorization that finishes after remote access was disabled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'open-science-remote-pairing-'))
+    roots.push(root)
+    const repository = new RemoteAccessRepository(root)
+    let now = 0
+    let enabled = true
+    let authorizationGeneration = 0
+    const manager = await RemoteSessionPairingManager.create({
+      repository,
+      isAllowedRemoteHost: (hostname) => hostname === 'home.example.ts.net',
+      isEnabled: () => enabled,
+      authorizationGeneration: () => authorizationGeneration,
+      onChanged: vi.fn(),
+      now: () => now
+    })
+    const firstResponse = response()
+    await manager.webAccess.authorizeHttp(
+      request('/'),
+      firstResponse.response,
+      new URL('https://home.example.ts.net/')
+    )
+    const pendingCookie = cookiePair(firstResponse.headers.get('set-cookie') as string)
+    await manager.approve(manager.pendingViews()[0].id, 'always')
+    const statusResponse = response()
+    await manager.webAccess.authorizeHttp(
+      request('/__open_science_remote/pair/status', { cookie: pendingCookie }),
+      statusResponse.response,
+      new URL('https://home.example.ts.net/__open_science_remote/pair/status')
+    )
+    const sessionCookie = cookiePair((statusResponse.headers.get('set-cookie') as string[])[0])
+    const httpAuthorization = await manager.webAccess.authorizeHttp(
+      request(
+        '/rpc/test',
+        { cookie: sessionCookie, origin: 'https://home.example.ts.net' },
+        'POST'
+      ),
+      response().response,
+      new URL('https://home.example.ts.net/rpc/test')
+    )
+    expect(httpAuthorization).toMatchObject({ kind: 'authorized-pairing-manager' })
+    if (typeof httpAuthorization !== 'object') throw new Error('Expected HTTP authorization.')
+    expect(httpAuthorization.isCurrent()).toBe(true)
+    now = 60_001
+    let releaseSave: (() => void) | undefined
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve
+    })
+    const save = vi.spyOn(repository, 'save').mockReturnValue(saveGate)
+
+    const authorization = manager.webAccess.authorizeWebSocket(
+      request('/events', {
+        cookie: sessionCookie,
+        origin: 'https://home.example.ts.net'
+      }),
+      new URL('https://home.example.ts.net/events')
+    )
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce())
+    enabled = false
+    authorizationGeneration += 1
+    expect(httpAuthorization.isCurrent()).toBe(false)
+    releaseSave?.()
+
+    await expect(authorization).resolves.toBeUndefined()
+  })
+
+  it('does not treat an allowed provider Host header as authentication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'open-science-remote-pairing-'))
+    roots.push(root)
+    const manager = await RemoteSessionPairingManager.create({
+      repository: new RemoteAccessRepository(root),
+      isAllowedRemoteHost: (hostname) => hostname.endsWith('.r3proxy.com'),
+      isEnabled: () => true,
+      onChanged: vi.fn()
+    })
+
+    const directResponse = response()
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request('/', { host: 'session-123.r3proxy.com' }),
+        directResponse.response,
+        new URL('https://session-123.r3proxy.com/')
+      )
+    ).resolves.toBe('handled')
+    expect(directResponse.body()).toContain('Approve this browser')
+    expect(manager.pendingViews()).toHaveLength(1)
+
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request(
+          '/rpc/test',
+          {
+            host: 'session-123.r3proxy.com',
+            origin: 'https://session-123.r3proxy.com'
+          },
+          'POST'
+        ),
+        response().response,
+        new URL('https://session-123.r3proxy.com/rpc/test')
+      )
+    ).resolves.toBe('denied')
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request(
+          '/rpc/test',
+          {
+            host: 'session-123.r3proxy.com',
+            origin: 'https://different.r3proxy.com'
+          },
+          'POST'
+        ),
+        response().response,
+        new URL('https://session-123.r3proxy.com/rpc/test')
+      )
+    ).resolves.toBe('denied')
+    await expect(
+      manager.webAccess.authorizeHttp(
+        request('/', { host: 'r3proxy.com' }),
+        response().response,
+        new URL('https://r3proxy.com/')
+      )
+    ).resolves.toBe('denied')
+
+    await expect(
+      manager.webAccess.authorizeWebSocket(
+        request('/events', {
+          host: 'session-123.r3proxy.com',
+          origin: 'https://session-123.r3proxy.com'
+        }),
+        new URL('https://session-123.r3proxy.com/events')
+      )
+    ).resolves.toBeUndefined()
+    await expect(
+      manager.webAccess.authorizeWebSocket(
+        request('/events', {
+          host: 'session-123.r3proxy.com',
+          origin: 'https://different.r3proxy.com'
+        }),
+        new URL('https://session-123.r3proxy.com/events')
+      )
+    ).resolves.toBeUndefined()
+  })
+})

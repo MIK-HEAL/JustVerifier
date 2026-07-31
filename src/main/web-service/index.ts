@@ -7,7 +7,7 @@ import { createLogger } from '../logger'
 import { addRendererBroadcastSink } from '../renderer-broadcast'
 import { resolveConfigRoot } from '../storage-root'
 import { loadOrCreateWebToken } from './auth'
-import { startWebHttpServer, type RunningWebServer } from './http-server'
+import { startWebHttpServer, type ExternalWebAccess, type RunningWebServer } from './http-server'
 import { HeadlessTaskApi } from './task-api'
 import { removeWebServiceState, writeWebServiceState, type WebServiceState } from './state-file'
 
@@ -23,6 +23,10 @@ export type WebServiceController = {
   ) => Promise<{ port: number; url: string }>
   // Stops the web service and removes its state file. Idempotent; safe to call when not running.
   close: () => Promise<void>
+  // Closes remotely authenticated sockets without disturbing local Web clients.
+  closeExternalConnections: (sessionId?: string) => void
+  // Subscribes to actual server stops, including attached shutdown requests from the CLI.
+  onStopped: (listener: () => void) => () => void
   isRunning: () => boolean
   // The live port when serving, else undefined (used to build the tray's "Open Web" URL).
   runningPort: () => number | undefined
@@ -55,7 +59,11 @@ const buildAuthenticatedWebUrl = async (port: number): Promise<string> =>
 // serving are reachable over HTTP); `requestQuit` quits the whole app when a dedicated headless daemon
 // is asked to shut down. An attached service instead only tears itself down and leaves the app running.
 const createWebServiceController = (
-  { rpc, requestQuit }: { rpc: WebRpcRouter; requestQuit: () => void },
+  {
+    rpc,
+    requestQuit,
+    externalAccess
+  }: { rpc: WebRpcRouter; requestQuit: () => void; externalAccess?: ExternalWebAccess },
   deps: Partial<WebServiceControllerDeps> = {}
 ): WebServiceController => {
   const startServer = deps.startServer ?? startWebHttpServer
@@ -83,14 +91,26 @@ const createWebServiceController = (
       })
   })
 
-  let running: { close: () => Promise<void>; port: number; configRoot: string } | undefined
+  let running:
+    | {
+        close: () => Promise<void>
+        closeExternalConnections: (sessionId?: string) => void
+        port: number
+        configRoot: string
+      }
+    | undefined
   let starting: Promise<{ port: number; url: string }> | undefined
+  const stoppedListeners = new Set<() => void>()
 
   const close = async (): Promise<void> => {
     const current = running
     running = undefined
     if (!current) return
-    await current.close()
+    try {
+      await current.close()
+    } finally {
+      for (const listener of stoppedListeners) listener()
+    }
   }
 
   const start = async (port: number, attached: boolean): Promise<{ port: number; url: string }> => {
@@ -103,6 +123,7 @@ const createWebServiceController = (
       token,
       staticRoot: join(info.appPath, 'out', 'web'),
       rpc,
+      externalAccess,
       tasks,
       // Attached: a graceful shutdown request stops only the web service (the app keeps running). A
       // dedicated daemon quits the process, which is what stops it serving.
@@ -119,6 +140,7 @@ const createWebServiceController = (
     running = {
       port: server.port,
       configRoot,
+      closeExternalConnections: server.closeExternalConnections,
       close: async () => {
         try {
           await server.close()
@@ -169,10 +191,15 @@ const createWebServiceController = (
   return {
     ensureStarted,
     close,
+    closeExternalConnections: (sessionId) => running?.closeExternalConnections(sessionId),
+    onStopped: (listener) => {
+      stoppedListeners.add(listener)
+      return () => stoppedListeners.delete(listener)
+    },
     isRunning: () => running !== undefined,
     runningPort: () => running?.port
   }
 }
 
-export { parseWebModeOptions } from './options'
+export { DEFAULT_WEB_PORT, parseWebModeOptions } from './options'
 export { buildAuthenticatedWebUrl, createWebServiceController }
