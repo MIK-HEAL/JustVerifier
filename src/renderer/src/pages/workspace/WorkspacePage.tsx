@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { animate } from 'motion'
+import { PanelLeft, PanelRight } from 'lucide-react'
 import type { PanelImperativeHandle, PanelSize } from 'react-resizable-panels'
 
 import type { NotebookSessionReference } from '../../../../shared/notebook'
@@ -7,7 +8,7 @@ import {
   DEFAULT_PERMISSION_PROFILE,
   type PermissionProfileId
 } from '../../../../shared/permission-profiles'
-import { ResizableHandle, ResizablePanelGroup } from '@/components/ui/resizable'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { useWorkspaceAgentRuntime } from '@/lib/acp/useWorkspaceAgentRuntime'
 import { usePreviewPersistence } from '@/lib/preview-persistence/preview-persistence'
 import { useNavigationStore } from '@/stores/navigation-store'
@@ -64,14 +65,22 @@ const getErrorMessage = (error: unknown): string =>
 // Stable draft-map key for the "new conversation" composer, which has no selected session id.
 const NEW_CONVERSATION_DRAFT_KEY = '__new_conversation__'
 
+const PANEL_COLLAPSED_SIZE = 0
+const PANEL_COLLAPSED_SIZE_CSS = `${PANEL_COLLAPSED_SIZE}%`
+const PANEL_COLLAPSED_THRESHOLD = 0.1
+
+const SIDEBAR_PANEL_DEFAULT_SIZE = 16
+const SIDEBAR_PANEL_DEFAULT_SIZE_CSS = `${SIDEBAR_PANEL_DEFAULT_SIZE}%`
+const SIDEBAR_PANEL_MIN_OPEN_SIZE = 16
+const SIDEBAR_PANEL_MIN_OPEN_SIZE_CSS = `${SIDEBAR_PANEL_MIN_OPEN_SIZE}%`
+const SIDEBAR_PANEL_ANIMATING_MIN_SIZE = PANEL_COLLAPSED_SIZE_CSS
+const SIDEBAR_TOGGLE_RIGHT_INSET = 38
+
 const PREVIEW_PANEL_DEFAULT_SIZE = 40
 const PREVIEW_PANEL_DEFAULT_SIZE_CSS = `${PREVIEW_PANEL_DEFAULT_SIZE}%`
 const PREVIEW_PANEL_MIN_OPEN_SIZE = 30
 const PREVIEW_PANEL_MIN_OPEN_SIZE_CSS = `${PREVIEW_PANEL_MIN_OPEN_SIZE}%`
-const PREVIEW_PANEL_COLLAPSED_SIZE = 0
-const PREVIEW_PANEL_COLLAPSED_SIZE_CSS = `${PREVIEW_PANEL_COLLAPSED_SIZE}%`
-const PREVIEW_PANEL_COLLAPSED_THRESHOLD = 0.1
-const PREVIEW_PANEL_ANIMATING_MIN_SIZE = PREVIEW_PANEL_COLLAPSED_SIZE_CSS
+const PREVIEW_PANEL_ANIMATING_MIN_SIZE = PANEL_COLLAPSED_SIZE_CSS
 const previewPanelAnimation = {
   duration: 0.22,
   ease: [0.22, 1, 0.36, 1] as [number, number, number, number]
@@ -79,6 +88,227 @@ const previewPanelAnimation = {
 
 const prefersReducedMotion = (): boolean =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+
+type ResizablePanelState = 'open' | 'collapsed'
+type PanelAnimationDirection = 'opening' | 'closing'
+
+type AnimatedResizablePanelOptions = {
+  panelState: ResizablePanelState
+  defaultOpenSize: number
+  minOpenSize: number
+  collapsedSize: number
+  collapsedThreshold: number
+  requestVersion?: number
+  onPanelStateChange: (state: ResizablePanelState) => void
+  onPixelWidthChange?: (width: number) => void
+  collapseFocusTargetRef: React.RefObject<HTMLButtonElement | null>
+}
+
+// Shares the imperative animation lifecycle while each panel keeps ownership of its business state.
+const useAnimatedResizablePanel = ({
+  panelState,
+  defaultOpenSize,
+  minOpenSize,
+  collapsedSize,
+  collapsedThreshold,
+  requestVersion = 0,
+  onPanelStateChange,
+  onPixelWidthChange,
+  collapseFocusTargetRef
+}: AnimatedResizablePanelOptions): {
+  panelRef: React.RefObject<PanelImperativeHandle | null>
+  separatorRef: React.RefObject<HTMLDivElement | null>
+  isAnimationMinSizeRelaxed: boolean
+  syncPanelResize: (panelSize: PanelSize, previousPanelSize: PanelSize | undefined) => void
+} => {
+  const panelRef = useRef<PanelImperativeHandle | null>(null)
+  const separatorRef = useRef<HTMLDivElement | null>(null)
+  const animationRef = useRef<{ stop: () => void } | null>(null)
+  const animationFrameRef = useRef<number | null>(null)
+  const animationDirectionRef = useRef<PanelAnimationDirection | null>(null)
+  const lastOpenSizeRef = useRef(defaultOpenSize)
+  const hasSyncedInitialSizeRef = useRef(false)
+  const [isAnimationMinSizeRelaxed, setIsAnimationMinSizeRelaxed] = useState(false)
+
+  const animatePanelSize = useCallback(
+    (
+      targetSize: number,
+      direction: PanelAnimationDirection,
+      options?: { animate?: boolean }
+    ): void => {
+      const panel = panelRef.current
+      if (!panel) return
+
+      animationRef.current?.stop()
+      if (animationFrameRef.current !== null) {
+        window.cancelAnimationFrame(animationFrameRef.current)
+        animationFrameRef.current = null
+      }
+
+      const currentSize = panel.getSize().asPercentage
+      const resizePanel = (size: number): boolean => {
+        const currentPanel = panelRef.current
+
+        // Ignore motion callbacks that outlive the panel handle they were created for.
+        if (currentPanel !== panel) return false
+
+        currentPanel.resize(`${Number(size.toFixed(3))}%`)
+        return true
+      }
+
+      if (
+        options?.animate === false ||
+        Math.abs(currentSize - targetSize) <= collapsedThreshold ||
+        prefersReducedMotion()
+      ) {
+        resizePanel(targetSize)
+        if (direction === 'opening') lastOpenSizeRef.current = targetSize
+        animationDirectionRef.current = null
+        animationRef.current = null
+        setIsAnimationMinSizeRelaxed(false)
+        return
+      }
+
+      animationDirectionRef.current = direction
+      setIsAnimationMinSizeRelaxed(true)
+      animationFrameRef.current = window.requestAnimationFrame(() => {
+        animationFrameRef.current = null
+        const nextPanel = panelRef.current
+        if (!nextPanel) return
+
+        const nextCurrentSize = nextPanel.getSize().asPercentage
+        animationRef.current = animate(nextCurrentSize, targetSize, {
+          ...previewPanelAnimation,
+          onUpdate: resizePanel,
+          onComplete: () => {
+            const didResize = resizePanel(targetSize)
+            if (didResize && direction === 'opening') lastOpenSizeRef.current = targetSize
+            animationDirectionRef.current = null
+            animationRef.current = null
+            setIsAnimationMinSizeRelaxed(false)
+          }
+        })
+      })
+    },
+    [collapsedThreshold]
+  )
+
+  const syncPanelResize = useCallback(
+    (panelSize: PanelSize, previousPanelSize: PanelSize | undefined): void => {
+      onPixelWidthChange?.(panelSize.inPixels)
+
+      const isNearCollapsedSize = panelSize.asPercentage <= collapsedThreshold
+      const animationDirection = animationDirectionRef.current
+      const isOpeningAnimationResize =
+        animationDirection === 'opening' &&
+        (previousPanelSize === undefined ||
+          panelSize.asPercentage >= previousPanelSize.asPercentage)
+      const isClosingAnimationResize =
+        animationDirection === 'closing' &&
+        (previousPanelSize === undefined ||
+          panelSize.asPercentage <= previousPanelSize.asPercentage)
+
+      // Ignore same-direction intermediate sizes, but allow an opposite drag to interrupt animation.
+      if (isNearCollapsedSize && isOpeningAnimationResize) return
+      if (!isNearCollapsedSize && isClosingAnimationResize) return
+
+      if (!isNearCollapsedSize && animationDirection === null) {
+        lastOpenSizeRef.current = panelSize.asPercentage
+      }
+
+      // A keyboard collapse must not leave focus on the separator that is about to be hidden.
+      if (isNearCollapsedSize && document.activeElement === separatorRef.current) {
+        collapseFocusTargetRef.current?.focus()
+      }
+
+      onPanelStateChange(isNearCollapsedSize ? 'collapsed' : 'open')
+    },
+    [collapseFocusTargetRef, collapsedThreshold, onPanelStateChange, onPixelWidthChange]
+  )
+
+  // The first layout pass synchronizes restored state without introducing an entrance animation.
+  useLayoutEffect(() => {
+    const shouldAnimate = hasSyncedInitialSizeRef.current
+    hasSyncedInitialSizeRef.current = true
+
+    if (panelState === 'collapsed') {
+      animatePanelSize(collapsedSize, 'closing', { animate: shouldAnimate })
+      return
+    }
+
+    const targetSize = Math.max(lastOpenSizeRef.current, minOpenSize)
+    animatePanelSize(targetSize, 'opening', { animate: shouldAnimate })
+  }, [animatePanelSize, collapsedSize, minOpenSize, panelState, requestVersion])
+
+  useEffect(
+    () => () => {
+      animationRef.current?.stop()
+      if (animationFrameRef.current !== null) {
+        window.cancelAnimationFrame(animationFrameRef.current)
+      }
+    },
+    []
+  )
+
+  return { panelRef, separatorRef, isAnimationMinSizeRelaxed, syncPanelResize }
+}
+
+// Mirrors the right preview toggle while staying outside the collapsible sidebar panel.
+const SidebarPanelToggleButton = ({
+  buttonRef,
+  isCollapsed,
+  left,
+  onToggle
+}: {
+  buttonRef: React.RefObject<HTMLButtonElement | null>
+  isCollapsed: boolean
+  left: string
+  onToggle: () => void
+}): React.JSX.Element => (
+  <button
+    ref={buttonRef}
+    type="button"
+    data-testid="workspace-sidebar-toggle"
+    className="absolute top-0 z-40 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg bg-transparent text-action-panel-toggle shadow-none hover:bg-surface-control-hover"
+    style={{ left }}
+    aria-label={isCollapsed ? 'Expand sidebar panel' : 'Collapse sidebar panel'}
+    aria-expanded={!isCollapsed}
+    aria-controls="left-panel"
+    title={isCollapsed ? 'Expand sidebar panel' : 'Collapse sidebar panel'}
+    onClick={onToggle}
+  >
+    <PanelLeft className="size-4" strokeWidth={2} fill="none" aria-hidden="true" />
+  </button>
+)
+
+// The preview toggle lives outside the collapsible panel so it remains clickable at 0% width.
+const PreviewPanelToggleButton = ({
+  buttonRef,
+  isCollapsed,
+  onToggle
+}: {
+  buttonRef: React.RefObject<HTMLButtonElement | null>
+  isCollapsed: boolean
+  onToggle: () => void
+}): React.JSX.Element => (
+  <button
+    ref={buttonRef}
+    type="button"
+    data-testid="workspace-preview-toggle"
+    className={`absolute right-2 top-0 z-40 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg ${
+      isCollapsed
+        ? 'bg-transparent shadow-none text-action-panel-toggle hover:bg-surface-control-hover'
+        : 'bg-primary/20 shadow-card backdrop-blur text-action-panel-toggle'
+    }`}
+    aria-label={isCollapsed ? 'Expand preview panel' : 'Collapse preview panel'}
+    aria-expanded={!isCollapsed}
+    aria-controls="right-panel"
+    title={isCollapsed ? 'Expand preview panel' : 'Collapse preview panel'}
+    onClick={onToggle}
+  >
+    <PanelRight className="size-4" strokeWidth={2} fill="none" aria-hidden="true" />
+  </button>
+)
 
 // Provides stable names for pasted images, which often arrive without a useful filename.
 const getUploadFilename = (file: File, index: number): string => {
@@ -93,15 +323,30 @@ const WorkspacePage = ({
   isSessionPersistenceReady,
   canDeleteConversations
 }: WorkspacePageProps): React.JSX.Element => {
-  // The page owns the imperative panel handle because open requests come from outside PreviewPanel.
-  const previewPanelRef = useRef<PanelImperativeHandle | null>(null)
-  const previewPanelAnimationRef = useRef<{ stop: () => void } | null>(null)
-  const previewPanelAnimationFrameRef = useRef<number | null>(null)
-  const previewPanelAnimationDirectionRef = useRef<'opening' | 'closing' | null>(null)
-  const lastOpenPreviewPanelSizeRef = useRef(PREVIEW_PANEL_DEFAULT_SIZE)
-  const hasSyncedInitialPreviewPanelSizeRef = useRef(false)
-  const [isPreviewPanelAnimationMinSizeRelaxed, setIsPreviewPanelAnimationMinSizeRelaxed] =
-    useState(false)
+  const [sidebarPanelState, setSidebarPanelState] = useState<'open' | 'collapsed'>('open')
+  const sidebarToggleRef = useRef<HTMLButtonElement | null>(null)
+  const previewToggleRef = useRef<HTMLButtonElement | null>(null)
+  const syncSidebarTogglePosition = useCallback((panelWidth: number): void => {
+    const toggle = sidebarToggleRef.current
+    if (!toggle) return
+
+    toggle.style.left = `${Math.max(0, panelWidth - SIDEBAR_TOGGLE_RIGHT_INSET)}px`
+  }, [])
+  const {
+    panelRef: sidebarPanelRef,
+    separatorRef: sidebarSeparatorRef,
+    isAnimationMinSizeRelaxed: isSidebarPanelAnimationMinSizeRelaxed,
+    syncPanelResize: syncSidebarPanelResize
+  } = useAnimatedResizablePanel({
+    panelState: sidebarPanelState,
+    defaultOpenSize: SIDEBAR_PANEL_DEFAULT_SIZE,
+    minOpenSize: SIDEBAR_PANEL_MIN_OPEN_SIZE,
+    collapsedSize: PANEL_COLLAPSED_SIZE,
+    collapsedThreshold: PANEL_COLLAPSED_THRESHOLD,
+    onPanelStateChange: setSidebarPanelState,
+    onPixelWidthChange: syncSidebarTogglePosition,
+    collapseFocusTargetRef: sidebarToggleRef
+  })
 
   // The active project scopes which sessions are visible and stamps newly created ones. The workspace
   // is only reachable via openProject/openSession (which set it); '' is a defensive sentinel that
@@ -141,10 +386,9 @@ const WorkspacePage = ({
     [allSessions, scopedProjectId]
   )
   const previewPanelState = usePreviewWorkbenchStore((state) => state.panelState)
+  const previewItems = usePreviewWorkbenchStore((state) => state.items)
   const [initialPreviewPanelDefaultSize] = useState(() =>
-    previewPanelState === 'collapsed'
-      ? PREVIEW_PANEL_COLLAPSED_SIZE_CSS
-      : PREVIEW_PANEL_DEFAULT_SIZE_CSS
+    previewPanelState === 'collapsed' ? PANEL_COLLAPSED_SIZE_CSS : PREVIEW_PANEL_DEFAULT_SIZE_CSS
   )
   const activePreviewItemId = usePreviewWorkbenchStore((state) => state.activeItemId)
   const previewOpenRequestVersion = usePreviewWorkbenchStore((state) => state.openRequestVersion)
@@ -154,6 +398,21 @@ const WorkspacePage = ({
   )
   const togglePreviewPanel = usePreviewWorkbenchStore((state) => state.togglePanel)
   const syncPreviewPanelState = usePreviewWorkbenchStore((state) => state.syncPanelState)
+  const {
+    panelRef: previewPanelRef,
+    separatorRef: previewSeparatorRef,
+    isAnimationMinSizeRelaxed: isPreviewPanelAnimationMinSizeRelaxed,
+    syncPanelResize: syncPreviewPanelResize
+  } = useAnimatedResizablePanel({
+    panelState: previewPanelState,
+    defaultOpenSize: PREVIEW_PANEL_DEFAULT_SIZE,
+    minOpenSize: PREVIEW_PANEL_MIN_OPEN_SIZE,
+    collapsedSize: PANEL_COLLAPSED_SIZE,
+    collapsedThreshold: PANEL_COLLAPSED_THRESHOLD,
+    requestVersion: previewOpenRequestVersion,
+    onPanelStateChange: syncPreviewPanelState,
+    collapseFocusTargetRef: previewToggleRef
+  })
   const {
     actionError,
     pendingPermissions,
@@ -454,73 +713,6 @@ const WorkspacePage = ({
     void compactContext?.(activeSession.id)
   }, [activeSession, canCompactContext, compactContext])
 
-  const animatePreviewPanelSize = useCallback(
-    (
-      targetSize: number,
-      direction: 'opening' | 'closing',
-      options?: { animate?: boolean }
-    ): void => {
-      const panel = previewPanelRef.current
-
-      if (!panel) return
-
-      previewPanelAnimationRef.current?.stop()
-      if (previewPanelAnimationFrameRef.current !== null) {
-        window.cancelAnimationFrame(previewPanelAnimationFrameRef.current)
-        previewPanelAnimationFrameRef.current = null
-      }
-
-      const currentSize = panel.getSize().asPercentage
-      const resizePanel = (size: number): boolean => {
-        const currentPanel = previewPanelRef.current
-
-        // Ignore motion callbacks that outlive the panel handle they were created for.
-        if (currentPanel !== panel) return false
-
-        currentPanel.resize(`${Number(size.toFixed(3))}%`)
-        return true
-      }
-
-      if (
-        options?.animate === false ||
-        Math.abs(currentSize - targetSize) <= PREVIEW_PANEL_COLLAPSED_THRESHOLD ||
-        prefersReducedMotion()
-      ) {
-        resizePanel(targetSize)
-        if (direction === 'opening') lastOpenPreviewPanelSizeRef.current = targetSize
-        previewPanelAnimationDirectionRef.current = null
-        previewPanelAnimationRef.current = null
-        setIsPreviewPanelAnimationMinSizeRelaxed(false)
-        return
-      }
-
-      previewPanelAnimationDirectionRef.current = direction
-      setIsPreviewPanelAnimationMinSizeRelaxed(true)
-      previewPanelAnimationFrameRef.current = window.requestAnimationFrame(() => {
-        previewPanelAnimationFrameRef.current = null
-        const nextPanel = previewPanelRef.current
-
-        if (!nextPanel) return
-
-        const nextCurrentSize = nextPanel.getSize().asPercentage
-        previewPanelAnimationRef.current = animate(nextCurrentSize, targetSize, {
-          ...previewPanelAnimation,
-          onUpdate: resizePanel,
-          onComplete: () => {
-            const didResize = resizePanel(targetSize)
-            if (didResize && direction === 'opening') {
-              lastOpenPreviewPanelSizeRef.current = targetSize
-            }
-            previewPanelAnimationDirectionRef.current = null
-            previewPanelAnimationRef.current = null
-            setIsPreviewPanelAnimationMinSizeRelaxed(false)
-          }
-        })
-      })
-    },
-    []
-  )
-
   // The workspace requires an active project; if none is set (e.g. after a project delete), go home.
   useEffect(() => {
     if (!activeProjectId) goHome('automatic')
@@ -529,32 +721,6 @@ const WorkspacePage = ({
   // Switches the preview panel to the active project's own tabs (never another project's stale
   // previews) and persists/restores each project's panel state across switches and restarts.
   usePreviewPersistence(activeProjectId, isSessionPersistenceReady)
-
-  // Preview workbench open requests come through the store; the shell owns the panel ref.
-  useLayoutEffect(() => {
-    const shouldAnimate = hasSyncedInitialPreviewPanelSizeRef.current
-    hasSyncedInitialPreviewPanelSizeRef.current = true
-
-    if (previewPanelState === 'collapsed') {
-      animatePreviewPanelSize(PREVIEW_PANEL_COLLAPSED_SIZE, 'closing', {
-        animate: shouldAnimate
-      })
-      return
-    }
-
-    const targetSize = Math.max(lastOpenPreviewPanelSizeRef.current, PREVIEW_PANEL_MIN_OPEN_SIZE)
-    animatePreviewPanelSize(targetSize, 'opening', { animate: shouldAnimate })
-  }, [animatePreviewPanelSize, previewOpenRequestVersion, previewPanelState])
-
-  useEffect(
-    () => () => {
-      previewPanelAnimationRef.current?.stop()
-      if (previewPanelAnimationFrameRef.current !== null) {
-        window.cancelAnimationFrame(previewPanelAnimationFrameRef.current)
-      }
-    },
-    []
-  )
 
   // Save the outgoing draft and load the incoming one whenever the selected session changes, covering
   // every selection path (session list, new conversation, project switch, deletes) in one place.
@@ -692,30 +858,6 @@ const WorkspacePage = ({
       })
     // Only re-run when the active session changes (session switch). Toggle handler syncs directly.
   }, [activeSessionId])
-
-  // Resizable drag/collapse state is mirrored back into the transient preview workbench store.
-  const syncPreviewPanelResize = (
-    panelSize: PanelSize,
-    previousPanelSize: PanelSize | undefined
-  ): void => {
-    const isNearCollapsedSize = panelSize.asPercentage <= PREVIEW_PANEL_COLLAPSED_THRESHOLD
-    const animationDirection = previewPanelAnimationDirectionRef.current
-    const isOpeningAnimationResize =
-      animationDirection === 'opening' &&
-      (previousPanelSize === undefined || panelSize.asPercentage >= previousPanelSize.asPercentage)
-    const isClosingAnimationResize =
-      animationDirection === 'closing' &&
-      (previousPanelSize === undefined || panelSize.asPercentage <= previousPanelSize.asPercentage)
-
-    if (isNearCollapsedSize && isOpeningAnimationResize) return
-    if (!isNearCollapsedSize && isClosingAnimationResize) return
-
-    if (!isNearCollapsedSize && animationDirection === null) {
-      lastOpenPreviewPanelSizeRef.current = panelSize.asPercentage
-    }
-
-    syncPreviewPanelState(isNearCollapsedSize ? 'collapsed' : 'open')
-  }
 
   // Deletes staged files when the user abandons the current composer draft.
   const deleteAttachmentFiles = (items: UploadedAttachment[]): void => {
@@ -1444,37 +1586,67 @@ const WorkspacePage = ({
     return remove
   }, [loadSpecialists])
 
+  const toggleSidebarPanel = (): void => {
+    setSidebarPanelState((state) => (state === 'collapsed' ? 'open' : 'collapsed'))
+  }
+
   return (
     <main className="h-screen overflow-hidden bg-bg-10 p-[10px] text-[13px] leading-normal text-text-000">
-      <div className="flex h-full gap-2">
-        <WorkspaceSidebar
-          projectName={activeProject?.name ?? 'Project'}
-          sessions={sessions}
-          activeSessionId={selectedSessionId}
-          canCreateConversation={isSessionPersistenceReady}
-          canMutateConversations={isSessionPersistenceReady}
-          canDeleteConversations={canDeleteConversations}
-          onGoHome={() => goHome('user')}
-          onNewConversation={openNewConversation}
-          isFilesOpen={activePreviewItemId === PROJECT_FILES_PREVIEW_ID}
-          onOpenFiles={openFilesPreview}
-          onOpenSession={openSession}
-          onRenameSession={openRenameDialog}
-          canDownloadArtifacts={typeof window.api?.saveSessionArtifacts === 'function'}
-          onDownloadArtifacts={setSessionToDownloadArtifacts}
-          onViewNotebook={setSessionToViewNotebook}
-          onTogglePin={(session) => {
-            if (isSessionPersistenceReady) togglePinned(session.id)
-          }}
-          onDeleteSession={openDeleteDialog}
-          onOpenSettings={openSettings}
-        />
-
+      <div className="relative flex h-full">
         {/* Cancel the workspace's vertical and trailing padding so panel dividers meet the app edges. */}
         <ResizablePanelGroup
           orientation="horizontal"
           className="-my-[10px] -mr-[10px] h-[calc(100%+20px)] min-w-0 flex-1"
         >
+          <ResizablePanel
+            id="left-panel"
+            panelRef={sidebarPanelRef}
+            defaultSize={SIDEBAR_PANEL_DEFAULT_SIZE_CSS}
+            minSize={
+              isSidebarPanelAnimationMinSizeRelaxed
+                ? SIDEBAR_PANEL_ANIMATING_MIN_SIZE
+                : SIDEBAR_PANEL_MIN_OPEN_SIZE_CSS
+            }
+            collapsible
+            collapsedSize="0%"
+            onResize={(panelSize, _panelId, previousPanelSize) =>
+              syncSidebarPanelResize(panelSize, previousPanelSize)
+            }
+          >
+            <WorkspaceSidebar
+              projectName={activeProject?.name ?? 'Project'}
+              sessions={sessions}
+              activeSessionId={selectedSessionId}
+              canCreateConversation={isSessionPersistenceReady}
+              canMutateConversations={isSessionPersistenceReady}
+              canDeleteConversations={canDeleteConversations}
+              onGoHome={() => goHome('user')}
+              onNewConversation={openNewConversation}
+              isFilesOpen={activePreviewItemId === PROJECT_FILES_PREVIEW_ID}
+              onOpenFiles={openFilesPreview}
+              onOpenSession={openSession}
+              onRenameSession={openRenameDialog}
+              canDownloadArtifacts={typeof window.api?.saveSessionArtifacts === 'function'}
+              onDownloadArtifacts={setSessionToDownloadArtifacts}
+              onViewNotebook={setSessionToViewNotebook}
+              onTogglePin={(session) => {
+                if (isSessionPersistenceReady) togglePinned(session.id)
+              }}
+              onDeleteSession={openDeleteDialog}
+              onOpenSettings={openSettings}
+            />
+          </ResizablePanel>
+
+          <ResizableHandle
+            elementRef={sidebarSeparatorRef}
+            aria-label="Resize left panel"
+            disabled={sidebarPanelState === 'collapsed'}
+            aria-hidden={sidebarPanelState === 'collapsed'}
+            className={`before:left-auto before:right-full before:mr-[3px] before:translate-x-0 transition-opacity duration-200 ease-out ${
+              sidebarPanelState === 'collapsed' ? 'opacity-0' : 'opacity-100'
+            }`}
+          />
+
           <ConversationPanel
             activeSession={activeSession}
             draftDoc={draftDoc}
@@ -1482,7 +1654,6 @@ const WorkspacePage = ({
             canEditDraft={canEditDraft}
             canResumeSession={isSessionPersistenceReady}
             actionError={visibleActionError}
-            isPreviewPanelCollapsed={previewPanelState === 'collapsed'}
             attachments={attachments}
             attachmentTransfers={attachmentTransfers}
             isUploadingAttachments={isUploadingAttachments}
@@ -1505,7 +1676,6 @@ const WorkspacePage = ({
             onCancelRun={cancelActiveRun}
             onResumeSession={resumeActiveSession}
             onOpenNotebook={openNotebookPreview}
-            onTogglePreviewPanel={togglePreviewPanel}
             onRespondToPermission={respondToVisiblePermission}
             onPermissionProfileChange={changePermissionProfile}
             onRevokePermissionGrant={revokeActivePermissionGrant}
@@ -1612,10 +1782,11 @@ const WorkspacePage = ({
           />
 
           <ResizableHandle
+            elementRef={previewSeparatorRef}
             aria-label="Resize right panel"
             disabled={previewPanelState === 'collapsed'}
             aria-hidden={previewPanelState === 'collapsed'}
-            className={`transition-opacity duration-200 ease-out ${
+            className={`bg-border shadow-[1px_0_3px_rgba(30,28,24,0.08)] before:left-auto before:right-full before:mr-0.5 before:w-1 before:translate-x-0 transition-opacity duration-200 ease-out ${
               previewPanelState === 'collapsed' ? 'opacity-0' : 'opacity-100'
             }`}
           />
@@ -1631,6 +1802,19 @@ const WorkspacePage = ({
             onResize={syncPreviewPanelResize}
           />
         </ResizablePanelGroup>
+        {previewItems.length > 0 ? (
+          <PreviewPanelToggleButton
+            buttonRef={previewToggleRef}
+            isCollapsed={previewPanelState === 'collapsed'}
+            onToggle={togglePreviewPanel}
+          />
+        ) : null}
+        <SidebarPanelToggleButton
+          buttonRef={sidebarToggleRef}
+          isCollapsed={sidebarPanelState === 'collapsed'}
+          left={`calc(${SIDEBAR_PANEL_DEFAULT_SIZE_CSS} - ${SIDEBAR_TOGGLE_RIGHT_INSET}px)`}
+          onToggle={toggleSidebarPanel}
+        />
       </div>
 
       <RenameSessionDialog

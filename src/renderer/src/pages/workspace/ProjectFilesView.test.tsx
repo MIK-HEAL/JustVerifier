@@ -588,6 +588,32 @@ describe('ProjectFilesView', () => {
     expect(listFiles).toHaveBeenCalledTimes(fileCalls)
   })
 
+  it('preserves the file extension when a long list-row name runs out of width', async () => {
+    const name = 'very_long_experiment_analysis_result_2025.csv'
+    await renderView([
+      createSession({
+        artifacts: [
+          {
+            id: 'long-name-artifact',
+            kind: 'managed-file',
+            path: `/workspace/${name}`,
+            name
+          }
+        ]
+      })
+    ])
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="List view"]')?.click()
+    })
+
+    const row = container.querySelector(`[aria-label="Preview generated file ${name}"]`)
+    expect(row?.querySelector('[data-testid="file-name-root"]')).not.toBeNull()
+    expect(row?.querySelector('[data-testid="file-name-head"]')?.textContent).toMatch(/^very/)
+    expect(row?.querySelector('[data-testid="file-name-tail"]')?.textContent).toBe('_2025')
+    expect(row?.querySelector('[data-testid="file-name-extension"]')?.textContent).toBe('.csv')
+  })
+
   it('uses the requested search, list-row, and view-mode interaction styling', async () => {
     await renderView([
       createSession({

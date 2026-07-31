@@ -75,6 +75,20 @@ const getTextContent = (node: ReactNode): string => {
 }
 
 describe('WorkspaceSidebar accessible render', () => {
+  it('keeps the sidebar card inset even on both sides', async () => {
+    const html = await renderSidebar([createSession({ id: 'session-a' })])
+
+    expect(html).toContain('m-2 flex min-h-0 flex-1 flex-col rounded-lg')
+    expect(html).not.toContain('mr-0')
+  })
+
+  it('reserves header padding for the external panel toggle without spacer markup', async () => {
+    const html = await renderSidebar([createSession({ id: 'session-a' })])
+
+    expect(html).toContain('flex items-start pr-9')
+    expect(html).not.toContain('workspace-sidebar-toggle-slot')
+  })
+
   it('renders non-visual session status text for assistive technology', async () => {
     const html = await renderSidebar([
       createSession({ id: 'running-session', status: 'running' }),
