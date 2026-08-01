@@ -15,6 +15,7 @@ import { PassThrough, Readable, Writable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AcpRuntime } from './runtime'
+import { AcpPermissionContext } from './permission-context'
 import { ContextUsageTracker, type TokenCounter } from './context-usage-tracker'
 import {
   ACP_PROMPT_FAILED_EVENT_TITLE,
@@ -614,19 +615,28 @@ const handleSessionUpdate = (runtime: AcpRuntime, notification: SessionNotificat
 const reviewerSessionIds = (runtime: AcpRuntime): Set<string> =>
   (runtime as unknown as { reviewerSessionIds: Set<string> }).reviewerSessionIds
 
+const permissionContext = (runtime: AcpRuntime): AcpPermissionContext =>
+  (runtime as unknown as { permissionContext: AcpPermissionContext }).permissionContext
+
 const codexMcpToolIdentitiesMap = (runtime: AcpRuntime): Map<string, Map<string, unknown>> =>
-  (runtime as unknown as { codexMcpToolIdentities: Map<string, Map<string, unknown>> })
-    .codexMcpToolIdentities
+  (
+    permissionContext(runtime) as unknown as {
+      codexMcpToolIdentities: Map<string, Map<string, unknown>>
+    }
+  ).codexMcpToolIdentities
 
 const opencodeMcpToolInputsMap = (runtime: AcpRuntime): Map<string, Map<string, unknown>> =>
-  (runtime as unknown as { opencodeMcpToolInputs: Map<string, Map<string, unknown>> })
-    .opencodeMcpToolInputs
+  (
+    permissionContext(runtime) as unknown as {
+      opencodeMcpToolInputs: Map<string, Map<string, unknown>>
+    }
+  ).opencodeMcpToolInputs
 
 const opencodeMcpToolInputWaitersMap = (
   runtime: AcpRuntime
 ): Map<string, Map<string, Set<unknown>>> =>
   (
-    runtime as unknown as {
+    permissionContext(runtime) as unknown as {
       opencodeMcpToolInputWaiters: Map<string, Map<string, Set<unknown>>>
     }
   ).opencodeMcpToolInputWaiters
@@ -637,14 +647,24 @@ const waitForOpenCodeMcpToolInput = (
   toolCallId: string
 ): Promise<'ready' | 'timeout' | 'cancelled'> =>
   (
-    runtime as unknown as {
+    permissionContext(runtime) as unknown as {
       waitForOpenCodeMcpToolInput: (
         currentSessionId: string,
         currentToolCallId: string,
-        promptTurn: number | undefined
+        context: {
+          sessionId: string
+          framework: 'opencode'
+          mcpServerNames: readonly string[]
+          isCancelled: () => boolean
+        }
       ) => Promise<'ready' | 'timeout' | 'cancelled'>
     }
-  ).waitForOpenCodeMcpToolInput(sessionId, toolCallId, undefined)
+  ).waitForOpenCodeMcpToolInput(sessionId, toolCallId, {
+    sessionId,
+    framework: 'opencode',
+    mcpServerNames: ['open-science-notebook'],
+    isCancelled: () => false
+  })
 
 const observePermissionToolContext = (
   runtime: AcpRuntime,
@@ -5350,7 +5370,7 @@ describe('ACP runtime session management', () => {
     expect(opencodeMcpToolInputWaitersMap(runtime).has(session.sessionId)).toBe(false)
   })
 
-  it('cancels an OpenCode permission that arrives after its tool call ended', async () => {
+  it('cancels an OpenCode permission when its tool call ends as context restore completes', async () => {
     const process = new FakeAgentProcess()
     const permissionResponses: acp.RequestPermissionResponse[] = []
 
@@ -5376,14 +5396,6 @@ describe('ACP runtime session management', () => {
             kind: 'other',
             status: 'pending',
             rawInput: { language: 'python', code: 'print(1)' }
-          }
-        })
-        await ctx.client.notify(acp.methods.client.session.update, {
-          sessionId: ctx.params.sessionId,
-          update: {
-            sessionUpdate: 'tool_call_update',
-            toolCallId,
-            status: 'completed'
           }
         })
         permissionResponses.push(
@@ -5423,9 +5435,28 @@ describe('ACP runtime session management', () => {
         mcpEntryPath: '/app/out/main/index.js',
         getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:4567', token: 'nb' })
       },
-      callbacks: { onPermissionRequest }
+      callbacks: {
+        onPermissionRequest: (request) => {
+          onPermissionRequest(request)
+          void runtime.respondToPermission({ requestId: request.requestId, cancelled: true })
+        }
+      }
     })
     const session = await runtime.createSession({ cwd: '/workspace', permissionProfile: 'ask' })
+    const context = permissionContext(runtime)
+    const restoreToolCall = context.restoreToolCall.bind(context)
+    vi.spyOn(context, 'restoreToolCall').mockImplementation(async (params, restoreContext) => {
+      const restored = await restoreToolCall(params, restoreContext)
+      observePermissionToolContext(runtime, {
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: params.toolCall.toolCallId,
+          status: 'completed'
+        }
+      })
+      return restored
+    })
 
     await runtime.sendPrompt({ sessionId: session.sessionId, text: 'run python' })
 
