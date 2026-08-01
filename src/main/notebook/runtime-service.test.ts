@@ -16,7 +16,6 @@ import {
   resolveShellInvocation,
   terminateShellOnTimeout
 } from './runtime-service'
-import { NotebookKernelExecutor } from './kernel-executor'
 import { effectiveMirrorAsync, resetAutoMirrorCache } from './mirror-probe'
 import { NotebookRunRepository, getRuntimeRoot } from './repository'
 import {
@@ -709,6 +708,86 @@ describe('notebook runtime service', () => {
     expect(changedSessions.filter((sessionId) => sessionId === 'agent-session').length).toBe(5)
   })
 
+  it('keeps agent notebook availability process-scoped across session shutdown', async () => {
+    const root = await createStorageRoot()
+    const availableSessions: string[] = []
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      callbacks: {
+        onNotebookAvailable: (event) => availableSessions.push(event.sessionId)
+      },
+      executorFactory: () => ({
+        execute: async (request) => ({
+          status: 'completed',
+          stdout: request.code,
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+
+    for (const code of ['before-shutdown', 'after-shutdown']) {
+      if (availableSessions.length > 0) {
+        await service.shutdown({ sessionId: 'session-1', workspaceCwd: root })
+      }
+      await service.execute({
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        code,
+        language: 'python'
+      })
+    }
+
+    expect(availableSessions).toEqual(['session-1'])
+  })
+
+  it('keeps a runtime session usable when executor shutdown fails', async () => {
+    const root = await createStorageRoot()
+    const shutdownError = new Error('kernel teardown failed')
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request) => ({
+          status: 'completed',
+          stdout: request.code,
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => Promise.reject(shutdownError)
+      })
+    })
+
+    await service.execute({
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'before-failed-shutdown',
+      language: 'python'
+    })
+
+    await expect(service.shutdown({ sessionId: 'session-1', workspaceCwd: root })).rejects.toBe(
+      shutdownError
+    )
+    await expect(
+      service.execute({
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        code: 'after-failed-shutdown',
+        language: 'python'
+      })
+    ).resolves.toMatchObject({ status: 'completed', script: 'after-failed-shutdown' })
+  })
+
   it('does not thread the mcp RPC connection into the data-cell execute request', async () => {
     const root = await createStorageRoot()
     const executions: NotebookExecutionRequest[] = []
@@ -869,6 +948,64 @@ describe('notebook runtime service', () => {
 
     await service.shutdown({ sessionId: 'session-1', workspaceCwd: root })
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('keeps control connections and cleanup isolated between runtime sessions', async () => {
+    const root = await createStorageRoot()
+    const releases = new Map([
+      ['session-1', vi.fn()],
+      ['session-2', vi.fn()]
+    ])
+    const resolveConnection = vi.fn(
+      async ({ sessionId }: { sessionId: string; projectId: string }) => ({
+        endpoint: 'http://127.0.0.1:1/x',
+        token: `${sessionId}-token`,
+        release: releases.get(sessionId)
+      })
+    )
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: (sessionId) => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: `${sessionId}:${request.mcpRpcToken}`,
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    service.setMcpRpcConnectionResolver(resolveConnection)
+
+    const [first, second] = await Promise.all(
+      ['session-1', 'session-2'].map((sessionId) =>
+        service.executeControl({ sessionId, workspaceCwd: root, code: 'return 1' })
+      )
+    )
+
+    expect([first.stdout, second.stdout]).toEqual([
+      'session-1:session-1-token',
+      'session-2:session-2-token'
+    ])
+
+    await service.shutdown({ sessionId: 'session-1', workspaceCwd: root })
+    expect(releases.get('session-1')).toHaveBeenCalledOnce()
+    expect(releases.get('session-2')).not.toHaveBeenCalled()
+
+    await expect(
+      service.executeControl({ sessionId: 'session-2', workspaceCwd: root, code: 'return 2' })
+    ).resolves.toMatchObject({ stdout: 'session-2:session-2-token' })
+    expect(
+      resolveConnection.mock.calls.filter(([binding]) => binding.sessionId === 'session-2')
+    ).toHaveLength(1)
+
+    await service.shutdownAll()
+    expect(releases.get('session-2')).toHaveBeenCalledOnce()
   })
 
   it('rejects a dynamically executed package installer in the control REPL before dispatch', async () => {
@@ -3430,7 +3567,7 @@ describe('notebook runtime service', () => {
       })
     })
 
-    it('builds a NotebookKernelExecutor by default (no executorFactory injected)', async () => {
+    it('creates and shuts down a session through the default executor', async () => {
       const root = await createStorageRoot()
       const service = new NotebookRuntimeService({
         configRoot: root,
@@ -3439,16 +3576,12 @@ describe('notebook runtime service', () => {
         repository: new NotebookRunRepository(root)
       })
 
-      // beginCodeCell creates the runtime session (and thus the default executor) without ever
-      // spawning a loop -- spawning is deferred to the first execute(). Reach into the private
-      // session map to prove the default backend is the exec-loop executor, python and r as two
-      // independent persistent processes rather than a single restart-on-language-switch kernel.
-      await service.beginCodeCell({ sessionId: 'session-1', workspaceCwd: root })
-      const executor = (
-        service as unknown as { sessions: Map<string, { executor: unknown }> }
-      ).sessions.get('session-1')?.executor
+      const cell = await service.beginCodeCell({ sessionId: 'session-1', workspaceCwd: root })
 
-      expect(executor).toBeInstanceOf(NotebookKernelExecutor)
+      expect(cell).toMatchObject({ sessionId: 'session-1', status: 'receiving-code' })
+      await expect(
+        service.shutdown({ sessionId: 'session-1', workspaceCwd: root })
+      ).resolves.toEqual({ sessionId: 'session-1', status: 'shutdown' })
     })
   })
 
