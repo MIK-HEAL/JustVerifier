@@ -212,6 +212,36 @@ const settingsSection = (title: string): HTMLElement | undefined =>
 const agentItem = (): HTMLElement | null => navButton('Agent')?.closest('li') ?? null
 
 describe('SettingsPage layout', () => {
+  it('shows and dismisses a settings write failure above the scrolling content', async () => {
+    useSettingsStore.setState({
+      settingsWriteError: 'Could not save notification preference. Try again.'
+    })
+
+    act(() => {
+      root.render(<SettingsPage open onClose={vi.fn()} />)
+    })
+
+    const alert = document.body.querySelector<HTMLElement>('[data-slot="settings-write-error"]')
+    const scroll = document.body.querySelector<HTMLElement>('[data-slot="settings-content-scroll"]')
+    expect(alert?.getAttribute('role')).toBe('alert')
+    expect(alert?.textContent).toContain('Could not save notification preference. Try again.')
+    expect(alert?.className).toContain('border-danger-000/30')
+    expect(alert?.className).toContain('bg-danger-000/10')
+    expect(alert?.className).toContain('text-danger-000')
+    expect(alert?.nextElementSibling).toBe(scroll)
+
+    const dismiss = alert?.querySelector<HTMLButtonElement>('[aria-label="Dismiss settings error"]')
+    await act(async () => dismiss?.focus())
+    expect(document.body.textContent).toContain('Dismiss')
+
+    act(() => {
+      dismiss?.click()
+    })
+
+    expect(useSettingsStore.getState().settingsWriteError).toBeUndefined()
+    expect(document.body.querySelector('[data-slot="settings-write-error"]')).toBeNull()
+  })
+
   it('mounts the sidebar + content with grouped nav items and a close control', () => {
     useSettingsStore.setState({
       providers: [

@@ -239,6 +239,7 @@ beforeEach(() => {
     })
   }
   ;(globalThis as { window?: unknown }).window = { api: { settings: api, acp } }
+  useSettingsStore.getState().clearSettingsWriteError()
   useSettingsStore.setState(createInitialSettingsState())
 })
 
@@ -852,6 +853,36 @@ describe('settings store: provider/model selection', () => {
 
     expect(api.setActiveProvider).toHaveBeenCalledWith({ id: 'p1', model: undefined })
   })
+
+  it('clears an existing preference write error after the active provider saves', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    api.setReasoningEffort.mockRejectedValueOnce(new Error('reasoning unavailable'))
+
+    await useSettingsStore.getState().setReasoningEffort('high')
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save reasoning effort. Try again.'
+    )
+
+    await useSettingsStore.getState().setActiveProvider('p1', 'glm-4.7')
+
+    expect(useSettingsStore.getState().settingsWriteError).toBeUndefined()
+  })
+
+  it('records a safe write error and preserves rejection semantics when activation fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const ipcError = new Error('/Users/example/.open-science/settings.json is unavailable')
+    api.setActiveProvider.mockRejectedValueOnce(ipcError)
+
+    await expect(useSettingsStore.getState().setActiveProvider('p1', 'glm-4.7')).rejects.toBe(
+      ipcError
+    )
+
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not switch active provider or model. Try again.'
+    )
+    expect(useSettingsStore.getState().settingsWriteError).not.toContain('/Users/example')
+    expect(consoleError).toHaveBeenCalledWith('Failed to set active provider', ipcError)
+  })
 })
 
 describe('selectProviderModelOptions', () => {
@@ -1342,6 +1373,34 @@ describe('settings store: setAgentFramework', () => {
     })
   })
 
+  it('keeps the previous framework and exposes a visible failure when main rejects', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const ipcError = new Error('ipc down')
+    api.setAgentFramework.mockRejectedValue(ipcError)
+
+    await expect(useSettingsStore.getState().setAgentFramework('opencode')).rejects.toBe(ipcError)
+
+    expect(useSettingsStore.getState().agentFrameworkId).toBe('claude-code')
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not switch agent framework. Try again.'
+    )
+    expect(consoleError).toHaveBeenCalledWith('Failed to switch agent framework', expect.any(Error))
+  })
+
+  it('does not report a saved framework as a write failure when live detection rejects', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    api.detectOpencode.mockRejectedValue(new Error('probe down'))
+
+    await useSettingsStore.getState().setAgentFramework('opencode')
+
+    expect(useSettingsStore.getState().agentFrameworkId).toBe('opencode')
+    expect(useSettingsStore.getState().settingsWriteError).toBeUndefined()
+    expect(consoleError).toHaveBeenCalledWith(
+      'Failed to refresh agent framework status',
+      expect.any(Error)
+    )
+  })
+
   it('installs and uninstalls Codex through the shared runtime lifecycle', async () => {
     api.getSettings.mockResolvedValue({
       ...snapshot([]),
@@ -1506,10 +1565,15 @@ describe('settings store: setAgentFramework', () => {
 
 describe('settings store: setReasoningEffort', () => {
   it('forwards the level to main and caches the returned snapshot', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    api.setNotificationsEnabled.mockRejectedValueOnce(new Error('notifications unavailable'))
+    await useSettingsStore.getState().setNotificationsEnabled(false)
+
     await useSettingsStore.getState().setReasoningEffort('high')
 
     expect(api.setReasoningEffort).toHaveBeenCalledWith({ effort: 'high' })
     expect(useSettingsStore.getState().reasoningEffort).toBe('high')
+    expect(useSettingsStore.getState().settingsWriteError).toBeUndefined()
   })
 
   it('applies the picked level optimistically before main confirms', async () => {
@@ -1531,13 +1595,140 @@ describe('settings store: setReasoningEffort', () => {
     expect(useSettingsStore.getState().reasoningEffort).toBe('max')
   })
 
-  it('reverts to the previous level and logs when main rejects', async () => {
+  it('surfaces an unrelated older write failure after a newer settings write succeeds', async () => {
+    let rejectReasoning: (reason?: unknown) => void = () => undefined
+    api.setReasoningEffort.mockImplementation(
+      () =>
+        new Promise<SettingsSnapshot>((_resolve, reject) => {
+          rejectReasoning = reject
+        })
+    )
+
+    const olderWrite = useSettingsStore.getState().setReasoningEffort('high')
+    await useSettingsStore.getState().setNotificationsEnabled(false)
+
+    rejectReasoning(new Error('stale failure'))
+    await olderWrite
+
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save reasoning effort. Try again.'
+    )
+  })
+
+  it('keeps a newer write failure when an older settings write succeeds later', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let resolveReasoning: (value: SettingsSnapshot) => void = () => undefined
+    api.setReasoningEffort.mockImplementation(
+      () =>
+        new Promise<SettingsSnapshot>((resolve) => {
+          resolveReasoning = resolve
+        })
+    )
+    api.setNotificationsEnabled.mockRejectedValue(new Error('newer failure'))
+
+    const olderWrite = useSettingsStore.getState().setReasoningEffort('high')
+    await useSettingsStore.getState().setNotificationsEnabled(false)
+
+    resolveReasoning({ ...snapshot([]), reasoningEffort: 'high' })
+    await olderWrite
+
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save notification preference. Try again.'
+    )
+  })
+
+  it('retains failures from concurrent writes to different preferences', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let rejectReasoning: (reason?: unknown) => void = () => undefined
+    let rejectNotifications: (reason?: unknown) => void = () => undefined
+    api.setReasoningEffort.mockImplementation(
+      () =>
+        new Promise<SettingsSnapshot>((_resolve, reject) => {
+          rejectReasoning = reject
+        })
+    )
+    api.setNotificationsEnabled.mockImplementation(
+      () =>
+        new Promise<SettingsSnapshot>((_resolve, reject) => {
+          rejectNotifications = reject
+        })
+    )
+
+    const reasoningWrite = useSettingsStore.getState().setReasoningEffort('high')
+    const notificationsWrite = useSettingsStore.getState().setNotificationsEnabled(false)
+
+    rejectNotifications(new Error('notifications unavailable'))
+    await notificationsWrite
+    rejectReasoning(new Error('reasoning unavailable'))
+    await reasoningWrite
+
+    expect(useSettingsStore.getState().settingsWriteError).toContain(
+      'Could not save notification preference. Try again.'
+    )
+    expect(useSettingsStore.getState().settingsWriteError).toContain(
+      'Could not save reasoning effort. Try again.'
+    )
+  })
+
+  it('ignores a stale failure from an older write to the same preference', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    api.setReasoningEffort
+      .mockRejectedValueOnce(new Error('stale failure'))
+      .mockResolvedValueOnce({ ...snapshot([]), reasoningEffort: 'max' })
+
+    const olderWrite = useSettingsStore.getState().setReasoningEffort('high')
+    const newerWrite = useSettingsStore.getState().setReasoningEffort('max')
+
+    await Promise.all([olderWrite, newerWrite])
+
+    expect(useSettingsStore.getState().reasoningEffort).toBe('max')
+    expect(useSettingsStore.getState().settingsWriteError).toBeUndefined()
+  })
+
+  it('restores the confirmed value when concurrent writes to the same preference both fail', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    api.setReasoningEffort
+      .mockRejectedValueOnce(new Error('older failure'))
+      .mockRejectedValueOnce(new Error('newer failure'))
+
+    const olderWrite = useSettingsStore.getState().setReasoningEffort('high')
+    const newerWrite = useSettingsStore.getState().setReasoningEffort('max')
+
+    await Promise.all([olderWrite, newerWrite])
+
+    expect(useSettingsStore.getState().reasoningEffort).toBe('default')
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save reasoning effort. Try again.'
+    )
+  })
+
+  it('restores the last successful value when a queued newer write fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    api.setReasoningEffort
+      .mockResolvedValueOnce({ ...snapshot([]), reasoningEffort: 'high' })
+      .mockRejectedValueOnce(new Error('newer failure'))
+
+    const olderWrite = useSettingsStore.getState().setReasoningEffort('high')
+    const newerWrite = useSettingsStore.getState().setReasoningEffort('max')
+
+    await Promise.all([olderWrite, newerWrite])
+
+    expect(useSettingsStore.getState().reasoningEffort).toBe('high')
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save reasoning effort. Try again.'
+    )
+  })
+
+  it('reverts to the previous level and exposes a visible failure when main rejects', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     api.setReasoningEffort.mockRejectedValue(new Error('ipc down'))
 
     await useSettingsStore.getState().setReasoningEffort('low')
 
     expect(useSettingsStore.getState().reasoningEffort).toBe('default')
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save reasoning effort. Try again.'
+    )
     expect(consoleError).toHaveBeenCalledWith('Failed to set reasoning effort', expect.any(Error))
   })
 
@@ -1558,13 +1749,16 @@ describe('settings store: setNotificationsEnabled', () => {
     expect(useSettingsStore.getState().notificationsEnabled).toBe(false)
   })
 
-  it('reverts to the previous flag and logs when main rejects', async () => {
+  it('reverts to the previous flag and exposes a visible failure when main rejects', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     api.setNotificationsEnabled.mockRejectedValue(new Error('ipc down'))
 
     await useSettingsStore.getState().setNotificationsEnabled(false)
 
     expect(useSettingsStore.getState().notificationsEnabled).toBe(true)
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save notification preference. Try again.'
+    )
     expect(consoleError).toHaveBeenCalledWith(
       'Failed to set notifications enabled',
       expect.any(Error)
@@ -1588,13 +1782,16 @@ describe('settings store: setConversationSkillImportEnabled', () => {
     expect(useSettingsStore.getState().conversationSkillImportEnabled).toBe(false)
   })
 
-  it('reverts to the previous flag and logs when main rejects', async () => {
+  it('reverts to the previous flag and exposes a visible failure when main rejects', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     api.setConversationSkillImportEnabled.mockRejectedValue(new Error('ipc down'))
 
     await useSettingsStore.getState().setConversationSkillImportEnabled(false)
 
     expect(useSettingsStore.getState().conversationSkillImportEnabled).toBe(true)
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save conversation Skill import preference. Try again.'
+    )
     expect(consoleError).toHaveBeenCalledWith(
       'Failed to set conversation Skill import enabled',
       expect.any(Error)
@@ -1624,7 +1821,7 @@ describe('settings store: setClosePreference', () => {
     expect(useSettingsStore.getState().closePreference).toBeUndefined()
   })
 
-  it('reverts to the previous preference when main rejects', async () => {
+  it('reverts to the previous preference and exposes a visible failure when main rejects', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     useSettingsStore.setState({ closePreference: 'quit' })
     api.setClosePreference.mockRejectedValue(new Error('ipc down'))
@@ -1632,6 +1829,9 @@ describe('settings store: setClosePreference', () => {
     await useSettingsStore.getState().setClosePreference(undefined)
 
     expect(useSettingsStore.getState().closePreference).toBe('quit')
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save window close preference. Try again.'
+    )
     expect(consoleError).toHaveBeenCalledWith('Failed to set close preference', expect.any(Error))
   })
 
@@ -1652,7 +1852,7 @@ describe('settings store: setAppIconVariant', () => {
     expect(useSettingsStore.getState().appIconVariant).toBe('dark')
   })
 
-  it('reverts to the previous variant and logs when main rejects', async () => {
+  it('reverts to the previous variant and exposes a visible failure when main rejects', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     useSettingsStore.setState({ appIconVariant: 'light' })
     api.setAppIconVariant.mockRejectedValue(new Error('ipc down'))
@@ -1660,6 +1860,9 @@ describe('settings store: setAppIconVariant', () => {
     await useSettingsStore.getState().setAppIconVariant('dark')
 
     expect(useSettingsStore.getState().appIconVariant).toBe('light')
+    expect(useSettingsStore.getState().settingsWriteError).toBe(
+      'Could not save app icon preference. Try again.'
+    )
     expect(consoleError).toHaveBeenCalledWith('Failed to set app icon variant', expect.any(Error))
   })
 
