@@ -1424,6 +1424,58 @@ describe('notebook runtime service', () => {
     expect(await journal.pending()).toEqual([])
   })
 
+  it('shares one startup recovery attempt across concurrent callers', async () => {
+    const root = await createStorageRoot()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const originalReadState = RuntimeOperationJournal.prototype.readState
+    let releaseRead!: () => void
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    const readState = vi
+      .spyOn(RuntimeOperationJournal.prototype, 'readState')
+      .mockImplementation(async function (this: RuntimeOperationJournal) {
+        await readGate
+        return originalReadState.call(this)
+      })
+
+    const first = service.recoverInterruptedOperations()
+    await vi.waitFor(() => expect(readState).toHaveBeenCalledOnce())
+    const second = service.recoverInterruptedOperations()
+
+    await Promise.resolve()
+    expect(readState).toHaveBeenCalledOnce()
+
+    releaseRead()
+    await Promise.all([first, second])
+
+    // One healthy recovery reads once for the fail-closed preflight and once for reconciliation.
+    expect(readState).toHaveBeenCalledTimes(2)
+    readState.mockRestore()
+  })
+
+  it('treats a missing startup journal as ready without blocking runtimes', async () => {
+    const root = await createStorageRoot()
+    const runtimeRoot = getRuntimeRoot(root)
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+
+    await service.recoverInterruptedOperations()
+
+    expect(service.isPrefixRecoveryBlocked(envPrefix(runtimeRoot, DEFAULT_PY_ENV))).toBe(false)
+    expect(service.isPrefixRecoveryBlocked(envPrefix(runtimeRoot, DEFAULT_R_ENV))).toBe(false)
+    expect(existsSync(operationJournalPath(runtimeRoot))).toBe(false)
+  })
+
   it('wipes the pack download cache on startup so a restart does not resume a partial (WS13)', async () => {
     const root = await createStorageRoot()
     const runtimeRoot = join(root, 'runtime')
@@ -5906,6 +5958,151 @@ describe('v4 runtime bindings & agent tools', () => {
     // after the in-flight run drains (here already finished), not left to idle-timeout.
     await vi.waitFor(() => expect(terminations).toContain('python:default-python'))
     await service.shutdownAll()
+  })
+
+  it('remains usable after temporary shutdowns for update and migration gates', async () => {
+    const root = await createStorageRoot()
+    const executions: string[] = []
+    let shutdowns = 0
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          executions.push(request.code)
+          return {
+            status: 'completed',
+            stdout: request.code,
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => {
+          shutdowns += 1
+          return { reaped: true }
+        }
+      })
+    })
+
+    for (const code of ['before-gate', 'after-update-gate', 'after-migration-gate']) {
+      if (executions.length > 0) await service.shutdownAll()
+
+      const result = await service.execute({
+        sessionId: 's',
+        workspaceCwd: root,
+        code,
+        language: 'python'
+      })
+
+      expect(result.status).toBe('completed')
+    }
+
+    expect(executions).toEqual(['before-gate', 'after-update-gate', 'after-migration-gate'])
+    expect(shutdowns).toBe(2)
+  })
+
+  it('starts kernel teardown without waiting for startup recovery to settle', async () => {
+    const root = await createStorageRoot()
+    let releaseRecovery: (() => void) | undefined
+    const recoveryDisposal = new Promise<void>((resolve) => {
+      releaseRecovery = resolve
+    })
+    const shutdown = vi.fn(async () => ({ reaped: true }))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: request.code,
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown
+      })
+    })
+
+    await service.execute({
+      sessionId: 's',
+      workspaceCwd: root,
+      code: 'before-quit',
+      language: 'python'
+    })
+    Object.defineProperty(service, 'recoveryCoordinator', {
+      value: { dispose: vi.fn(() => recoveryDisposal) }
+    })
+
+    const disposal = service.dispose()
+    let disposed = false
+    void disposal.then(() => {
+      disposed = true
+    })
+
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1))
+    expect(disposed).toBe(false)
+    releaseRecovery?.()
+    await expect(disposal).resolves.toEqual({ reaped: true })
+  })
+
+  it('waits for recovery disposal before propagating a kernel teardown failure', async () => {
+    const root = await createStorageRoot()
+    let releaseRecovery: (() => void) | undefined
+    const recoveryDisposal = new Promise<void>((resolve) => {
+      releaseRecovery = resolve
+    })
+    const shutdownError = new Error('kernel teardown failed')
+    const shutdown = vi.fn(async () => Promise.reject(shutdownError))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: request.code,
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown
+      })
+    })
+
+    await service.execute({
+      sessionId: 's',
+      workspaceCwd: root,
+      code: 'before-quit',
+      language: 'python'
+    })
+    Object.defineProperty(service, 'recoveryCoordinator', {
+      value: { dispose: vi.fn(() => recoveryDisposal) }
+    })
+
+    const disposal = service.dispose()
+    let disposed = false
+    void disposal.then(
+      () => {
+        disposed = true
+      },
+      () => {
+        disposed = true
+      }
+    )
+
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1))
+    expect(disposed).toBe(false)
+    releaseRecovery?.()
+    await expect(disposal).rejects.toBe(shutdownError)
   })
 
   it('describeRuntimeUsage counts bound sessions by kernel state for the disable warning (WS11)', async () => {
