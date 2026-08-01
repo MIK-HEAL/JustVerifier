@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AcpRuntimeEvent } from '../../shared/acp'
 import { ARTIFACT_OWNERSHIP_PERSISTENCE_RACE } from '../../shared/artifacts'
 import type { PersistedChatSession } from '../../shared/session-persistence'
+import { createTaskCallerContext, type CallerContext } from '../caller-context'
 import { HeadlessTaskApi } from './task-api'
 
 const project = {
@@ -13,6 +14,15 @@ const project = {
   createdAt: 1,
   updatedAt: 1
 }
+
+const taskCallerContext = (): ReturnType<typeof expect.objectContaining> =>
+  expect.objectContaining({
+    clientId: 'headless-task-api',
+    lifecycleClientId: 'web:headless-task-api',
+    surface: 'task',
+    principalKind: 'automation',
+    actionOrigin: 'automation'
+  })
 
 describe('HeadlessTaskApi', () => {
   it('supports project, session, and artifact queries through the public interface', async () => {
@@ -36,7 +46,7 @@ describe('HeadlessTaskApi', () => {
       createdAt: 1,
       updatedAt: 2
     }
-    const invoke = vi.fn(async (channel: string, _clientId: string, args: unknown[]) => {
+    const invoke = vi.fn(async (channel: string, _callerContext: unknown, args: unknown[]) => {
       if (channel === 'projects:list') return [project]
       if (channel === 'projects:create') {
         return { ...project, ...(args[0] as object), id: 'project-created' }
@@ -72,16 +82,63 @@ describe('HeadlessTaskApi', () => {
     })
     await api.releaseArtifact('resource-query')
 
-    expect(invoke).toHaveBeenCalledWith('preview-resources:acquire', expect.any(String), [
+    expect(invoke).toHaveBeenCalledWith('preview-resources:acquire', taskCallerContext(), [
       {
         source: 'artifact',
         path: '/artifacts/query.csv',
         mimeType: 'text/csv'
       }
     ])
-    expect(invoke).toHaveBeenCalledWith('preview-resources:release', expect.any(String), [
+    expect(invoke).toHaveBeenCalledWith('preview-resources:release', taskCallerContext(), [
       { resourceId: 'resource-query' }
     ])
+  })
+
+  it('keeps the request caller context across asynchronous run RPC', async () => {
+    let finishPrompt: (() => void) | undefined
+    const promptGate = new Promise<void>((resolve) => {
+      finishPrompt = resolve
+    })
+    const invoke = vi.fn(
+      async (channel: string, _callerContext: CallerContext, _args: unknown[]) => {
+        void _callerContext
+        void _args
+        if (channel === 'projects:list') return [project]
+        if (channel === 'sessions:load-all') return { sessions: [], manifest: { version: 1 } }
+        if (channel === 'acp:create-session') {
+          return { sessionId: 'session-context', cwd: '/workspace/context' }
+        }
+        if (channel === 'acp:send-prompt') return promptGate
+        if (channel === 'sessions:save-session') return undefined
+        if (channel === 'preview-resources:release') return undefined
+        throw new Error(`Unexpected RPC channel: ${channel}`)
+      }
+    )
+    const api = new HeadlessTaskApi({ invoke })
+    let authorizationCurrent = true
+    const context = createTaskCallerContext({
+      location: 'remote',
+      isAuthorizationCurrent: () => authorizationCurrent
+    })
+
+    const run = await api.runWithCallerContext(context, () =>
+      api.startRun({ project: project.id, prompt: 'Research with remote context.' })
+    )
+    authorizationCurrent = false
+    finishPrompt?.()
+    await api.waitForRun(run.id)
+
+    expect(invoke).toHaveBeenCalled()
+    expect(invoke.mock.calls.every(([, callerContext]) => callerContext === context)).toBe(true)
+    expect(context.isAuthorizationCurrent()).toBe(false)
+
+    await api.runWithCallerContext(context, () => api.releaseArtifact('resource-context'))
+    expect(invoke).toHaveBeenLastCalledWith(
+      'preview-resources:release',
+      expect.objectContaining({ location: 'local', actionOrigin: 'automation' }),
+      [{ resourceId: 'resource-context' }]
+    )
+    expect(invoke.mock.calls.at(-1)?.[1].isAuthorizationCurrent()).toBe(true)
   })
 
   it('rejects malformed public run requests before invoking internal RPC', async () => {
@@ -155,7 +212,7 @@ describe('HeadlessTaskApi', () => {
   it('runs a prompt in a new durable session and returns the assistant output', async () => {
     let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
     const savedSessions: PersistedChatSession[] = []
-    const invoke = vi.fn(async (channel: string, _clientId: string, args: unknown[]) => {
+    const invoke = vi.fn(async (channel: string, _callerContext: unknown, args: unknown[]) => {
       if (channel === 'projects:list') return [project]
       if (channel === 'sessions:load-all') return { sessions: [], manifest: { version: 1 } }
       if (channel === 'acp:create-session') {
@@ -241,7 +298,7 @@ describe('HeadlessTaskApi', () => {
         }
       ]
     })
-    expect(invoke).toHaveBeenCalledWith('acp:send-prompt', expect.any(String), [
+    expect(invoke).toHaveBeenCalledWith('acp:send-prompt', taskCallerContext(), [
       { sessionId: 'session-1', text: 'Review these papers.' }
     ])
   })
@@ -249,7 +306,7 @@ describe('HeadlessTaskApi', () => {
   it('marks artifact-only headless completions when turn usage is unavailable', async () => {
     let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
     const savedSessions: PersistedChatSession[] = []
-    const invoke = vi.fn(async (channel: string, _clientId: string, args: unknown[]) => {
+    const invoke = vi.fn(async (channel: string, _callerContext: unknown, args: unknown[]) => {
       if (channel === 'projects:list') return [project]
       if (channel === 'sessions:load-all') return { sessions: [], manifest: { version: 1 } }
       if (channel === 'acp:create-session') {
@@ -457,10 +514,10 @@ describe('HeadlessTaskApi', () => {
     })
     await api.waitForRun('run-2')
 
-    expect(invoke).toHaveBeenCalledWith('acp:resume-session', expect.any(String), [
+    expect(invoke).toHaveBeenCalledWith('acp:resume-session', taskCallerContext(), [
       expect.objectContaining({ sessionId: existing.id, permissionProfile: 'auto' })
     ])
-    expect(invoke).toHaveBeenCalledWith('acp:send-prompt', expect.any(String), [
+    expect(invoke).toHaveBeenCalledWith('acp:send-prompt', taskCallerContext(), [
       {
         sessionId: existing.id,
         text: 'Follow-up question',
@@ -527,7 +584,7 @@ describe('HeadlessTaskApi', () => {
     })
     await api.waitForRun('skill-run')
 
-    expect(invoke).toHaveBeenCalledWith('acp:send-prompt', expect.any(String), [
+    expect(invoke).toHaveBeenCalledWith('acp:send-prompt', taskCallerContext(), [
       {
         sessionId: existing.id,
         text: 'Use the selected skill.',
@@ -544,7 +601,7 @@ describe('HeadlessTaskApi', () => {
     let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
     let finalizeAttempts = 0
     const savedSessions: PersistedChatSession[] = []
-    const invoke = vi.fn(async (channel: string, _clientId: string, args: unknown[]) => {
+    const invoke = vi.fn(async (channel: string, _callerContext: unknown, args: unknown[]) => {
       if (channel === 'projects:list') return [project]
       if (channel === 'sessions:load-all') return { sessions: [], manifest: { version: 1 } }
       if (channel === 'acp:create-session') {

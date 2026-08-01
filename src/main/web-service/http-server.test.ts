@@ -13,6 +13,7 @@ vi.mock('electron', () => ({
 }))
 
 import { WEB_RPC_PROTOCOL_VERSION } from '../../shared/web-rpc-contract'
+import type { CallerContext } from '../caller-context'
 import { broadcastToRenderers } from '../renderer-broadcast'
 import {
   REMOTE_LOCAL_ONLY_RPC_CHANNELS,
@@ -32,6 +33,8 @@ const accessOnlyExternalAccess = (): ExternalWebAccessAuthorization => ({
   kind: 'authorized' as const,
   isCurrent: () => true
 })
+const runWithCallerContext = <Result>(_context: CallerContext, operation: () => Result): Result =>
+  operation()
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()))
@@ -54,7 +57,9 @@ describe('startWebHttpServer', () => {
         'settings:list-agent-home-skills',
         'settings:import-agent-home-skills'
       ],
-      invoke: vi.fn(async (_channel: string, _client: string, args: unknown[]) => args[0]),
+      invoke: vi.fn(
+        async (_channel: string, _callerContext: CallerContext, args: unknown[]) => args[0]
+      ),
       releaseClient: vi.fn(),
       dispose: vi.fn()
     }
@@ -114,9 +119,17 @@ describe('startWebHttpServer', () => {
       ok: true,
       result: { value: 1 }
     })
-    expect(rpc.invoke).toHaveBeenCalledWith('projects:list', 'test-client', [{ value: 1 }], {
-      canManageRemotePairing: false
-    })
+    expect(rpc.invoke).toHaveBeenCalledWith(
+      'projects:list',
+      expect.objectContaining({
+        clientId: 'test-client',
+        lifecycleClientId: 'web:test-client',
+        location: 'local',
+        actionOrigin: 'human',
+        authorities: []
+      }),
+      [{ value: 1 }]
+    )
 
     const binary = Uint8Array.from([0, 1, 127, 128, 255])
     const encodedBinary = Buffer.from(binary).toString('base64')
@@ -163,7 +176,11 @@ describe('startWebHttpServer', () => {
     const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events?client=test-client`, {
       headers: { cookie, origin: base }
     })
+    const secondSocket = new WebSocket(`ws://127.0.0.1:${server.port}/events?client=test-client`, {
+      headers: { cookie, origin: base }
+    })
     await new Promise<void>((resolve) => socket.once('open', resolve))
+    await new Promise<void>((resolve) => secondSocket.once('open', resolve))
     const message = new Promise<string>((resolve) =>
       socket.once('message', (data) => resolve(data.toString()))
     )
@@ -176,7 +193,14 @@ describe('startWebHttpServer', () => {
     const socketClosed = new Promise<void>((resolve) => socket.once('close', () => resolve()))
     socket.close()
     await socketClosed
+    expect(rpc.releaseClient).not.toHaveBeenCalled()
+    const secondSocketClosed = new Promise<void>((resolve) =>
+      secondSocket.once('close', () => resolve())
+    )
+    secondSocket.close()
+    await secondSocketClosed
     await vi.waitFor(() => expect(rpc.releaseClient).toHaveBeenCalledWith('test-client'))
+    expect(rpc.releaseClient).toHaveBeenCalledTimes(1)
 
     await new Promise<void>((resolve, reject) => {
       const unauthenticatedSocket = new WebSocket(`ws://127.0.0.1:${server.port}/api/v1/events`)
@@ -272,6 +296,49 @@ describe('startWebHttpServer', () => {
     expect(rpc.invoke).not.toHaveBeenCalled()
   })
 
+  it('releases each active client once when the server closes', async () => {
+    const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
+    roots.push(staticRoot)
+    await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
+    const releaseClient = vi.fn()
+    const server = await startWebHttpServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'test-token',
+      staticRoot,
+      rpc: {
+        channels: () => [],
+        invoke: vi.fn(),
+        releaseClient,
+        dispose: vi.fn()
+      },
+      bootstrap: {
+        appName: 'Open Science',
+        appVersion: '0.0.0',
+        configRoot: '/fake/root',
+        platform: 'test',
+        versions: { electron: '1', chrome: '1', node: '1' }
+      }
+    })
+    servers.push(server)
+    const firstSocket = new WebSocket(
+      `ws://127.0.0.1:${server.port}/events?token=test-token&client=test-client`
+    )
+    const secondSocket = new WebSocket(
+      `ws://127.0.0.1:${server.port}/events?token=test-token&client=test-client`
+    )
+    await Promise.all([
+      new Promise<void>((resolve) => firstSocket.once('open', resolve)),
+      new Promise<void>((resolve) => secondSocket.once('open', resolve))
+    ])
+
+    await server.close()
+    servers.splice(servers.indexOf(server), 1)
+
+    expect(releaseClient).toHaveBeenCalledTimes(1)
+    expect(releaseClient).toHaveBeenCalledWith('test-client')
+  })
+
   it('passes pairing authority only for trusted-browser Web RPC calls', async () => {
     const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
     roots.push(staticRoot)
@@ -316,9 +383,15 @@ describe('startWebHttpServer', () => {
     )
 
     expect(response.status).toBe(200)
-    expect(rpc.invoke).toHaveBeenCalledWith('remote-access:get-snapshot', 'trusted-phone', [], {
-      canManageRemotePairing: true
-    })
+    expect(rpc.invoke).toHaveBeenCalledWith(
+      'remote-access:get-snapshot',
+      expect.objectContaining({
+        clientId: 'trusted-phone',
+        location: 'remote',
+        authorities: ['manage-remote-pairing']
+      }),
+      []
+    )
 
     authorizeHttp.mockResolvedValueOnce(accessOnlyExternalAccess())
     const oneTimeResponse = await fetch(
@@ -336,9 +409,12 @@ describe('startWebHttpServer', () => {
     expect(oneTimeResponse.status).toBe(200)
     expect(rpc.invoke).toHaveBeenLastCalledWith(
       'remote-access:get-snapshot',
-      'one-time-phone',
-      [],
-      { canManageRemotePairing: false }
+      expect.objectContaining({
+        clientId: 'one-time-phone',
+        location: 'remote',
+        authorities: []
+      }),
+      []
     )
   })
 
@@ -360,7 +436,16 @@ describe('startWebHttpServer', () => {
       releaseClient: vi.fn(),
       dispose: vi.fn()
     }
+    const taskContexts: CallerContext[] = []
+    const runWithCapturedCallerContext = <Result>(
+      context: CallerContext,
+      operation: () => Result
+    ): Result => {
+      taskContexts.push(context)
+      return operation()
+    }
     const tasks = {
+      runWithCallerContext: runWithCapturedCallerContext,
       listProjects: vi.fn(),
       createProject: vi.fn(),
       listSessions: vi.fn(),
@@ -448,6 +533,14 @@ describe('startWebHttpServer', () => {
       )
     ).toBe(401)
     expect(tasks.startRun).not.toHaveBeenCalled()
+    const taskContext = taskContexts[0]
+    expect(taskContext).toMatchObject({
+      surface: 'task',
+      location: 'remote',
+      principalKind: 'automation',
+      actionOrigin: 'automation'
+    })
+    expect(taskContext?.isAuthorizationCurrent()).toBe(false)
   })
 
   it('keeps host-management RPC local while preserving the local Web client', async () => {
@@ -796,7 +889,16 @@ describe('startWebHttpServer', () => {
     const staticRoot = await mkdtemp(join(tmpdir(), 'open-science-web-static-'))
     roots.push(staticRoot)
     await writeFile(join(staticRoot, 'index.html'), '<!doctype html>')
+    const taskContexts: CallerContext[] = []
+    const runWithCapturedCallerContext = <Result>(
+      context: CallerContext,
+      operation: () => Result
+    ): Result => {
+      taskContexts.push(context)
+      return operation()
+    }
     const tasks = {
+      runWithCallerContext: runWithCapturedCallerContext,
       listProjects: vi.fn().mockResolvedValue([{ id: 'project-1', name: 'Research' }]),
       createProject: vi.fn().mockResolvedValue({ id: 'project-2', name: 'Created' }),
       listSessions: vi.fn().mockResolvedValue([{ id: 'session/1', title: 'Review' }]),
@@ -853,6 +955,12 @@ describe('startWebHttpServer', () => {
     expect(projects.headers.get('content-type')).toBe('application/json; charset=utf-8')
     expect(projects.headers.get('cache-control')).toBe('no-store')
     expect(await projects.json()).toEqual({ data: [{ id: 'project-1', name: 'Research' }] })
+    expect(taskContexts[0]).toMatchObject({
+      surface: 'task',
+      location: 'local',
+      principalKind: 'automation',
+      actionOrigin: 'automation'
+    })
 
     const created = await fetch(`${base}/api/v1/projects`, {
       method: 'POST',
@@ -968,6 +1076,7 @@ describe('startWebHttpServer', () => {
       })
     )
     const tasks = {
+      runWithCallerContext,
       listProjects: vi.fn(),
       createProject: vi.fn(),
       listSessions: vi.fn(),
@@ -1033,6 +1142,7 @@ describe('startWebHttpServer', () => {
       )
     )
     const tasks = {
+      runWithCallerContext,
       listProjects: vi.fn(),
       createProject: vi.fn(),
       listSessions: vi.fn(),

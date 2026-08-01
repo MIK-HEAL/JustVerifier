@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 import {
   getAcpRuntimeEventImage,
@@ -28,12 +29,13 @@ import type {
   TaskRun,
   TaskSessionSummary
 } from '../../shared/task-api'
+import { createTaskCallerContext, type CallerContext } from '../caller-context'
 
-const TASK_API_CLIENT_ID = 'headless-task-api'
+const TASK_CALLER_CONTEXT = createTaskCallerContext()
 const MAX_RETAINED_RUNS = 200
 
 type TaskRpc = {
-  invoke(channel: string, clientId: string, args: unknown[]): Promise<unknown>
+  invoke(channel: string, callerContext: CallerContext, args: unknown[]): Promise<unknown>
 }
 
 type TaskApiDependencies = {
@@ -135,6 +137,7 @@ const summarizeSession = (session: PersistedChatSession): TaskSessionSummary => 
 
 class HeadlessTaskApi {
   private readonly dependencies: TaskApiDependencies
+  private readonly callerContexts = new AsyncLocalStorage<CallerContext>()
   private readonly runs = new Map<string, MutableTaskRun>()
   private readonly activeRunBySession = new Map<string, string>()
   private readonly unsubscribeEvents: () => void
@@ -153,6 +156,10 @@ class HeadlessTaskApi {
 
   dispose(): void {
     this.unsubscribeEvents()
+  }
+
+  runWithCallerContext<Result>(context: CallerContext, operation: () => Result): Result {
+    return this.callerContexts.run(context, operation)
   }
 
   async listProjects(): Promise<Project[]> {
@@ -297,7 +304,9 @@ class HeadlessTaskApi {
   }
 
   async releaseArtifact(resourceId: string): Promise<void> {
-    await this.invoke('preview-resources:release', { resourceId })
+    // Capability cleanup must remain available if the request authorization is revoked while the
+    // response stream is still draining. It grants no new access and only releases an acquired id.
+    await this.rpc.invoke('preview-resources:release', TASK_CALLER_CONTEXT, [{ resourceId }])
   }
 
   private reserveSession(sessionId: string, runId: string): void {
@@ -671,7 +680,7 @@ class HeadlessTaskApi {
   }
 
   private invoke(channel: string, ...args: unknown[]): Promise<unknown> {
-    return this.rpc.invoke(channel, TASK_API_CLIENT_ID, args)
+    return this.rpc.invoke(channel, this.callerContexts.getStore() ?? TASK_CALLER_CONTEXT, args)
   }
 }
 

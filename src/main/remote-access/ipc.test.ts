@@ -10,11 +10,21 @@ import {
   requireDesktopSender,
   requirePairingManager
 } from './ipc'
+import { createElectronCallerContext, createWebCallerContext } from '../caller-context'
 import { webRpc } from '../ipc-handler-registry'
 
 const eventWithSenderId = (id: number, remotePairingManager = false): IpcMainInvokeEvent =>
   ({
-    sender: { id, canManageRemotePairing: remotePairingManager }
+    sender: {
+      id,
+      callerContext:
+        id > 0
+          ? createElectronCallerContext(id)
+          : createWebCallerContext(`browser-${Math.abs(id)}`, {
+              location: 'remote',
+              authorities: remotePairingManager ? ['manage-remote-pairing'] : []
+            })
+    }
   }) as unknown as IpcMainInvokeEvent
 
 describe('remote access IPC authorization', () => {
@@ -33,9 +43,9 @@ describe('remote access IPC authorization', () => {
         'remote-access:set-mode'
       ])
     )
-    await expect(webRpc.invoke('remote-access:get-snapshot', 'browser-1', [])).resolves.toEqual({
-      mode: 'off'
-    })
+    await expect(
+      webRpc.invoke('remote-access:get-snapshot', createWebCallerContext('browser-1'), [])
+    ).resolves.toEqual({ mode: 'off' })
     expect(snapshot).toHaveBeenCalledWith(false, false)
   })
 
