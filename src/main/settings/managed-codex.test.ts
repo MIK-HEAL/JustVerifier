@@ -17,7 +17,11 @@ import { Readable } from 'node:stream'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ACP_TURN_TOKEN_USAGE_META_KEY, toAcpTurnTokenUsage } from '../../shared/acp'
+import {
+  ACP_MODEL_TURN_COUNT_META_KEY,
+  ACP_TURN_TOKEN_USAGE_META_KEY,
+  toAcpTurnTokenUsage
+} from '../../shared/acp'
 
 const PINNED_SKILL_MAPPER_FIXTURE = [
   'function buildPromptItems(prompt) {',
@@ -1215,7 +1219,7 @@ describe('patchCodexAcpContextUsageSource', () => {
     expect(used).toBe(42)
   })
 
-  it('reports the latest request input and cached input instead of total tokens', () => {
+  it("recombines the pinned adapter's exclusive input and cached input for context usage", () => {
     const source = [
       '  createUsageUpdate(params) {',
       '    this.handleTokenUsageUpdated(params);',
@@ -1227,7 +1231,7 @@ describe('patchCodexAcpContextUsageSource', () => {
     const patched = patchCodexAcpContextUsageSource(source)
 
     expect(patched).toContain(
-      'contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0)'
+      ': contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0);'
     )
     expect(patched).not.toContain('lastTokenUsage?.totalTokens')
     expect(patchCodexAcpContextUsageSource(patched)).toBe(patched)
@@ -1252,7 +1256,7 @@ describe('patchCodexAcpContextUsageSource', () => {
       await ensureManagedCodexContextUsage(adapterPath)
 
       expect(await readFile(adapterPath, 'utf8')).toContain(
-        'contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0)'
+        ': contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0);'
       )
     } finally {
       await rm(patchRoot, { recursive: true, force: true })
@@ -1308,7 +1312,7 @@ describe('patchCodexAcpContextUsageSource', () => {
         await ensureManagedCodexContextUsage(adapterPath)
 
         expect(await readFile(adapterPath, 'utf8')).toContain(
-          'contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0)'
+          ': contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0);'
         )
       } finally {
         fsFaults.adapterReplaceFailures = 0
@@ -1354,7 +1358,7 @@ describe('patchCodexAcpContextUsageSource', () => {
 
       await expect(firstCheck).resolves.toBeUndefined()
       expect(await readFile(adapterPath, 'utf8')).toContain(
-        'contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0)'
+        ': contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0);'
       )
     } finally {
       releaseWrite?.()
@@ -1504,6 +1508,7 @@ describe('patchCodexAcpTurnUsageSource', () => {
     const response = adapter.finishPrompt()
     expect(response.usage).toEqual(usage(27, 19, 5, 3, 0))
     expect(response._meta?.['open-science/turn-usage']).toEqual(usage(45, 31, 8, 6, 0))
+    expect(response._meta?.['open-science/model-turn-count']).toBe(2)
     expect(patchCodexAcpTurnUsageSource(patched)).toBe(patched)
   })
 
@@ -1559,7 +1564,8 @@ describe('patchCodexAcpTurnUsageSource', () => {
 
     expect(adapter.finishPrompt()._meta).toEqual({
       quota: { remaining: 42 },
-      [ACP_TURN_TOKEN_USAGE_META_KEY]: usage(18, 12, 3, 3, 0)
+      [ACP_TURN_TOKEN_USAGE_META_KEY]: usage(18, 12, 3, 3, 0),
+      [ACP_MODEL_TURN_COUNT_META_KEY]: 1
     })
   })
 
@@ -1659,7 +1665,8 @@ describe('patchCodexAcpTurnUsageSource', () => {
       '...(sessionState.promptTokenUsageObserved',
       '  ? {',
       '      _meta: {',
-      `        "${ACP_TURN_TOKEN_USAGE_META_KEY}": this.buildPromptUsage(sessionState.promptTokenUsage)`,
+      `        "${ACP_TURN_TOKEN_USAGE_META_KEY}": this.buildPromptUsage(sessionState.promptTokenUsage),`,
+      `        "${ACP_MODEL_TURN_COUNT_META_KEY}": sessionState.promptModelTurnCount`,
       '      }',
       '    }',
       '  : {}),'
@@ -1669,7 +1676,8 @@ describe('patchCodexAcpTurnUsageSource', () => {
       '  ...this.buildQuotaMeta(sessionState),',
       '  ...(sessionState.promptTokenUsageObserved',
       '    ? {',
-      `        "${ACP_TURN_TOKEN_USAGE_META_KEY}": this.buildPromptUsage(sessionState.promptTokenUsage)`,
+      `        "${ACP_TURN_TOKEN_USAGE_META_KEY}": this.buildPromptUsage(sessionState.promptTokenUsage),`,
+      `        "${ACP_MODEL_TURN_COUNT_META_KEY}": sessionState.promptModelTurnCount`,
       '      }',
       '    : {})',
       '}'
@@ -1681,6 +1689,29 @@ describe('patchCodexAcpTurnUsageSource', () => {
 
     expect(overwritten).not.toBe(patched)
     expect(patchCodexAcpTurnUsageSource(overwritten)).toBe(patched)
+  })
+
+  it('repairs an overwritten response when other response sites already match the current patch', () => {
+    const patched = patchCodexAcpTurnUsageSource(fixture)
+    const latestUsage = [
+      'usage: this.buildPromptUsage(',
+      '  sessionState.lastTokenUsage',
+      '),'
+    ].join('\n')
+    const overwrittenUsage = [
+      latestUsage,
+      '...(sessionState.promptTokenUsageObserved',
+      '  ? {',
+      '      _meta: {',
+      `        "${ACP_TURN_TOKEN_USAGE_META_KEY}": this.buildPromptUsage(sessionState.promptTokenUsage),`,
+      `        "${ACP_MODEL_TURN_COUNT_META_KEY}": sessionState.promptModelTurnCount`,
+      '      }',
+      '    }',
+      '  : {}),'
+    ].join('\n')
+    const mixedResponseSites = `${patched}\n${overwrittenUsage}`
+
+    expect(patchCodexAcpTurnUsageSource(mixedResponseSites)).toBe(`${patched}\n${latestUsage}`)
   })
 
   it('composes with the context-usage patch without duplicate declarations', () => {
@@ -1696,7 +1727,7 @@ describe('patchCodexAcpTurnUsageSource', () => {
 
     expect(() => Function(composed)).not.toThrow()
     expect(composed).toContain(
-      'contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0)'
+      ': contextTokenUsage.inputTokens + (contextTokenUsage.cachedInputTokens ?? 0);'
     )
   })
 })

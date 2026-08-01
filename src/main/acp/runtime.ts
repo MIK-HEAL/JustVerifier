@@ -38,6 +38,7 @@ import type {
   AcpStateSnapshot
 } from '../../shared/acp'
 import {
+  ACP_MODEL_TURN_COUNT_META_KEY,
   ACP_TURN_TOKEN_USAGE_META_KEY,
   getAcpRuntimeEventImage,
   MAX_ACP_SESSION_IMAGE_BYTES,
@@ -71,6 +72,7 @@ import {
   toAcpRuntimeEvent
 } from './runtime-events'
 import { readWorkspaceTextFile, writeWorkspaceTextFile } from './filesystem'
+import { toCodexTurnTokenUsage } from './codex-turn-usage'
 import { fetchOpenCodeUsageSnapshot, sumOpenCodeTurnUsage } from './opencode-turn-usage'
 import {
   matchSessionModelOption,
@@ -503,6 +505,15 @@ const MAX_CODEX_MCP_TOOL_IDENTITIES_PER_SESSION = 32
 const MAX_CLAUDE_CODE_MCP_TOOL_INPUTS_PER_SESSION = 32
 const MAX_OPENCODE_MCP_TOOL_INPUTS_PER_SESSION = 32
 const MAX_PERMISSION_CODE_PREVIEW_CHARS = 7_500
+// Mirror claude-agent-acp's autonomous result lanes. Unknown future origins stay eligible so a
+// newly introduced user lane does not silently lose the terminal SDK `num_turns` value.
+const CLAUDE_AUTONOMOUS_RESULT_ORIGINS = new Set([
+  'task-notification',
+  'peer',
+  'coordinator',
+  'observer',
+  'observer-activity'
+])
 const OPENCODE_PERMISSION_CONTEXT_WAIT_MS = 1_000
 const ACTIVITY_GROUP_SYSTEM_PROMPT_APPEND = [
   '<open_science_activity_group_instructions>',
@@ -638,6 +649,9 @@ const isUnresumableSessionErrorKind = (errorKind: unknown): boolean =>
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_|_$/g, '')
   )
+
+const isCodexProtocolSessionId = (sessionId: string): boolean =>
+  /^(?:urn:uuid:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)
 
 // Legacy agents may expose only an English diagnostic. Keep this fallback deliberately narrow: a
 // false positive silently resets agent-side context, while a false negative leaves the real error
@@ -828,6 +842,10 @@ class AcpRuntime {
   // overflow-recovery replay reuses a session id, its start bumps the token; the abandoned turn's finally
   // then sees a newer owner and leaves the replay's shared state (lock, artifact run) untouched.
   private promptTurnSequence = 0
+  private readonly claudeTurnCountsBySession = new Map<
+    string,
+    { promptTurn: number; count: number }
+  >()
   private readonly currentPromptTurnBySession = new Map<string, number>()
   private readonly permissionProfiles = new Map<string, SessionPermissionProfileState>()
   // A provider change requested while a prompt was running, applied when the session next goes idle.
@@ -2043,6 +2061,17 @@ class AcpRuntime {
       return this.adoptFreshSession(connection, request, sessionCwd, projectName)
     }
 
+    // A conversation adopted from another framework keeps its app-facing id. After restart the
+    // in-memory agent-id mapping is gone, and Codex cannot parse non-UUID ids such as OpenCode's
+    // `ses_...` form. The resume call is guaranteed to fail, so adopt a fresh Codex session directly
+    // and let the caller replay the visible transcript under the stable app id.
+    if (this.framework.id === 'codex' && !isCodexProtocolSessionId(request.sessionId)) {
+      log.info('skipping invalid Codex session resume; adopting a fresh session', {
+        sessionId: request.sessionId
+      })
+      return this.adoptFreshSession(connection, request, sessionCwd, projectName)
+    }
+
     // Resume is optional in ACP. A cross-framework session was handled above and can always be
     // adopted fresh; same-framework sessions require the advertised resume capability.
     if (!this.supportsSessionResume) {
@@ -2526,6 +2555,7 @@ class AcpRuntime {
       this.sessionCwds.clear()
       this.sessionInlineImageBytes.clear()
       this.currentPromptTurnBySession.clear()
+      this.claudeTurnCountsBySession.clear()
       this.latestSessionConfigOptions.clear()
       this.sessionMcpServerNames.clear()
       this.codexMcpToolIdentities.clear()
@@ -2808,6 +2838,7 @@ class AcpRuntime {
     const skillImportTurnToken = randomUUID()
     this.promptInFlightSessionIds.add(request.sessionId)
     this.currentPromptTurnBySession.set(request.sessionId, promptTurn)
+    this.claudeTurnCountsBySession.delete(request.sessionId)
     this.skillImportTurnTokens.set(request.sessionId, skillImportTurnToken)
     this.cancelledPromptTurnsBySession.delete(request.sessionId)
     try {
@@ -3028,11 +3059,25 @@ class AcpRuntime {
           // Codex ACP exposes only the latest request in PromptResponse.usage. Prefer the managed
           // adapter's app-owned whole-turn total, but retain the standard usage as a compatibility
           // fallback so a bridge response never loses token accounting entirely when metadata is absent.
-          const turnUsage =
+          const reportedTurnUsage =
             promptFramework === 'codex'
-              ? (toAcpTurnTokenUsage(message.response._meta?.[ACP_TURN_TOKEN_USAGE_META_KEY]) ??
-                toAcpTurnTokenUsage(message.response.usage))
+              ? (toCodexTurnTokenUsage(message.response._meta?.[ACP_TURN_TOKEN_USAGE_META_KEY]) ??
+                toCodexTurnTokenUsage(message.response.usage))
               : (opencodeTurnUsage ?? toAcpTurnTokenUsage(message.response.usage))
+          const claudeTurnCount = this.claudeTurnCountsBySession.get(request.sessionId)
+          const codexTurnCount = message.response._meta?.[ACP_MODEL_TURN_COUNT_META_KEY]
+          const reportedTurnCount =
+            promptFramework === 'claude-code' && claudeTurnCount?.promptTurn === promptTurn
+              ? claudeTurnCount.count
+              : promptFramework === 'codex' &&
+                  Number.isSafeInteger(codexTurnCount) &&
+                  (codexTurnCount as number) > 0
+                ? (codexTurnCount as number)
+                : undefined
+          const turnUsage =
+            reportedTurnUsage && reportedTurnCount !== undefined
+              ? { ...reportedTurnUsage, turnCount: reportedTurnCount }
+              : reportedTurnUsage
           this.pushEvent({
             kind: 'stop',
             level: 'info',
@@ -3172,6 +3217,7 @@ class AcpRuntime {
         this.cancelTimers.delete(request.sessionId)
         this.codexMcpToolIdentities.delete(request.sessionId)
         this.claudeCodeMcpToolInputs.delete(request.sessionId)
+        this.claudeTurnCountsBySession.delete(request.sessionId)
         this.clearOpenCodePermissionToolContext(request.sessionId)
         this.currentPromptTurnBySession.delete(request.sessionId)
         if (this.contextUsageUpdatedPromptTurnsBySession.get(request.sessionId) === promptTurn) {
@@ -3319,6 +3365,7 @@ class AcpRuntime {
     this.sessionCwds.delete(request.sessionId)
     this.sessionInlineImageBytes.delete(request.sessionId)
     this.currentPromptTurnBySession.delete(request.sessionId)
+    this.claudeTurnCountsBySession.delete(request.sessionId)
     this.cancelledPromptTurnsBySession.delete(request.sessionId)
     this.latestSessionConfigOptions.delete(request.sessionId)
     this.sessionMcpServerNames.delete(request.sessionId)
@@ -3939,6 +3986,11 @@ class AcpRuntime {
       .onNotification(acp.methods.client.session.update, (ctx) =>
         this.observePermissionToolContext(ctx.params)
       )
+      .onNotification(
+        '_claude/sdkMessage',
+        (params) => params as Record<string, unknown>,
+        (ctx) => this.observeClaudeSdkMessage(ctx.params)
+      )
       .onRequest(acp.methods.client.fs.readTextFile, (ctx) =>
         readWorkspaceTextFile(
           this.resolveSessionCwd(ctx.params.sessionId),
@@ -3950,6 +4002,33 @@ class AcpRuntime {
         writeWorkspaceTextFile(this.resolveSessionCwd(ctx.params.sessionId), ctx.params)
       )
       .connect(stream)
+  }
+
+  private observeClaudeSdkMessage(params: Record<string, unknown>): void {
+    if (typeof params.sessionId !== 'string') return
+    if (typeof params.message !== 'object' || params.message === null) return
+
+    const message = params.message as Record<string, unknown>
+    if (message.type !== 'result') return
+    const origin =
+      typeof message.origin === 'object' && message.origin !== null
+        ? (message.origin as Record<string, unknown>).kind
+        : undefined
+    if (typeof origin === 'string' && CLAUDE_AUTONOMOUS_RESULT_ORIGINS.has(origin)) return
+    if (!Number.isSafeInteger(message.num_turns) || (message.num_turns as number) <= 0) return
+
+    const appSessionId = this.agentToAppSessionId.get(params.sessionId) ?? params.sessionId
+    const promptTurn = this.currentPromptTurnBySession.get(appSessionId)
+    if (promptTurn === undefined) return
+
+    const current = this.claudeTurnCountsBySession.get(appSessionId)
+    const count =
+      current?.promptTurn === promptTurn
+        ? current.count + (message.num_turns as number)
+        : (message.num_turns as number)
+    if (!Number.isSafeInteger(count)) return
+
+    this.claudeTurnCountsBySession.set(appSessionId, { promptTurn, count })
   }
 
   // Looks up the workspace root bound to a session for filesystem operations.
@@ -5401,9 +5480,9 @@ class AcpRuntime {
     return { outcome: { outcome: 'selected', optionId: allowOption.optionId } }
   }
 
-  // App-managed codex-acp emits the exact per-request numerator during generation. A user-managed
-  // unpatched adapter emits its latest total instead, but Codex PromptResponse.usage is also a
-  // per-request (not per-turn accumulated) snapshot, so use it as a final compatibility correction.
+  // App-managed codex-acp emits the exact per-request numerator during generation. Codex's pinned
+  // adapter publishes uncached input and cached input as separate PromptResponse categories, so
+  // recombine them for the context numerator when applying the final per-request correction.
   private recordCodexPromptResponseContextUsage(
     sessionId: string,
     response: PromptResponse,
@@ -5417,12 +5496,12 @@ class AcpRuntime {
       return
     }
 
-    const usage = response.usage
+    const usage = toCodexTurnTokenUsage(response.usage)
     const current = this.contextUsageBySession.get(sessionId)
     if (!usage || !current) return
 
-    const used = usage.inputTokens + (usage.cachedReadTokens ?? 0)
-    if (!Number.isFinite(used) || used < 0) return
+    const used = usage.inputTokens + usage.cacheTokens
+    if (!Number.isSafeInteger(used)) return
     if (current.used === used && current.breakdown?.status === 'reconciled') return
 
     this.contextUsageBySession.set(sessionId, {
@@ -5812,6 +5891,7 @@ class AcpRuntime {
     this.sessionCwds.clear()
     this.sessionInlineImageBytes.clear()
     this.currentPromptTurnBySession.clear()
+    this.claudeTurnCountsBySession.clear()
     this.latestSessionConfigOptions.clear()
     this.sessionMcpServerNames.clear()
     this.codexMcpToolIdentities.clear()

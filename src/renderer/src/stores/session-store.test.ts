@@ -365,14 +365,16 @@ describe('session store', () => {
       status: 'complete',
       turnUsage: { inputTokens: 31, cacheTokens: 15, outputTokens: 14 }
     })
+    expect(agentMessage.completedAt).toBe(session.updatedAt)
     expect(
       session.conversationGraph?.messages.find((message) => message.id === agentMessage.id)
-        ?.turnUsage
-    ).toEqual({ inputTokens: 31, cacheTokens: 15, outputTokens: 14 })
-    expect(toPersistedSession(session).messages[1].turnUsage).toEqual({
-      inputTokens: 31,
-      cacheTokens: 15,
-      outputTokens: 14
+    ).toMatchObject({
+      completedAt: agentMessage.completedAt,
+      turnUsage: { inputTokens: 31, cacheTokens: 15, outputTokens: 14 }
+    })
+    expect(toPersistedSession(session).messages[1]).toMatchObject({
+      completedAt: agentMessage.completedAt,
+      turnUsage: { inputTokens: 31, cacheTokens: 15, outputTokens: 14 }
     })
     expect(session.status).toBe('idle')
     expect(session.activeRun).toBeUndefined()
@@ -556,13 +558,23 @@ describe('session store', () => {
     useSessionStore.getState().failRun('transport-session-1', 'Permission denied')
 
     const session = useSessionStore.getState().sessions[0]
+    const failedAt = session.messages[1].failedAt
 
     expect(session.status).toBe('error')
     expect(session.error).toBe('Permission denied')
     expect(session.activeRun).toBeUndefined()
+    expect(failedAt).toEqual(expect.any(Number))
     expect(session.messages[1]).toMatchObject({
       content: 'I started',
-      status: 'error'
+      status: 'error',
+      failedAt
+    })
+    expect(
+      session.conversationGraph?.messages.find((message) => message.id === session.messages[1].id)
+    ).toMatchObject({ status: 'error', failedAt })
+    expect(toPersistedSession(session).messages[1]).toMatchObject({
+      status: 'error',
+      failedAt
     })
   })
 

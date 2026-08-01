@@ -169,6 +169,7 @@ const startFakeAgent = (
     }) => Promise<PromptResponse | void> | PromptResponse | void
     replyForPrompt?: (text: string) => string
     usageForPrompt?: (text: string) => { used: number; size: number } | undefined
+    claudeTurnCountForPrompt?: (text: string) => number | undefined
   } = {}
 ): {
   authRequests: unknown[]
@@ -313,6 +314,17 @@ const startFakeAgent = (
         await ctx.client.notify(acp.methods.client.session.update, {
           sessionId: ctx.params.sessionId,
           update: { sessionUpdate: 'usage_update', ...usage }
+        })
+      }
+      const claudeTurnCount = options.claudeTurnCountForPrompt?.(text)
+      if (claudeTurnCount !== undefined) {
+        await ctx.client.notify('_claude/sdkMessage', {
+          sessionId: ctx.params.sessionId,
+          message: {
+            type: 'result',
+            num_turns: claudeTurnCount,
+            origin: { kind: 'human' }
+          }
         })
       }
       // Stream one assistant chunk through the client callback path before stopping.
@@ -6594,6 +6606,7 @@ describe('ACP runtime session management', () => {
         // Every session (new or resumed) is restricted to the app-owned "user" settings scope.
         _meta: {
           claudeCode: {
+            emitRawSDKMessages: [{ type: 'result' }],
             options: {
               settingSources: ['user'],
               tools: { type: 'preset', preset: 'claude_code' }
@@ -6900,6 +6913,65 @@ describe('ACP runtime session management', () => {
     expect(fakeAgent.prompts).toEqual([{ sessionId: 'adopted-session-1', text: 'keep going' }])
   })
 
+  it('adopts a fresh Codex session when an app-facing id is not a valid Codex UUID', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['019fb8c8-6c66-7f22-9653-17b5b287dbbb'], {
+      modes: createModes(['read-only', 'agent', 'agent-full-access'], 'agent'),
+      resumeInternalErrorDetails:
+        'invalid session id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `s` at 1'
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      framework: codexFramework
+    })
+
+    await expect(
+      runtime.resumeSession({
+        sessionId: 'ses_0458258b7ffeH2DeqPYBPk6fh2',
+        cwd: '/workspace',
+        previousFrameworkId: 'codex'
+      })
+    ).resolves.toMatchObject({
+      sessionId: 'ses_0458258b7ffeH2DeqPYBPk6fh2',
+      contextReset: true
+    })
+    expect(fakeAgent.resumedSessions).toEqual([])
+    expect(fakeAgent.newSessions).toHaveLength(1)
+  })
+
+  it.each([
+    '019fb8c8-6c66-7f22-9653-17b5b287dbbb',
+    'urn:uuid:019fb8c8-6c66-7f22-9653-17b5b287dbbb'
+  ])('resumes a valid Codex protocol session id: %s', async (sessionId) => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, [], {
+      modes: createModes(['read-only', 'agent', 'agent-full-access'], 'agent')
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      framework: codexFramework
+    })
+
+    await expect(
+      runtime.resumeSession({
+        sessionId,
+        cwd: '/workspace',
+        previousFrameworkId: 'codex'
+      })
+    ).resolves.toMatchObject({ sessionId })
+    expect(fakeAgent.resumedSessions).toEqual([
+      expect.objectContaining({
+        sessionId,
+        cwd: '/workspace'
+      })
+    ])
+    expect(fakeAgent.newSessions).toEqual([])
+  })
+
   it('adopts a fresh session from a language-independent session-loss reason', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['adopted-session-1'], {
@@ -7118,7 +7190,7 @@ describe('ACP runtime session management', () => {
     expect(sharedAgent.resumedSessions).toEqual([])
   })
 
-  it('uses Codex input and cache-read tokens for context usage', async () => {
+  it('recombines Codex uncached input and cache read for context usage', async () => {
     const process = new FakeAgentProcess()
     const usageSent = createDeferred()
     const finishPrompt = createDeferred()
@@ -7127,7 +7199,7 @@ describe('ACP runtime session management', () => {
       onPrompt: async ({ sessionId }) => {
         handleSessionUpdate(runtime, {
           sessionId,
-          // Patched codex-acp reports only the current request's input plus cached input.
+          // Patched codex-acp recombines its exclusive input and cache-read categories.
           update: { sessionUpdate: 'usage_update', used: 15, size: 128000 }
         })
         usageSent.resolve()
@@ -7136,7 +7208,7 @@ describe('ACP runtime session management', () => {
         return {
           stopReason: 'end_turn',
           usage: {
-            totalTokens: 18,
+            totalTokens: 15,
             inputTokens: 12,
             cachedReadTokens: 3,
             outputTokens: 3
@@ -7789,6 +7861,40 @@ describe('ACP runtime session management', () => {
     })
   })
 
+  it('attaches Claude SDK model-turn counts to completed turn usage', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['s1'], {
+      claudeTurnCountForPrompt: () => 3,
+      onPrompt: () => ({
+        stopReason: 'end_turn',
+        usage: {
+          totalTokens: 60,
+          inputTokens: 31,
+          cachedReadTokens: 8,
+          cachedWriteTokens: 7,
+          outputTokens: 14
+        }
+      })
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process)
+    })
+
+    await runtime.createSession({ cwd: '/workspace' })
+    await runtime.sendPrompt({ sessionId: 's1', text: 'use tools' })
+
+    expect(runtime.getSnapshot().events.find((event) => event.kind === 'stop')?.turnUsage).toEqual({
+      inputTokens: 31,
+      cacheTokens: 15,
+      cachedReadTokens: 8,
+      cachedWriteTokens: 7,
+      outputTokens: 14,
+      turnCount: 3
+    })
+  })
+
   it('falls back to an unpatched Codex latest request usage at stop', async () => {
     const process = new FakeAgentProcess()
     const usageSent = createDeferred()
@@ -7798,14 +7904,14 @@ describe('ACP runtime session management', () => {
       onPrompt: async ({ sessionId }) => {
         handleSessionUpdate(runtime, {
           sessionId,
-          update: { sessionUpdate: 'usage_update', used: 18, size: 128000 }
+          update: { sessionUpdate: 'usage_update', used: 15, size: 128000 }
         })
         usageSent.resolve()
         await finishPrompt.promise
         return {
           stopReason: 'end_turn',
           usage: {
-            totalTokens: 18,
+            totalTokens: 15,
             inputTokens: 12,
             cachedReadTokens: 3,
             outputTokens: 3
@@ -7824,7 +7930,7 @@ describe('ACP runtime session management', () => {
     const prompt = runtime.sendPrompt({ sessionId: 's1', text: 'hi' })
     await usageSent.promise
     expect(runtime.getSnapshot().contextUsageBySession).toMatchObject({
-      s1: { used: 18, size: 128000 }
+      s1: { used: 15, size: 128000 }
     })
 
     finishPrompt.resolve()
@@ -7847,19 +7953,20 @@ describe('ACP runtime session management', () => {
       onPrompt: () => ({
         stopReason: 'end_turn',
         usage: {
-          totalTokens: 27,
+          totalTokens: 22,
           inputTokens: 19,
           cachedReadTokens: 5,
           outputTokens: 3
         },
         _meta: {
           'open-science/turn-usage': {
-            totalTokens: 60,
+            totalTokens: 45,
             inputTokens: 31,
             cachedReadTokens: 8,
             cachedWriteTokens: 7,
             outputTokens: 14
-          }
+          },
+          'open-science/model-turn-count': 2
         }
       })
     })
@@ -7877,7 +7984,14 @@ describe('ACP runtime session management', () => {
       s1: { used: 24 }
     })
     expect(runtime.getSnapshot().events.find((event) => event.kind === 'stop')).toMatchObject({
-      turnUsage: { inputTokens: 31, cacheTokens: 15, outputTokens: 14 }
+      turnUsage: {
+        inputTokens: 31,
+        cacheTokens: 15,
+        cachedReadTokens: 8,
+        cachedWriteTokens: 7,
+        outputTokens: 14,
+        turnCount: 2
+      }
     })
   })
 

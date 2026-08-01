@@ -136,17 +136,24 @@ export type AcpContextUsage = {
   breakdown?: AcpContextUsageBreakdown
 }
 
-// Provider-reported totals for one completed prompt turn. Cache reads and writes are combined for the
-// transcript because both consume the provider's cache token budget and users need one comparable sum.
+// Provider-reported totals for one completed prompt turn. `cacheTokens` stays as the comparable
+// provider-neutral total. Read/write details are present as a pair only when the adapter reports both
+// categories separately.
 export type AcpTurnTokenUsage = {
   inputTokens: number
   cacheTokens: number
+  cachedReadTokens?: number
+  cachedWriteTokens?: number
   outputTokens: number
+  // Number of model inference turns performed during this completed agent run. Optional because
+  // ACP adapters do not all expose a reliable request count.
+  turnCount?: number
 }
 
 // Private PromptResponse metadata used by the managed Codex adapter to keep whole-turn totals
 // separate from ACP's latest-request usage snapshot.
 export const ACP_TURN_TOKEN_USAGE_META_KEY = 'open-science/turn-usage'
+export const ACP_MODEL_TURN_COUNT_META_KEY = 'open-science/model-turn-count'
 
 const asTokenCount = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
@@ -175,7 +182,13 @@ export const toAcpTurnTokenUsage = (value: unknown): AcpTurnTokenUsage | undefin
   const cacheTokens = cachedReadTokens + cachedWriteTokens
   if (!Number.isSafeInteger(cacheTokens)) return undefined
 
-  return { inputTokens, cacheTokens, outputTokens }
+  const hasCacheBreakdown = usage.cachedReadTokens != null && usage.cachedWriteTokens != null
+  return {
+    inputTokens,
+    cacheTokens,
+    ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
+    outputTokens
+  }
 }
 
 // Re-validates the durable projection when loading session JSON, dropping unknown or unsafe values.
@@ -186,10 +199,27 @@ export const sanitizeAcpTurnTokenUsage = (value: unknown): AcpTurnTokenUsage | u
   const inputTokens = asTokenCount(usage.inputTokens)
   const cacheTokens = asTokenCount(usage.cacheTokens)
   const outputTokens = asTokenCount(usage.outputTokens)
+  const turnCount = asTokenCount(usage.turnCount)
 
-  return inputTokens === undefined || cacheTokens === undefined || outputTokens === undefined
-    ? undefined
-    : { inputTokens, cacheTokens, outputTokens }
+  if (inputTokens === undefined || cacheTokens === undefined || outputTokens === undefined) {
+    return undefined
+  }
+
+  const cachedReadTokens = asTokenCount(usage.cachedReadTokens)
+  const cachedWriteTokens = asTokenCount(usage.cachedWriteTokens)
+  const hasCacheBreakdown =
+    cachedReadTokens !== undefined &&
+    cachedWriteTokens !== undefined &&
+    Number.isSafeInteger(cachedReadTokens + cachedWriteTokens) &&
+    cachedReadTokens + cachedWriteTokens === cacheTokens
+
+  return {
+    inputTokens,
+    cacheTokens,
+    ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
+    outputTokens,
+    ...(turnCount !== undefined && turnCount > 0 ? { turnCount } : {})
+  }
 }
 
 export type AcpRuntimeEvent = {
