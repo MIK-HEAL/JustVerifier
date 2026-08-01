@@ -6,6 +6,8 @@ import {
   CODEX_SUBSCRIPTION_PROVIDER_ID
 } from '../../shared/settings'
 import type { SettingsService } from './service'
+import type { SettingsIpcOptions } from './ipc'
+import type { SettingsWorkflowEffects } from './workflows'
 
 // Capture every ipcMain.handle registration so handlers can be invoked directly in the test.
 const handlers = new Map<string, (event: unknown, payload: unknown) => unknown>()
@@ -20,6 +22,9 @@ vi.mock('electron', () => ({
 }))
 
 const { registerSettingsIpcHandlers } = await import('./ipc')
+const { createSettingsWorkflows } = await import('./workflows')
+const { webRpc } = await import('../ipc-handler-registry')
+const { createWebCallerContext } = await import('../caller-context')
 
 // A fake service whose methods are all spies; cast to SettingsService only when registering handlers.
 type FakeSettingsService = Record<
@@ -163,13 +168,86 @@ const createFakeService = (): FakeSettingsService => ({
 // Adapts the spy bag into the SettingsService shape the registration function expects.
 const asService = (fake: FakeSettingsService): SettingsService => fake as unknown as SettingsService
 
+type TestSettingsIpcOptions = {
+  service: SettingsService
+  onActiveProviderChanged?: () => void
+  onAgentFrameworkChanged?: () => void
+  onReasoningEffortChanged?: SettingsWorkflowEffects['runtime']['applyReasoningEffort']
+  onSkillsChanged?: () => void
+  onConnectorsChanged?: () => void
+  onCustomServerRemoved?: (serverId: string) => Promise<void>
+  onCustomServerSecurityChanged?: (serverId: string) => Promise<unknown>
+  onAppIconVariantChanged?: SettingsWorkflowEffects['appearance']['applyAppIconVariant']
+  listAppIconPreviews?: SettingsIpcOptions['listAppIconPreviews']
+}
+
+// Keeps the adapter tests concise while routing every mutation through the real workflow owner.
+const registerTestSettingsIpcHandlers = ({
+  service,
+  onActiveProviderChanged,
+  onAgentFrameworkChanged,
+  onReasoningEffortChanged,
+  onSkillsChanged,
+  onConnectorsChanged,
+  onCustomServerRemoved,
+  onCustomServerSecurityChanged,
+  onAppIconVariantChanged,
+  listAppIconPreviews
+}: TestSettingsIpcOptions): void => {
+  registerSettingsIpcHandlers({
+    service,
+    workflows: createSettingsWorkflows(service, {
+      runtime: {
+        requestProviderReconnect: onActiveProviderChanged ?? (() => undefined),
+        requestAgentFrameworkSwitch: onAgentFrameworkChanged ?? (() => undefined),
+        applyReasoningEffort: onReasoningEffortChanged ?? (async () => false)
+      },
+      skills: { requestSkillsReload: onSkillsChanged ?? (() => undefined) },
+      connectors: {
+        invalidatePermissionProjection: onConnectorsChanged ?? (() => undefined),
+        refreshConnectorSkillDocs: async () => undefined,
+        requestSkillsReload: onSkillsChanged ?? (() => undefined),
+        pruneCustomServerPermissions:
+          onCustomServerRemoved ??
+          (onCustomServerSecurityChanged
+            ? async (serverId) => {
+                await onCustomServerSecurityChanged(serverId)
+              }
+            : async () => undefined),
+        beginCustomServerSecurityChange: () => undefined
+      },
+      appearance: {
+        applyAppIconVariant: onAppIconVariantChanged ?? (() => undefined)
+      }
+    }),
+    listAppIconPreviews
+  })
+}
+
 const invoke = (channel: string, payload?: unknown): unknown =>
   handlers.get(channel)!(undefined, payload)
 
 describe('settings IPC handlers', () => {
+  it('routes local Web RPC through the same workflow command as Electron', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const onActiveProviderChanged = vi.fn()
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    const context = createWebCallerContext('settings-workflow-test')
+
+    try {
+      await webRpc.invoke('settings:set-active-provider', context, [{ id: 'p1' }])
+    } finally {
+      webRpc.releaseClient(context.clientId)
+    }
+
+    expect(service.setActiveProvider).toHaveBeenCalledWith('p1', undefined)
+    expect(onActiveProviderChanged).toHaveBeenCalledOnce()
+  })
+
   it('registers every settings channel', () => {
     handlers.clear()
-    registerSettingsIpcHandlers({ service: asService(createFakeService()) })
+    registerTestSettingsIpcHandlers({ service: asService(createFakeService()) })
 
     for (const channel of [
       'settings:get-preflight',
@@ -203,7 +281,7 @@ describe('settings IPC handlers', () => {
   it('routes provider commands to the service', async () => {
     handlers.clear()
     const service = createFakeService()
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     await invoke('settings:upsert-provider', { type: 'custom', name: 'G' })
     expect(service.upsertProvider).toHaveBeenCalledWith({ type: 'custom', name: 'G' })
@@ -249,7 +327,7 @@ describe('settings IPC handlers', () => {
       activeProviderId: CODEX_SUBSCRIPTION_PROVIDER_ID
     })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onActiveProviderChanged
     })
@@ -268,7 +346,7 @@ describe('settings IPC handlers', () => {
       message: 'The Open Science Codex login could not be removed.'
     })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onActiveProviderChanged
     })
@@ -282,7 +360,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onActiveProviderChanged
     })
@@ -325,7 +403,7 @@ describe('settings IPC handlers', () => {
   it('routes mark-onboarding-complete to the service', async () => {
     handlers.clear()
     const service = createFakeService()
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     await invoke('settings:mark-onboarding-complete')
 
@@ -336,7 +414,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onConnectorsChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onConnectorsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onConnectorsChanged })
 
     await invoke('settings:set-connector-enabled', { id: 'biomart', enabled: false })
 
@@ -351,7 +429,11 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     const onCustomServerSecurityChanged = vi.fn().mockResolvedValue(undefined)
     const onConnectorsChanged = vi.fn()
-    registerSettingsIpcHandlers({
+    service.updateCustomServer.mockImplementation(async (_request, beforeSecurityChange) => {
+      await beforeSecurityChange('server-id')
+      return { connectors: [], customServers: [] }
+    })
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onCustomServerSecurityChanged,
       onConnectorsChanged
@@ -364,7 +446,8 @@ describe('settings IPC handlers', () => {
 
     await invoke('settings:update-custom-server', request)
 
-    expect(service.updateCustomServer).toHaveBeenCalledWith(request, onCustomServerSecurityChanged)
+    expect(service.updateCustomServer).toHaveBeenCalledWith(request, expect.any(Function))
+    expect(onCustomServerSecurityChanged).toHaveBeenCalledWith('server-id')
     expect(onConnectorsChanged).toHaveBeenCalledOnce()
   })
 
@@ -372,7 +455,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     await invoke('settings:set-active-provider', { id: 'p1' })
 
@@ -385,7 +468,7 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     service.getSettingsView.mockResolvedValue({ activeProviderId: 'p1', providers: [] })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     await invoke('settings:delete-provider', { id: 'p1' })
 
@@ -405,7 +488,7 @@ describe('settings IPC handlers', () => {
       providers: []
     })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     await invoke('settings:delete-provider', { id: CLAUDE_ISOLATED_PROVIDER_ID })
 
@@ -417,7 +500,7 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     service.upsertProvider.mockResolvedValue({ claude: {}, activeProviderId: 'p1', providers: [] })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     await invoke('settings:upsert-provider', { id: 'p1', type: 'custom', name: 'G' })
 
@@ -444,7 +527,7 @@ describe('settings IPC handlers', () => {
         providers: []
       })
       const onActiveProviderChanged = vi.fn()
-      registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+      registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
       await invoke('settings:upsert-provider', {
         id: previousProviderId,
@@ -461,7 +544,7 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     service.upsertProvider.mockResolvedValue({ claude: {}, activeProviderId: 'p1', providers: [] })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     await invoke('settings:upsert-provider', { id: 'p2', type: 'custom', name: 'Other' })
 
@@ -473,7 +556,7 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     service.upsertProvider.mockResolvedValue({ claude: {}, activeProviderId: 'p1', providers: [] })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     // A create has no id, so it can't be the active provider yet — no respawn.
     await invoke('settings:upsert-provider', { type: 'custom', name: 'New' })
@@ -502,7 +585,7 @@ describe('settings IPC handlers', () => {
       })
       const onActiveProviderChanged = vi.fn()
       const onAgentFrameworkChanged = vi.fn()
-      registerSettingsIpcHandlers({
+      registerTestSettingsIpcHandlers({
         service: asService(service),
         onActiveProviderChanged,
         onAgentFrameworkChanged
@@ -524,7 +607,7 @@ describe('settings IPC handlers', () => {
     })
     const onActiveProviderChanged = vi.fn()
     const onAgentFrameworkChanged = vi.fn()
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onActiveProviderChanged,
       onAgentFrameworkChanged
@@ -545,7 +628,7 @@ describe('settings IPC handlers', () => {
       activeBackendAffected: false
     })
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     await invoke('settings:uninstall-opencode')
 
@@ -557,7 +640,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onSkillsChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
 
     await invoke('settings:list-skills')
     expect(service.listSkills).toHaveBeenCalledTimes(1)
@@ -574,7 +657,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onSkillsChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
 
     await invoke('settings:create-skill', { name: 'S', description: 'd', body: 'b' })
     expect(service.createSkill).toHaveBeenCalledWith({ name: 'S', description: 'd', body: 'b' })
@@ -607,7 +690,7 @@ describe('settings IPC handlers', () => {
       skills: []
     }
     service.importSkillZipBatch.mockResolvedValue(result)
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
 
     expect(handlers.has('settings:import-skill-zip-batch')).toBe(true)
 
@@ -635,7 +718,7 @@ describe('settings IPC handlers', () => {
       skills: []
     }
     service.importAgentHomeSkills.mockResolvedValue(result)
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
     const request = { skills: [{ source: 'agents', slug: 'shared' }] }
 
     expect(await invoke('settings:list-agent-home-skills')).toEqual([])
@@ -664,7 +747,7 @@ describe('settings IPC handlers', () => {
       skills: []
     }
     service.importAgentHomeSkills.mockResolvedValue(result)
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
 
     expect(
       await invoke('settings:import-agent-home-skills', {
@@ -681,7 +764,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onSkillsChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
     const github = { url: 'https://github.com/acme/skills/tree/main/foo' }
     const installed = { source: 'agents', slug: 'foo' }
 
@@ -695,7 +778,7 @@ describe('settings IPC handlers', () => {
 
   it('registers the OpenCode / framework-switch channels', () => {
     handlers.clear()
-    registerSettingsIpcHandlers({ service: asService(createFakeService()) })
+    registerTestSettingsIpcHandlers({ service: asService(createFakeService()) })
 
     for (const channel of [
       'settings:detect-opencode',
@@ -710,7 +793,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     expect(handlers.has('settings:detect-codex')).toBe(true)
     expect(handlers.has('settings:install-codex')).toBe(true)
@@ -731,7 +814,7 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     const snapshot = { claude: {}, providers: [], agentFrameworkId: 'opencode' }
     service.detectOpencode.mockResolvedValue(snapshot)
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     const result = await invoke('settings:detect-opencode')
 
@@ -744,7 +827,7 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     const outcome = { installId: 'oc', ok: true }
     service.installOpencode.mockResolvedValue(outcome)
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     const result = await invoke('settings:install-opencode', { source: 'managed' })
 
@@ -759,7 +842,7 @@ describe('settings IPC handlers', () => {
   it('routes each install-opencode source to the service unchanged', async () => {
     handlers.clear()
     const service = createFakeService()
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     for (const source of ['managed', 'npm', 'official-script'] as const) {
       await invoke('settings:install-opencode', { source })
@@ -774,7 +857,7 @@ describe('settings IPC handlers', () => {
     service.setAgentFramework.mockResolvedValue(snapshot)
     const onActiveProviderChanged = vi.fn()
     const onAgentFrameworkChanged = vi.fn()
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onActiveProviderChanged,
       onAgentFrameworkChanged
@@ -798,7 +881,7 @@ describe('settings IPC handlers', () => {
     service.resolveActiveReasoningEffort.mockResolvedValue('max')
     const onActiveProviderChanged = vi.fn()
     const onReasoningEffortChanged = vi.fn().mockResolvedValue(true)
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onActiveProviderChanged,
       onReasoningEffortChanged
@@ -821,7 +904,7 @@ describe('settings IPC handlers', () => {
     service.setReasoningEffort.mockResolvedValue(snapshot)
     const onActiveProviderChanged = vi.fn()
     const onReasoningEffortChanged = vi.fn().mockResolvedValue(false)
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       onActiveProviderChanged,
       onReasoningEffortChanged
@@ -839,7 +922,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onActiveProviderChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 
     // Renderer payloads are untyped at runtime: garbage must fail at the boundary, not persist.
     await expect(invoke('settings:set-reasoning-effort', { effort: 'ultra' })).rejects.toThrow(
@@ -860,7 +943,7 @@ describe('settings IPC handlers', () => {
     const service = createFakeService()
     const snapshot = { claude: {}, providers: [], notificationsEnabled: false }
     service.setNotificationsEnabled.mockResolvedValue(snapshot)
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     const result = await invoke('settings:set-notifications-enabled', { enabled: false })
 
@@ -872,7 +955,7 @@ describe('settings IPC handlers', () => {
   it('rejects a non-boolean notifications flag without touching the service', async () => {
     handlers.clear()
     const service = createFakeService()
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     // Renderer payloads are untyped at runtime: garbage must fail at the boundary, not persist.
     await expect(invoke('settings:set-notifications-enabled', { enabled: 'yes' })).rejects.toThrow(
@@ -890,7 +973,7 @@ describe('settings IPC handlers', () => {
     const snapshot = { claude: {}, providers: [], conversationSkillImportEnabled: false }
     service.setConversationSkillImportEnabled.mockResolvedValue(snapshot)
     const onSkillsChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
 
     const result = await invoke('settings:set-conversation-skill-import-enabled', {
       enabled: false
@@ -905,7 +988,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onSkillsChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onSkillsChanged })
 
     await expect(
       invoke('settings:set-conversation-skill-import-enabled', { enabled: 'yes' })
@@ -920,7 +1003,7 @@ describe('settings IPC handlers', () => {
   it('persists valid close preferences and rejects unknown values', async () => {
     handlers.clear()
     const service = createFakeService()
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     await invoke('settings:set-close-preference', { preference: 'quit' })
     await invoke('settings:set-close-preference', {})
@@ -938,7 +1021,7 @@ describe('settings IPC handlers', () => {
     const snapshot = { claude: {}, providers: [], appIconVariant: 'dark' }
     service.setAppIconVariant.mockResolvedValue(snapshot)
     const onAppIconVariantChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onAppIconVariantChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onAppIconVariantChanged })
 
     const result = await invoke('settings:set-app-icon-variant', { variant: 'dark' })
 
@@ -952,7 +1035,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     const onAppIconVariantChanged = vi.fn()
-    registerSettingsIpcHandlers({ service: asService(service), onAppIconVariantChanged })
+    registerTestSettingsIpcHandlers({ service: asService(service), onAppIconVariantChanged })
 
     await expect(invoke('settings:set-app-icon-variant', { variant: 'sparkle' })).rejects.toThrow(
       'Unknown app icon variant'
@@ -976,14 +1059,14 @@ describe('settings IPC handlers', () => {
           previewDataUrl: 'data:image/png;base64,AA'
         }
       ]
-    registerSettingsIpcHandlers({
+    registerTestSettingsIpcHandlers({
       service: asService(service),
       listAppIconPreviews: () => previews
     })
     expect(await invoke('settings:list-app-icons')).toBe(previews)
 
     handlers.clear()
-    registerSettingsIpcHandlers({ service: asService(createFakeService()) })
+    registerTestSettingsIpcHandlers({ service: asService(createFakeService()) })
     expect(await invoke('settings:list-app-icons')).toEqual([])
   })
 
@@ -991,7 +1074,7 @@ describe('settings IPC handlers', () => {
     handlers.clear()
     const service = createFakeService()
     service.installOpencode.mockRejectedValue(new Error('download failed'))
-    registerSettingsIpcHandlers({ service: asService(service) })
+    registerTestSettingsIpcHandlers({ service: asService(service) })
 
     await expect(invoke('settings:install-opencode', { source: 'managed' })).rejects.toThrow(
       'download failed'
