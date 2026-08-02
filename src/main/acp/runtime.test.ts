@@ -754,10 +754,12 @@ const startPermissionProbeAgent = (
     )
 }
 
-// White-box view of the per-session MCP name map so cleanup paths (no black-box signal) can be
-// asserted directly.
-const mcpServerNamesMap = (runtime: AcpRuntime): Map<string, string[]> =>
-  (runtime as unknown as { sessionMcpServerNames: Map<string, string[]> }).sessionMcpServerNames
+const mcpServerNamesFor = (runtime: AcpRuntime, sessionId: string): readonly string[] =>
+  (
+    runtime as unknown as {
+      sessionCapabilities: { mcpServerNamesFor: (sessionId: string) => readonly string[] }
+    }
+  ).sessionCapabilities.mcpServerNamesFor(sessionId)
 
 const agentToAppSessionMap = (runtime: AcpRuntime): Map<string, string> =>
   (runtime as unknown as { agentToAppSessionId: Map<string, string> }).agentToAppSessionId
@@ -1283,6 +1285,63 @@ describe('ACP runtime migration write-gate', () => {
 })
 
 describe('ACP runtime session management', () => {
+  it('keeps the current primary capability set separate from reviewer-only authority', async () => {
+    const root = await createTemporaryRoot()
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['primary-session', 'reviewer-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js'
+      },
+      notebook: {
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        getRpcConnection: async () => ({
+          endpoint: 'http://127.0.0.1:4567',
+          token: 'notebook-token'
+        })
+      },
+      skillImport: {
+        mcpEntryPath: '/app/out/main/index.js',
+        getRpcConnection: async () => ({
+          endpoint: 'http://127.0.0.1:4568',
+          token: 'skill-token'
+        })
+      }
+    })
+
+    const reviewerServer = {
+      type: 'http' as const,
+      name: 'open-science-reviewer',
+      url: 'http://127.0.0.1:1/mcp',
+      headers: []
+    }
+
+    try {
+      await runtime.createSession({ cwd: '/workspace' })
+      const reviewer = await runtime.buildReviewerSession({
+        cwd: '/workspace',
+        mcpServers: [reviewerServer]
+      })
+
+      expect(
+        fakeAgent.newSessions[0].mcpServers.map((server) => (server as { name: string }).name)
+      ).toEqual(['open-science-artifacts', 'open-science-notebook', 'open-science-skills'])
+      expect(fakeAgent.newSessions[1].mcpServers).toEqual([reviewerServer])
+      expect(reviewer.role).toBe('reviewer')
+
+      await runtime.disposeReviewerSession(reviewer.session)
+    } finally {
+      await runtime.disconnect()
+    }
+  })
+
   it('omits activity-group declarations from main and reviewer sessions', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['main-session', 'reviewer-session'])
@@ -5516,7 +5575,7 @@ describe('ACP runtime session management', () => {
       }
     })
     const session = await runtime.createSession({ cwd: '/workspace', permissionProfile: 'ask' })
-    expect(mcpServerNamesMap(runtime).get(session.sessionId)).toContain('open-science-notebook')
+    expect(mcpServerNamesFor(runtime, session.sessionId)).toContain('open-science-notebook')
 
     for (const toolInput of toolInputs) {
       await runtime.sendPrompt({ sessionId: session.sessionId, text: `run ${toolInput.language}` })
@@ -6515,7 +6574,7 @@ describe('ACP runtime session management', () => {
     await runtime.sendPrompt({ sessionId: 'resumed-session', text: 'continue resumed session' })
 
     expect(auditedIsMcp('resumed-mcp')).toBe(true)
-    expect(mcpServerNamesMap(runtime).get('resumed-session')).toEqual(['open-science-artifacts'])
+    expect(mcpServerNamesFor(runtime, 'resumed-session')).toEqual(['open-science-artifacts'])
   })
 
   it('records MCP server names when adopting a fresh session after an unresumable resume', async () => {
@@ -6559,7 +6618,7 @@ describe('ACP runtime session management', () => {
     // The adopted session recorded its MCP names under the app-facing id, so the relabeled permission
     // request audits as MCP.
     expect(auditedIsMcp('adopted-mcp')).toBe(true)
-    expect(mcpServerNamesMap(runtime).get('switched-session')).toEqual(['open-science-artifacts'])
+    expect(mcpServerNamesFor(runtime, 'switched-session')).toEqual(['open-science-artifacts'])
   })
 
   it('returns an explicit reviewer role while preserving MCP audit routing', async () => {
@@ -6598,7 +6657,7 @@ describe('ACP runtime session management', () => {
       mcpServerNames: ['open-science-reviewer'],
       role: 'reviewer'
     })
-    expect(mcpServerNamesMap(runtime).has('reviewer-session-1')).toBe(false)
+    expect(mcpServerNamesFor(runtime, 'reviewer-session-1')).toEqual([])
     expect(sessionFrameworksMap(runtime).has('reviewer-session-1')).toBe(false)
 
     // Drive a tool-call permission request through the reviewer session (auto-approved by the runtime).
@@ -6609,7 +6668,7 @@ describe('ACP runtime session management', () => {
     // Disposing the reviewer session clears only the owner-private invocation context.
     runtime.disposeReviewerSession(session)
     expect(reviewerOwnerProbe(runtime).contextFor('reviewer-session-1')).toBeUndefined()
-    expect(mcpServerNamesMap(runtime).has('reviewer-session-1')).toBe(false)
+    expect(mcpServerNamesFor(runtime, 'reviewer-session-1')).toEqual([])
     expect(sessionFrameworksMap(runtime).has('reviewer-session-1')).toBe(false)
   })
 
@@ -9095,7 +9154,7 @@ describe('ACP runtime session management', () => {
     await expect(stat(reviewerCwd)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(reviewerSessionIds(runtime).size).toBe(0)
     expect(pendingReviewerSessionIds(runtime).size).toBe(0)
-    expect(mcpServerNamesMap(runtime).has('reviewer-session-1')).toBe(false)
+    expect(mcpServerNamesFor(runtime, 'reviewer-session-1')).toEqual([])
   })
 
   it('keeps setMode failure primary when reviewer startup disposal also fails', async () => {
@@ -9337,11 +9396,11 @@ describe('ACP runtime session management', () => {
     })
 
     const session = await runtime.createSession({ cwd: '/workspace' })
-    expect(mcpServerNamesMap(runtime).get(session.sessionId)).toEqual(['open-science-artifacts'])
+    expect(mcpServerNamesFor(runtime, session.sessionId)).toEqual(['open-science-artifacts'])
 
     await runtime.deleteSession({ sessionId: session.sessionId })
 
-    expect(mcpServerNamesMap(runtime).has(session.sessionId)).toBe(false)
+    expect(mcpServerNamesFor(runtime, session.sessionId)).toEqual([])
   })
 
   it('releases notebook RPC capabilities when a session is deleted', async () => {
@@ -9416,11 +9475,11 @@ describe('ACP runtime session management', () => {
     })
 
     const session = await runtime.createSession({ cwd: '/workspace' })
-    expect(mcpServerNamesMap(runtime).has(session.sessionId)).toBe(true)
+    expect(mcpServerNamesFor(runtime, session.sessionId)).toEqual(['open-science-artifacts'])
 
     await runtime.disconnect()
 
-    expect(mcpServerNamesMap(runtime).size).toBe(0)
+    expect(mcpServerNamesFor(runtime, session.sessionId)).toEqual([])
   })
 
   it('removes a session so later prompts cannot target it', async () => {
