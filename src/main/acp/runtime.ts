@@ -151,6 +151,7 @@ type AcpRuntimeOptions = {
   // inject that directly).
   resolveBackend?: (context: {
     forcedSkillIds: string[]
+    systemPromptAppends: string[]
   }) => Promise<ResolvedAgentBackend> | ResolvedAgentBackend
   artifacts?: AcpRuntimeArtifactOptions
   uploads?: AcpRuntimeUploadOptions
@@ -641,6 +642,7 @@ class AcpRuntime {
   private pendingSessionEffort: ModelReasoningEffort | undefined
   private pendingSessionOptions: Record<string, unknown> | undefined
   private pendingSystemPromptAppends: string[] = []
+  private pendingPersistentSystemPrompt: string | undefined
   // The latest configOptions each session reported — seeded from session/new and refreshed after a
   // model switch (effort rungs are model-dependent, so the original set goes stale). The live effort
   // path resolves against this, never against the possibly-outdated session/new response.
@@ -2749,7 +2751,7 @@ class AcpRuntime {
     }
 
     this.pendingProviderReconnect = false
-    await this.disconnect()
+    await this.disconnectForPlannedReconnect()
   }
 
   // If a provider reconnect was deferred while a prompt ran, apply it once nothing is in flight.
@@ -2786,7 +2788,7 @@ class AcpRuntime {
   private async disconnectForDeferredReconnect(): Promise<void> {
     const reconnectBarrierGeneration = this.reconnectBarrierGeneration
     try {
-      await this.disconnect()
+      await this.disconnectForPlannedReconnect()
     } catch (error) {
       safeLogError('deferred reconnect disconnect failed', errorLogFields(error))
       // disconnect() rejected — its synchronous teardown may have thrown before clearing the
@@ -2809,6 +2811,18 @@ class AcpRuntime {
       // this one is settling. Complete only the barrier generation this teardown was started for.
       this.completePendingReconnectTeardown(reconnectBarrierGeneration)
     }
+  }
+
+  // A provider/model change deliberately detaches the current native sessions so the next prompt can
+  // resume them on a freshly configured process. Publish `idle`, not `closed`: renderer treats a
+  // running-session transition to closed/error as an unexpected transport loss and offers Resume.
+  // The main-process turn can already be terminal while its renderer event is still queued, so even an
+  // otherwise idle reconnect must not expose that race as a false interruption.
+  private async disconnectForPlannedReconnect(): Promise<void> {
+    const disconnect = this.disconnect(false)
+    const teardownGeneration = this.connectionGeneration
+    await disconnect
+    if (teardownGeneration === this.connectionGeneration) this.setStatus('idle')
   }
 
   // Retirement is terminal for this runtime generation. Swallow teardown failures just like deferred
@@ -3058,7 +3072,10 @@ class AcpRuntime {
     }
 
     const backend = this.options.resolveBackend
-      ? await this.options.resolveBackend({ forcedSkillIds: [...this.turnForcedSkillIds] })
+      ? await this.options.resolveBackend({
+          forcedSkillIds: [...this.turnForcedSkillIds],
+          systemPromptAppends: await this.getBackendSystemPromptAppends()
+        })
       : undefined
 
     if (!backend) {
@@ -3111,6 +3128,7 @@ class AcpRuntime {
     this.selectedContextUsageModel = backend.contextUsageModel
     this.pendingSessionOptions = backend.sessionOptions
     this.pendingSystemPromptAppends = [...(backend.systemPromptAppends ?? [])]
+    this.pendingPersistentSystemPrompt = backend.persistentSystemPrompt
     this.pendingAuthentication = backend.authentication
     this.pendingProviderConfiguration = backend.providerConfiguration
     this.opencodeUsageApi = backend.opencodeUsageApi
@@ -3364,11 +3382,12 @@ class AcpRuntime {
       // the agent; the user-facing message event keeps the original text (which already shows /Name).
       // Framework-neutral delivery of system-prompt guidance: Claude carries appends in session _meta;
       // frameworks without a session preset carry the guidance as a prompt prefix.
+      const specialistSkillGuidance = this.specialistSkillGuidance(currentSpecialistSkills)
       const { promptPrefix: frameworkPromptPrefix } = this.framework.buildSessionSetup({
-        systemPromptAppends: this.getSystemPromptAppends(
-          this.specialistSkillGuidance(currentSpecialistSkills)
-        ),
-        turnPromptReminders: [],
+        systemPromptAppends: this.pendingPersistentSystemPrompt
+          ? []
+          : this.getSystemPromptAppends(),
+        turnPromptReminders: specialistSkillGuidance ? [specialistSkillGuidance] : [],
         sessionOptions: this.pendingSessionOptions
       })
       // For Codex/OpenCode, prepend the per-session specialist identity prefix (set at createSession).
@@ -4199,16 +4218,27 @@ class AcpRuntime {
     })
   }
 
+  private getAppSystemPromptAppends(): string[] {
+    return [
+      TURN_CONTINUITY_SYSTEM_PROMPT_APPEND,
+      LARGE_DATA_FILE_SYSTEM_PROMPT_APPEND,
+      ...(this.artifactToolingAvailable() ? [ARTIFACT_FILE_SYSTEM_PROMPT_APPEND] : []),
+      ...(this.notebookToolingAvailable() ? [NOTEBOOK_SYSTEM_PROMPT_APPEND] : []),
+      ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : [])
+    ]
+  }
+
+  private async getBackendSystemPromptAppends(): Promise<string[]> {
+    await this.sessionCapabilities.refreshDynamicAvailability()
+    return this.getAppSystemPromptAppends()
+  }
+
   private getSystemPromptAppends(skillGuidance?: string): string[] {
     // Each append names MCP tools that only exist when that tooling is actually wired for this session;
     // omit it otherwise so the agent isn't told to use tools it wasn't given.
     return [
-      TURN_CONTINUITY_SYSTEM_PROMPT_APPEND,
-      LARGE_DATA_FILE_SYSTEM_PROMPT_APPEND,
+      ...this.getAppSystemPromptAppends(),
       ...this.pendingSystemPromptAppends,
-      ...(this.artifactToolingAvailable() ? [ARTIFACT_FILE_SYSTEM_PROMPT_APPEND] : []),
-      ...(this.notebookToolingAvailable() ? [NOTEBOOK_SYSTEM_PROMPT_APPEND] : []),
-      ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : []),
       ...(skillGuidance ? [skillGuidance] : [])
     ]
   }
@@ -4565,9 +4595,11 @@ class AcpRuntime {
   private contextUsageEstimateInput(sessionId?: string): SessionEstimateInput {
     const { model } = this.contextUsageSelectionFor(sessionId)
     const sessionSetup = this.framework.buildSessionSetup({
-      systemPromptAppends: this.getSystemPromptAppends(),
+      systemPromptAppends: this.pendingPersistentSystemPrompt ? [] : this.getSystemPromptAppends(),
       sessionOptions: this.pendingSessionOptions
     })
+    const persistentSystemPrompt =
+      this.pendingPersistentSystemPrompt ?? sessionSetup.persistentSystemPrompt
     const persistentSections = contextUsageMcpSections(this.framework.id, {
       artifacts: this.artifactToolingAvailable(),
       notebook: this.notebookToolingAvailable(),
@@ -4578,9 +4610,7 @@ class AcpRuntime {
     return {
       frameworkId: this.framework.id,
       ...(model ? { model } : {}),
-      ...(sessionSetup.persistentSystemPrompt
-        ? { persistentSystemPrompt: [sessionSetup.persistentSystemPrompt] }
-        : {}),
+      ...(persistentSystemPrompt ? { persistentSystemPrompt: [persistentSystemPrompt] } : {}),
       ...(persistentSections.length > 0 ? { persistentSections } : {})
     }
   }

@@ -4353,7 +4353,7 @@ describe('ACP runtime session management', () => {
     })
   })
 
-  it('delivers resolved connector guidance to Codex as a prompt prefix', async () => {
+  it('keeps backend-persistent Codex guidance out of the user prompt', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['codex-session'], {
       modes: {
@@ -4361,24 +4361,34 @@ describe('ACP runtime session management', () => {
         availableModes: ['read-only', 'agent', 'agent-full-access'].map((id) => ({ id, name: id }))
       }
     })
-    const connectorInstructions =
-      'Load the matching `mcp-*` skill before using a connector, then call host.mcp(...).'
+    const persistentInstructions = 'Stable Codex developer instructions.'
+    let resolvedContext: { forcedSkillIds: string[]; systemPromptAppends?: string[] } | undefined
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
       defaultCwd: '/workspace',
-      resolveBackend: () => ({
-        framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
-        executablePath: '/bin/codex-acp',
-        env: {},
-        systemPromptAppends: [connectorInstructions]
-      })
+      resolveBackend: (context) => {
+        resolvedContext = context
+        return {
+          framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
+          executablePath: '/bin/codex-acp',
+          env: {},
+          persistentSystemPrompt: persistentInstructions
+        }
+      }
     })
 
     const session = await runtime.createSession({ cwd: '/workspace' })
     await runtime.sendPrompt({ sessionId: session.sessionId, text: 'search PubMed' })
+    await runtime.sendPrompt({ sessionId: session.sessionId, text: 'summarize the results' })
 
-    expect(fakeAgent.prompts[0].text).toContain(connectorInstructions)
-    expect(fakeAgent.prompts[0].text).toContain('search PubMed')
+    expect(resolvedContext?.systemPromptAppends).toEqual(
+      expect.arrayContaining([expect.stringContaining('open_science_large_file_instructions')])
+    )
+    expect(fakeAgent.prompts.map(({ text }) => text)).toEqual([
+      'search PubMed',
+      'summarize the results'
+    ])
+    expect(fakeAgent.prompts.every(({ text }) => !text.includes(persistentInstructions))).toBe(true)
   })
 
   it('forwards resolved Claude session options on create and resume', async () => {
@@ -4410,23 +4420,33 @@ describe('ACP runtime session management', () => {
     })
   })
 
-  it('delivers the large-data-file guidance to opencode as a prompt prefix', async () => {
+  it('keeps backend-persistent OpenCode guidance out of the user prompt', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['oc-session'])
+    let resolvedContext: { forcedSkillIds: string[]; systemPromptAppends?: string[] } | undefined
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
       defaultCwd: '/workspace',
-      spawnAgent: () => asAgentProcess(process),
-      framework: opencodeFramework
+      resolveBackend: (context) => {
+        resolvedContext = context
+        return {
+          framework: { ...opencodeFramework, spawn: () => asAgentProcess(process) },
+          executablePath: '/bin/opencode',
+          env: {},
+          persistentSystemPrompt: 'Stable OpenCode instructions.'
+        }
+      }
     })
 
     const session = await runtime.createSession({ cwd: '/workspace' })
     await runtime.sendPrompt({ sessionId: session.sessionId, text: 'hello opencode' })
+    await runtime.sendPrompt({ sessionId: session.sessionId, text: 'continue' })
 
-    // opencode has no system-prompt preset, so the guidance rides the prompt prefix ahead of user text.
     expect(fakeAgent.newSessions[0]._meta).toBeUndefined()
-    expect(fakeAgent.prompts[0].text).toContain('open_science_large_file_instructions')
-    expect(fakeAgent.prompts[0].text).toContain('hello opencode')
+    expect(resolvedContext?.systemPromptAppends).toEqual(
+      expect.arrayContaining([expect.stringContaining('open_science_large_file_instructions')])
+    )
+    expect(fakeAgent.prompts.map(({ text }) => text)).toEqual(['hello opencode', 'continue'])
   })
 
   it('waits for session-scoped MCP capability readiness before creating the agent session', async () => {
@@ -11770,6 +11790,7 @@ describe('ACP runtime session management', () => {
     const process = new FakeAgentProcess()
     const gate = createDeferred()
     const usageSent = createDeferred()
+    const states: string[] = []
     startFakeAgent(process, ['s1'], {
       onPrompt: async ({ sessionId }) => {
         handleSessionUpdate(runtime, {
@@ -11793,7 +11814,8 @@ describe('ACP runtime session management', () => {
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
       defaultCwd: '/workspace',
-      spawnAgent: () => asAgentProcess(process)
+      spawnAgent: () => asAgentProcess(process),
+      callbacks: { onStateChanged: (snapshot) => states.push(snapshot.status) }
     })
 
     await runtime.createSession({ cwd: '/workspace' })
@@ -11819,6 +11841,8 @@ describe('ACP runtime session management', () => {
     await prompt
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(process.killed).toBe(true)
+    expect(runtime.getSnapshot().status).toBe('idle')
+    expect(states).not.toContain('closed')
     expect(runtime.getSnapshot().contextUsageBySession).toEqual({})
   })
 
@@ -12820,16 +12844,64 @@ describe('ACP runtime session management', () => {
   it('reconnects immediately when a provider switch happens with no prompt in flight', async () => {
     const process = new FakeAgentProcess()
     startFakeAgent(process, ['s1'])
+    const states: string[] = []
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
       defaultCwd: '/workspace',
-      spawnAgent: () => asAgentProcess(process)
+      spawnAgent: () => asAgentProcess(process),
+      callbacks: { onStateChanged: (snapshot) => states.push(snapshot.status) }
     })
 
     await runtime.createSession({ cwd: '/workspace' })
     await runtime.requestProviderReconnect()
 
     expect(process.killed).toBe(true)
+    expect(runtime.getSnapshot().status).toBe('idle')
+    expect(states).not.toContain('closed')
+  })
+
+  it('does not let a stale planned reconnect overwrite a newer connection status', async () => {
+    const oldProcess = new FakeAgentProcess()
+    const newProcess = new FakeAgentProcess()
+    startFakeAgent(oldProcess, ['s1'])
+    startFakeAgent(newProcess, ['s2'])
+    const teardownStarted = createDeferred()
+    const releaseTeardown = createDeferred()
+    let spawnCount = 0
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: {
+          ...claudeCodeFramework,
+          spawn: () => asAgentProcess(spawnCount++ === 0 ? oldProcess : newProcess)
+        },
+        executablePath: '/bin/agent',
+        env: {}
+      })
+    })
+
+    await runtime.createSession({ cwd: '/workspace' })
+    vi.mocked(terminateProcessTree).mockImplementationOnce(async (child) => {
+      child?.kill()
+      teardownStarted.resolve()
+      await releaseTeardown.promise
+      return { reaped: true }
+    })
+    const reconnect = runtime.requestProviderReconnect()
+    await teardownStarted.promise
+
+    try {
+      await expect(runtime.createSession({ cwd: '/workspace' })).resolves.toMatchObject({
+        sessionId: 's2'
+      })
+      expect(runtime.getSnapshot().status).toBe('connected')
+    } finally {
+      releaseTeardown.resolve()
+      await reconnect
+    }
+
+    expect(runtime.getSnapshot().status).toBe('connected')
   })
 
   it('passes the artifact MCP server to new and resumed sessions', async () => {
@@ -14519,16 +14591,23 @@ describe('ACP runtime skill force-load + nudge', () => {
   it('passes turn-forced skill ids to backend resolution per runtime instance', async () => {
     const firstSpawner = createFreshAgentSpawner()
     const secondSpawner = createFreshAgentSpawner()
-    const firstContexts: Array<{ forcedSkillIds: string[] } | undefined> = []
-    const secondContexts: Array<{ forcedSkillIds: string[] } | undefined> = []
+    const firstContexts: Array<
+      { forcedSkillIds: string[]; systemPromptAppends?: string[] } | undefined
+    > = []
+    const secondContexts: Array<
+      { forcedSkillIds: string[]; systemPromptAppends?: string[] } | undefined
+    > = []
     const createRuntime = (
       spawner: ReturnType<typeof createFreshAgentSpawner>,
-      contexts: Array<{ forcedSkillIds: string[] } | undefined>
+      contexts: Array<{ forcedSkillIds: string[]; systemPromptAppends?: string[] } | undefined>
     ): AcpRuntime =>
       new AcpRuntime({
         appVersion: '0.1.0',
         defaultCwd: '/workspace',
-        resolveBackend: (context?: { forcedSkillIds: string[] }) => {
+        resolveBackend: (context?: {
+          forcedSkillIds: string[]
+          systemPromptAppends?: string[]
+        }) => {
           contexts.push(context)
           return {
             framework: { ...claudeCodeFramework, spawn: spawner.spawn },
@@ -14561,10 +14640,18 @@ describe('ACP runtime skill force-load + nudge', () => {
       })
     ])
 
-    expect(firstContexts).toContainEqual({ forcedSkillIds: ['skill-a'] })
-    expect(secondContexts).toContainEqual({ forcedSkillIds: ['skill-b'] })
-    expect(firstContexts).not.toContainEqual({ forcedSkillIds: ['skill-b'] })
-    expect(secondContexts).not.toContainEqual({ forcedSkillIds: ['skill-a'] })
+    expect(firstContexts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ forcedSkillIds: ['skill-a'] })])
+    )
+    expect(secondContexts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ forcedSkillIds: ['skill-b'] })])
+    )
+    expect(firstContexts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ forcedSkillIds: ['skill-b'] })])
+    )
+    expect(secondContexts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ forcedSkillIds: ['skill-a'] })])
+    )
   })
 
   it('respawns and nudges when a picked skill is disabled, then restores after the turn', async () => {
@@ -14599,9 +14686,10 @@ describe('ACP runtime skill force-load + nudge', () => {
       }
     ])
 
-    // After the turn the force set is cleared and a restore reconnect is scheduled (agent torn down).
+    // After the turn the force set is cleared and a planned restore reconnect tears the agent down
+    // without advertising an abnormal closed connection to the renderer.
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(runtime.getSnapshot().status).toBe('closed')
+    expect(runtime.getSnapshot().status).toBe('idle')
   })
 
   it('nudges without any reconnect when every picked skill is already enabled', async () => {
