@@ -1066,6 +1066,37 @@ describe('ACP runtime migration write-gate', () => {
     await runtime.disconnect()
   })
 
+  it('ignores detached process events after a replacement connection is published', async () => {
+    const oldProcess = new FakeAgentProcess()
+    const replacementProcess = new FakeAgentProcess()
+    startFakeAgent(oldProcess, ['old-session'])
+    startFakeAgent(replacementProcess, ['replacement-session'])
+    const events: AcpRuntimeEvent[] = []
+    let spawnCount = 0
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      callbacks: { onEvent: (event) => events.push(event) },
+      spawnAgent: () => asAgentProcess(spawnCount++ === 0 ? oldProcess : replacementProcess)
+    })
+
+    await runtime.createSession({ cwd: '/workspace' })
+    await runtime.disconnect()
+    await runtime.createSession({ cwd: '/workspace' })
+    events.length = 0
+
+    oldProcess.stderr.emit('data', Buffer.from('late detached stderr'))
+    oldProcess.emit('error', new Error('late detached error'))
+    oldProcess.emit('exit', 1, null)
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      status: 'connected',
+      sessionIds: ['replacement-session']
+    })
+    expect(events).toEqual([])
+    await runtime.disconnect()
+  })
+
   it('keeps using a published connection when teardown fails before resource detach', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['first-session', 'successor-session'])
@@ -1863,6 +1894,29 @@ describe('ACP runtime session management', () => {
 
     runtime.shutdown()
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('releases the backend lease once when synchronous shutdown overlaps protocol close', async () => {
+    const process = new FakeAgentProcess()
+    const { lease, release } = createBackendLeaseHarness()
+    startFakeAgent(process, ['overlapping-close-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/agent',
+        env: {},
+        responsesBridgeLease: lease
+      })
+    })
+
+    await runtime.createSession({ cwd: '/workspace' })
+    process.stdout.end()
+    runtime.shutdown()
+
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
+    expect(process.killed).toBe(true)
   })
 
   it('releases notebook RPC capabilities after an unexpected protocol close', async () => {
@@ -8627,20 +8681,22 @@ describe('ACP runtime session management', () => {
   it('does not let an older teardown complete a newer reconnect intent', async () => {
     const process = new FakeAgentProcess()
     startFakeAgent(process, [])
-    const runtime = new AcpRuntime({
-      appVersion: '0.1.0',
-      defaultCwd: '/workspace',
-      spawnAgent: () => asAgentProcess(process)
-    })
-    await runtime.connect({ cwd: '/workspace' })
     const oldCloseStarted = createDeferred()
     const releaseOldClose = createDeferred()
-    const closeMcpHttpHostSpy = vi
-      .spyOn(runtime as unknown as { closeMcpHttpHost: () => Promise<void> }, 'closeMcpHttpHost')
-      .mockImplementationOnce(async () => {
+    const mcpHttpHost = {
+      clear: vi.fn(),
+      close: vi.fn(async () => {
         oldCloseStarted.resolve()
         await releaseOldClose.promise
       })
+    } as unknown as AgentMcpHttpHost
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      mcpHttpHost,
+      spawnAgent: () => asAgentProcess(process)
+    })
+    await runtime.connect({ cwd: '/workspace' })
     const oldDisconnect = runtime.disconnect()
     await oldCloseStarted.promise
     const releaseActivity = createDeferred()
@@ -8676,7 +8732,6 @@ describe('ACP runtime session management', () => {
       releaseActivity.resolve()
       await oldDisconnect.catch(() => undefined)
       await activity.catch(() => undefined)
-      closeMcpHttpHostSpy.mockRestore()
       await runtime.disconnect().catch(() => undefined)
     }
   })
@@ -8867,6 +8922,20 @@ describe('ACP runtime session management', () => {
       const releaseStaleMode = createDeferred()
       const capabilityReleases: ReturnType<typeof vi.fn>[] = []
       const releaseSessionCapabilities = vi.fn()
+      const mcpHttpHost = {
+        ensureStarted: vi.fn(async () => ({
+          endpoint: 'http://127.0.0.1:4321',
+          token: 'host-token'
+        })),
+        registerNotebook: vi.fn(),
+        urlFor: vi.fn(
+          (kind: string, routingId: string) =>
+            `http://127.0.0.1:4321/mcp/${kind}/${encodeURIComponent(routingId)}`
+        ),
+        unregister: vi.fn(),
+        clear: vi.fn(),
+        close: vi.fn(async () => undefined)
+      } as unknown as AgentMcpHttpHost
       const fakeAgent = startFakeAgent(process, ['stale-provider', 'successor-provider'], {
         modes: createModes(['read-only', 'agent', 'agent-full-access'], 'agent'),
         onSetMode: async ({ modeId }) => {
@@ -8888,20 +8957,7 @@ describe('ACP runtime session management', () => {
           executablePath: '/bin/codex-acp',
           env: {}
         }),
-        mcpHttpHost: {
-          ensureStarted: vi.fn(async () => ({
-            endpoint: 'http://127.0.0.1:4321',
-            token: 'host-token'
-          })),
-          registerNotebook: vi.fn(),
-          urlFor: vi.fn(
-            (kind: string, routingId: string) =>
-              `http://127.0.0.1:4321/mcp/${kind}/${encodeURIComponent(routingId)}`
-          ),
-          unregister: vi.fn(),
-          clear: vi.fn(),
-          close: vi.fn(async () => undefined)
-        } as unknown as AgentMcpHttpHost,
+        mcpHttpHost,
         notebook: {
           projectName: 'default-project',
           mcpEntryPath: '/app/out/main/index.js',
@@ -8967,9 +9023,7 @@ describe('ACP runtime session management', () => {
         expect(fakeAgent.prompts.at(-1)?.text).toContain('successor turn')
         expect(fakeAgent.prompts.at(-1)?.text).not.toContain('stale-specialist prefix')
         expect(runtime.getSnapshot().sessionIds).toEqual([sessionId])
-        expect(
-          (runtime as unknown as { mcpHttpHost: AgentMcpHttpHost }).mcpHttpHost.unregister
-        ).not.toHaveBeenCalled()
+        expect(mcpHttpHost.unregister).not.toHaveBeenCalled()
         expect(capabilityReleases).toHaveLength(2)
         expect(capabilityReleases[0]).toHaveBeenCalledOnce()
         expect(capabilityReleases[1]).not.toHaveBeenCalled()
@@ -16689,6 +16743,42 @@ describe('ACP runtime — session-creation and spawn diagnostics', () => {
       generation: 1,
       status: 'connecting'
     })
+  })
+
+  it('does not let bridge release and logger failures mask the original spawn error', async () => {
+    const release = vi.fn().mockRejectedValue(new Error('bridge release failed'))
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: {
+          ...claudeCodeFramework,
+          spawn: () => {
+            throw new Error('primary spawn failed')
+          }
+        },
+        executablePath: '/bin/agent',
+        env: {},
+        responsesBridgeLease: {
+          selectSkills: vi.fn(async () => []),
+          registerReviewerSession: vi.fn(),
+          unregisterReviewerSession: vi.fn(() => true),
+          release
+        }
+      })
+    })
+
+    errorLogSpy.mockImplementation(() => {
+      throw new Error('cleanup logger failed')
+    })
+    try {
+      await expect(runtime.createSession({ cwd: '/workspace' })).rejects.toThrow(
+        'primary spawn failed'
+      )
+      expect(release).toHaveBeenCalledOnce()
+    } finally {
+      errorLogSpy.mockReset()
+    }
   })
 
   it('survives a hostile Error (throwing message getter) through the real connectFresh path', async () => {
