@@ -777,8 +777,14 @@ const contextUsageMap = (
   }
 }
 
-const sessionInlineImageBytesMap = (runtime: AcpRuntime): Map<string, number> =>
-  (runtime as unknown as { sessionInlineImageBytes: Map<string, number> }).sessionInlineImageBytes
+const promptContentLifecycle = (
+  runtime: AcpRuntime
+): { resetSession: (sessionId: string) => void } =>
+  (
+    runtime as unknown as {
+      promptContentOwner: { resetSession: (sessionId: string) => void }
+    }
+  ).promptContentOwner
 
 const resolveArtifactRunClaim = (runtime: AcpRuntime, claimId: string): ArtifactRunClaim =>
   (
@@ -2007,6 +2013,49 @@ describe('ACP runtime session management', () => {
     )
   })
 
+  it('keeps a text-only prompt free of omitted ambient context', async () => {
+    const root = await createTemporaryRoot()
+    const ambientSecret = 'AMBIENT_FILE_MUST_NOT_ENTER_PROMPT'
+    await writeFile(join(root, 'ambient-secret.txt'), ambientSecret, 'utf8')
+    const uploadRepository = new UploadRepository(root)
+    const finalizeUploads = vi.spyOn(uploadRepository, 'finalizePendingSessionUploads')
+    const resolveManagedUpload = vi.spyOn(uploadRepository, 'resolveManagedUploadPath')
+    const resolveSessionUpload = vi.spyOn(uploadRepository, 'resolveSessionUploadPath')
+    const registerTurnInputs = vi.fn(async () => undefined)
+    const process = new FakeAgentProcess()
+    const receivedPrompts: ContentBlock[][] = []
+    startFakeAgent(process, ['remote-session-1'], {
+      onPrompt: ({ prompt }) => {
+        receivedPrompts.push(prompt)
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: root,
+      spawnAgent: () => asAgentProcess(process),
+      uploads: { repository: uploadRepository },
+      notebook: {
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:1/notebook', token: 'nb' }),
+        registerTurnInputs
+      }
+    })
+
+    const session = await runtime.createSession({ cwd: root })
+    finalizeUploads.mockClear()
+    resolveManagedUpload.mockClear()
+    resolveSessionUpload.mockClear()
+    await runtime.sendPrompt({ sessionId: session.sessionId, text: 'summarize without context' })
+
+    expect(receivedPrompts).toEqual([[{ type: 'text', text: 'summarize without context' }]])
+    expect(JSON.stringify(receivedPrompts)).not.toContain(ambientSecret)
+    expect(finalizeUploads).not.toHaveBeenCalled()
+    expect(resolveManagedUpload).not.toHaveBeenCalled()
+    expect(resolveSessionUpload).not.toHaveBeenCalled()
+    expect(registerTurnInputs).not.toHaveBeenCalled()
+  })
+
   it('sends staged uploads as ACP prompt content blocks', async () => {
     const root = await createTemporaryRoot()
     const uploadRepository = new UploadRepository(root)
@@ -2069,6 +2118,84 @@ describe('ACP runtime session management', () => {
     await expect(
       readFile(join(root, 'uploads', 'default-project', 'remote-session-1', 'notes.txt'), 'utf8')
     ).resolves.toBe('hello from upload')
+  })
+
+  it('preserves prompt content order across replay images, uploads, and references', async () => {
+    const root = await createTemporaryRoot()
+    const uploadRepository = new UploadRepository(root)
+    const [historyUpload, currentUpload, mentionedUpload] = await stageUploadFixtures(
+      uploadRepository,
+      {
+        files: [
+          {
+            name: 'history.txt',
+            mimeType: 'text/plain',
+            content: Buffer.from('history upload').toString('base64')
+          },
+          {
+            name: 'current.txt',
+            mimeType: 'text/plain',
+            content: Buffer.from('current upload').toString('base64')
+          },
+          {
+            name: 'mentioned.txt',
+            mimeType: 'text/plain',
+            content: Buffer.from('mentioned upload').toString('base64')
+          }
+        ]
+      }
+    )
+    const [mentionedReference] = await uploadRepository.finalizePendingSessionUploads(
+      'remote-session-1',
+      [mentionedUpload]
+    )
+    const process = new FakeAgentProcess()
+    const receivedPrompts: ContentBlock[][] = []
+    startFakeAgent(process, ['remote-session-1'], {
+      onPrompt: ({ prompt }) => {
+        receivedPrompts.push(prompt)
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      uploads: { repository: uploadRepository }
+    })
+    const historyImageData = Buffer.from('history-image').toString('base64')
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'inspect all context',
+      historyImages: [
+        {
+          mimeType: 'image/png',
+          data: historyImageData,
+          byteLength: Buffer.byteLength('history-image')
+        }
+      ],
+      historyAttachments: [historyUpload],
+      attachments: [currentUpload],
+      referencedArtifacts: [
+        {
+          id: mentionedReference.id,
+          name: mentionedReference.originalName,
+          path: mentionedReference.path,
+          source: 'upload',
+          mimeType: mentionedReference.mimeType
+        }
+      ]
+    })
+
+    expect(receivedPrompts).toHaveLength(1)
+    expect(receivedPrompts[0]).toMatchObject([
+      { type: 'text', text: 'inspect all context' },
+      { type: 'image', mimeType: 'image/png', data: historyImageData },
+      { type: 'resource', resource: { text: 'history upload' } },
+      { type: 'resource', resource: { text: 'current upload' } },
+      { type: 'resource', resource: { text: 'mentioned upload' } }
+    ])
   })
 
   it('keeps ordinary ZIPs on provider-safe references and marks only Skill packages eligible', async () => {
@@ -2371,6 +2498,68 @@ describe('ACP runtime session management', () => {
     )
   })
 
+  it('keeps image bytes charged when later prompt content preparation fails', async () => {
+    const root = await createTemporaryRoot()
+    const uploadRepository = new UploadRepository(root)
+    const process = new FakeAgentProcess()
+    const receivedPrompts: ContentBlock[][] = []
+    startFakeAgent(process, ['remote-session-1'], {
+      onPrompt: ({ prompt }) => {
+        receivedPrompts.push(prompt)
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      uploads: { repository: uploadRepository },
+      inlineImageBudgetBytes: 15
+    })
+    const stageImage = (name: string): Promise<UploadedAttachment[]> =>
+      stageUploadFixtures(uploadRepository, {
+        files: [
+          { name, mimeType: 'image/png', content: Buffer.from('png-bytes').toString('base64') }
+        ]
+      })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    await expect(
+      runtime.sendPrompt({
+        sessionId: session.sessionId,
+        text: 'first image then invalid reference',
+        attachments: await stageImage('first.png'),
+        referencedArtifacts: [
+          {
+            id: 'missing-artifact',
+            name: 'missing.txt',
+            path: '/not-configured/missing.txt',
+            source: 'artifact',
+            mimeType: 'text/plain'
+          }
+        ]
+      })
+    ).rejects.toThrow('File reference source is not configured: artifact')
+    expect(receivedPrompts).toHaveLength(0)
+
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'second image',
+      attachments: await stageImage('second.png')
+    })
+
+    expect(receivedPrompts).toHaveLength(1)
+    expect(receivedPrompts[0][1]).toMatchObject({
+      type: 'resource_link',
+      name: 'second.png',
+      title: 'second.png',
+      mimeType: 'image/png',
+      uri: expect.stringContaining('second.png')
+    })
+    expect(JSON.stringify(receivedPrompts[0])).not.toContain(
+      Buffer.from('png-bytes').toString('base64')
+    )
+  })
+
   it('registers every finalized prompt Upload Version with the trusted Notebook bridge', async () => {
     const root = await createTemporaryRoot()
     const uploadRepository = new UploadRepository(root)
@@ -2634,13 +2823,14 @@ describe('ACP runtime session management', () => {
     })
 
     const session = await runtime.createSession({ cwd: '/workspace' })
-    sessionInlineImageBytesMap(runtime).set(session.sessionId, 2048)
+    const resetPromptContent = vi.spyOn(promptContentLifecycle(runtime), 'resetSession')
     contextUsageMap(runtime).set(session.sessionId, { used: 180_000, size: 200_000 })
     expect(runtime.getSnapshot().nativeContextCompactionSessionIds).toEqual([session.sessionId])
     await runtime.compactSession({ sessionId: session.sessionId })
 
     expect(agent.prompts).toEqual([{ sessionId: 'remote-session-1', text: '/compact' }])
-    expect(sessionInlineImageBytesMap(runtime).has(session.sessionId)).toBe(false)
+    expect(resetPromptContent).toHaveBeenCalledOnce()
+    expect(resetPromptContent).toHaveBeenCalledWith(session.sessionId)
     expect(runtime.getSnapshot().contextUsageBySession).toEqual({})
     expect(
       runtime
@@ -2697,13 +2887,13 @@ describe('ACP runtime session management', () => {
     })
 
     const session = await runtime.createSession({ cwd: '/workspace' })
-    sessionInlineImageBytesMap(runtime).set(session.sessionId, 2048)
+    const resetPromptContent = vi.spyOn(promptContentLifecycle(runtime), 'resetSession')
 
     await expect(runtime.compactSession({ sessionId: session.sessionId })).resolves.toMatchObject({
       stopReason: 'cancelled'
     })
 
-    expect(sessionInlineImageBytesMap(runtime).get(session.sessionId)).toBe(2048)
+    expect(resetPromptContent).not.toHaveBeenCalled()
     expect(
       runtime
         .getSnapshot()
@@ -2734,13 +2924,13 @@ describe('ACP runtime session management', () => {
     })
 
     const session = await runtime.createSession({ cwd: '/workspace' })
-    sessionInlineImageBytesMap(runtime).set(session.sessionId, 2048)
+    const resetPromptContent = vi.spyOn(promptContentLifecycle(runtime), 'resetSession')
 
     await expect(runtime.compactSession({ sessionId: session.sessionId })).rejects.toThrow(
       'Compacting failed: media_unstrippable'
     )
 
-    expect(sessionInlineImageBytesMap(runtime).get(session.sessionId)).toBe(2048)
+    expect(resetPromptContent).not.toHaveBeenCalled()
     expect(runtime.getSnapshot().events).toContainEqual(
       expect.objectContaining({
         kind: 'compaction',
