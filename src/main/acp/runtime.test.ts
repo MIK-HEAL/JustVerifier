@@ -975,6 +975,128 @@ describe('ACP runtime migration write-gate', () => {
     ])
   })
 
+  it('publishes connected only after initialize, authentication, and provider configuration', async () => {
+    const process = new FakeAgentProcess()
+    const actions: string[] = []
+    acp
+      .agent({ name: 'connection-order-agent' })
+      .onRequest(acp.methods.agent.initialize, () => {
+        actions.push('initialize')
+        return {
+          protocolVersion: acp.PROTOCOL_VERSION,
+          agentCapabilities: { loadSession: false },
+          authMethods: []
+        }
+      })
+      .onRequest(acp.methods.agent.authenticate, () => {
+        actions.push('authenticate')
+        return {}
+      })
+      .onRequest(acp.methods.agent.providers.set, () => {
+        actions.push('configure-provider')
+        return {}
+      })
+      .connect(
+        acp.ndJsonStream(
+          Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
+          Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
+        )
+      )
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/agent',
+        env: {},
+        authentication: { methodId: 'api-key' },
+        providerConfiguration: {
+          providerId: 'custom-gateway',
+          apiType: 'openai',
+          baseUrl: 'http://127.0.0.1:1234/v1',
+          headers: {}
+        }
+      }),
+      callbacks: {
+        onEvent: (event) => {
+          if (event.title === 'Agent initialized') actions.push('initialized-event')
+        },
+        onStateChanged: (snapshot) => {
+          if (snapshot.status === 'connected') actions.push('publish-connected')
+        }
+      }
+    })
+
+    await runtime.connect({ cwd: '/workspace' })
+
+    expect(actions).toEqual([
+      'initialize',
+      'authenticate',
+      'configure-provider',
+      'initialized-event',
+      'publish-connected'
+    ])
+    await runtime.disconnect()
+  })
+
+  it('ignores a detached connection closing after its replacement is connected', async () => {
+    const oldProcess = new FakeAgentProcess()
+    const replacementProcess = new FakeAgentProcess()
+    startFakeAgent(oldProcess, ['old-session'])
+    startFakeAgent(replacementProcess, ['replacement-session'])
+    let spawnCount = 0
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(spawnCount++ === 0 ? oldProcess : replacementProcess)
+    })
+
+    await runtime.createSession({ cwd: '/workspace' })
+    await runtime.disconnect()
+    await runtime.createSession({ cwd: '/workspace' })
+
+    oldProcess.stdout.end()
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 0))
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      status: 'connected',
+      sessionIds: ['replacement-session']
+    })
+    expect(replacementProcess.killed).toBe(false)
+    await runtime.disconnect()
+  })
+
+  it('keeps using a published connection when teardown fails before resource detach', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['first-session', 'successor-session'])
+    const spawnAgent = vi.fn(() => asAgentProcess(process))
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+    const internal = runtime as unknown as {
+      disconnectCurrent: (emitClosedStatus?: boolean) => Promise<AcpStateSnapshot>
+    }
+    const disconnectCurrentSpy = vi
+      .spyOn(internal, 'disconnectCurrent')
+      .mockRejectedValueOnce(new Error('disconnect failed before detach'))
+
+    try {
+      await expect(runtime.disconnect()).rejects.toThrow('disconnect failed before detach')
+      await expect(runtime.createSession({ cwd: '/workspace' })).resolves.toMatchObject({
+        sessionId: 'successor-session'
+      })
+      expect(fakeAgent.newSessions).toHaveLength(2)
+      expect(spawnAgent).toHaveBeenCalledOnce()
+      expect(process.killed).toBe(false)
+    } finally {
+      disconnectCurrentSpy.mockRestore()
+      await runtime.disconnect().catch(() => undefined)
+    }
+  })
+
   it.each(['initialize', 'authenticate'] as const)(
     'clears one-shot connection intents when %s fails',
     async (failureStage) => {
@@ -5218,6 +5340,64 @@ describe('ACP runtime session management', () => {
     ])
     expect(spawnCount).toBe(1)
     expect(runtime.getSnapshot().sessionIds).toEqual(['remote-session-1', 'remote-session-2'])
+  })
+
+  it('does not reuse a superseded connection while its replacement connect is starting', async () => {
+    const oldProcess = new FakeAgentProcess()
+    const replacementProcess = new FakeAgentProcess()
+    const oldAgent = startFakeAgent(oldProcess, ['old-session', 'wrong-old-session'])
+    const replacementAgent = startFakeAgent(replacementProcess, ['replacement-session'])
+    let spawnCount = 0
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(spawnCount++ === 0 ? oldProcess : replacementProcess)
+    })
+    await runtime.createSession({ cwd: '/workspace' })
+
+    const reconnect = runtime.connect({ cwd: '/workspace' })
+    const successor = runtime.createSession({ cwd: '/workspace' })
+    const [, session] = await Promise.all([reconnect, successor])
+
+    expect(session.sessionId).toBe('replacement-session')
+    expect(oldAgent.newSessions).toHaveLength(1)
+    expect(replacementAgent.newSessions).toHaveLength(1)
+    expect(spawnCount).toBe(2)
+  })
+
+  it('releases a spawned resource superseded immediately before owner attach', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, [])
+    const { lease, release } = createBackendLeaseHarness()
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/agent',
+        env: {},
+        responsesBridgeLease: lease
+      })
+    })
+    const internal = runtime as unknown as {
+      createClientConnection: (
+        stream: acp.Stream
+      ) => import('@agentclientprotocol/sdk').ClientConnection
+    }
+    const createConnection = internal.createClientConnection.bind(runtime)
+    let disconnect: Promise<unknown> | undefined
+    vi.spyOn(internal, 'createClientConnection').mockImplementation((stream) => {
+      const connection = createConnection(stream)
+      disconnect = runtime.disconnect()
+      return connection
+    })
+
+    await expect(runtime.connect({ cwd: '/workspace' })).rejects.toThrow(/superseded/i)
+    await disconnect
+
+    expect(process.killed).toBe(true)
+    expect(release).toHaveBeenCalledOnce()
+    expect(runtime.getSnapshot().sessionIds).toEqual([])
   })
 
   it('invalidates an in-flight connection when disconnect is requested before initialization finishes', async () => {
@@ -15649,7 +15829,11 @@ describe('ACP runtime — connect failure logging', () => {
         framework: {
           ...claudeCodeFramework,
           spawn: () => {
-            ;(runtime as unknown as { connectionGeneration: number }).connectionGeneration += 1
+            ;(
+              runtime as unknown as {
+                connectionResources: { supersede: () => number }
+              }
+            ).connectionResources.supersede()
             return asAgentProcess(process)
           }
         },
@@ -16873,7 +17057,11 @@ describe('ACP runtime — failure-path robustness (errorMessage coercion + sync-
       appVersion: '0.1.0',
       defaultCwd: '/workspace',
       spawnAgent: () => {
-        ;(runtime as unknown as { connectionGeneration: number }).connectionGeneration += 1
+        ;(
+          runtime as unknown as {
+            connectionResources: { supersede: () => number }
+          }
+        ).connectionResources.supersede()
         return asAgentProcess(process)
       }
     })
