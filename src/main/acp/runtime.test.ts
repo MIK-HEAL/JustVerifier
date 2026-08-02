@@ -761,9 +761,6 @@ const mcpServerNamesFor = (runtime: AcpRuntime, sessionId: string): readonly str
     }
   ).sessionCapabilities.mcpServerNamesFor(sessionId)
 
-const agentToAppSessionMap = (runtime: AcpRuntime): Map<string, string> =>
-  (runtime as unknown as { agentToAppSessionId: Map<string, string> }).agentToAppSessionId
-
 const activeSessionForTest = (
   runtime: AcpRuntime,
   sessionId: string
@@ -1705,6 +1702,23 @@ describe('ACP runtime session management', () => {
     await runtime.resetSessionContext({ sessionId: 'session-a', cwd: '/workspace' })
 
     expect(runtime.getSnapshot().sessionIds).toEqual(['session-b', 'session-a'])
+  })
+
+  it('keeps active ordering stable when resume only refreshes metadata', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['session-a', 'session-b'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process)
+    })
+
+    await runtime.createSession({ cwd: '/workspace' })
+    await runtime.createSession({ cwd: '/workspace' })
+    await runtime.resumeSession({ sessionId: 'session-a', cwd: '/updated-workspace' })
+
+    expect(runtime.getSnapshot().sessionIds).toEqual(['session-a', 'session-b'])
+    expect(fakeAgent.resumedSessions).toEqual([])
   })
 
   it('releases the backend lease exactly once after an unexpected protocol close', async () => {
@@ -9789,11 +9803,13 @@ describe('ACP runtime session management', () => {
     ).rejects.toThrow(/not found/)
   })
 
-  it('clears the reverse (agent id -> app id) mapping when an adopted session is deleted', async () => {
+  it('releases an adopted provider id for reuse when the app session is deleted', async () => {
     const process = new FakeAgentProcess()
     // Resume rejects, so the runtime adopts a fresh agent session (adopted-session-1) under the
     // app-facing id (switched-session), registering the reverse mapping used to relabel agent events.
-    startFakeAgent(process, ['adopted-session-1'], { resumeNotFound: true })
+    const fakeAgent = startFakeAgent(process, ['adopted-session-1', 'adopted-session-1'], {
+      resumeNotFound: true
+    })
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
       defaultCwd: '/workspace',
@@ -9801,14 +9817,18 @@ describe('ACP runtime session management', () => {
     })
 
     await runtime.resumeSession({ sessionId: 'switched-session', cwd: '/workspace' })
-    // The adoption recorded the underlying id -> app id mapping.
-    expect(agentToAppSessionMap(runtime).get('adopted-session-1')).toBe('switched-session')
-
     await runtime.deleteSession({ sessionId: 'switched-session' })
 
-    // Delete removes the reverse entry, so a reused agent id or a late agent event carrying the
-    // underlying id no longer resolves to the deleted app session.
-    expect(agentToAppSessionMap(runtime).has('adopted-session-1')).toBe(false)
+    // A new provider session may reuse the deleted underlying id without colliding with a stale alias.
+    const reused = await runtime.createSession({ cwd: '/workspace' })
+    expect(reused.sessionId).toBe('adopted-session-1')
+
+    await runtime.sendPrompt({ sessionId: reused.sessionId, text: 'reuse provider identity' })
+    expect(fakeAgent.prompts.at(-1)).toEqual({
+      sessionId: 'adopted-session-1',
+      text: 'reuse provider identity'
+    })
+    await runtime.deleteSession({ sessionId: reused.sessionId })
   })
 
   it('cancels an adopted session by its own id when the agent lacks session/close', async () => {
