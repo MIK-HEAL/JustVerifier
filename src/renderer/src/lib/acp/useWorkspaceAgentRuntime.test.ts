@@ -212,6 +212,42 @@ describe('workspace agent runtime event processing', () => {
 })
 
 describe('resume failure classification', () => {
+  it('classifies an opaque ACP Internal error as unknown without guessing a cause', () => {
+    const message = getResumeFailureMessage(
+      new Error("Error invoking remote method 'acp:resume-session': RequestError: Internal error")
+    )
+
+    expect(message).toBe('Agent session resume failed: Unknown error')
+  })
+
+  it('classifies a bare Internal error as unknown when IPC drops the custom error name', () => {
+    const message = getResumeFailureMessage(
+      new Error("Error invoking remote method 'acp:resume-session': Error: Internal error")
+    )
+
+    expect(message).toBe('Agent session resume failed: Unknown error')
+  })
+
+  it('classifies an empty downstream failure at the Electron IPC seam as unknown', () => {
+    const message = getResumeFailureMessage(
+      new Error("Error invoking remote method 'acp:resume-session': Error")
+    )
+
+    expect(message).toBe('Agent session resume failed: Unknown error')
+  })
+
+  it('keeps a specific RequestError cause visible', () => {
+    const message = getResumeFailureMessage(
+      new Error(
+        "Error invoking remote method 'acp:resume-session': RequestError: Internal error while loading provider configuration"
+      )
+    )
+
+    expect(message).toBe(
+      'Agent session resume failed: RequestError: Internal error while loading provider configuration'
+    )
+  })
+
   it('rewrites a genuine model↔framework incompatibility into the actionable settings message', () => {
     // Verbatim error thrown by settings/service.ts when the active provider cannot drive the framework.
     const message = getResumeFailureMessage(
@@ -762,7 +798,12 @@ describe('workspace agent message sending', () => {
       agentModel: 'model-used-by-run'
     })
 
-    expect(runtime.createSession).toHaveBeenCalledWith('/workspace/project', undefined, 'ask', undefined)
+    expect(runtime.createSession).toHaveBeenCalledWith(
+      '/workspace/project',
+      undefined,
+      'ask',
+      undefined
+    )
     expect(runtime.sendPrompt).not.toHaveBeenCalled()
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
       id: sent?.sessionId,
@@ -885,6 +926,29 @@ describe('workspace agent message sending', () => {
       agentBackendId: 'codex:builtin-codex-subscription',
       agentModel: 'gpt-5.6-sol'
     })
+  })
+
+  it('uses a generic creation error when IPC supplies no downstream detail', async () => {
+    const runtime = {
+      state: createSnapshot(),
+      createSession: vi
+        .fn()
+        .mockRejectedValue(new Error("Error invoking remote method 'acp:create-session': Error")),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn()
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      text: 'Start a new analysis',
+      cwd: '/workspace/project',
+      agentFrameworkId: 'codex'
+    })
+    await flushRuntimeTasks()
+
+    expect(useSessionStore.getState().sessions[0]?.error).toBe(
+      'Agent session could not be created.'
+    )
   })
 
   it('unwraps an IPC-wrapped config failure at session start and marks it non-reportable', async () => {
@@ -1197,8 +1261,20 @@ describe('workspace agent message sending', () => {
       projectName: 'project-1'
     })
 
-    expect(runtime.createSession).toHaveBeenNthCalledWith(1, undefined, 'project-1', 'ask', undefined)
-    expect(runtime.createSession).toHaveBeenNthCalledWith(2, undefined, 'project-1', 'ask', undefined)
+    expect(runtime.createSession).toHaveBeenNthCalledWith(
+      1,
+      undefined,
+      'project-1',
+      'ask',
+      undefined
+    )
+    expect(runtime.createSession).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+      'project-1',
+      'ask',
+      undefined
+    )
   })
 
   it('does not submit another prompt for a session that already owns a run', async () => {
