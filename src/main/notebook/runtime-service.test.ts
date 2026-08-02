@@ -2914,6 +2914,26 @@ describe('notebook runtime service', () => {
       expect(events).toEqual(['first:start', 'first:end', 'second:start'])
     })
 
+    it('releases environment mutation admission after a failed operation', async () => {
+      const root = await createStorageRoot()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        repository: new NotebookRunRepository(root)
+      })
+
+      await expect(
+        service.withEnvLock('analysis', async () => {
+          throw new Error('mutation failed')
+        })
+      ).rejects.toThrow('mutation failed')
+
+      await expect(
+        service.withEnvLock('analysis', async () => 'next mutation admitted')
+      ).resolves.toBe('next mutation admitted')
+    })
+
     it('allows environment mutations for different environments to proceed concurrently', async () => {
       const root = await createStorageRoot()
       const service = new NotebookRuntimeService({
@@ -7004,25 +7024,31 @@ describe('v4 runtime bindings & agent tools', () => {
       projectName: 'default-project',
       repository: new NotebookRunRepository(root)
     })
-    const leaseManager = (
+    const operationOwner = (
       service as unknown as {
-        environmentLeases: {
-          acquire: (
-            environment: string,
-            mode: 'shared' | 'exclusive'
-          ) => { granted: Promise<{ release(): boolean }> }
+        environmentOperations: {
+          runMutation: <T>(environment: string, operation: () => Promise<T>) => Promise<T>
           snapshot: () => { disposed: boolean }
         }
       }
-    ).environmentLeases
-    const held = await leaseManager.acquire('default', 'exclusive').granted
-    const queued = leaseManager.acquire('default', 'exclusive').granted
+    ).environmentOperations
+    let releaseHeld!: () => void
+    const held = operationOwner.runMutation(
+      'default',
+      () =>
+        new Promise<void>((resolve) => {
+          releaseHeld = resolve
+        })
+    )
+    await vi.waitFor(() => expect(releaseHeld).toBeTypeOf('function'))
+    const queued = operationOwner.runMutation('default', async () => undefined)
 
     const disposal = service.dispose()
 
     await expect(queued).rejects.toThrow(/disposed/)
-    expect(leaseManager.snapshot().disposed).toBe(true)
-    expect(held.release()).toBe(false)
+    expect(operationOwner.snapshot().disposed).toBe(true)
+    releaseHeld()
+    await held
     await expect(disposal).resolves.toEqual({ reaped: true })
   })
 
