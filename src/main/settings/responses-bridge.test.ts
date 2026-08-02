@@ -11,6 +11,7 @@ import {
   toolsToChat,
   upstreamErrorMessage
 } from './responses-bridge'
+import { selectExplicitConnectorSkills } from './skill-selector-routing'
 
 describe('Responses-compatible bridge conversion', () => {
   const legacyReviewerMarker = '<open_science_reviewer_session>'
@@ -1608,7 +1609,8 @@ describe('Responses bridge Skill selector', () => {
     {
       name: 'mcp-pubmed',
       description: 'Search biomedical literature.',
-      path: '/private/pubmed/SKILL.md'
+      path: '/private/pubmed/SKILL.md',
+      source: 'connector' as const
     },
     {
       name: 'literature-review',
@@ -1661,7 +1663,7 @@ describe('Responses bridge Skill selector', () => {
       upstreamFetch
     )
 
-    const selected = await bridge.selectSkills('用 PubMed 搜索肿瘤免疫文章', catalog)
+    const selected = await bridge.selectSkills('查找肿瘤免疫相关的生物医学文献', catalog)
 
     expect(selected).toEqual(catalog.slice(0, 3).map(({ name, path }) => ({ name, path })))
     expect(upstreamUrl).toBe('https://vendor.example/v1/chat/completions')
@@ -1673,7 +1675,7 @@ describe('Responses bridge Skill selector', () => {
       max_tokens: 512,
       messages: [
         expect.objectContaining({ role: 'system' }),
-        { role: 'user', content: '用 PubMed 搜索肿瘤免疫文章' }
+        { role: 'user', content: '查找肿瘤免疫相关的生物医学文献' }
       ],
       tools: [
         {
@@ -1692,8 +1694,97 @@ describe('Responses bridge Skill selector', () => {
     expect(upstreamBody).not.toHaveProperty('tool_choice')
     const serialized = JSON.stringify(upstreamBody)
     expect(serialized).toContain('Search biomedical literature.')
+    expect(serialized.match(/mcp-pubmed/g)).toHaveLength(1)
     expect(serialized).not.toContain('/private/')
     expect(serialized).not.toContain('secret-key')
+  })
+
+  it('selects an explicitly named connector Skill locally without an upstream request', async () => {
+    const upstreamFetch = vi.fn<typeof fetch>()
+    const bridge = new ResponsesBridge(
+      { baseUrl: 'https://vendor.example/v1', model: 'deepseek-v4-flash' },
+      upstreamFetch
+    )
+
+    await expect(bridge.selectSkills('用 PubMed 搜索肿瘤免疫文章', catalog)).resolves.toEqual([
+      { name: 'mcp-pubmed', path: '/private/pubmed/SKILL.md' }
+    ])
+    expect(upstreamFetch).not.toHaveBeenCalled()
+  })
+
+  it('does not treat an ordinary Skill name in natural text as an explicit local selection', async () => {
+    const upstreamFetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  tool_calls: [
+                    {
+                      function: {
+                        name: 'select_skills',
+                        arguments: JSON.stringify({ skill_names: ['research'] })
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          })
+        )
+    )
+    const bridge = new ResponsesBridge(
+      { baseUrl: 'https://vendor.example/v1', model: 'model-a' },
+      upstreamFetch
+    )
+    const mixedCatalog = [
+      ...catalog,
+      { name: 'research', description: 'Research a topic.', path: '/skills/research/SKILL.md' }
+    ]
+
+    await expect(bridge.selectSkills('research cancer treatments', mixedCatalog)).resolves.toEqual([
+      { name: 'research', path: '/skills/research/SKILL.md' }
+    ])
+    expect(upstreamFetch).toHaveBeenCalledOnce()
+  })
+
+  it('does not infer connector provenance from a user-controlled mcp-* name', () => {
+    expect(
+      selectExplicitConnectorSkills('use personal for this task', [
+        {
+          name: 'mcp-personal',
+          description: 'A user-authored Skill.',
+          path: '/skills/personal/SKILL.md'
+        }
+      ])
+    ).toEqual([])
+  })
+
+  it('finds an explicitly named connector before bounding the inference catalog', async () => {
+    const upstreamFetch = vi.fn<typeof fetch>()
+    const bridge = new ResponsesBridge(
+      { baseUrl: 'https://vendor.example/v1', model: 'model-a' },
+      upstreamFetch
+    )
+    const largeCatalog = [
+      ...Array.from({ length: 140 }, (_, index) => ({
+        name: `skill-${index}`,
+        description: `Description ${index}`,
+        path: `/skills/${index}/SKILL.md`
+      })),
+      {
+        name: 'mcp-pubmed',
+        description: 'Search PubMed.',
+        path: '/skills/pubmed/SKILL.md',
+        source: 'connector' as const
+      }
+    ]
+
+    await expect(bridge.selectSkills('用 PubMed 搜索文章', largeCatalog)).resolves.toEqual([
+      { name: 'mcp-pubmed', path: '/skills/pubmed/SKILL.md' }
+    ])
+    expect(upstreamFetch).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -1749,12 +1840,18 @@ describe('Responses bridge Skill selector', () => {
     const request = JSON.parse(upstreamBody) as {
       messages: Array<{ content: string }>
       tools: Array<{
-        function: { parameters: { properties: { skill_names: { items: { enum: string[] } } } } }
+        function: {
+          parameters: { properties: { skill_names: { items: Record<string, unknown> } } }
+        }
       }>
     }
-    const names = request.tools[0].function.parameters.properties.skill_names.items.enum
+    const catalogJson = request.messages[0].content.split('Skill catalog:\n')[1]
+    const names = (JSON.parse(catalogJson) as Array<{ name: string }>).map(({ name }) => name)
     expect(names).toHaveLength(128)
     expect(names).not.toContain('oversized')
+    expect(request.tools[0].function.parameters.properties.skill_names.items).toEqual({
+      type: 'string'
+    })
     expect(request.messages[0].content).not.toContain('x'.repeat(10_000))
     expect(Buffer.byteLength(upstreamBody, 'utf8')).toBeLessThan(300 * 1024)
   })

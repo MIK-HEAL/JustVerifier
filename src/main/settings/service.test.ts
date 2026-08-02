@@ -1162,7 +1162,8 @@ describe('SettingsService: providers', () => {
       'utf8'
     )
     expect(chemistrySkill).toContain('pubchem_get_compounds')
-    expect(chemistrySkill).toContain('```json')
+    expect(chemistrySkill).toContain('**Input:**')
+    expect(chemistrySkill).not.toContain('```json')
   })
 
   it('rejects an invalid custom context window when IPC bypasses the form', async () => {
@@ -3777,7 +3778,8 @@ describe('SettingsService: skills', () => {
           expect.objectContaining({
             name: 'mcp-pubmed',
             description: expect.stringContaining('biomedical literature'),
-            path: join(storageRoot, 'codex', 'skills', 'mcp-pubmed', 'SKILL.md')
+            path: join(storageRoot, 'codex', 'skills', 'mcp-pubmed', 'SKILL.md'),
+            source: 'connector'
           })
         ])
       )
