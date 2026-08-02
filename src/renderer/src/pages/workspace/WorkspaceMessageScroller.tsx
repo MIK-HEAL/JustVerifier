@@ -561,6 +561,24 @@ const WorkspaceMessageScrollerImpl = ({
                     const messageNode = graph?.messages.find(
                       (message) => message.id === item.message.id
                     )
+                    const runtimeSegment = messageNode?.runtimeSegmentId
+                      ? graph?.runtimeSegments.find(
+                          (segment) => segment.id === messageNode.runtimeSegmentId
+                        )
+                      : undefined
+                    // Legacy sessions synthesize this segment with a fallback framework. Keep only
+                    // the session-level values that were actually persisted.
+                    const synthesizedLegacyRuntime =
+                      runtimeSegment?.id === `runtime-segment-${activeSession?.id}` &&
+                      !activeSession?.agentFrameworkId
+                    const runtimeIdentity = synthesizedLegacyRuntime
+                      ? activeSession?.agentBackendId || activeSession?.agentModel
+                        ? {
+                            backendId: activeSession.agentBackendId,
+                            model: activeSession.agentModel
+                          }
+                        : undefined
+                      : runtimeSegment
                     const revisionRootMessageId = messageNode?.revisionRootMessageId
                     const revisions = revisionRootMessageId
                       ? (graph?.messages
@@ -599,6 +617,7 @@ const WorkspaceMessageScrollerImpl = ({
                       turnStartedAt: item.message.responseToMessageId
                         ? messageCreatedAtById.get(item.message.responseToMessageId)
                         : undefined,
+                      runtimeIdentity,
                       showAssistantFooter:
                         item.message.role !== 'agent' ||
                         assistantFooterMessageIds.has(item.message.id),
