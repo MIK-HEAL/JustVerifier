@@ -13044,6 +13044,128 @@ describe('ACP runtime session management', () => {
     )
   })
 
+  it('retries transient Artifact claim preparation in the prompt failure cleanup', async () => {
+    const storageRoot = await createTemporaryRoot()
+    const repository = new ArtifactRepository(storageRoot)
+    const generatedArtifact = {
+      id: 'version-1',
+      artifactId: 'artifact-1',
+      versionId: 'version-1',
+      versionNumber: 1,
+      checksum: 'a'.repeat(64),
+      createdAt: '2026-08-02T00:00:00.000Z',
+      projectName: 'project-1',
+      sessionId: 'artifact-session-1',
+      runId: 'artifact-run-1',
+      name: 'result.txt',
+      path: '/managed/result.txt',
+      fileUrl: 'file:///managed/result.txt',
+      mimeType: 'text/plain',
+      size: 6,
+      mtimeMs: 1
+    }
+    let listAttempts = 0
+    const listRunVersions = vi.fn(async () => {
+      listAttempts += 1
+      if (listAttempts === 1) throw new Error('temporary Artifact list failure')
+      return [generatedArtifact]
+    })
+    const artifactEvents: AcpRuntimeEvent[] = []
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['remote-session-1'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: storageRoot,
+        dataRoot: storageRoot,
+        projectName: 'project-1',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository,
+        provenance: {
+          listRunVersions,
+          writeAppGeneratedVersion: async () => generatedArtifact
+        }
+      },
+      callbacks: {
+        onEvent: (event) => {
+          if (event.kind === 'artifact') artifactEvents.push(event)
+        }
+      }
+    })
+    const session = await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+
+    await expect(
+      runtime.sendPrompt({ sessionId: session.sessionId, text: 'prepare an Artifact claim' })
+    ).rejects.toThrow('temporary Artifact list failure')
+
+    expect(listRunVersions).toHaveBeenCalledTimes(2)
+    expect(artifactEvents).toHaveLength(1)
+    const claim = resolveArtifactRunClaim(runtime, artifactEvents[0].artifactClaimId!)
+    expect(claim.artifactVersionIds).toEqual(['version-1'])
+    await expect(
+      repository.findRunFinalizationMarker('project-1', claim.runId)
+    ).resolves.toMatchObject({ artifactVersionIds: ['version-1'] })
+  })
+
+  it.each([
+    { outcome: 'success' as const, promptError: undefined },
+    { outcome: 'failure' as const, promptError: new Error('agent failed after opening the run') }
+  ])(
+    'exposes an active artifact run only while its current-run handoff is live after $outcome',
+    async ({ promptError }) => {
+      const storageRoot = await createTemporaryRoot()
+      const process = new FakeAgentProcess()
+      let currentRunFile = ''
+      let activeRunIds: string[] = []
+      let handoffRunId: string | undefined
+      const fakeAgent = startFakeAgent(process, ['remote-session-1'], {
+        onPrompt: async () => {
+          const handoff = JSON.parse(await readFile(currentRunFile, 'utf8')) as {
+            artifactRunId?: string
+          }
+          handoffRunId = handoff.artifactRunId
+          activeRunIds = runtime.getActiveArtifactRunIds()
+          if (promptError) throw promptError
+        }
+      })
+      const runtime = new AcpRuntime({
+        appVersion: '0.1.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        artifacts: {
+          configRoot: storageRoot,
+          dataRoot: storageRoot,
+          projectName: 'default-project',
+          mcpEntryPath: '/app/out/main/index.js',
+          repository: new ArtifactRepository(storageRoot)
+        }
+      })
+
+      const session = await runtime.createSession({ cwd: '/workspace' })
+      currentRunFile = getEnvValue(
+        fakeAgent.newSessions[0].mcpServers[0],
+        'OPEN_SCIENCE_ARTIFACT_CURRENT_RUN_FILE'
+      )
+      const prompt = runtime.sendPrompt({ sessionId: session.sessionId, text: 'make a file' })
+
+      if (promptError) {
+        await expect(prompt).rejects.toMatchObject({
+          code: -32603,
+          data: { details: promptError.message }
+        })
+      } else {
+        await expect(prompt).resolves.toBeDefined()
+      }
+
+      expect(handoffRunId).toMatch(/^artifact-run-/)
+      expect(activeRunIds).toEqual([handoffRunId])
+      expect(runtime.getActiveArtifactRunIds()).toEqual([])
+      await expect(readFile(currentRunFile, 'utf8')).resolves.toBe(`${JSON.stringify({})}\n`)
+    }
+  )
+
   it('emits an artifact event with pending files before a prompt stops', async () => {
     const storageRoot = await createTemporaryRoot()
     const repository = new ArtifactRepository(storageRoot)
