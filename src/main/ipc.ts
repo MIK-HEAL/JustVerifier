@@ -196,6 +196,7 @@ export type ApplicationRuntimeInterfaces = {
   taskAgent: TaskAgentPort
   sessionDeletionCapability: Pick<SessionPersistenceCoordinator, 'setSessionDeletionHandlers'>
   detectActiveSessions: () => ReturnType<typeof detectActiveSessions>
+  prepareForQuit: () => Promise<void>
 }
 
 type ApplicationModuleInterfaces = ApplicationRuntimeInterfaces & {
@@ -1347,6 +1348,7 @@ const createApplicationModules = async (
     taskAgent,
     sessionDeletionCapability: sessionPersistenceCoordinator,
     detectActiveSessions: () => detectActiveSessions({ runtime, notebook: notebookService }),
+    prepareForQuit: () => runtime.prepareForQuit(),
     electronAdapters: {
       beforeCompute: beforeComputeAdapters,
       compute: computeIpcModule,
