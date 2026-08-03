@@ -21,6 +21,7 @@ type PreviewFormatPresentation = {
 }
 
 const FORMAT_LOADING_TITLES: Record<PreviewFileFormat, string> = {
+  code: 'Preparing code file',
   csv: 'Preparing data',
   fasta: 'Preparing sequence',
   html: 'Preparing document',
@@ -39,6 +40,7 @@ const FORMAT_LOADING_TITLES: Record<PreviewFileFormat, string> = {
 }
 
 const FORMAT_BADGES: Record<PreviewFileFormat, string> = {
+  code: 'CODE',
   csv: 'CSV',
   fasta: 'FASTA',
   html: 'HTML',

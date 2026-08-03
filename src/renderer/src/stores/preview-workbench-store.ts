@@ -8,6 +8,7 @@ import { getUploadedAttachmentPath } from '../../../shared/uploads'
 
 export type PreviewPanelState = 'open' | 'collapsed'
 export type PreviewFileFormat =
+  | 'code'
   | 'markdown'
   | 'text'
   | 'json'
