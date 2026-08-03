@@ -50,8 +50,13 @@ describe('parseGitHubSkillUrl', () => {
     ).toBe('scientific-skills/Academic Writing/citation-formatter')
   })
 
-  it('returns null for non-GitHub input', () => {
+  it('returns null unless the URL is an HTTPS github.com repository', () => {
     expect(parseGitHubSkillUrl('https://example.com/foo')).toBeNull()
+    expect(parseGitHubSkillUrl('http://github.com/acme/skills')).toBeNull()
+    expect(parseGitHubSkillUrl('https://example.invalid/github.com/acme/skills')).toBeNull()
+    expect(parseGitHubSkillUrl('https://github.com.evil/acme/skills')).toBeNull()
+    expect(parseGitHubSkillUrl('https://github.com/acme')).toBeNull()
+    expect(parseGitHubSkillUrl('https://github.com/acme/skills/issues')).toBeNull()
   })
 })
 
@@ -674,12 +679,17 @@ describe('parseGitHubRepo', () => {
 
 describe('scanRepoForSkills', () => {
   // Fakes the repo-meta + recursive git-tree API responses.
+  const commitSha = '0123456789abcdef0123456789abcdef01234567'
   const treeFetch = (
     paths: { path: string; type: string }[],
     defaultBranch = 'main'
   ): FetchLike => {
     return async (url: string) => {
-      const body = url.includes('/git/trees/') ? { tree: paths } : { default_branch: defaultBranch }
+      const body = url.includes('/git/trees/')
+        ? { tree: paths }
+        : url.includes('/commits/')
+          ? { sha: commitSha }
+          : { default_branch: defaultBranch }
       return {
         ok: true,
         status: 200,
@@ -704,9 +714,13 @@ describe('scanRepoForSkills', () => {
       {
         name: 'foo',
         path: 'pack/foo',
-        url: 'https://github.com/acme/skills/tree/main/pack/foo'
+        url: `https://github.com/acme/skills/tree/${commitSha}/pack/foo`
       },
-      { name: 'bar', path: 'bar', url: 'https://github.com/acme/skills/tree/main/bar' }
+      {
+        name: 'bar',
+        path: 'bar',
+        url: `https://github.com/acme/skills/tree/${commitSha}/bar`
+      }
     ])
   })
 })
