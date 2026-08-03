@@ -176,6 +176,8 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
   // latest, so an older (drained) download can't clear a newer one's lifecycle.
   private downloadGeneration = 0
   private status: UpdateStatus
+  private applying = false
+  private installerStarted = false
   // In-flight manifest notes fetch for the current update, awaited by check() so the returned
   // status reflects the hydrated notes.
   private notesHydration?: Promise<void>
@@ -268,13 +270,21 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
       this.setStatus({ ...this.status, state: 'ready', progress: 100 })
     })
     this.updater.on('error', (err) => {
-      this.setStatus({ state: 'error', error: err instanceof Error ? err.message : 'Update error' })
+      if (this.applying && !this.installerStarted) return
+      this.applying = false
+      this.installerStarted = false
+      this.setStatus({
+        ...this.status,
+        state: 'error',
+        error: err instanceof Error ? err.message : 'Update error'
+      })
     })
   }
 
   // Always re-stamps current + applyKind so every broadcast status is self-consistent regardless of
   // which event produced it.
   private setStatus(partial: Partial<UpdateStatus>): void {
+    if (this.applying && partial.state !== 'applying') return
     this.status = {
       ...partial,
       state: partial.state ?? this.status.state,
@@ -303,6 +313,7 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
   }
 
   async check(): Promise<UpdateStatus> {
+    if (this.applying) return this.status
     try {
       await this.updater.checkForUpdates()
     } catch (error) {
@@ -320,7 +331,7 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
     // An active download is in flight; ignore repeat clicks / concurrent renderers. Starting a second
     // would overwrite downloadToken and orphan the first (cancel() could no longer stop it). This guard
     // and the token claim below are synchronous so a racing download()/cancel() sees a consistent slot.
-    if (this.downloadToken) return this.status
+    if (this.applying || this.downloadToken) return this.status
 
     // A just-cancelled download may still be settling: cancel() returns before electron-updater's
     // underlying downloadPromise rejects. downloadUpdate() reuses that live promise and ignores a fresh
@@ -369,6 +380,7 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
   // download() awaits it so it never reuses the still-settling (cancelled) downloadPromise. No-op when
   // nothing is downloading.
   async cancel(): Promise<UpdateStatus> {
+    if (this.applying) return this.status
     this.downloadToken?.cancel()
     this.downloadToken = undefined
     if (this.status.state === 'downloading') {
@@ -377,11 +389,18 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
     return this.status
   }
 
-  // Triggered by the user's "Restart to update" click once the download is ready. On win/linux,
-  // isSilent=true keeps the assisted NSIS installer from showing its wizard and isForceRunAfter=true
-  // relaunches into the new version (per-user install = no UAC prompt). On macOS Squirrel.Mac swaps
-  // the .app and relaunches; it ignores isSilent, so the same call is correct there too.
+  // Triggered by the user's "Restart to update" click once the download is ready. On Windows,
+  // isSilent=false keeps the assisted NSIS progress page visible while the app files are unavailable;
+  // isForceRunAfter=true relaunches into the new version. Other updaters ignore isSilent.
   async apply(): Promise<UpdateStatus> {
+    // Claim the update synchronously so repeat clicks or concurrent renderers cannot start a second
+    // teardown/install. The broadcast also gives the renderer immediate feedback during the shutdown
+    // gate, which can take up to 15 seconds on Windows.
+    if (this.applying) return this.status
+    this.applying = true
+    this.installerStarted = false
+    this.setStatus({ ...this.status, state: 'applying' })
+
     // Stop the agent + notebook process trees BEFORE handing off to the installer. Its uninstall step
     // deletes the running app's files, and on Windows an executable/DLL still mapped by a background
     // child (agent CLI, python kernel, conda) is locked — the classic "Failed to uninstall old
@@ -389,10 +408,25 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
     // may have left grandchildren), refuse the install rather than fail mid-uninstall: the gate is
     // non-latching, so the app stays usable and the user can retry (fewer live processes next time).
     if (this.installGate) {
-      const readiness = await this.installGate()
+      let readiness: Awaited<ReturnType<InstallGate>>
+      try {
+        readiness = await this.installGate()
+      } catch (error) {
+        this.log.error('update install gate failed', error)
+        this.applying = false
+        this.setStatus({
+          ...this.status,
+          state: 'error',
+          error: 'Could not stop background processes before updating. Please try again.'
+        })
+        return this.status
+      }
+      if (!this.applying) return this.status
       if (!readiness.completed || !readiness.reaped) {
         this.log.error('update install gate refused: backend teardown degraded', readiness)
+        this.applying = false
         this.setStatus({
+          ...this.status,
           state: 'error',
           error: 'Could not fully stop background processes before updating. Please try again.'
         })
@@ -401,7 +435,18 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
       this.log.info('update install gate cleared; proceeding to quitAndInstall')
     }
 
-    this.updater.quitAndInstall(true, true)
+    this.installerStarted = true
+    try {
+      this.updater.quitAndInstall(false, true)
+    } catch (error) {
+      this.applying = false
+      this.installerStarted = false
+      this.setStatus({
+        ...this.status,
+        state: 'error',
+        error: error instanceof Error ? error.message : 'Could not start the update installer.'
+      })
+    }
     return this.status
   }
 }
