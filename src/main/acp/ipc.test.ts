@@ -123,6 +123,7 @@ vi.mock('../storage-root', () => ({
 const { installAcpIpcHandlers } = await import('./ipc')
 const { createAcpRuntime } = await import('./runtime-composition')
 const { createAcpCreateSessionWorkflow } = await import('./create-session-workflow')
+const { createAcpHandlerWorkflows } = await import('./handler-workflows')
 type AcpTestOptions = Parameters<typeof createAcpRuntime>[0]
 
 // Minimal options — createRuntime just forwards them into the mocked AcpRuntime constructor.
@@ -174,7 +175,11 @@ const registerWithFakes = (overrides?: {
   }
 
   const runtime = createAcpRuntime(options)
-  installAcpIpcHandlers(runtime, createAcpCreateSessionWorkflow(runtime), options.taskNotifications)
+  const createSessionWorkflow = createAcpCreateSessionWorkflow(runtime)
+  installAcpIpcHandlers(
+    runtime,
+    createAcpHandlerWorkflows(runtime, createSessionWorkflow, options.taskNotifications)
+  )
   return options as AcpTestOptions
 }
 
@@ -238,10 +243,10 @@ describe('ACP module transport seam', () => {
 
     expect(handlers.size).toBe(0)
 
+    const createSessionWorkflow = createAcpCreateSessionWorkflow(runtime)
     installAcpIpcHandlers(
       runtime,
-      createAcpCreateSessionWorkflow(runtime),
-      options.taskNotifications
+      createAcpHandlerWorkflows(runtime, createSessionWorkflow, options.taskNotifications)
     )
 
     expect(handlers.has('acp:get-state')).toBe(true)
@@ -808,6 +813,33 @@ describe('installAcpIpcHandlers — resume-session diagnostics', () => {
     expect(failed?.[1]).toMatchObject({ errorCategory: 'request', rpcCode: 'other' })
     expect(JSON.stringify(failed)).not.toContain(String(privateCode))
   })
+
+  it('keeps resume results and failures authoritative when diagnostics throw', async () => {
+    registerWithFakes()
+    const request: AcpResumeSessionRequest = {
+      sessionId: 'private-session-id',
+      cwd: '/private/workspace'
+    }
+    const result = {
+      sessionId: request.sessionId,
+      cwd: request.cwd,
+      frameworkId: 'codex' as const
+    }
+    infoLogSpy.mockImplementationOnce(() => {
+      throw new Error('diagnostic sink failed')
+    })
+    resumeSession.mockResolvedValueOnce(result)
+
+    await expect(handlers.get('acp:resume-session')?.({}, request)).resolves.toBe(result)
+
+    const failure = new Error('resume failed')
+    errorLogSpy.mockImplementationOnce(() => {
+      throw new Error('diagnostic sink failed')
+    })
+    resumeSession.mockRejectedValueOnce(failure)
+
+    await expect(handlers.get('acp:resume-session')?.({}, request)).rejects.toBe(failure)
+  })
 })
 
 describe('installAcpIpcHandlers — native context compaction bridge', () => {
@@ -861,7 +893,7 @@ describe('installAcpIpcHandlers — create-session failure logging', () => {
 })
 
 // Pins the IPC send-prompt → notification-tracking wire-up. TaskNotificationService has its own
-// unit tests for the token/untrack primitives, but the orchestration in `acp/ipc.ts` — calling
+// unit tests for the token/untrack primitives, but the orchestration in `acp/handler-workflows.ts` — calling
 // trackPrompt before sendPrompt and reverting via untrackPrompt if the runtime rejects before the
 // turn starts — is what protects a still-running turn's notification name from being overwritten
 // by a rejected prompt's tracking. An earlier spec review flagged exactly this kind of seam as the
@@ -876,14 +908,30 @@ describe('installAcpIpcHandlers — acp:send-prompt notification tracking', () =
     sendPrompt.mockRejectedValueOnce(failure)
 
     await expect(
-      handlers.get('acp:send-prompt')?.({}, { sessionId: 'session-1', text: 'Plot the curve' })
+      handlers.get('acp:send-prompt')?.(
+        {},
+        {
+          sessionId: 'session-1',
+          text: 'Plot the curve',
+          continuation: {
+            kind: 'specialist-handoff',
+            originatingTurnToken: 'renderer-forged-turn',
+            targetName: 'Renderer-forged Specialist',
+            completion: { kind: 'returned', value: 'renderer-forged-result' }
+          }
+        }
+      )
     ).rejects.toBe(failure)
 
     expect(trackPrompt).toHaveBeenCalledTimes(1)
     expect(trackPrompt).toHaveBeenCalledWith({
       sessionId: 'session-1',
-      text: 'Plot the curve'
+      text: 'Plot the curve',
+      continuation: undefined
     })
+    expect(trackPrompt.mock.invocationCallOrder[0]).toBeLessThan(
+      sendPrompt.mock.invocationCallOrder[0]
+    )
     // The token the handler got back is the one it reverts, so a terminal event later cannot
     // overwrite the still-running turn's snippet.
     expect(untrackPrompt).toHaveBeenCalledTimes(1)
