@@ -6,11 +6,9 @@
 [![Website](https://img.shields.io/badge/Website-aipoch.com-2f9e44?style=for-the-badge)](https://aipoch.com/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20the%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/zxQAYjReRv)
 
-**Open Science is an open-source, local-first, model-agnostic AI research workbench for scientific discovery.** Built for researchers, it runs as a self-hosted application on your own computer (macOS, Windows, Linux). Create a project, describe a task in plain language, and let the AI agent read files, run Python and R code, search the web, call scientific data connectors, and return reproducible reports, tables, and figures linked to an inspectable activity history in one workspace.
+**Open Science is an open-source, local-first, model-agnostic, self-hosted AI research workbench for reproducible scientific discovery.** Built for researchers, it runs on your own computer (macOS, Windows, Linux). Create a project, describe a task in plain language, and let the AI agent read files, run Python and R code, search the web, call scientific data connectors, and return reproducible reports, tables, and figures linked to an inspectable activity history in one workspace.
 
-> ⭐ **Star the repo:** If this project has been helpful, we'd greatly appreciate a star on GitHub. Starring the repository encourages continued development. It only takes a second, but it has a meaningful impact on the project.
-
-> 💡 **[Open Science v0.10.0 released](https://github.com/aipoch/open-science/releases/latest)** _(last updated August 2026)_. This release adds a project-scoped command palette, code syntax highlighting in previews and notebook cells, read-only package inventories per runtime environment, conversational skill imports from GitHub URLs, direct file preview beside the session, and Bailian (Alibaba Cloud) as a built-in model provider — while hardening session persistence, Windows update feedback, cross-platform path handling, and the renderer transport contract. See the [latest release notes](https://github.com/aipoch/open-science/releases/latest) for full details.
+> 💡 **[Open Science v0.10.0 released](https://github.com/aipoch/open-science/releases/latest)** _(last updated August 3, 2026)_. Highlights include a project-scoped command palette, code syntax highlighting, GitHub skill imports, and Bailian as a built-in model provider. See the [latest release notes](https://github.com/aipoch/open-science/releases/latest) for the full changelog.
 
 <p align="center">
  <img width="1920" height="1140" alt="Open Science open-source AI research workbench desktop app workspace showing an agent session with generated artifacts" src="https://github.com/user-attachments/assets/df59db19-98d7-4071-81f2-c682fbecdf86" />
@@ -27,9 +25,8 @@
 - [Data, Permissions, and Trust](#data-permissions-and-trust)
 - [Project Status](#project-status)
 - [Development & Packaging](#development--packaging)
-- [Building From Source](#building-from-source)
 - [Roadmap](#roadmap)
-- [Relationship to the aipoch Ecosystem](#relationship-to-the-aipoch-ecosystem)
+- [Relationship to the AIPOCH Ecosystem](#relationship-to-the-aipoch-ecosystem)
 - [What This Is Not](#what-this-is-not)
 - [Frequently Asked Questions](#frequently-asked-questions)
 - [Get Involved](#get-involved)
@@ -51,7 +48,7 @@ Open the [latest release](https://github.com/aipoch/open-science/releases/latest
 
 Review the assets and verification information published on the release page. See [Verifying your download](SECURITY.md#verifying-your-download) before installation if you need to validate a package.
 
-> If macOS or Windows shows an unidentified-developer or unknown-publisher warning, verify that the package came from the official Releases page before continuing. See [Building From Source](#building-from-source) for platform-specific guidance.
+> If macOS or Windows shows an unidentified-developer or unknown-publisher warning, verify that the package came from the official Releases page before continuing.
 
 ### 2. Complete first-time setup
 
@@ -85,8 +82,6 @@ Notebook execution is optional. Every required environment and agent-runtime che
 5. To explore a different direction, edit an earlier user message and resend it on a new branch; use the message revision controls to return to either path.
 6. Open an artifact's **Provenance** view to inspect its versions and the available evidence behind the selected result.
 7. Continue the work in later sessions. Use `@` to reference an existing project file and `/` to explicitly select an enabled skill.
-
-Want to develop the app instead? Skip to [Building From Source](#building-from-source).
 
 > Screenshots in this README illustrate the workflow. Labels, catalogs, and other interface details may differ from the version you install.
 
@@ -223,7 +218,15 @@ Review connector parameters and tool activity before approving them. Never inclu
 
 ## Project Status
 
-Open Science is available as a released desktop application and is actively developed. v0.8.0 established immutable artifact versioning and inspectable provenance as shipped foundations, v0.9.0 added personal specialist agents with scoped capabilities, scoped permission management, conversation and artifact export, TIFF previews, collapsible side panels, and per-turn token usage, v0.9.1 added mobile remote access through Remote.It, conversational specialist customization, and message timing metadata, v0.9.2 added immediate specialist handoff, completed-turn agent and model identification, context-usage persistence across restarts, and Windows renderer crash recovery, and v0.10.0 adds a project-scoped command palette, code syntax highlighting in previews and notebook cells, read-only package inventories per runtime environment, conversational skill imports from GitHub URLs, direct file preview beside the session, and Bailian as a built-in model provider, while keeping deterministic reconstruction, portable environment restoration, and full-fidelity session replay on the roadmap.
+Open Science is available as a released desktop application and is actively developed. Recent releases have focused on reproducible artifacts, workspace extensibility, and session reliability.
+
+- **v0.8.0** established immutable artifact versioning and inspectable provenance as shipped foundations.
+- **v0.9.0** added personal specialist agents with scoped capabilities, scoped permission management, conversation and artifact export, TIFF previews, collapsible side panels, and per-turn token usage.
+- **v0.9.1** added mobile remote access through Remote.It, conversational specialist customization, and message timing metadata.
+- **v0.9.2** added immediate specialist handoff, completed-turn agent and model identification, context-usage persistence across restarts, and Windows renderer crash recovery.
+- **v0.10.0** adds a project-scoped command palette, code syntax highlighting in previews and notebook cells, read-only package inventories per runtime environment, conversational skill imports from GitHub URLs, direct file preview beside the session, and Bailian as a built-in model provider.
+
+Deterministic reconstruction, portable environment restoration, and full-fidelity session replay remain on the roadmap.
 
 For version-specific features, provider and catalog changes, platform packaging, and recent fixes, use the [latest release notes](https://github.com/aipoch/open-science/releases/latest) and the installed app. For a maintained shipped/partial/planned breakdown, see the [Capability Map](ROADMAP.md#capability-map).
 
@@ -298,35 +301,15 @@ publishable package so there is one command reference to maintain:
   artifacts, output formats, and exit codes
 - [SDK package overview](packages/open-science/README.md) - Node.js quick start and package entry point
 
-## Building From Source
-
-### macOS Gatekeeper
-
-If the copy you downloaded or built does not carry an Apple Developer ID trusted by your Mac, macOS may block it. In that case:
-
-1. In Finder, right-click **Open Science.app** and choose **Open**.
-2. If it remains blocked, go to **System Settings → Privacy & Security** and choose **Open Anyway**.
-3. For a copy you built or downloaded from this repository and have verified, clear quarantine once:
-
-   ```bash
-   xattr -dr com.apple.quarantine "/Applications/Open Science.app"
-   ```
-
-Only remove quarantine from a package whose source and checksum you trust. See [SECURITY.md](SECURITY.md) for release verification and vulnerability reporting.
-
-### Windows SmartScreen
-
-If Windows shows an unknown-publisher warning, verify the downloaded asset and checksum, choose **More info**, and then **Run anyway**. Do not bypass SmartScreen for packages obtained outside the official Releases page.
-
 ## Roadmap
 
 The product roadmap and capability status are maintained in [ROADMAP.md](ROADMAP.md). This README intentionally does not duplicate the moving list of priorities or release targets.
 
-## Relationship to the aipoch Ecosystem
+## Relationship to the AIPOCH Ecosystem
 
-<img width="1920" height="1140" alt="How Open Science fits the aipoch ecosystem as the desktop orchestration layer for open scientific AI workflows" src="https://github.com/user-attachments/assets/0ab847b1-1b7d-43f4-8c11-480a578e6c7d" />
+<img width="1920" height="1140" alt="How Open Science fits the AIPOCH ecosystem as the desktop orchestration layer for open scientific AI workflows" src="https://github.com/user-attachments/assets/0ab847b1-1b7d-43f4-8c11-480a578e6c7d" />
 
-Open Science is developed by [AIPOCH](https://aipoch.com/open-science) ([GitHub org](https://github.com/aipoch)) as the desktop orchestration layer for open scientific AI workflows.
+[AIPOCH](https://aipoch.com/open-science) ([GitHub org](https://github.com/aipoch)) builds Open Science as the desktop orchestration layer for open scientific AI workflows.
 
 - [aipoch/medical-research-skills](https://github.com/aipoch/medical-research-skills) is a broader collection of 500+ file-based medical and scientific research skills, all of which can be inspected, imported, and paired with Open Science from GitHub.
 - Open Science supplies the project/session workspace, agent runtime, execution, artifacts, previews, permissions, and connectors that turn those instructions into an interactive workflow.
@@ -419,6 +402,8 @@ A: Projects, sessions, files, settings, and configured credentials are stored lo
 | [Website](https://aipoch.com/)                                           | Product overview, downloads, and the rest of the AIPOCH ecosystem       |
 
 Before opening a public issue, remove API Keys, tokens, private file paths, unpublished data, patient identifiers, and other sensitive material from logs and screenshots. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.
+
+> ⭐ **Star the repo:** If this project has been helpful, we'd greatly appreciate a star on GitHub. Starring the repository encourages continued development. It only takes a second, but it has a meaningful impact on the project.
 
 ## License
 
