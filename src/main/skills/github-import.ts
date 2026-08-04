@@ -1,5 +1,9 @@
 import { createLogger } from '../logger'
 import { SKILL_IMPORT_LIMITS } from './import-limits'
+import {
+  GITHUB_REPOSITORY_SEARCH_TOO_LONG_MESSAGE,
+  type GitHubRepositorySearchView
+} from '../../shared/settings'
 
 const log = createLogger('skills')
 
@@ -308,6 +312,63 @@ const parseGitHubRepo = (input: string): GitHubRepoRef | null => {
   return location ? { owner: location.owner, repo: location.repo, ref: location.ref } : null
 }
 
+const searchGitHubSkillRepositories = async (
+  input: string,
+  fetchImpl: FetchLike
+): Promise<GitHubRepositorySearchView[]> => {
+  const keywords = input.trim()
+  const searchTerms = `${keywords} SKILL.md`
+  if (searchTerms.length > 256) {
+    throw new Error(GITHUB_REPOSITORY_SEARCH_TOO_LONG_MESSAGE)
+  }
+  const query = `${searchTerms} in:name,description,topics,readme`
+  const response = await fetchImpl(
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=10`,
+    { headers: GITHUB_HEADERS }
+  )
+  if (response.status === 403 || response.status === 429) {
+    throw new Error(
+      'GitHub search is temporarily rate-limited. Try again later or paste an owner/repo reference.'
+    )
+  }
+  if (!response.ok) throw new Error(`GitHub API request failed (${response.status}).`)
+
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new Error('GitHub returned an invalid repository search response.')
+  }
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    !Array.isArray((payload as { items?: unknown }).items)
+  ) {
+    throw new Error('GitHub returned an invalid repository search response.')
+  }
+
+  const repositories: GitHubRepositorySearchView[] = []
+  for (const item of (payload as { items: unknown[] }).items.slice(0, 10)) {
+    if (!item || typeof item !== 'object') continue
+    const repository = item as Record<string, unknown>
+    if (
+      typeof repository.full_name !== 'string' ||
+      (repository.description !== null && typeof repository.description !== 'string') ||
+      typeof repository.html_url !== 'string' ||
+      typeof repository.stargazers_count !== 'number'
+    ) {
+      continue
+    }
+    repositories.push({
+      fullName: repository.full_name,
+      description: repository.description,
+      url: repository.html_url,
+      stars: repository.stargazers_count
+    })
+  }
+  return repositories
+}
+
 // Scans a repo's git tree for every directory containing a SKILL.md, returning an importable URL for
 // each. Resolve branch/tag refs to a commit first so a later preview and import read the same snapshot.
 const scanRepoForSkills = async (
@@ -337,7 +398,15 @@ const scanRepoForSkills = async (
   )
   if (!treeResponse.ok) throw new Error(`GitHub API request failed (${treeResponse.status}).`)
 
-  const tree = (await treeResponse.json()) as { tree?: { path: string; type: string }[] }
+  const tree = (await treeResponse.json()) as {
+    tree?: { path: string; type: string }[]
+    truncated?: boolean
+  }
+  if (tree.truncated) {
+    throw new Error(
+      'This repository is too large to scan completely. Paste a link to the Skill folder instead.'
+    )
+  }
   const skills: ScannedSkill[] = []
 
   for (const entry of tree.tree ?? []) {
@@ -360,6 +429,7 @@ const scanRepoForSkills = async (
 export {
   parseGitHubSkillUrl,
   parseGitHubRepo,
+  searchGitHubSkillRepositories,
   fetchSkillPreview,
   fetchSkillFiles,
   scanRepoForSkills
