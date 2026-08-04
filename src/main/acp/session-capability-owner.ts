@@ -616,7 +616,8 @@ export class AcpSessionCapabilityOwner {
         routingId
       ),
       allowedImportRoots: [sessionCwd],
-      rpcEndpoint: connection?.endpoint
+      rpcEndpoint: connection?.endpoint,
+      rpcSocketPath: connection?.socketPath
     }
   }
 
@@ -637,6 +638,7 @@ export class AcpSessionCapabilityOwner {
     onConnection?.(connection)
     return {
       endpoint: connection.endpoint,
+      socketPath: connection.socketPath,
       token: connection.token,
       projectName,
       sessionId: routingId,
