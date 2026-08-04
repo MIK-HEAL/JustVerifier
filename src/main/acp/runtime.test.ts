@@ -3049,6 +3049,7 @@ describe('ACP runtime session management', () => {
       repository: new NotebookRunRepository(root)
     })
     const notebookRpcServer = new NotebookLocalRpcServer(notebookService, {
+      transport: 'tcp',
       token: 'control-token',
       connectorService: { call: connectorCall }
     })
@@ -14502,6 +14503,7 @@ describe('ACP runtime session management', () => {
       repository: new NotebookRunRepository(storageRoot)
     })
     const rpcServer = new NotebookLocalRpcServer(notebookService, {
+      transport: 'tcp',
       artifactProvenance: {
         createVersion: async (request) => {
           rpcWriteStarted.resolve()
