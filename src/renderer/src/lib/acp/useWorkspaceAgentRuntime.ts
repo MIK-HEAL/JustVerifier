@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   AcpConnectionStatus,
@@ -14,6 +14,7 @@ import {
   type SessionPermissionProfileState
 } from '../../../../shared/permission-profiles'
 import {
+  imageAttachmentMimeType,
   toPersistedUploadedAttachment,
   toRuntimeUploadedAttachment,
   type UploadedAttachment
@@ -22,9 +23,9 @@ import type { FileReference } from '../../../../shared/artifacts'
 import type { MessagePart } from '../../../../shared/session-persistence'
 import { getActiveConversationContext } from '../../../../shared/conversation-graph'
 import type { AgentFrameworkId } from '../../../../shared/settings'
+import { resolveModelContextWindow } from '../../../../shared/provider-registry'
 import { isMediaOverflowError } from '../../../../shared/media-overflow'
 import {
-  IMAGE_REPLAY_UNSUPPORTED_MESSAGE,
   RESUME_MODEL_INCOMPATIBLE_MESSAGE,
   RESUME_RECONNECT_FAILED_MESSAGE,
   RESUME_TIMED_OUT_MESSAGE,
@@ -35,7 +36,12 @@ import { usePreviewWorkbenchStore } from '../../stores/preview-workbench-store'
 import { useSessionStore, type ChatMessage, type ChatSession } from '../../stores/session-store'
 import { useSettingsStore } from '../../stores/settings-store'
 import { useAcpRuntime } from './useAcpRuntime'
-import { buildHistoryPreamble, buildHistoryReplayMedia } from './history-preamble'
+import {
+  buildWorkspaceHistoryReplay,
+  resolveHistoryReplayTarget,
+  resolveSessionHistoryReplayDescriptor,
+  type HistoryReplayDescriptor
+} from './history-preamble'
 import { applyWorkspaceRuntimeEvent, syncWorkspacePermissionState } from './workspace-events'
 
 type SendWorkspaceMessageInput = {
@@ -56,6 +62,7 @@ type SendWorkspaceMessageInput = {
   agentFrameworkId?: AgentFrameworkId
   agentBackendId?: string
   agentModel?: string
+  historyReplayDescriptor?: HistoryReplayDescriptor
   // Skills the user picked in the composer; force-loaded and nudged for this turn only.
   forcedSkillIds?: string[]
   // Existing files referenced via `@` mentions; attached to the prompt as content blocks.
@@ -94,6 +101,37 @@ type HistoryReplayContext = {
   historyImages?: AcpMessageImage[]
 }
 
+const isReplayImage = (attachment: Pick<UploadedAttachment, 'name' | 'mimeType'>): boolean =>
+  imageAttachmentMimeType(attachment.name, attachment.mimeType) !== undefined
+
+const hasHistoryImages = (messages: ChatMessage[]): boolean =>
+  messages.some(
+    (message) => (message.images?.length ?? 0) > 0 || message.uploads?.some(isReplayImage) === true
+  )
+
+const replayAttachmentsForModel = (
+  replay: HistoryReplayContext | undefined,
+  supportsImageInput: boolean | undefined
+): UploadedAttachment[] | undefined => {
+  if (supportsImageInput !== false) return replay?.historyAttachments
+  const attachments = replay?.historyAttachments?.filter((attachment) => !isReplayImage(attachment))
+  return attachments?.length ? attachments : undefined
+}
+
+const buildWorkspaceReplay = (
+  messages: ChatMessage[],
+  descriptor: HistoryReplayDescriptor | undefined,
+  frameworkId: AgentFrameworkId | undefined,
+  projectId?: string,
+  supportsImageInput?: boolean
+): HistoryReplayContext | undefined =>
+  buildWorkspaceHistoryReplay(
+    messages,
+    descriptor ?? { target: resolveHistoryReplayTarget(frameworkId) },
+    projectId,
+    supportsImageInput
+  )
+
 type SendPreparationStateChange = (sessionId: string, inFlight: boolean) => void
 type RuntimeEventDrain = (sessionId?: string) => Promise<void>
 
@@ -114,6 +152,7 @@ type ResendEditedWorkspaceMessageOptions = {
   agentFrameworkId?: AgentFrameworkId
   agentBackendId?: string
   agentModel?: string
+  historyReplayDescriptor?: HistoryReplayDescriptor
   onSendPreparationStateChange?: SendPreparationStateChange
   drainRuntimeEvents?: RuntimeEventDrain
 }
@@ -121,6 +160,7 @@ type ResendEditedWorkspaceMessageOptions = {
 type ResumeInterruptedWorkspaceSessionOptions = {
   supportsImageInput?: boolean
   agentModel?: string
+  historyReplayDescriptor?: HistoryReplayDescriptor
   onSendPreparationStateChange?: SendPreparationStateChange
   drainRuntimeEvents?: RuntimeEventDrain
 }
@@ -590,7 +630,8 @@ const startPendingSessionPrompt = (
   forcedSkillIds: string[] | undefined,
   referencedArtifacts: FileReference[] | undefined,
   specialistId: string | undefined,
-  historyReplay?: HistoryReplayContext
+  historyReplay?: HistoryReplayContext,
+  contextReset = false
 ): void => {
   void (async () => {
     if (!sessionOwnsActivePrompt(pending.sessionId, pending.messageId)) return
@@ -674,7 +715,8 @@ const startPendingSessionPrompt = (
         historyReplay?.historyAttachments,
         historyReplay?.historyImages,
         undefined,
-        getPromptProvenanceContext(runtimeSessionId, bound.messageId)
+        getPromptProvenanceContext(runtimeSessionId, bound.messageId),
+        contextReset
       )
       .then((snapshot) => {
         useSessionStore.getState().clearPendingContextReplay(runtimeSessionId, bound.messageId)
@@ -704,6 +746,7 @@ const sendWorkspaceMessage = async (
     agentFrameworkId,
     agentBackendId,
     agentModel,
+    historyReplayDescriptor,
     forcedSkillIds,
     referencedArtifacts,
     parts,
@@ -788,29 +831,19 @@ const sendWorkspaceMessage = async (
       useSessionStore.getState().failRun(pending.sessionId, getErrorMessage(error))
       return pending
     }
-    const historyReplay: HistoryReplayContext = {
-      historyPreamble: buildHistoryPreamble(historyMessages)
-    }
-    let replayMedia: ReturnType<typeof buildHistoryReplayMedia>
+    let historyReplay: HistoryReplayContext | undefined
     try {
-      replayMedia = buildHistoryReplayMedia(historyMessages, sessionProjectName)
+      historyReplay = buildWorkspaceReplay(
+        historyMessages,
+        historyReplayDescriptor,
+        agentFrameworkId,
+        sessionProjectName,
+        supportsImageInput
+      )
     } catch (error) {
       useSessionStore.getState().failRun(pending.sessionId, getErrorMessage(error))
       return pending
     }
-
-    // Branch creation is intentionally immediate. A model incompatibility remains a recoverable error
-    // on the selected pending Session and must never silently dispatch the new prompt without history.
-    if (
-      supportsImageInput === false &&
-      (replayMedia.images.length > 0 || replayMedia.attachments.length > 0)
-    ) {
-      useSessionStore.getState().failRun(pending.sessionId, IMAGE_REPLAY_UNSUPPORTED_MESSAGE)
-      return pending
-    }
-
-    historyReplay.historyAttachments = replayMedia.attachments
-    historyReplay.historyImages = replayMedia.images
 
     startPendingSessionPrompt(
       runtime,
@@ -823,7 +856,8 @@ const sendWorkspaceMessage = async (
       forcedSkillIds,
       referencedArtifacts,
       pendingSession.specialistId,
-      historyReplay
+      historyReplay,
+      true
     )
 
     return pending
@@ -857,9 +891,15 @@ const sendWorkspaceMessage = async (
         const historyMessages = currentSession.messages.filter(
           (message) => message.id !== currentSession.pendingContextReplayMessageId
         )
-        let replayMedia: ReturnType<typeof buildHistoryReplayMedia>
+        let replay: HistoryReplayContext | undefined
         try {
-          replayMedia = buildHistoryReplayMedia(historyMessages, sessionProjectName)
+          replay = buildWorkspaceReplay(
+            historyMessages,
+            historyReplayDescriptor,
+            agentFrameworkId,
+            sessionProjectName,
+            supportsImageInput
+          )
         } catch (error) {
           useSessionStore.getState().failRun(currentSession.id, getErrorMessage(error))
           return {
@@ -868,23 +908,7 @@ const sendWorkspaceMessage = async (
           }
         }
 
-        // Keep the original pending prompt intact until the selected model can accept its history.
-        if (
-          supportsImageInput === false &&
-          (replayMedia.images.length > 0 || replayMedia.attachments.length > 0)
-        ) {
-          useSessionStore.getState().failRun(currentSession.id, IMAGE_REPLAY_UNSUPPORTED_MESSAGE)
-          return {
-            sessionId: currentSession.id,
-            messageId: currentSession.pendingContextReplayMessageId
-          }
-        }
-
-        historyReplay = {
-          historyPreamble: buildHistoryPreamble(historyMessages),
-          historyAttachments: replayMedia.attachments,
-          historyImages: replayMedia.images
-        }
+        historyReplay = replay
       }
 
       const appended = useSessionStore.getState().appendUserMessage({
@@ -912,7 +936,8 @@ const sendWorkspaceMessage = async (
         forcedSkillIds,
         referencedArtifacts,
         currentSession.pendingContextReplayMessageId ? currentSession.specialistId : undefined,
-        historyReplay
+        historyReplay,
+        Boolean(currentSession.pendingContextReplayMessageId)
       )
       return appended
     }
@@ -938,10 +963,7 @@ const sendWorkspaceMessage = async (
     const resumeNeedsImageFiltering =
       runtimeMustAdoptSession &&
       supportsImageInput === false &&
-      (() => {
-        const media = buildHistoryReplayMedia(currentSession?.messages ?? [], sessionProjectName)
-        return media.images.length > 0 || media.attachments.length > 0
-      })()
+      hasHistoryImages(currentSession?.messages ?? [])
     const sendPreparationRequired = branchResetRequired || runtimeMustAdoptSession
 
     if (sendPreparationRequired) {
@@ -1105,23 +1127,42 @@ const sendWorkspaceMessage = async (
         preparedSession?.pendingContextReplayMessageId) &&
       historyMessages
     ) {
-      historyPreamble = buildHistoryPreamble(historyMessages)
-      const media = buildHistoryReplayMedia(historyMessages, sessionProjectName)
-      historyAttachments = supportsImageInput === false ? undefined : media.attachments
-      historyImages = supportsImageInput === false ? undefined : media.images
+      const replay = buildWorkspaceReplay(
+        historyMessages,
+        historyReplayDescriptor,
+        agentFrameworkId,
+        sessionProjectName,
+        supportsImageInput
+      )
+      historyPreamble = replay?.historyPreamble
+      historyAttachments = replayAttachmentsForModel(replay, supportsImageInput)
+      historyImages = supportsImageInput === false ? undefined : replay?.historyImages
     }
 
     const resumeFallback =
       forcedSkillIds && forcedSkillIds.length > 0 && historyMessages
         ? (() => {
-            const media = buildHistoryReplayMedia(historyMessages, sessionProjectName)
+            const replay = buildWorkspaceReplay(
+              historyMessages,
+              historyReplayDescriptor,
+              agentFrameworkId,
+              sessionProjectName,
+              supportsImageInput
+            )
             return {
-              historyPreamble: buildHistoryPreamble(historyMessages),
-              historyAttachments: supportsImageInput === false ? undefined : media.attachments,
-              historyImages: supportsImageInput === false ? undefined : media.images
+              historyPreamble: replay?.historyPreamble,
+              historyAttachments: replayAttachmentsForModel(replay, supportsImageInput),
+              historyImages: supportsImageInput === false ? undefined : replay?.historyImages
             }
           })()
         : undefined
+    const contextReset = Boolean(
+      branchContextResetPerformed ||
+      contextResetFromResume ||
+      forceHistoryReplay ||
+      specialistSwitchReplay ||
+      preparedSession?.pendingContextReplayMessageId
+    )
 
     let promptAttachments = effectiveAttachments
 
@@ -1156,7 +1197,8 @@ const sendWorkspaceMessage = async (
         historyAttachments,
         historyImages,
         resumeFallback,
-        getPromptProvenanceContext(targetSessionId, appended.messageId)
+        getPromptProvenanceContext(targetSessionId, appended.messageId),
+        contextReset
       )
       .then((snapshot) => {
         if (branchContextResetPerformed) {
@@ -1269,6 +1311,7 @@ const resumeInterruptedWorkspaceSession = async (
   {
     supportsImageInput,
     agentModel,
+    historyReplayDescriptor,
     onSendPreparationStateChange,
     drainRuntimeEvents
   }: ResumeInterruptedWorkspaceSessionOptions = {}
@@ -1345,7 +1388,8 @@ const resumeInterruptedWorkspaceSession = async (
       forceHistoryReplay: contextReset,
       requireExistingSession: true,
       supportsImageInput,
-      agentModel
+      agentModel,
+      historyReplayDescriptor
     },
     onSendPreparationStateChange,
     drainRuntimeEvents
@@ -1416,7 +1460,8 @@ const recoverContextOverflowWorkspaceSession = async (
   runtime: WorkspaceMessageRuntime,
   sessionId: string,
   supportsImageInput?: boolean,
-  cancelledSessionIds?: Set<string>
+  cancelledSessionIds?: Set<string>,
+  historyReplayDescriptor?: HistoryReplayDescriptor
 ): Promise<boolean> => {
   const session = useSessionStore.getState().sessions.find((item) => item.id === sessionId)
 
@@ -1522,7 +1567,8 @@ const recoverContextOverflowWorkspaceSession = async (
     forceHistoryReplay: !nativeCompacted,
     allowCompactionRecovery: true,
     supportsImageInput,
-    agentModel: session.agentModel
+    agentModel: session.agentModel,
+    historyReplayDescriptor
   })
 
   if (!retried) restoreRemovedTurnProjection(session)
@@ -1572,6 +1618,7 @@ const resendEditedWorkspaceMessage = async (
     agentFrameworkId,
     agentBackendId,
     agentModel,
+    historyReplayDescriptor,
     onSendPreparationStateChange,
     drainRuntimeEvents
   }: ResendEditedWorkspaceMessageOptions = {}
@@ -1593,22 +1640,6 @@ const resendEditedWorkspaceMessage = async (
     return false
   }
 
-  // Validate replay compatibility before the Branch switch: a kept history with images — whether
-  // agent-emitted blocks or user uploads — cannot be replayed on a model without image input, and
-  // discovering that after the truncation would leave the later turns dropped with no prompt dispatched.
-  const replayMedia = buildHistoryReplayMedia(
-    session.messages.slice(0, cutIndex),
-    session.projectId
-  )
-
-  if (
-    supportsImageInput === false &&
-    (replayMedia.images.length > 0 || replayMedia.attachments.length > 0)
-  ) {
-    useSessionStore.getState().failRun(input.sessionId, IMAGE_REPLAY_UNSUPPORTED_MESSAGE)
-    return false
-  }
-
   const resent = await sendWorkspaceMessage(
     runtime,
     {
@@ -1624,6 +1655,7 @@ const resendEditedWorkspaceMessage = async (
       agentFrameworkId,
       agentBackendId,
       agentModel,
+      historyReplayDescriptor,
       // Reset/adopt while the old Branch remains visible, then replace it only after preparation.
       truncateFromMessageId: input.messageId,
       supportsImageInput
@@ -1800,14 +1832,42 @@ const useWorkspaceAgentRuntime = (): {
   revokePermissionGrant: (sessionId: string, categoryKey: string) => Promise<void>
 } => {
   const runtime = useAcpRuntime()
-  const supportsImageInput = useSettingsStore((state) => {
-    const provider = state.providers.find((candidate) => candidate.id === state.activeProviderId)
-    return provider?.supportsImageInput ?? false
-  })
+  const activeProvider = useSettingsStore((state) =>
+    state.providers.find((candidate) => candidate.id === state.activeProviderId)
+  )
+  const supportsImageInput = activeProvider?.supportsImageInput ?? false
   const activeModel = useSettingsStore((state) => state.activeModel)
   const activeProviderId = useSettingsStore((state) => state.activeProviderId)
   const agentFrameworkId = useSettingsStore((state) => state.agentFrameworkId)
+  const agentFramework = useSettingsStore((state) =>
+    state.agentFrameworks.find((candidate) => candidate.id === state.agentFrameworkId)
+  )
+  const providers = useSettingsStore((state) => state.providers)
+  const agentFrameworks = useSettingsStore((state) => state.agentFrameworks)
   const agentBackendId = activeProviderId ? `${agentFrameworkId}:${activeProviderId}` : undefined
+  const historyReplayDescriptor = useMemo<HistoryReplayDescriptor>(
+    () => ({
+      target: resolveHistoryReplayTarget(agentFrameworkId, activeProvider, agentFramework),
+      contextWindow: activeProvider?.vendorId
+        ? resolveModelContextWindow(
+            activeProvider.vendorId,
+            activeModel ?? activeProvider.model ?? activeProvider.models[0]
+          )
+        : activeProvider?.contextWindow
+    }),
+    [activeModel, activeProvider, agentFramework, agentFrameworkId]
+  )
+  const getSessionHistoryReplayDescriptor = useCallback(
+    (sessionId: string): HistoryReplayDescriptor => {
+      const session = useSessionStore
+        .getState()
+        .sessions.find((candidate) => candidate.id === sessionId)
+      return session
+        ? resolveSessionHistoryReplayDescriptor(session, providers, agentFrameworks)
+        : { target: 'codex-bridge' }
+    },
+    [agentFrameworks, providers]
+  )
   const [sendPreparationInFlightSessionIds, setSendPreparationInFlightSessionIds] = useState<
     string[]
   >([])
@@ -1852,12 +1912,13 @@ const useWorkspaceAgentRuntime = (): {
           recoveryRuntime,
           sessionId,
           supportsImageInput,
-          cancelledOverflowRecoverySessionIds.current
+          cancelledOverflowRecoverySessionIds.current,
+          getSessionHistoryReplayDescriptor(sessionId)
         )
       }
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runtime is read fresh; fire on new events.
-  }, [runtime.state.events])
+  }, [runtime.state.events, getSessionHistoryReplayDescriptor, supportsImageInput])
 
   // Applies each visible runtime event once and trims ids that fell out of the runtime window.
   useEffect(() => {
@@ -1898,7 +1959,8 @@ const useWorkspaceAgentRuntime = (): {
           supportsImageInput,
           agentFrameworkId,
           agentBackendId,
-          agentModel: activeModel
+          agentModel: activeModel,
+          historyReplayDescriptor
         },
         handleSendPreparationStateChange,
         drainRuntimeEvents
@@ -1909,6 +1971,7 @@ const useWorkspaceAgentRuntime = (): {
       agentFrameworkId,
       agentBackendId,
       activeModel,
+      historyReplayDescriptor,
       handleSendPreparationStateChange,
       drainRuntimeEvents
     ]
@@ -1926,6 +1989,7 @@ const useWorkspaceAgentRuntime = (): {
           agentFrameworkId,
           agentBackendId,
           agentModel: activeModel,
+          historyReplayDescriptor,
           onSendPreparationStateChange: handleSendPreparationStateChange,
           drainRuntimeEvents
         }
@@ -1936,6 +2000,7 @@ const useWorkspaceAgentRuntime = (): {
       agentFrameworkId,
       agentBackendId,
       activeModel,
+      historyReplayDescriptor,
       handleSendPreparationStateChange,
       drainRuntimeEvents
     ]
@@ -1949,14 +2014,25 @@ const useWorkspaceAgentRuntime = (): {
   // Explicitly re-attaches an interrupted session's ACP runtime so the user can keep chatting. On
   // success the composer is unlocked; on failure the interrupted banner stays so a retry stays possible.
   const resumeInterruptedSession = useCallback(
-    (sessionId: string): Promise<void> =>
-      resumeInterruptedWorkspaceSession(runtime, sessionId, {
+    (sessionId: string): Promise<void> => {
+      const session = useSessionStore
+        .getState()
+        .sessions.find((candidate) => candidate.id === sessionId)
+      return resumeInterruptedWorkspaceSession(runtime, sessionId, {
         supportsImageInput,
-        agentModel: activeModel,
+        agentModel: session?.agentModel,
+        historyReplayDescriptor: getSessionHistoryReplayDescriptor(sessionId),
         onSendPreparationStateChange: handleSendPreparationStateChange,
         drainRuntimeEvents
-      }),
-    [runtime, supportsImageInput, activeModel, handleSendPreparationStateChange, drainRuntimeEvents]
+      })
+    },
+    [
+      runtime,
+      supportsImageInput,
+      getSessionHistoryReplayDescriptor,
+      handleSendPreparationStateChange,
+      drainRuntimeEvents
+    ]
   )
 
   // Sends a cancellation request while the runtime waits for the eventual stop event.
