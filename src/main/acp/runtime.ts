@@ -995,6 +995,7 @@ class AcpRuntime {
       interactionIsLive: this.sessionInteractions.current(input.sessionId) !== undefined
     })
     if (!projection) throw new Error('The Session has no active Plan.')
+    this.assertPlanVisibleToActiveTurn(input.sessionId, projection)
     const identity = {
       projectId: input.projectId,
       sessionId: input.sessionId,
@@ -1085,6 +1086,11 @@ class AcpRuntime {
       throw new Error('The paused Session Plan interaction is no longer available.')
     }
     const interactionIsLive = this.planApprovalWaiters.has(input.sessionId)
+    const projection = await this.planService.getProjection(input.projectId, input.sessionId, {
+      interactionIsLive
+    })
+    if (!projection) throw new Error('The Session has no active Plan.')
+    this.assertPlanVisibleToActiveTurn(input.sessionId, projection)
     const result = await this.planService.respond({ ...input, interactionIsLive })
     if ('projection' in result) {
       if (interactionIsLive && result.projection.approval === 'approved') {
@@ -1170,6 +1176,33 @@ class AcpRuntime {
       interactionSequence: interaction.sequence,
       artifactVersionId
     })
+  }
+
+  private assertPlanVisibleToActiveTurn(sessionId: string, projection: ActivePlanProjection): void {
+    const origin = projection.originatingPromptMessageId
+    if (!origin || !this.artifactTurns?.containsMessageForActiveTurn(sessionId, origin)) {
+      throw new PlanCommandError(
+        'interaction-mismatch',
+        'The active Session Plan does not belong to this Message Branch.'
+      )
+    }
+  }
+
+  private assertPlanVisibleToPrompt(
+    request: AcpPromptRequest,
+    projection: ActivePlanProjection
+  ): void {
+    const origin = projection.originatingPromptMessageId
+    const visibleMessageIds = new Set(request.provenanceContext?.messageAncestry ?? [])
+    if (request.provenanceContext?.promptMessageId) {
+      visibleMessageIds.add(request.provenanceContext.promptMessageId)
+    }
+    if (!origin || !visibleMessageIds.has(origin)) {
+      throw new PlanCommandError(
+        'interaction-mismatch',
+        'The Session Plan continuation does not belong to this Message Branch.'
+      )
+    }
   }
 
   private rejectPlanApprovalWaiter(sessionId: string, reason: string): void {
@@ -1940,9 +1973,12 @@ class AcpRuntime {
         sessionId: request.sessionId,
         artifactVersionId: continuation.artifactVersionId,
         expectedRevision: continuation.expectedRevision
-      }).then((authorized) => Object.freeze({ authorized }))
+      }).then((authorized) => {
+        this.assertPlanVisibleToPrompt(request, authorized)
+        return Object.freeze({ authorized })
+      })
     }
-    if (continuation?.pendingAction !== 'review') return Object.freeze({})
+    if (!continuation) return Object.freeze({})
     return this.planService!.getProjection(continuation.projectId, request.sessionId, {
       interactionIsLive: false
     }).then((protectedPending) => {
@@ -1958,6 +1994,7 @@ class AcpRuntime {
       if (protectedPending.approval !== 'pending') {
         throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
       }
+      this.assertPlanVisibleToPrompt(request, protectedPending)
       return Object.freeze({ protectedPending })
     })
   }
