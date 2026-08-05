@@ -12,6 +12,7 @@ import { PermissionUndoSnackbar } from '@/components/PermissionUndoSnackbar'
 import { SessionPersistenceAlert } from '@/components/SessionPersistenceAlert'
 import { UpdateDialog } from '@/components/UpdateDialog'
 import { GlobalSearchDialog } from '@/components/global-search/GlobalSearchDialog'
+import { STREAMDOWN_FULLSCREEN_SELECTOR } from '@/components/streamdown/dom-selectors'
 import { Button } from '@/components/ui/button'
 import { HomePage } from '@/pages/home/HomePage'
 import { OnboardingWizard } from '@/pages/onboarding/OnboardingWizard'
@@ -19,7 +20,7 @@ import { resolveStartupView } from '@/pages/onboarding/startup-gate'
 import { ComputeApprovalDialog } from '@/pages/settings/ComputeApprovalDialog'
 import { ConnectorApprovalDialog } from '@/pages/settings/ConnectorApprovalDialog'
 import { SkillImportApprovalDialog } from '@/pages/settings/SkillImportApprovalDialog'
-import { SettingsPage } from '@/pages/settings/SettingsPage'
+import { SettingsPage, type SettingsPageHandle } from '@/pages/settings/SettingsPage'
 import { EnvStatusBanner } from '@/pages/workspace/EnvStatusBanner'
 import { WorkspacePage } from '@/pages/workspace/WorkspacePage'
 import { useCloseActivePaneShortcut } from '@/hooks/useCloseActivePaneShortcut'
@@ -57,8 +58,7 @@ const App = (): React.JSX.Element | null => {
     isReady: isSessionPersistenceReady
   })
   const view = useNavigationStore((state) => state.view)
-  // Cmd+W / Ctrl+W closes the open preview panel before it closes the window.
-  useCloseActivePaneShortcut()
+  const settingsPageRef = useRef<SettingsPageHandle>(null)
   useWindowFindAppearanceSync()
   const loadProjects = useProjectStore((state) => state.loadProjects)
   const isSettingsLoaded = useSettingsStore((state) => state.isLoaded)
@@ -68,6 +68,7 @@ const App = (): React.JSX.Element | null => {
   const loadSettings = useSettingsStore((state) => state.load)
   const checkEnvironment = useSettingsStore((state) => state.checkEnvironment)
   const isSettingsOpen = useSettingsStore((state) => state.isSettingsOpen)
+  const openSettings = useSettingsStore((state) => state.openSettings)
   const hasConnectorApproval = useSettingsStore((state) => state.pendingApprovals.length > 0)
   const closeSettings = useSettingsStore((state) => state.closeSettings)
   const enqueueApproval = useSettingsStore((state) => state.enqueueApproval)
@@ -80,6 +81,10 @@ const App = (): React.JSX.Element | null => {
   const initUpdates = useUpdateStore((state) => state.init)
   const isUpdateDialogOpen = useUpdateStore((state) => state.isDialogOpen)
   const isFilePreviewOpen = usePreviewWorkbenchStore((state) => state.fileDialogItem !== undefined)
+  const isExpandedPreviewOpen = usePreviewWorkbenchStore(
+    (state) => state.panelState === 'open' && state.expandedToolItemId === state.activeItemId
+  )
+  const isPreviewModalOpen = view === 'workspace' && (isFilePreviewOpen || isExpandedPreviewOpen)
   const initEnv = useNotebookEnvStore((state) => state.init)
   const envUi = useNotebookEnvStore((state) => state.ui)
   const listenForPermissionChanges = usePermissionGrantsStore((state) => state.listen)
@@ -111,6 +116,20 @@ const App = (): React.JSX.Element | null => {
   })
   const [isCloseConfirmOpen, setIsCloseConfirmOpen] = useState(false)
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false)
+  // Cmd+W / Ctrl+W closes transient modals before falling through to preview panes/window.
+  const closeActiveModal = useCallback((): boolean => {
+    const update = useUpdateStore.getState()
+    if (update.isDialogOpen) {
+      if (update.status.state !== 'applying') update.closeDialog()
+      return true
+    }
+    if (isGlobalSearchOpen) {
+      setIsGlobalSearchOpen(false)
+      return true
+    }
+    return settingsPageRef.current?.closeActivePane() ?? false
+  }, [isGlobalSearchOpen])
+  useCloseActivePaneShortcut(closeActiveModal)
   const startupView = isSettingsLoaded
     ? resolveStartupView({ onboardingDone: onboardingCompletedAt !== undefined })
     : undefined
@@ -138,6 +157,53 @@ const App = (): React.JSX.Element | null => {
   useUnreadTaskViewSync({ isSessionContentVisible })
 
   useEffect(() => {
+    const openSettingsFromShortcut = (event: KeyboardEvent): void => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.key !== ',' ||
+        !(event.metaKey || event.ctrlKey) ||
+        document.querySelector(
+          `[role="dialog"]:not([data-state="closed"]), [role="alertdialog"]:not([data-state="closed"]), ${STREAMDOWN_FULLSCREEN_SELECTOR}`
+        ) !== null ||
+        startupView !== 'app' ||
+        !isSessionPersistenceHydrated ||
+        isSettingsOpen ||
+        isGlobalSearchOpen ||
+        hasConnectorApproval ||
+        hasComputeApproval ||
+        hasSkillImportApproval ||
+        isUpdateDialogOpen ||
+        isPreviewModalOpen ||
+        isCloseConfirmOpen ||
+        missingDataRoot !== undefined ||
+        legacyMove !== undefined
+      ) {
+        return
+      }
+      event.preventDefault()
+      openSettings()
+    }
+
+    window.addEventListener('keydown', openSettingsFromShortcut)
+    return () => window.removeEventListener('keydown', openSettingsFromShortcut)
+  }, [
+    hasComputeApproval,
+    hasConnectorApproval,
+    hasSkillImportApproval,
+    isCloseConfirmOpen,
+    isGlobalSearchOpen,
+    isPreviewModalOpen,
+    isSessionPersistenceHydrated,
+    isSettingsOpen,
+    isUpdateDialogOpen,
+    legacyMove,
+    missingDataRoot,
+    openSettings,
+    startupView
+  ])
+
+  useEffect(() => {
     const toggleGlobalSearch = (event: KeyboardEvent): void => {
       if (
         event.defaultPrevented ||
@@ -152,7 +218,7 @@ const App = (): React.JSX.Element | null => {
         hasComputeApproval ||
         hasSkillImportApproval ||
         isUpdateDialogOpen ||
-        isFilePreviewOpen ||
+        isPreviewModalOpen ||
         isCloseConfirmOpen ||
         missingDataRoot !== undefined ||
         legacyMove !== undefined
@@ -171,7 +237,7 @@ const App = (): React.JSX.Element | null => {
     hasSkillImportApproval,
     isCloseConfirmOpen,
     isSessionPersistenceHydrated,
-    isFilePreviewOpen,
+    isPreviewModalOpen,
     isSettingsLoaded,
     isSettingsOpen,
     isUpdateDialogOpen,
@@ -477,6 +543,7 @@ const App = (): React.JSX.Element | null => {
         />
       )}
       <SettingsPage
+        ref={settingsPageRef}
         open={isSettingsOpen}
         onClose={closeSettings}
         onOpenSession={openPermissionSession}
