@@ -43,6 +43,7 @@ type FakeSettingsService = Record<
   | 'setAgentFramework'
   | 'setReasoningEffort'
   | 'resolveActiveReasoningEffort'
+  | 'resolveActiveModelChangeTarget'
   | 'setNotificationsEnabled'
   | 'setConversationSkillImportEnabled'
   | 'setClosePreference'
@@ -111,6 +112,7 @@ const createFakeService = (): FakeSettingsService => ({
     .fn()
     .mockResolvedValue({ claude: {}, providers: [], reasoningEffort: 'high' }),
   resolveActiveReasoningEffort: vi.fn().mockResolvedValue('high'),
+  resolveActiveModelChangeTarget: vi.fn().mockResolvedValue(undefined),
   setNotificationsEnabled: vi
     .fn()
     .mockResolvedValue({ claude: {}, providers: [], notificationsEnabled: false }),
@@ -198,7 +200,8 @@ const registerTestSettingsIpcHandlers = ({
       runtime: {
         requestProviderReconnect: onActiveProviderChanged ?? (() => undefined),
         requestAgentFrameworkSwitch: onAgentFrameworkChanged ?? (() => undefined),
-        applyReasoningEffort: onReasoningEffortChanged ?? (async () => false)
+        applyReasoningEffort: onReasoningEffortChanged ?? (async () => false),
+        applyModelChange: async () => false
       },
       skills: { requestSkillsReload: onSkillsChanged ?? (() => undefined) },
       connectors: {
@@ -435,6 +438,8 @@ describe('settings IPC handlers', () => {
   it('drops the agent connection when the active provider changes', async () => {
     handlers.clear()
     const service = createFakeService()
+    service.getSettingsView.mockResolvedValue({ activeProviderId: 'p0', providers: [] })
+    service.setActiveProvider.mockResolvedValue({ activeProviderId: 'p1', providers: [] })
     const onActiveProviderChanged = vi.fn()
     registerTestSettingsIpcHandlers({ service: asService(service), onActiveProviderChanged })
 

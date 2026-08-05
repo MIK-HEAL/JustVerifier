@@ -1,5 +1,10 @@
 import type { ModelReasoningEffort, ResolvedReasoningEffort } from '../../shared/reasoning-effort'
-import type { AgentFramework, ResolvedAgentBackend } from '../agent-framework'
+import type {
+  AgentFramework,
+  AgentModelChangeTarget,
+  AgentModelRoute,
+  ResolvedAgentBackend
+} from '../agent-framework'
 
 type AcpBackendGenerationAttemptIdentity = Readonly<{
   epoch: number
@@ -9,6 +14,7 @@ type AcpBackendGenerationAttemptIdentity = Readonly<{
 export type AcpBackendGenerationView = Readonly<{
   framework: AgentFramework
   backendId?: string
+  modelRoute?: AgentModelRoute
   session: Readonly<{
     model?: string
     modelRequired: boolean
@@ -22,6 +28,7 @@ export type AcpBackendGenerationView = Readonly<{
   context: Readonly<{
     window?: number
     model?: string
+    supportsImageInput: boolean
   }>
   adapter: Readonly<{
     codexHome?: string
@@ -69,6 +76,7 @@ const generationView = (backend: ResolvedAgentBackend): AcpBackendGenerationView
   return Object.freeze({
     framework: backend.framework,
     ...(backend.backendId ? { backendId: backend.backendId } : {}),
+    ...(backend.modelRoute ? { modelRoute: backend.modelRoute } : {}),
     session: Object.freeze({
       ...(backend.sessionModel ? { model: backend.sessionModel } : {}),
       modelRequired: backend.sessionModelRequired ?? false,
@@ -85,7 +93,8 @@ const generationView = (backend: ResolvedAgentBackend): AcpBackendGenerationView
     }),
     context: Object.freeze({
       ...(backend.contextWindow ? { window: backend.contextWindow } : {}),
-      ...(backend.contextUsageModel ? { model: backend.contextUsageModel } : {})
+      ...(backend.contextUsageModel ? { model: backend.contextUsageModel } : {}),
+      supportsImageInput: backend.supportsImageInput === true
     }),
     adapter: Object.freeze({
       ...(codexHome ? { codexHome } : {}),
@@ -131,6 +140,28 @@ export class AcpBackendGenerationOwner {
     this.currentView = Object.freeze({
       ...this.currentView,
       session: Object.freeze(session)
+    })
+    return this.currentView
+  }
+
+  updateModel(target: AgentModelChangeTarget): AcpBackendGenerationView {
+    const session = {
+      ...this.currentView.session,
+      model: target.sessionModel,
+      modelRequired: target.sessionModelRequired
+    }
+    if (target.reasoningEffort === 'default') delete session.effort
+    else session.effort = target.reasoningEffort
+    this.currentView = Object.freeze({
+      ...this.currentView,
+      backendId: target.backendId,
+      modelRoute: target.route,
+      session: Object.freeze(session),
+      context: Object.freeze({
+        model: target.model,
+        ...(target.contextWindow ? { window: target.contextWindow } : {}),
+        supportsImageInput: target.supportsImageInput
+      })
     })
     return this.currentView
   }
