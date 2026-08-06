@@ -174,6 +174,8 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
     reconnectPending: () => base.connectionTransitions.providerReconnectPending,
     mcpServerNamesFor: (sessionId) => base.sessionCapabilities.mcpServerNamesFor(sessionId),
     nextEventId: () => publication.nextEventId(),
+    setProviderPermissionProfile: (sessionId, profile) =>
+      permissionContext.setProviderPermissionProfile(sessionId, profile),
     emitState: () => publication.emitState(),
     pushEvent: (event) => publication.pushEvent(event),
     reportToolFailure: (effect) =>

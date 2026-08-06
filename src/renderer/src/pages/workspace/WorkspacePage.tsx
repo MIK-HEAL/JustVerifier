@@ -1108,12 +1108,14 @@ const WorkspacePage = ({
     useSessionStore.getState().setBranchSwitchBlocked(sessionId, !canEditMessage)
     return () => useSessionStore.getState().setBranchSwitchBlocked(sessionId, false)
   }, [activeSession?.id, canEditMessage])
-  const canChangePermissionProfile =
+  const canChangeAgentControls =
     isSessionPersistenceReady &&
     activeSession?.status !== 'running' &&
     activeSession?.status !== 'waiting-permission' &&
     !activeSessionHasRuntimeInteraction &&
     !activeSession?.compacting
+  const canChangePermissionProfile =
+    isSessionPersistenceReady && !activeSessionHasSendPreparation && !activeSession?.compacting
   const canCompactContext =
     isSessionPersistenceReady &&
     activeSessionSupportsNativeCompaction &&
@@ -2486,6 +2488,7 @@ const WorkspacePage = ({
             canCompactContext={canCompactContext}
             compactContextDisabledReason={compactContextDisabledReason}
             onCompactContext={compactActiveContext}
+            canChangeAgentControls={canChangeAgentControls}
             canChangePermissionProfile={canChangePermissionProfile}
             autoReviewEnabled={activeAutoReviewEnabled}
             onDraftDocChange={changeComposerDraftDoc}
