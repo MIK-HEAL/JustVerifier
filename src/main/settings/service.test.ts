@@ -253,6 +253,36 @@ afterEach(async () => {
   await rm(storageRoot, { recursive: true, force: true })
 })
 
+describe('SettingsService: custom MCP OAuth', () => {
+  it('delegates authentication and returns the refreshed connector snapshot', async () => {
+    const service = createService()
+    const added = await service.addCustomServer({
+      name: 'OAuth MCP',
+      transport: 'streamable_http',
+      url: 'https://mcp.example.test',
+      oauth: { scopes: ['openid'] }
+    })
+    const id = added.customServers[0].id
+    const authenticator = vi.fn(async (serverId: string) => {
+      await service.saveCustomServerOAuthState(serverId, {
+        tokens: { access_token: 'access', token_type: 'Bearer' }
+      })
+    })
+    const cancel = vi.fn(async () => undefined)
+    service.setCustomServerAuthenticator(authenticator, cancel)
+
+    const snapshot = await service.authenticateCustomServer(id)
+
+    expect(authenticator).toHaveBeenCalledWith(id)
+    expect(snapshot.customServers[0].oauth).toMatchObject({ hasTokens: true })
+    expect(snapshot.customServers[0].availability).toBeUndefined()
+    expect(snapshot.customServers[0].enabled).toBe(true)
+
+    await service.cancelCustomServerAuthentication(id)
+    expect(cancel).toHaveBeenCalledWith(id)
+  })
+})
+
 describe('SettingsService: providers', () => {
   it('imports existing Codex authentication and its safe active provider route', async () => {
     const userCodexDir = join(storageRoot, 'user-codex')

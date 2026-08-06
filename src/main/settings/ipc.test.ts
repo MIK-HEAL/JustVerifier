@@ -74,8 +74,12 @@ type FakeSettingsService = Record<
   | 'listAgentHomeSkills'
   | 'previewAgentHomeSkill'
   | 'importAgentHomeSkills'
+  | 'previewCustomServerTemplateExport'
+  | 'buildCustomServerTemplateExport'
+  | 'previewCustomServerTemplateImport'
   | 'setConnectorEnabled'
-  | 'updateCustomServer',
+  | 'updateCustomServer'
+  | 'cancelCustomServerAuthentication',
   ReturnType<typeof vi.fn>
 >
 
@@ -161,8 +165,38 @@ const createFakeService = (): FakeSettingsService => ({
   listAgentHomeSkills: vi.fn().mockResolvedValue([]),
   previewAgentHomeSkill: vi.fn().mockResolvedValue({ name: 'Installed preview' }),
   importAgentHomeSkills: vi.fn().mockResolvedValue({ results: [], skills: [] }),
+  previewCustomServerTemplateExport: vi.fn().mockResolvedValue({
+    connectorId: 'server-id',
+    ready: true,
+    diagnostics: [],
+    digest: 'digest',
+    suggestedFileName: 'open-science-connector-example.json'
+  }),
+  buildCustomServerTemplateExport: vi.fn().mockResolvedValue({
+    preview: {
+      connectorId: 'server-id',
+      ready: true,
+      diagnostics: [],
+      digest: 'digest',
+      suggestedFileName: 'open-science-connector-example.json'
+    },
+    contents: '{"schemaVersion":1}\n'
+  }),
+  previewCustomServerTemplateImport: vi.fn().mockResolvedValue({
+    ready: true,
+    diagnostics: [],
+    definition: {
+      schemaVersion: 1,
+      kind: 'open-science.connector',
+      name: 'example-server',
+      slug: 'example-server',
+      transport: 'stdio',
+      command: 'example-mcp'
+    }
+  }),
   setConnectorEnabled: vi.fn().mockResolvedValue({ connectors: [] }),
-  updateCustomServer: vi.fn().mockResolvedValue({ connectors: [], customServers: [] })
+  updateCustomServer: vi.fn().mockResolvedValue({ connectors: [], customServers: [] }),
+  cancelCustomServerAuthentication: vi.fn().mockResolvedValue(undefined)
 })
 
 // Adapts the spy bag into the SettingsService shape the registration function expects.
@@ -179,6 +213,7 @@ type TestSettingsIpcOptions = {
   onCustomServerSecurityChanged?: (serverId: string) => Promise<unknown>
   onAppIconVariantChanged?: SettingsWorkflowEffects['appearance']['applyAppIconVariant']
   listAppIconPreviews?: SettingsIpcOptions['listAppIconPreviews']
+  connectorTemplateFiles?: SettingsIpcOptions['connectorTemplateFiles']
 }
 
 // Keeps the adapter tests concise while routing every mutation through the real workflow owner.
@@ -192,7 +227,8 @@ const registerTestSettingsIpcHandlers = ({
   onCustomServerRemoved,
   onCustomServerSecurityChanged,
   onAppIconVariantChanged,
-  listAppIconPreviews
+  listAppIconPreviews,
+  connectorTemplateFiles
 }: TestSettingsIpcOptions): void => {
   registerSettingsIpcHandlers({
     service,
@@ -215,13 +251,15 @@ const registerTestSettingsIpcHandlers = ({
                 await onCustomServerSecurityChanged(serverId)
               }
             : async () => undefined),
-        beginCustomServerSecurityChange: () => undefined
+        beginCustomServerSecurityChange: () => undefined,
+        clearCustomServerFailure: () => undefined
       },
       appearance: {
         applyAppIconVariant: onAppIconVariantChanged ?? (() => undefined)
       }
     }),
-    listAppIconPreviews
+    listAppIconPreviews,
+    connectorTemplateFiles
   })
 }
 
@@ -256,10 +294,70 @@ describe('settings IPC handlers', () => {
       'settings:login-isolated-claude-browser',
       'settings:cancel-isolated-claude-login',
       'settings:logout-isolated-claude',
-      'settings:mark-onboarding-complete'
+      'settings:mark-onboarding-complete',
+      'settings:preview-custom-server-template-export',
+      'settings:select-custom-server-template',
+      'settings:export-custom-server-template'
     ]) {
       expect(handlers.has(channel)).toBe(true)
     }
+  })
+
+  it('validates selected Connector files and saves only the previewed export', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const connectorTemplateFiles = {
+      select: vi.fn().mockResolvedValue({
+        cancelled: false as const,
+        fileName: 'example.json',
+        contents: '{"schemaVersion":1}'
+      }),
+      save: vi.fn().mockResolvedValue(true)
+    }
+    registerTestSettingsIpcHandlers({
+      service: asService(service),
+      connectorTemplateFiles
+    })
+
+    await expect(invoke('settings:select-custom-server-template')).resolves.toMatchObject({
+      cancelled: false,
+      fileName: 'example.json',
+      preview: { ready: true }
+    })
+    expect(service.previewCustomServerTemplateImport).toHaveBeenCalledWith('{"schemaVersion":1}')
+
+    await expect(
+      invoke('settings:select-custom-server-template', {
+        fileName: 'dropped.json',
+        contents: '{"schemaVersion":1,"kind":"open-science.connector"}'
+      })
+    ).resolves.toMatchObject({
+      cancelled: false,
+      fileName: 'dropped.json',
+      preview: { ready: true }
+    })
+    expect(connectorTemplateFiles.select).toHaveBeenCalledTimes(1)
+    expect(service.previewCustomServerTemplateImport).toHaveBeenLastCalledWith(
+      '{"schemaVersion":1,"kind":"open-science.connector"}'
+    )
+
+    await expect(
+      invoke('settings:export-custom-server-template', {
+        id: 'server-id',
+        expectedDigest: 'digest'
+      })
+    ).resolves.toEqual({ saved: true })
+    expect(connectorTemplateFiles.save).toHaveBeenCalledWith(
+      'open-science-connector-example.json',
+      '{"schemaVersion":1}\n'
+    )
+
+    await expect(
+      invoke('settings:export-custom-server-template', {
+        id: 'server-id',
+        expectedDigest: 'stale'
+      })
+    ).rejects.toThrow('changed after preview')
   })
 
   it('routes provider commands to the service', async () => {
@@ -406,6 +504,18 @@ describe('settings IPC handlers', () => {
     // fires even if the refresh rejects — see connector-skill-reload.finally.test.ts).
     expect(service.setConnectorEnabled).toHaveBeenCalledWith({ id: 'biomart', enabled: false })
     expect(onConnectorsChanged).toHaveBeenCalledOnce()
+  })
+
+  it('routes OAuth cancellation without treating it as a Connector settings change', async () => {
+    handlers.clear()
+    const fake = createFakeService()
+    const onConnectorsChanged = vi.fn()
+    registerTestSettingsIpcHandlers({ service: asService(fake), onConnectorsChanged })
+
+    await invoke('settings:cancel-custom-server-authentication', { id: 'server-id' })
+
+    expect(fake.cancelCustomServerAuthentication).toHaveBeenCalledWith('server-id')
+    expect(onConnectorsChanged).not.toHaveBeenCalled()
   })
 
   it('passes the custom-server security invalidation gate through before refreshing connectors', async () => {

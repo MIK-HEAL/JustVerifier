@@ -35,7 +35,8 @@ const testEffects = (effects: TestSettingsWorkflowEffects = {}): SettingsWorkflo
     refreshConnectorSkillDocs: effects.refreshConnectorSkillDocs ?? (async () => undefined),
     requestSkillsReload: effects.requestSkillsReload ?? (() => undefined),
     pruneCustomServerPermissions: effects.pruneCustomServerPermissions ?? (async () => undefined),
-    beginCustomServerSecurityChange: effects.beginCustomServerSecurityChange ?? (() => undefined)
+    beginCustomServerSecurityChange: effects.beginCustomServerSecurityChange ?? (() => undefined),
+    clearCustomServerFailure: effects.clearCustomServerFailure ?? (() => undefined)
   },
   appearance: { applyAppIconVariant: effects.applyAppIconVariant ?? (() => undefined) }
 })
@@ -97,7 +98,9 @@ const fakeStore = () => {
     addCustomServer: vi.fn().mockResolvedValue({ connectors: [] }),
     setCustomServerEnabled: vi.fn().mockResolvedValue({ connectors: [] }),
     removeCustomServer: vi.fn().mockResolvedValue({ connectors: [] }),
-    updateCustomServer: vi.fn().mockResolvedValue({ connectors: [] })
+    updateCustomServer: vi.fn().mockResolvedValue({ connectors: [] }),
+    authenticateCustomServer: vi.fn().mockResolvedValue({ connectors: [] }),
+    cancelCustomServerAuthentication: vi.fn().mockResolvedValue(undefined)
   }
   return { store, capability: store as unknown as SettingsWorkflowStore }
 }
@@ -537,6 +540,40 @@ describe('SettingsWorkflows catalog and appearance effects', () => {
     await vi.waitFor(() => expect(calls).toEqual(['persist', 'invalidate', 'refresh', 'reload']))
   })
 
+  it('refreshes Connector projections after OAuth authentication', async () => {
+    const calls: string[] = []
+    const { store, capability } = fakeStore()
+    store.authenticateCustomServer.mockImplementation(async () => {
+      calls.push('authenticate')
+      return { connectors: [] }
+    })
+    const workflows = createSettingsWorkflows(
+      capability,
+      testEffects({
+        clearCustomServerFailure: (serverId) => calls.push(`clear:${serverId}`),
+        invalidatePermissionProjection: () => calls.push('invalidate'),
+        refreshConnectorSkillDocs: async () => {
+          calls.push('refresh')
+        }
+      })
+    ).connectors
+
+    await workflows.authenticateCustomServer({ id: 'server-1' })
+    expect(calls).toEqual(['authenticate', 'clear:server-1', 'invalidate', 'refresh'])
+  })
+
+  it('cancels OAuth authentication without refreshing Connector projections', async () => {
+    const { store, capability } = fakeStore()
+    const refreshConnectorSkillDocs = vi.fn(async () => undefined)
+    const effects = testEffects({ refreshConnectorSkillDocs })
+    const workflows = createSettingsWorkflows(capability, effects).connectors
+
+    await workflows.cancelCustomServerAuthentication({ id: 'server-1' })
+
+    expect(store.cancelCustomServerAuthentication).toHaveBeenCalledWith('server-1')
+    expect(refreshConnectorSkillDocs).not.toHaveBeenCalled()
+  })
+
   it('awaits custom-server prune before refreshing and skips refresh when prune fails', async () => {
     const calls: string[] = []
     const { store, capability } = fakeStore()
@@ -590,6 +627,9 @@ describe('SettingsWorkflows catalog and appearance effects', () => {
     const pruneCustomServerPermissions = vi.fn(async () => {
       calls.push('prune')
     })
+    store.cancelCustomServerAuthentication.mockImplementation(async () => {
+      calls.push('cancel')
+    })
     const workflows = createSettingsWorkflows(
       capability,
       testEffects({
@@ -607,12 +647,20 @@ describe('SettingsWorkflows catalog and appearance effects', () => {
     const request = { id: 'server', transport: 'stdio' as const, command: 'new-mcp' }
 
     await workflows.updateCustomServer(request)
-    expect(calls).toEqual(['begin', 'prune', 'persist', 'commit', 'invalidate', 'refresh'])
+    expect(calls).toEqual([
+      'begin',
+      'cancel',
+      'prune',
+      'persist',
+      'commit',
+      'invalidate',
+      'refresh'
+    ])
 
     calls.length = 0
     pruneCustomServerPermissions.mockRejectedValue(new Error('prune failed'))
     await expect(workflows.updateCustomServer(request)).rejects.toThrow('prune failed')
-    expect(calls).toEqual(['begin', 'rollback'])
+    expect(calls).toEqual(['begin', 'cancel', 'rollback'])
   })
 
   it('applies an icon only after persistence succeeds', async () => {

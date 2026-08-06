@@ -86,6 +86,7 @@ type PreloadApi = {
     logoutIsolatedClaude: () => unknown
     previewGitHubSkill: (request: unknown) => unknown
     previewAgentHomeSkill: (request: unknown) => unknown
+    selectCustomServerTemplate: (request?: unknown) => unknown
   }
   acp: {
     connect: (request?: unknown) => unknown
@@ -378,8 +379,10 @@ describe('preload bridge — public surface inventory', () => {
       'sessions.saveSession',
       'sessions.sendFlushResponse',
       'settings.addCustomServer',
+      'settings.authenticateCustomServer',
       'settings.cancelClaudeLogin',
       'settings.cancelCodexLogin',
+      'settings.cancelCustomServerAuthentication',
       'settings.cancelIsolatedClaudeLogin',
       'settings.checkEnvironment',
       'settings.createSkill',
@@ -388,6 +391,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.detectClaude',
       'settings.detectCodex',
       'settings.detectOpencode',
+      'settings.exportCustomServerTemplate',
       'settings.getConnectorDetail',
       'settings.getPackageMirror',
       'settings.getPreflight',
@@ -419,6 +423,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.onSkillImportApprovalRequest',
       'settings.onSkillImportApprovalSettled',
       'settings.previewAgentHomeSkill',
+      'settings.previewCustomServerTemplateExport',
       'settings.previewGitHubSkill',
       'settings.previewSkillZip',
       'settings.refreshProviderModels',
@@ -427,6 +432,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.respondConnectorApproval',
       'settings.respondSkillImportApproval',
       'settings.scanRepoSkills',
+      'settings.selectCustomServerTemplate',
       'settings.setActiveProvider',
       'settings.setAgentFramework',
       'settings.setAppIconVariant',
@@ -519,11 +525,24 @@ describe('preload bridge — public surface inventory', () => {
   })
 })
 
+describe('preload bridge — Connector configuration files', () => {
+  it('forwards dropped file contents for main-process validation', async () => {
+    const request = {
+      fileName: 'example.json',
+      contents: '{"schemaVersion":1,"kind":"open-science.connector"}'
+    }
+
+    await api.settings.selectCustomServerTemplate(request)
+
+    expect(invokeMock).toHaveBeenCalledWith('settings:select-custom-server-template', request)
+  })
+})
+
 describe('preload bridge — runtime renderer contract catalog', () => {
-  it('routes all 173 owned methods through their cataloged Electron channels', async () => {
+  it('routes all 178 owned methods through their cataloged Electron channels', async () => {
     const requestContracts = runtimeContracts.filter(({ kind }) => kind === 'method')
 
-    expect(runtimeContracts).toHaveLength(173)
+    expect(runtimeContracts).toHaveLength(178)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()

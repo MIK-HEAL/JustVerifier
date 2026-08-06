@@ -1,6 +1,7 @@
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { readFile, stat, writeFile } from 'node:fs/promises'
+import { customConnectorSlug } from '../shared/custom-connector'
 
 import {
   app,
@@ -9,6 +10,7 @@ import {
   net,
   Notification,
   protocol,
+  shell,
   webContents,
   type WebContents
 } from 'electron'
@@ -45,6 +47,7 @@ import { createComputeJobRuntime } from './compute/job-runtime'
 import { waitForInitialConnectorRefresh } from './connector-reload'
 import { ApprovalBroker } from './connectors/approval-broker'
 import { McpClientManager } from './connectors/mcp-client-manager'
+import { isCustomMcpServerRouteSafe, toCustomMcpConfig } from './connectors/custom-mcp-bootstrap'
 import { createMoleculePreviewHandler } from './connectors/molecule-preview'
 import { ALL_CONNECTOR_IDS } from './connectors/registry'
 import { ConnectorRuntimeSettingsProjection } from './connectors/runtime-settings-projection'
@@ -194,7 +197,12 @@ import {
 } from './specialist/package/contribution-template'
 import { SessionBindingService } from './specialist/session-binding'
 import { SPECIALIST_IPC } from '../shared/specialist'
-import type { AppIconPreview, AppIconVariant, RespondApprovalRequest } from '../shared/settings'
+import {
+  CONNECTOR_TEMPLATE_MAX_BYTES,
+  type AppIconPreview,
+  type AppIconVariant,
+  type RespondApprovalRequest
+} from '../shared/settings'
 import { registerStorageIpcHandlers } from './storage/ipc'
 import { createStorageCommandOwner } from './storage/command-owner'
 import { withDataRootWrite } from './storage/migration-state'
@@ -607,6 +615,7 @@ const createApplicationModules = async (
         specialistPackageSkillAdapter.snapshot(),
         settingsService.getConnectors()
       ])
+      const customMcpServers = connectorSettings?.customMcpServers ?? []
       const baseCatalog = {
         appVersion,
         builtinSkills: composeBuiltinSkillCatalog(appVersion, skills),
@@ -620,10 +629,25 @@ const createApplicationModules = async (
             ...(packageSkill ?? {})
           }
         }),
-        connectorIds: [
-          ...ALL_CONNECTOR_IDS,
-          ...(connectorSettings?.customMcpServers ?? []).map((server) => server.id)
-        ],
+        connectorIds: Array.from(
+          new Set([
+            ...ALL_CONNECTOR_IDS,
+            ...customMcpServers
+              .filter((server) => isCustomMcpServerRouteSafe(server, customMcpServers))
+              .map(customConnectorSlug)
+          ])
+        ),
+        connectorAliases: Object.fromEntries(
+          customMcpServers
+            .filter((server) => isCustomMcpServerRouteSafe(server, customMcpServers))
+            .flatMap((server) => {
+              const slug = customConnectorSlug(server)
+              return [
+                [server.name, slug],
+                [server.id, slug]
+              ]
+            })
+        ),
         protectedSpecialistIds: ['reviewer'],
         protectedSpecialistNames: ['Reviewer']
       }
@@ -738,7 +762,11 @@ const createApplicationModules = async (
   // generation (listTools) for user-added custom MCP servers (stdio + remote). It lazily connects per
   // server, so constructing it here does not spawn anything until a custom server is actually used.
   const mcpClientManager = await modules.add(undefined, () => {
-    const manager = new McpClientManager()
+    const manager = new McpClientManager({
+      openExternal: (url) => shell.openExternal(url),
+      saveOAuthState: (serverId, state) =>
+        settingsService.saveCustomServerOAuthState(serverId, state)
+    })
     return {
       name: 'mcp-client-manager',
       capability: manager,
@@ -750,6 +778,16 @@ const createApplicationModules = async (
     skillsDir: join(getAppClaudeConfigDir(resolveStorageRoot()), 'skills'),
     mcpClientManager
   })
+  settingsService.setCustomServerAuthenticator(
+    async (serverId) => {
+      const server = (await settingsService.getConnectors())?.customMcpServers?.find(
+        (candidate) => candidate.id === serverId
+      )
+      if (!server) throw new Error(`Unknown custom connector: ${serverId}`)
+      await mcpClientManager.authenticate(toCustomMcpConfig(server))
+    },
+    (serverId) => mcpClientManager.cancelAuthentication(serverId)
+  )
   // Bridges un-trusted connector calls to the renderer approval card. A tool call that isn't
   // pre-allowed or skip-approved is held here until the user decides (or it auto-denies on timeout).
   const approvalBroker = new ApprovalBroker({
@@ -1240,7 +1278,8 @@ const createApplicationModules = async (
       pruneCustomServerPermissions: (serverId) =>
         permissionGrantRegistry.prune({ kind: 'mcp_server', serverId }).then(() => undefined),
       beginCustomServerSecurityChange: (serverId) =>
-        connectorService.beginCustomServerSecurityChange(serverId)
+        connectorService.beginCustomServerSecurityChange(serverId),
+      clearCustomServerFailure: (serverId) => connectorService.clearCustomServerFailure(serverId)
     },
     appearance: { applyAppIconVariant: onAppIconVariantChanged ?? (() => undefined) }
   })
@@ -1248,7 +1287,36 @@ const createApplicationModules = async (
     registerSettingsIpcHandlers({
       service: settingsService,
       workflows: settingsWorkflows,
-      listAppIconPreviews
+      listAppIconPreviews,
+      connectorTemplateFiles: {
+        select: async () => {
+          const selected = await dialog.showOpenDialog({
+            title: 'Import Connector configuration',
+            properties: ['openFile'],
+            filters: [{ name: 'Connector configuration', extensions: ['json'] }]
+          })
+          const filePath = selected.filePaths[0]
+          if (selected.canceled || !filePath) return { cancelled: true as const }
+          if ((await stat(filePath)).size > CONNECTOR_TEMPLATE_MAX_BYTES) {
+            throw new Error('Connector configuration files must be 256 KiB or smaller')
+          }
+          return {
+            cancelled: false as const,
+            fileName: basename(filePath),
+            contents: await readFile(filePath, 'utf8')
+          }
+        },
+        save: async (suggestedFileName, contents) => {
+          const selected = await dialog.showSaveDialog({
+            title: 'Export Connector configuration',
+            defaultPath: suggestedFileName,
+            filters: [{ name: 'Connector configuration', extensions: ['json'] }]
+          })
+          if (selected.canceled || !selected.filePath) return false
+          await writeFile(selected.filePath, contents, 'utf8')
+          return true
+        }
+      }
     })
   )
   declareElectronAdapter('notebook', () => registerNotebookIpcHandlers(notebookCommands))

@@ -46,7 +46,9 @@ const expectedConnectorChannels = [
   'settings:add-custom-server',
   'settings:set-custom-server-enabled',
   'settings:remove-custom-server',
-  'settings:update-custom-server'
+  'settings:update-custom-server',
+  'settings:authenticate-custom-server',
+  'settings:cancel-custom-server-authentication'
 ] as const
 
 const expectedApprovalChannels = [
@@ -123,7 +125,7 @@ const createDependencies = (): Readonly<{
 }
 
 describe('Settings integration application commands', () => {
-  it('defines the exact 19-command Skill, Connector, and approval inventory', () => {
+  it('defines the exact 21-command Skill, Connector, and approval inventory', () => {
     const groups = [
       settingsSkillApplicationCommandGroup,
       settingsConnectorApplicationCommandGroup,
@@ -157,7 +159,7 @@ describe('Settings integration application commands', () => {
     expect(settingsApprovalApplicationCommandGroup.commands.map((command) => command.name)).toEqual(
       expectedApprovalChannels
     )
-    expect(groups.reduce((count, group) => count + group.commands.length, 0)).toBe(19)
+    expect(groups.reduce((count, group) => count + group.commands.length, 0)).toBe(21)
     expect(router.dispatcher.commandNames()).toEqual([...expectedChannels].sort())
     expect(settingsChannels).toEqual(
       expect.arrayContaining([
@@ -166,14 +168,33 @@ describe('Settings integration application commands', () => {
         ...expectedApprovalChannels
       ])
     )
-    expect(integrationContracts).toHaveLength(19)
+    expect(integrationContracts).toHaveLength(21)
     expect(
-      integrationContracts?.every(
-        (contract) =>
-          contract.kind === 'method' &&
-          contract.surfaceInstallation.localWeb === 'web-rpc' &&
-          contract.surfaceInstallation.remoteWeb === 'web-rpc'
-      )
+      integrationContracts
+        ?.filter(
+          (contract) =>
+            contract.channel !== 'settings:authenticate-custom-server' &&
+            contract.channel !== 'settings:cancel-custom-server-authentication'
+        )
+        .every(
+          (contract) =>
+            contract.kind === 'method' &&
+            contract.surfaceInstallation.localWeb === 'web-rpc' &&
+            contract.surfaceInstallation.remoteWeb === 'web-rpc'
+        )
+    ).toBe(true)
+    expect(
+      integrationContracts
+        ?.filter(
+          (contract) =>
+            contract.channel === 'settings:authenticate-custom-server' ||
+            contract.channel === 'settings:cancel-custom-server-authentication'
+        )
+        .every(
+          (contract) =>
+            contract.surfaceInstallation.localWeb === 'web-rpc' &&
+            contract.surfaceInstallation.remoteWeb === 'rejecting-stub'
+        )
     ).toBe(true)
     for (const eventChannel of [
       'connectors:approval-request',
@@ -346,6 +367,50 @@ describe('Settings integration application commands', () => {
       transport: 'streamable_http',
       url: 'https://mcp.example.test'
     })
+  })
+
+  it('allows OAuth authentication only from the local app', async () => {
+    const { connectorMethod, dependencies } = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerIntegrationSettingsApplicationCommands(router.registrar, dependencies)
+
+    await router.dispatcher.invoke(
+      settingsIntegrationApplicationCommands.authenticateCustomServer,
+      invocation([{ id: 'server-1' }] as const, createWebCallerContext('local-human'))
+    )
+    expect(connectorMethod('authenticateCustomServer')).toHaveBeenCalledWith({ id: 'server-1' })
+
+    await router.dispatcher.invoke(
+      settingsIntegrationApplicationCommands.cancelCustomServerAuthentication,
+      invocation([{ id: 'server-1' }] as const, createWebCallerContext('local-human'))
+    )
+    expect(connectorMethod('cancelCustomServerAuthentication')).toHaveBeenCalledWith({
+      id: 'server-1'
+    })
+
+    await expect(
+      router.dispatcher.invoke(
+        settingsIntegrationApplicationCommands.authenticateCustomServer,
+        invocation(
+          [{ id: 'server-1' }] as const,
+          createWebCallerContext('remote-human', { location: 'remote' })
+        )
+      )
+    ).rejects.toThrow(
+      'Channel only available from the local app: settings:authenticate-custom-server'
+    )
+
+    await expect(
+      router.dispatcher.invoke(
+        settingsIntegrationApplicationCommands.cancelCustomServerAuthentication,
+        invocation(
+          [{ id: 'server-1' }] as const,
+          createWebCallerContext('remote-human', { location: 'remote' })
+        )
+      )
+    ).rejects.toThrow(
+      'Channel only available from the local app: settings:cancel-custom-server-authentication'
+    )
   })
 
   it('allows only current human callers to settle Connector and Skill-import approvals', async () => {

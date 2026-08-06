@@ -212,11 +212,17 @@ import type {
   ScanRepoResult,
   ConnectorsSnapshot,
   ConnectorDetailView,
+  ConnectorTemplateExportPreview,
+  ConnectorTemplateSelectionResult,
+  SelectCustomServerTemplateRequest,
+  ExportCustomServerTemplateRequest,
+  ExportCustomServerTemplateResult,
   SetConnectorEnabledRequest,
   SetConnectorAutoAllowRequest,
   SetToolPermissionRequest,
   SetNcbiCredentialsRequest,
   AddCustomServerRequest,
+  AuthenticateCustomServerRequest,
   SetCustomServerEnabledRequest,
   RemoveCustomServerRequest,
   UpdateCustomServerRequest,
@@ -423,6 +429,13 @@ export interface OpenScienceAPI {
       request: ImportAgentHomeSkillsRequest
     ): Promise<ImportAgentHomeSkillsResult>
     listConnectors(): Promise<ConnectorsSnapshot>
+    previewCustomServerTemplateExport(id: string): Promise<ConnectorTemplateExportPreview>
+    selectCustomServerTemplate(
+      request?: SelectCustomServerTemplateRequest
+    ): Promise<ConnectorTemplateSelectionResult>
+    exportCustomServerTemplate(
+      request: ExportCustomServerTemplateRequest
+    ): Promise<ExportCustomServerTemplateResult>
     getConnectorDetail(id: string): Promise<ConnectorDetailView>
     setConnectorEnabled(request: SetConnectorEnabledRequest): Promise<ConnectorsSnapshot>
     setConnectorAutoAllow(request: SetConnectorAutoAllowRequest): Promise<ConnectorsSnapshot>
@@ -432,6 +445,8 @@ export interface OpenScienceAPI {
     setCustomServerEnabled(request: SetCustomServerEnabledRequest): Promise<ConnectorsSnapshot>
     removeCustomServer(request: RemoveCustomServerRequest): Promise<ConnectorsSnapshot>
     updateCustomServer(request: UpdateCustomServerRequest): Promise<ConnectorsSnapshot>
+    authenticateCustomServer(request: AuthenticateCustomServerRequest): Promise<ConnectorsSnapshot>
+    cancelCustomServerAuthentication(request: AuthenticateCustomServerRequest): Promise<void>
     onConnectorApprovalRequest(listener: AcpListener<ConnectorApprovalRequest>): RemoveListener
     onSkillImportApprovalRequest(
       listener: AcpListener<ConversationSkillImportApprovalRequest>

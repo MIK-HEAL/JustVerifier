@@ -13,11 +13,13 @@
 //  - The ProfileService and catalog services remain authoritative; nothing is copied here.
 
 import { CONNECTOR_CATALOG, type ConnectorMeta } from '../connectors/catalog'
+import { isCustomMcpServerRouteSafe } from '../connectors/custom-mcp-bootstrap'
 import { getConnectorTools } from '../connectors/registry'
 import type { ProfileService } from '../specialist/service'
 import type { SessionBindingService } from '../specialist/session-binding'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import type { StoredConnectors } from '../settings/types'
+import { customConnectorSlug } from '../../shared/custom-connector'
 import {
   isAgentsOpName,
   isAgentsParams,
@@ -411,23 +413,32 @@ export const projectConnectorsFromStored = (
     }))
   }))
 
-  const custom: ConnectorReadModel[] = (stored?.customMcpServers ?? []).map((server) => {
-    const unreachable =
-      (server.transport === 'stdio' && !server.command) ||
-      (server.transport !== 'stdio' && !server.url)
-    return {
-      id: server.id,
-      displayName: server.name,
-      description: server.description ?? '',
-      mainEnabled: server.enabled,
-      // Custom MCP servers expose their tools dynamically; we do not enumerate them here (the
-      // milestone decides whole-Connector inclusion only). An empty tools list keeps the shape
-      // consistent without leaking transport/command details.
-      availability: unreachable ? 'unavailable' : 'available',
-      source: 'custom',
-      tools: []
-    }
-  })
+  const customServers = stored?.customMcpServers ?? []
+  const custom: ConnectorReadModel[] = customServers
+    .filter((server) => isCustomMcpServerRouteSafe(server, customServers))
+    .map((server) => {
+      const unreachable =
+        (server.transport === 'stdio' && !server.command) ||
+        (server.transport !== 'stdio' && !server.url)
+      const unauthenticated = Boolean(server.oauth && !server.oauthState?.tokens?.access_token)
+      return {
+        // The slug is the immutable public route; the UUID remains local Settings/OAuth identity.
+        id: customConnectorSlug(server),
+        displayName: server.name,
+        description: server.description ?? '',
+        mainEnabled: server.enabled && !unauthenticated,
+        // Custom MCP servers expose their tools dynamically; we do not enumerate them here (the
+        // milestone decides whole-Connector inclusion only). An empty tools list keeps the shape
+        // consistent without leaking transport/command details.
+        availability: unreachable
+          ? 'unavailable'
+          : unauthenticated
+            ? 'unauthenticated'
+            : 'available',
+        source: 'custom',
+        tools: []
+      }
+    })
 
   return [...bundled, ...custom]
 }

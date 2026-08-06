@@ -109,7 +109,22 @@ describe('AgentsService read surface', () => {
       autoAllowIds: [],
       disabledConnectorIds: ['chemistry'],
       customMcpServers: [
-        { id: 'cust-1', name: 'My Server', transport: 'stdio', enabled: true, command: 'run' }
+        { id: 'cust-1', name: 'My Server', transport: 'stdio', enabled: true, command: 'run' },
+        {
+          id: 'cust-reserved',
+          name: 'Chemistry!',
+          transport: 'stdio',
+          enabled: true,
+          command: 'run'
+        },
+        {
+          id: 'oauth-1',
+          name: 'OAuth Server',
+          transport: 'streamable_http',
+          enabled: true,
+          url: 'https://mcp.example.test',
+          oauth: {}
+        }
       ]
     }
     const service = new AgentsService({
@@ -122,12 +137,17 @@ describe('AgentsService read surface', () => {
     expect(chemistry?.availability).toBe('available')
     expect(chemistry?.tools.length).toBeGreaterThan(0)
     expect(chemistry).not.toHaveProperty('args')
-    const custom = connectors.find((c) => c.id === 'cust-1')
+    expect(connectors.filter((connector) => connector.id === 'chemistry')).toHaveLength(1)
+    expect(connectors.some((connector) => connector.displayName === 'Chemistry!')).toBe(false)
+    const custom = connectors.find((c) => c.id === 'my-server')
     expect(custom?.source).toBe('custom')
     expect(custom?.mainEnabled).toBe(true)
     expect(custom).not.toHaveProperty('command')
     expect(custom).not.toHaveProperty('headers')
     expect(custom).not.toHaveProperty('env')
+    const oauth = connectors.find((c) => c.id === 'oauth-server')
+    expect(oauth?.availability).toBe('unauthenticated')
+    expect(oauth?.mainEnabled).toBe(false)
   })
 
   it('filters by exact stable id first', async () => {

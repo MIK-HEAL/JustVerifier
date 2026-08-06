@@ -22,7 +22,12 @@ import {
   type SetActiveProviderRequest,
   type SetAgentFrameworkRequest,
   type AddCustomServerRequest,
+  type AuthenticateCustomServerRequest,
+  type ConnectorTemplateSelectionResult,
+  type ExportCustomServerTemplateRequest,
+  type ExportCustomServerTemplateResult,
   type RemoveCustomServerRequest,
+  type SelectCustomServerTemplateRequest,
   type SetCustomServerEnabledRequest,
   type UpdateCustomServerRequest,
   type SetConnectorAutoAllowRequest,
@@ -64,6 +69,12 @@ export type SettingsIpcOptions = {
   // Renders the built-in icon variants to preview data URLs for the Appearance picker. Absent means
   // the picker gets an empty list (no bundled assets available, e.g. an environment without them).
   listAppIconPreviews?: () => AppIconPreview[]
+  connectorTemplateFiles?: {
+    select(): Promise<
+      { cancelled: true } | { cancelled: false; fileName: string; contents: string }
+    >
+    save(suggestedFileName: string, contents: string): Promise<boolean>
+  }
 }
 
 // Streams one install event (log line or progress tick) to every open renderer window.
@@ -76,7 +87,8 @@ const broadcastInstallEvent = (event: ClaudeInstallEvent): void => {
 const registerSettingsIpcHandlers = ({
   service,
   workflows,
-  listAppIconPreviews
+  listAppIconPreviews,
+  connectorTemplateFiles
 }: SettingsIpcOptions): void => {
   ipcMainHandle('settings:get-preflight', () => service.getPreflight())
   ipcMainHandle('settings:get-settings', () => service.getSettingsView())
@@ -242,6 +254,56 @@ const registerSettingsIpcHandlers = ({
   )
 
   ipcMainHandle('settings:list-connectors', () => service.listConnectors())
+  ipcMainHandle('settings:preview-custom-server-template-export', (_event, id: string) =>
+    service.previewCustomServerTemplateExport(id)
+  )
+  ipcMainHandle(
+    'settings:select-custom-server-template',
+    async (
+      _event,
+      request?: SelectCustomServerTemplateRequest
+    ): Promise<ConnectorTemplateSelectionResult> => {
+      if (request) {
+        return {
+          cancelled: false,
+          fileName: request.fileName,
+          preview: await service.previewCustomServerTemplateImport(request.contents)
+        }
+      }
+      if (!connectorTemplateFiles) throw new Error('Connector configuration files are unavailable')
+      const selected = await connectorTemplateFiles.select()
+      if (selected.cancelled) return selected
+      return {
+        cancelled: false,
+        fileName: selected.fileName,
+        preview: await service.previewCustomServerTemplateImport(selected.contents)
+      }
+    }
+  )
+  ipcMainHandle(
+    'settings:export-custom-server-template',
+    async (
+      _event,
+      request: ExportCustomServerTemplateRequest
+    ): Promise<ExportCustomServerTemplateResult> => {
+      if (!connectorTemplateFiles) throw new Error('Connector configuration files are unavailable')
+      const result = await service.buildCustomServerTemplateExport(request.id)
+      if (
+        !result.preview.ready ||
+        !result.preview.digest ||
+        !result.preview.suggestedFileName ||
+        !result.contents
+      ) {
+        throw new Error('Connector configuration is not safe to export')
+      }
+      if (result.preview.digest !== request.expectedDigest) {
+        throw new Error('Connector configuration changed after preview; review it again')
+      }
+      return {
+        saved: await connectorTemplateFiles.save(result.preview.suggestedFileName, result.contents)
+      }
+    }
+  )
   ipcMainHandle('settings:get-connector-detail', (_event, id: string) =>
     service.getConnectorDetail(id)
   )
@@ -272,6 +334,16 @@ const registerSettingsIpcHandlers = ({
   )
   ipcMainHandle('settings:update-custom-server', (_event, request: UpdateCustomServerRequest) =>
     workflows.connectors.updateCustomServer(request)
+  )
+  ipcMainHandle(
+    'settings:authenticate-custom-server',
+    (_event, request: AuthenticateCustomServerRequest) =>
+      workflows.connectors.authenticateCustomServer(request)
+  )
+  ipcMainHandle(
+    'settings:cancel-custom-server-authentication',
+    (_event, request: AuthenticateCustomServerRequest) =>
+      workflows.connectors.cancelCustomServerAuthentication(request)
   )
   // Compute file browser bookmarks: keyed by provider_id in settings.computeBookmarks.
   ipcMainHandle('compute:bookmarks:get', (_event, providerId: string) =>

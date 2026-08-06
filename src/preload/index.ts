@@ -8,6 +8,8 @@ import type { NotebookLanguage } from '../shared/notebook'
 import type { DiscoveredInterpreter } from '../shared/notebook-runtime'
 import type {
   AddCustomServerRequest,
+  AuthenticateCustomServerRequest,
+  ExportCustomServerTemplateRequest,
   CreateSkillRequest,
   DeleteSkillRequest,
   ImportAgentHomeSkillsRequest,
@@ -21,6 +23,7 @@ import type {
   RemoveCustomServerRequest,
   RespondApprovalRequest,
   ScanRepoRequest,
+  SelectCustomServerTemplateRequest,
   SetConnectorAutoAllowRequest,
   SetConnectorEnabledRequest,
   SetCustomServerEnabledRequest,
@@ -237,6 +240,12 @@ const api: OpenScienceAPI = {
     importAgentHomeSkills: (request: ImportAgentHomeSkillsRequest) =>
       electronRendererContracts.invoke('settings.importAgentHomeSkills', request),
     listConnectors: () => electronRendererContracts.invoke('settings.listConnectors'),
+    previewCustomServerTemplateExport: (id: string) =>
+      electronRendererContracts.invoke('settings.previewCustomServerTemplateExport', id),
+    selectCustomServerTemplate: (request?: SelectCustomServerTemplateRequest) =>
+      electronRendererContracts.invoke('settings.selectCustomServerTemplate', request),
+    exportCustomServerTemplate: (request: ExportCustomServerTemplateRequest) =>
+      electronRendererContracts.invoke('settings.exportCustomServerTemplate', request),
     getConnectorDetail: (id: string) =>
       electronRendererContracts.invoke('settings.getConnectorDetail', id),
     setConnectorEnabled: (request: SetConnectorEnabledRequest) =>
@@ -255,6 +264,10 @@ const api: OpenScienceAPI = {
       electronRendererContracts.invoke('settings.removeCustomServer', request),
     updateCustomServer: (request: UpdateCustomServerRequest) =>
       electronRendererContracts.invoke('settings.updateCustomServer', request),
+    authenticateCustomServer: (request: AuthenticateCustomServerRequest) =>
+      electronRendererContracts.invoke('settings.authenticateCustomServer', request),
+    cancelCustomServerAuthentication: (request: AuthenticateCustomServerRequest) =>
+      electronRendererContracts.invoke('settings.cancelCustomServerAuthentication', request),
     // Fires when a connector call needs the user's approval (external data-egress gate).
     onConnectorApprovalRequest: (listener) =>
       electronRendererContracts.subscribe('settings.onConnectorApprovalRequest', listener),
