@@ -26,6 +26,11 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
       ...interactions.filter(({ kind }) => kind === 'compaction')
     ].map(({ sessionId }) => sessionId)
   }
+  const agentPromptInFlightSessionIds = (): string[] =>
+    base.sessionInteractions
+      .snapshot()
+      .filter(({ kind }) => kind === 'prompt')
+      .map(({ sessionId }) => sessionId)
   const snapshotProjection = (): RuntimeSnapshotProjection => {
     const sessionIds = activeSessionIds()
     const promptInFlightIds = promptInFlightSessionIds()
@@ -49,6 +54,7 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
           ? sessionIds
           : [],
       promptInFlight: promptInFlightIds.length > 0,
+      agentPromptInFlightSessionIds: agentPromptInFlightSessionIds(),
       promptInFlightSessionIds: promptInFlightIds
     }
   }
