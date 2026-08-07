@@ -250,6 +250,23 @@ gate('r_loop.R', () => {
     }
   }, 60_000)
 
+  it('captures every base graphics page produced by one run', async () => {
+    const figuresDir = mkdtempSync(join(tmpdir(), 'os-kernel-figs-r-multiple-'))
+    const { child, send } = startLoop(rscriptBin(), {
+      OPEN_SCIENCE_KERNEL_FIGURES_DIR: figuresDir
+    })
+    try {
+      const result = await send('plot(1:3, main = "first"); plot(4:6, main = "second")')
+
+      expect(result.error).toBeNull()
+      expect(result.figures).toHaveLength(2)
+      expect(result.figures.every((figure) => existsSync(figure.path))).toBe(true)
+    } finally {
+      child.kill()
+      rmSync(figuresDir, { recursive: true, force: true })
+    }
+  }, 60_000)
+
   it('does not return a figure for text-only output when figure capture is enabled', async () => {
     const figuresDir = mkdtempSync(join(tmpdir(), 'os-kernel-figs-r-text-'))
     const { child, send } = startLoop(rscriptBin(), {
@@ -897,6 +914,23 @@ gate('r_loop.R', () => {
         // device figure capture, so skip rather than fail.
         return
       }
+      expect(r.error).toBeNull()
+      expect(r.figures.length).toBeGreaterThan(0)
+    } finally {
+      child.kill()
+      rmSync(figuresDir, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  it('captures a lattice figure via autoprint-triggered grid rendering', async () => {
+    const figuresDir = mkdtempSync(join(tmpdir(), 'os-kernel-figs-r-lattice-'))
+    const { child, send } = startLoop(rscriptBin(), {
+      OPEN_SCIENCE_KERNEL_FIGURES_DIR: figuresDir
+    })
+    try {
+      const r = await send('lattice::xyplot(y ~ x, data = data.frame(x = 1:3, y = c(1, 4, 9)))')
+      if (r.error && /there is no package called .lattice./.test(r.error)) return
+
       expect(r.error).toBeNull()
       expect(r.figures.length).toBeGreaterThan(0)
     } finally {
