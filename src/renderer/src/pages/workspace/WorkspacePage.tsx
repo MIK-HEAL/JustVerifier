@@ -2201,8 +2201,8 @@ const WorkspacePage = ({
 
   // Subscribe to specialist catalog changes so unavailability state stays fresh.
   useEffect(() => {
-    // Guard: window.api.specialist may be absent in test/headless environments.
-    if (!window.api?.specialist) return
+    // Guard: specialist.list is Electron-only and unavailable in the web gateway.
+    if (typeof window.api?.specialist?.list !== 'function') return
     void loadSpecialists()
     const remove = window.api.specialist.onCatalogChanged(() => {
       void loadSpecialists()
