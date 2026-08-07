@@ -69,6 +69,7 @@ type PreloadApi = {
     setNotificationsEnabled: (request: unknown) => unknown
     setConversationSkillImportEnabled: (request: unknown) => unknown
     setClosePreference: (request: unknown) => unknown
+    setDefaultPermissionProfile: (request: unknown) => unknown
     setAppIconVariant: (request: unknown) => unknown
     listAppIcons: () => unknown
     uninstallClaude: () => unknown
@@ -451,6 +452,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.setConnectorEnabled',
       'settings.setConversationSkillImportEnabled',
       'settings.setCustomServerEnabled',
+      'settings.setDefaultPermissionProfile',
       'settings.setNcbiCredentials',
       'settings.setNotificationsEnabled',
       'settings.setPackageMirror',
@@ -549,10 +551,10 @@ describe('preload bridge — Connector configuration files', () => {
 })
 
 describe('preload bridge — runtime renderer contract catalog', () => {
-  it('routes all 178 owned methods through their cataloged Electron channels', async () => {
+  it('routes all 179 owned methods through their cataloged Electron channels', async () => {
     const requestContracts = runtimeContracts.filter(({ kind }) => kind === 'method')
 
-    expect(runtimeContracts).toHaveLength(179)
+    expect(runtimeContracts).toHaveLength(180)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -1061,6 +1063,12 @@ const cases: ForwardingCase[] = [
     invoke: (a) => a.settings.setClosePreference({ preference: 'minimize' }),
     channel: 'settings:set-close-preference',
     args: [{ preference: 'minimize' }]
+  },
+  {
+    name: 'settings.setDefaultPermissionProfile → settings:set-default-permission-profile',
+    invoke: (a) => a.settings.setDefaultPermissionProfile({ profile: 'auto' }),
+    channel: 'settings:set-default-permission-profile',
+    args: [{ profile: 'auto' }]
   },
   {
     name: 'settings.setAppIconVariant → settings:set-app-icon-variant',

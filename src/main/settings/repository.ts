@@ -28,6 +28,7 @@ import {
   isReasoningEffort
 } from '../../shared/settings'
 import { isOfficialVendorId } from '../../shared/provider-registry'
+import { isPermissionProfileId, type PermissionProfileId } from '../../shared/permission-profiles'
 import {
   isCustomReasoningEffortTransport,
   isReasoningEffortPresetSetting
@@ -582,6 +583,13 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
     settings.appIconVariant = appIconVariant
   }
 
+  // New-conversation approval default; only known profiles survive hand-edited settings.json.
+  const defaultPermissionProfile = value.defaultPermissionProfile
+
+  if (isPermissionProfileId(defaultPermissionProfile)) {
+    settings.defaultPermissionProfile = defaultPermissionProfile
+  }
+
   const opencodePath = asString(value.opencodePath)
 
   if (opencodePath) {
@@ -966,6 +974,11 @@ class SettingsRepository {
   // Persists the selected app-icon look; applied live to the window and dock/taskbar by the caller.
   async setAppIconVariant(variant: AppIconVariant): Promise<StoredSettings> {
     return this.mutate((settings) => ({ ...settings, appIconVariant: variant }))
+  }
+
+  // Persists the approval profile applied to conversations created after this preference changes.
+  async setDefaultPermissionProfile(profile: PermissionProfileId): Promise<StoredSettings> {
+    return this.mutate((settings) => ({ ...settings, defaultPermissionProfile: profile }))
   }
 
   // Records the detected opencode executable path + version for later spawns + the settings status card.
