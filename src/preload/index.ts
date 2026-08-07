@@ -374,6 +374,10 @@ const api: OpenScienceAPI = {
   github: {
     getStars: () => electronRendererContracts.invoke('github.getStars')
   },
+  network: {
+    getInfo: () => electronRendererContracts.invoke('network.getInfo'),
+    checkConnectivity: () => electronRendererContracts.invoke('network.checkConnectivity')
+  },
   cli: {
     getStatus: () => electronRendererContracts.invoke('cli.getStatus'),
     install: () => electronRendererContracts.invoke('cli.install'),
