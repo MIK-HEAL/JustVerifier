@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import { terminateProcessTree } from '../../src/main/process-tree'
 import { RendererFailureGate } from './renderer-failure-gate'
 
 const APP_ROOT = resolve(process.cwd())
@@ -36,6 +37,54 @@ type LaunchRoots = {
 }
 
 type ShortcutModifier = 'alt' | 'control' | 'meta' | 'shift'
+
+type ElectronCleanupTarget = {
+  close: () => Promise<void>
+  forceClose: () => Promise<void>
+}
+
+type ElectronCleanupOptions = {
+  forcedTimeoutMs: number
+  gracefulTimeoutMs: number
+}
+
+const settlesWithin = async (promise: Promise<void>, timeoutMs: number): Promise<boolean> =>
+  new Promise<boolean>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs)
+    promise.then(
+      () => {
+        clearTimeout(timer)
+        resolve(true)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+
+const closeElectronApplicationForCleanup = async (
+  target: ElectronCleanupTarget,
+  { gracefulTimeoutMs, forcedTimeoutMs }: ElectronCleanupOptions
+): Promise<void> => {
+  const forceCloseWithinBudget = async (): Promise<void> => {
+    if (await settlesWithin(target.forceClose(), forcedTimeoutMs)) return
+    throw new Error(`Electron E2E forced close did not finish within ${forcedTimeoutMs}ms.`)
+  }
+
+  let closeError: unknown
+  const closing = target.close().catch((error: unknown) => {
+    closeError = error
+  })
+  if (await settlesWithin(closing, gracefulTimeoutMs)) {
+    if (closeError === undefined) return
+    await forceCloseWithinBudget()
+    throw closeError
+  }
+
+  await forceCloseWithinBudget()
+  if (closeError !== undefined) throw closeError
+}
 
 type ElectronApp = {
   readonly page: Page
@@ -355,7 +404,7 @@ class ElectronAppHarness implements ElectronApp {
   }
 
   async dispose(): Promise<void> {
-    await this.close().catch(() => undefined)
+    await this.closeForCleanup().catch(() => undefined)
     await makeTreeWritable(this.testRoot)
     await rm(this.testRoot, { force: true, maxRetries: 5, recursive: true, retryDelay: 200 })
     this.rendererFailures.assertNoFailures()
@@ -384,6 +433,25 @@ class ElectronAppHarness implements ElectronApp {
     this.currentPage = undefined
     await application.close()
   }
+
+  private async closeForCleanup(): Promise<void> {
+    if (!this.application) return
+
+    const application = this.application
+    this.application = undefined
+    this.currentPage = undefined
+    await closeElectronApplicationForCleanup(
+      {
+        close: () => application.close(),
+        forceClose: async () => {
+          const result = await terminateProcessTree(application.process())
+          if (!result.reaped)
+            throw new Error('Electron E2E forced close did not reap the process tree.')
+        }
+      },
+      { gracefulTimeoutMs: 10_000, forcedTimeoutMs: 10_000 }
+    )
+  }
 }
 
 const test = base.extend<{ app: ElectronApp }>({
@@ -400,5 +468,5 @@ const test = base.extend<{ app: ElectronApp }>({
   }
 })
 
-export { electronLaunchTarget, launchEnvironment, test }
+export { closeElectronApplicationForCleanup, electronLaunchTarget, launchEnvironment, test }
 export type { ElectronApp }
