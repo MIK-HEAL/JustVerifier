@@ -143,6 +143,7 @@ type HarnessOptions = {
   settings?: StoredSettings
   frameworkOverride?: string
   connectorIds?: string[]
+  connectorSkillNames?: string[]
   rejectRequiredModels?: ReadonlySet<string>
   targetOverride?: (
     provider: StoredProvider,
@@ -239,7 +240,8 @@ const makeHarness = (options: HarnessOptions = {}) => {
     resolveCodexProxyEnvironment: vi.fn(async () => undefined)
   } satisfies AgentBackendRuntimePort
   const connectors = {
-    enabledConnectorIds: vi.fn(() => options.connectorIds ?? [])
+    enabledConnectorIds: vi.fn(() => options.connectorIds ?? []),
+    provisionedConnectorSkillNames: vi.fn(async () => options.connectorSkillNames ?? [])
   } satisfies AgentBackendConnectorPort
 
   const responsesBridges: ResponsesBridgeDouble[] = []
@@ -339,6 +341,7 @@ describe('AgentBackendResolver construction and selection', () => {
     expect(harness.resolveRuntimeTarget).not.toHaveBeenCalled()
     expect(harness.resolveRuntimeReasoningEffortProfile).not.toHaveBeenCalled()
     expect(harness.connectors.enabledConnectorIds).not.toHaveBeenCalled()
+    expect(harness.connectors.provisionedConnectorSkillNames).not.toHaveBeenCalled()
     expect(harness.createResponsesBridge).not.toHaveBeenCalled()
     expect(harness.createNativeResponsesProxy).not.toHaveBeenCalled()
     expect(harness.createAnthropicProviderBridge).not.toHaveBeenCalled()
@@ -1105,6 +1108,55 @@ describe('AgentBackendResolver runtime delegation', () => {
 })
 
 describe('AgentBackendResolver bridge predicates', () => {
+  it.each([
+    { name: 'Claude Code', frameworkId: 'claude-code' as const, target: {} },
+    { name: 'OpenCode', frameworkId: 'opencode' as const, target: {} },
+    {
+      name: 'Codex Responses',
+      frameworkId: 'codex' as const,
+      target: { provider: { apiEndpoints: ['responses'] as const } }
+    },
+    {
+      name: 'Codex bridge',
+      frameworkId: 'codex' as const,
+      target: {
+        needsChatResponsesBridge: true,
+        provider: { apiEndpoints: ['openai'] as const }
+      }
+    }
+  ])('advertises exact enabled Connector Skill names to $name', async (testCase) => {
+    const harness = makeHarness({
+      connectorIds: ['pubmed', 'literature'],
+      connectorSkillNames: ['mcp-pubmed', 'mcp-literature', 'mcp-custom-chemistry'],
+      targetOverride: () => testCase.target
+    })
+
+    const backend = await harness.resolver.resolveExplicitTarget({
+      frameworkId: testCase.frameworkId,
+      providerId: 'provider-a',
+      model: { kind: 'provider-default' },
+      reasoningEffort: 'high'
+    })
+    const instructions =
+      testCase.frameworkId === 'claude-code'
+        ? backend.systemPromptAppends?.join('\n\n')
+        : backend.persistentSystemPrompt
+
+    expect(instructions).toContain(
+      testCase.frameworkId === 'claude-code'
+        ? 'Globally Enabled Connector Skills: `mcp-pubmed`, `mcp-literature`, `mcp-custom-chemistry`.'
+        : 'Globally Enabled Connector Skills: `mcp-pubmed`, `mcp-literature`.'
+    )
+    expect(instructions).toContain('Allowed Specialist Skills for this session')
+    if (testCase.frameworkId !== 'claude-code') {
+      expect(instructions).not.toContain('`mcp-custom-chemistry`')
+    }
+    expect(instructions).not.toContain('`mcp-openalex`')
+    await backend.anthropicBridgeLease?.release()
+    await backend.responsesBridgeLease?.release()
+    await backend.providerTransportLease?.release()
+  })
+
   it.each([
     { name: 'direct Responses', chat: false, native: false, apiEndpoints: ['responses'] as const },
     { name: 'Chat bridge', chat: true, native: false, apiEndpoints: ['openai'] as const },

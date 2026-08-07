@@ -39,20 +39,29 @@ const createProductionPlanService = ({
     },
     readRuntimeContext: (projectId, sessionId) =>
       sessions.readSessionRuntimeContext(projectId, sessionId),
-    patchRuntimeContext: ({ projectId, sessionId, expectedRevision, plan, sessionStatus }) =>
+    patchRuntimeContext: ({
+      projectId,
+      sessionId,
+      expectedRevision,
+      plan,
+      sessionStatus,
+      beforePersist
+    }) =>
       sessions.patchSessionRuntimeContext({
         projectId,
         sessionId,
         expectedRevision,
         patch: { plan },
-        sessionStatus
+        sessionStatus,
+        ...(beforePersist ? { beforePersist } : {})
       }),
     persistUserMessage: (input) =>
       sessions.appendUserMessageToInteraction({
         projectId: input.projectId,
         sessionId: input.sessionId,
         interactionId: input.interactionId,
-        content: input.content
+        content: input.content,
+        ...(input.beforePersist ? { beforePersist: input.beforePersist } : {})
       }),
     isRevisionConflict: (error) => error instanceof SessionRuntimeContextRevisionConflictError
   })

@@ -165,6 +165,7 @@ type PatchSessionRuntimeContextCommand = Readonly<{
   expectedRevision: number
   patch: SessionRuntimeContextPatch
   sessionStatus?: PersistedSessionStatus
+  beforePersist?: () => void
 }>
 
 type AppendUserMessageToInteractionCommand = Readonly<{
@@ -172,6 +173,7 @@ type AppendUserMessageToInteractionCommand = Readonly<{
   sessionId: string
   interactionId: string
   content: string
+  beforePersist?: () => void
 }>
 
 class SessionRuntimeContextRevisionConflictError extends Error {
@@ -772,6 +774,7 @@ class SessionPersistenceCoordinator {
       if (current.revision !== expectedRevision) {
         throw new SessionRuntimeContextRevisionConflictError(expectedRevision, current.revision)
       }
+      command.beforePersist?.()
 
       const candidate: Record<string, unknown> = { ...current }
       for (const [owner, value] of Object.entries(patch)) {
@@ -806,6 +809,7 @@ class SessionPersistenceCoordinator {
         throw new Error('Cannot mutate a session that has been deleted.')
       }
       const session = await this.loadRuntimeContextSession(projectId, sessionId, 'patch')
+      command.beforePersist?.()
       const timestamp = Math.max(session.updatedAt + 1, Date.now())
       const message: PersistedChatMessage = {
         id: `message-${randomUUID()}`,

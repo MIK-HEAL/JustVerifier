@@ -91,8 +91,9 @@ const setup = (): PlanServiceHarness => {
       checksum: createHash('sha256').update(bytes).digest('hex')
     })),
     readRuntimeContext: vi.fn(async () => context),
-    patchRuntimeContext: vi.fn(async ({ expectedRevision, plan, sessionStatus }) => {
+    patchRuntimeContext: vi.fn(async ({ expectedRevision, plan, sessionStatus, beforePersist }) => {
       if (expectedRevision !== context.revision) throw new Error('revision conflict')
+      beforePersist?.()
       context = {
         version: 1,
         revision: context.revision + 1,
@@ -256,6 +257,34 @@ describe('PlanService', () => {
         decision: 'rejected'
       })
     ).rejects.toMatchObject({ code: 'approval-already-decided' })
+  })
+
+  it('does not persist a Plan decision when its commit precondition is revoked', async () => {
+    const { service, context, dependencies } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    vi.mocked(dependencies.patchRuntimeContext).mockClear()
+
+    await expect(
+      service.respond({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: generated.projection.artifactVersionId,
+        expectedRevision: generated.projection.revision,
+        decision: 'approved',
+        beforeDecisionCommit: () => false
+      })
+    ).rejects.toMatchObject({ code: 'interaction-mismatch' })
+
+    expect(dependencies.patchRuntimeContext).toHaveBeenCalledOnce()
+    expect(dependencies.patchRuntimeContext).toHaveBeenCalledWith(
+      expect.objectContaining({ beforePersist: expect.any(Function) })
+    )
+    expect(context().plan?.approval).toBe('pending')
   })
 
   it.each(['approved', 'rejected'] as const)(

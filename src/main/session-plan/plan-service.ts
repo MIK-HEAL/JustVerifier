@@ -52,6 +52,7 @@ type PlanServiceDependencies = Readonly<{
     expectedRevision: number
     plan: SessionPlanRuntimeContext | undefined
     sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
+    beforePersist?: () => void
   }) => Promise<SessionRuntimeContext>
   isRevisionConflict: (error: unknown) => boolean
   persistUserMessage: (input: {
@@ -59,6 +60,7 @@ type PlanServiceDependencies = Readonly<{
     sessionId: string
     content: string
     interactionId: string
+    beforePersist?: () => void
   }) => Promise<PersistedChatMessage>
   now?: () => number
   createId?: () => string
@@ -69,6 +71,14 @@ type PlanIdentityCommand = Readonly<{
   sessionId: string
   artifactVersionId: string
   expectedRevision: number
+}>
+
+type PlanDecisionCommitPrecondition = Readonly<{
+  beforeDecisionCommit?: () => boolean
+}>
+
+type PlanFeedbackCommitPrecondition = Readonly<{
+  beforeFeedbackPersist?: () => void
 }>
 
 type PlanDecisionResult = { projection: ActivePlanProjection; changed: boolean }
@@ -175,16 +185,24 @@ class PlanService {
 
   async respond(
     input: PlanIdentityCommand &
-      Readonly<{ decision: 'approved' | 'rejected'; interactionIsLive?: boolean }>
+      Readonly<{ decision: 'approved' | 'rejected'; interactionIsLive?: boolean }> &
+      PlanDecisionCommitPrecondition
   ): Promise<PlanDecisionResult>
   async respond(
-    input: Readonly<{ projectId: string; sessionId: string; feedback: string }>
+    input: Readonly<{ projectId: string; sessionId: string; feedback: string }> &
+      PlanFeedbackCommitPrecondition
   ): Promise<PlanFeedbackResult>
   async respond(
-    input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
+    input: PlanResponseCommand &
+      Readonly<{ interactionIsLive?: boolean }> &
+      PlanDecisionCommitPrecondition &
+      PlanFeedbackCommitPrecondition
   ): Promise<PlanResponseResult>
   async respond(
-    input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
+    input: PlanResponseCommand &
+      Readonly<{ interactionIsLive?: boolean }> &
+      PlanDecisionCommitPrecondition &
+      PlanFeedbackCommitPrecondition
   ): Promise<PlanResponseResult> {
     if (input.decision === undefined) {
       const context = await this.dependencies.readRuntimeContext(input.projectId, input.sessionId)
@@ -209,7 +227,8 @@ class PlanService {
         projectId: input.projectId,
         sessionId: input.sessionId,
         content: text,
-        interactionId
+        interactionId,
+        ...(input.beforeFeedbackPersist ? { beforePersist: input.beforeFeedbackPersist } : {})
       })
       this.dependencies.interactions.release(input.sessionId, plan.artifactVersionId)
       return {
@@ -232,7 +251,22 @@ class PlanService {
       throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
     }
     const updated = { ...plan, approval: input.decision }
-    const next = await this.patch(input, updated, input.interactionIsLive ? 'running' : 'idle')
+    const beforePersist = input.beforeDecisionCommit
+      ? (): void => {
+          if (!input.beforeDecisionCommit?.()) {
+            throw new PlanCommandError(
+              'interaction-mismatch',
+              'The Session Plan decision authorization was revoked before commit.'
+            )
+          }
+        }
+      : undefined
+    const next = await this.patch(
+      input,
+      updated,
+      input.interactionIsLive ? 'running' : 'idle',
+      beforePersist
+    )
     this.dependencies.interactions.release(input.sessionId, plan.artifactVersionId)
     return {
       projection: this.project(document, updated, next.revision, input.interactionIsLive),
@@ -412,7 +446,8 @@ class PlanService {
   private async patch(
     input: PlanIdentityCommand,
     plan: SessionPlanRuntimeContext,
-    sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
+    sessionStatus: 'waiting-plan-approval' | 'running' | 'idle',
+    beforePersist?: () => void
   ): Promise<SessionRuntimeContext> {
     try {
       return await this.dependencies.patchRuntimeContext({
@@ -420,7 +455,8 @@ class PlanService {
         sessionId: input.sessionId,
         expectedRevision: input.expectedRevision,
         plan,
-        sessionStatus
+        sessionStatus,
+        ...(beforePersist ? { beforePersist } : {})
       })
     } catch (error) {
       if (this.dependencies.isRevisionConflict(error)) {
