@@ -20,9 +20,12 @@ vi.mock('@/components/ui/message-scroller', () => {
   const Wrapper = ({ children }: PropsWithChildren): JSX.Element => <div>{children}</div>
   const Item = ({
     children,
+    disableContainment,
     messageId
-  }: PropsWithChildren<{ messageId?: string }>): JSX.Element => (
-    <div data-message-id={messageId}>{children}</div>
+  }: PropsWithChildren<{ disableContainment?: boolean; messageId?: string }>): JSX.Element => (
+    <div data-message-id={messageId} data-disable-containment={disableContainment || undefined}>
+      {children}
+    </div>
   )
   const Button = (): JSX.Element => <button type="button">Scroll to end</button>
 
@@ -476,6 +479,61 @@ describe('WorkspaceMessageScroller loading render', () => {
     expect(html.indexOf('data-slot="assistant-message-footer"')).toBeGreaterThan(
       html.indexOf('Here is the final answer.')
     )
+  })
+
+  it('keeps a user clarification before its streamed mixed Chinese Markdown response', async () => {
+    const html = await renderScroller(
+      createSession({
+        activeRun: {
+          promptMessageId: 'prompt-2',
+          startedAt: 1710000000300
+        },
+        messages: [
+          createMessage({
+            id: 'prompt-1',
+            content: '找一篇疾病的生信文章',
+            sortIndex: 1,
+            createdAt: 1710000000000
+          }),
+          createMessage({
+            id: 'reply-1',
+            role: 'agent',
+            content: '请选择疾病和分析类型。',
+            responseToMessageId: 'prompt-1',
+            sortIndex: 2,
+            createdAt: 1710000000100
+          }),
+          createMessage({
+            id: 'prompt-2',
+            content: '癌症，转录组分析',
+            sortIndex: 3,
+            createdAt: 1710000000200
+          }),
+          createMessage({
+            id: 'reply-2',
+            role: 'agent',
+            content: '明白：聚焦**癌症**，使用转录组分析。',
+            status: 'streaming',
+            streamId: 'stream-2',
+            responseToMessageId: 'prompt-2',
+            sortIndex: 4,
+            createdAt: 1710000000300
+          })
+        ]
+      })
+    )
+
+    const timelineContent = [
+      '找一篇疾病的生信文章',
+      '请选择疾病和分析类型。',
+      '癌症，转录组分析',
+      '明白：聚焦**癌症**，使用转录组分析。'
+    ]
+    const timelinePositions = timelineContent.map((content) => html.indexOf(content))
+
+    expect(timelinePositions.every((position) => position >= 0)).toBe(true)
+    expect(timelinePositions).toEqual([...timelinePositions].sort((left, right) => left - right))
+    expect(html).toContain('data-message-id="reply-2" data-disable-containment="true"')
   })
 
   it('shows tool interaction during permission waits and hides it without an active run', async () => {
