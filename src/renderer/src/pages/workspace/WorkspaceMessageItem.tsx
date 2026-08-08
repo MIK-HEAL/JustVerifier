@@ -952,11 +952,19 @@ const WorkspaceMessageItem = ({
                   ) : null}
                 </div>
               </div>
-              {sentDate || showRevisionNavigation ? (
+              {sentDate || message.interrupted || showRevisionNavigation ? (
                 <div
                   data-slot="user-message-footer"
                   className="mt-1 flex min-h-6 w-full flex-wrap items-center justify-end gap-x-2 text-[11px] leading-4 text-text-000/70 tabular-nums"
                 >
+                  {message.interrupted ? (
+                    <span
+                      data-slot="user-message-interrupted"
+                      className="italic text-amber-600 dark:text-amber-400"
+                    >
+                      This turn was interrupted.
+                    </span>
+                  ) : null}
                   {sentDate ? <MessageTimestamp label="Sent" date={sentDate} /> : null}
                   {showRevisionNavigation ? (
                     <TooltipProvider delayDuration={200}>

@@ -2,7 +2,6 @@ import { create } from 'zustand'
 
 import type { AcpContextUsage } from '../../../shared/acp'
 import type { PermissionProfileId } from '../../../shared/permission-profiles'
-import type { PersistedChatSession } from '../../../shared/session-persistence'
 import type { UpdateSessionArchiveRequest } from '../../../shared/session-persistence'
 import { createSessionMessageGraphOwner } from './session-store-message-graph-owner'
 import type { SessionMessageGraphActions } from './session-store-message-graph-helpers'
@@ -10,7 +9,7 @@ import {
   createSessionRunProjectionOwner,
   type SessionRunProjectionActions
 } from './session-store-run-projection-owner'
-import { projectDisconnectedSession } from './session-store-run-terminal-helpers'
+import { projectInterruptedRun } from './session-store-run-terminal-helpers'
 import {
   createInitialSessionState,
   createSessionPersistenceOwner,
@@ -43,11 +42,6 @@ type SessionStore = SessionStoreData &
   SessionRunProjectionActions & {
     selectSession: (sessionId: string) => void
     clearSelection: () => void
-    markResumed: (
-      sessionId: string,
-      agentFrameworkId?: PersistedChatSession['agentFrameworkId'],
-      agentBackendId?: PersistedChatSession['agentBackendId']
-    ) => void
     markDisconnected: (sessionId: string, reason?: string) => void
     setBranchSwitchBlocked: (sessionId: string, blocked: boolean) => void
     clearBranchContextReset: (sessionId: string) => void
@@ -96,27 +90,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   ...createSessionRunProjectionOwner<SessionStore>(set, get),
 
-  // Clears the interrupted/error state after a successful resume so the composer is usable again.
-  markResumed: (sessionId, agentFrameworkId, agentBackendId) => {
-    set((state) => ({
-      sessions: state.sessions.map((session) =>
-        session.id === sessionId
-          ? {
-              ...session,
-              status: 'idle',
-              error: undefined,
-              errorReportable: undefined,
-              interrupted: undefined,
-              agentFrameworkId: agentFrameworkId ?? session.agentFrameworkId,
-              agentBackendId: agentBackendId ?? session.agentBackendId,
-              compacting: undefined,
-              updatedAt: Date.now()
-            }
-          : session
-      )
-    }))
-  },
-
   // Flags a session dropped by a live connection loss so the Resume banner appears; like failRun it
   // settles any half-streamed message/open tool so nothing hangs in a perpetually-running state.
   markDisconnected: (sessionId, reason) => {
@@ -128,7 +101,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       : 'Connection lost — Resume to reconnect and continue.'
     set((state) => ({
       sessions: state.sessions.map((session) =>
-        session.id === sessionId ? projectDisconnectedSession(session, error) : session
+        session.id === sessionId
+          ? projectInterruptedRun(session, 'connection-lost', error)
+          : session
       )
     }))
   },

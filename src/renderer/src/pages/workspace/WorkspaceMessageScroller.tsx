@@ -56,6 +56,7 @@ import { useNotebookRunsById } from './use-notebook-runs-by-id'
 
 type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
+  isResumingSession?: boolean
   notebookReference?: NotebookSessionReference
   onSendEditedMessage: (messageId: string, doc: ComposerDoc) => void
   // Events are read-only projections; retry sends an intent that main validates against its state.
@@ -336,6 +337,7 @@ const EditableWorkspaceMessageItem = (
 // Owns transcript scrolling and session-scoped expansion state for activity groups.
 const WorkspaceMessageScrollerImpl = ({
   activeSession,
+  isResumingSession = false,
   notebookReference,
   onSendEditedMessage,
   handoffLifecycleSource,
@@ -428,6 +430,15 @@ const WorkspaceMessageScrollerImpl = ({
       ),
     [activeSession, handoffEvents]
   )
+  const interruptedPromptMessageId =
+    activeSession?.resumeRecovery?.promptMessageId ??
+    (activeSession?.activeRun &&
+    activeSession.messages.some(
+      (message) =>
+        message.id === activeSession.activeRun?.promptMessageId && message.interrupted === true
+    )
+      ? activeSession.activeRun.promptMessageId
+      : undefined)
   // Assistant text can be split into several messages around tool calls. All fragments share the
   // prompt they respond to, but only the last visible fragment in that turn owns whole-turn metadata.
   // Legacy unlinked messages remain independent so older transcripts do not lose their timestamps.
@@ -443,6 +454,9 @@ const WorkspaceMessageScrollerImpl = ({
         footerIds.add(item.message.id)
         continue
       }
+      // The interrupted user marker owns this turn's terminal state until Resume produces a new
+      // terminal response; partial assistant fragments must not claim completion or failure.
+      if (promptMessageId === interruptedPromptMessageId) continue
 
       const previousFooterId = footerIdByPromptMessageId.get(promptMessageId)
       if (previousFooterId) footerIds.delete(previousFooterId)
@@ -451,7 +465,7 @@ const WorkspaceMessageScrollerImpl = ({
     }
 
     return footerIds
-  }, [conversationItems])
+  }, [conversationItems, interruptedPromptMessageId])
   const agentLoadingPhase = getAgentLoadingPhase(activeSession)
   const messageCreatedAtById = new Map(
     activeSession?.messages.map((message) => [message.id, message.createdAt]) ?? []
@@ -884,7 +898,9 @@ const WorkspaceMessageScrollerImpl = ({
                   </MessageScrollerItem>
                 ))}
 
-                {agentLoadingPhase !== 'hidden' && activeSession ? (
+                {isResumingSession && activeSession ? (
+                  <WorkspaceAgentLoadingRow sessionId={activeSession.id} phase="resuming" />
+                ) : agentLoadingPhase !== 'hidden' && activeSession ? (
                   <WorkspaceAgentLoadingRow
                     sessionId={activeSession.id}
                     phase={agentLoadingPhase}
@@ -952,6 +968,7 @@ const areWorkspaceMessageScrollerPropsEqual = (
   next: WorkspaceMessageScrollerProps
 ): boolean =>
   previous.onSendEditedMessage === next.onSendEditedMessage &&
+  previous.isResumingSession === next.isResumingSession &&
   previous.notebookReference?.sessionId === next.notebookReference?.sessionId &&
   previous.notebookReference?.projectName === next.notebookReference?.projectName &&
   previous.notebookReference?.workspaceCwd === next.notebookReference?.workspaceCwd &&

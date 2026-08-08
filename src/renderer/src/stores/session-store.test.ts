@@ -2333,6 +2333,13 @@ describe('session store', () => {
 
     it('markResumed clears the interrupted state so the composer is usable', () => {
       hydrateInterrupted({
+        providerSessionId: 'provider-session-old',
+        providerContinuityToken: 'bridge-generation-old',
+        resumeRecovery: {
+          kind: 'resume-required',
+          cause: 'app-restart',
+          promptMessageId: 'prompt-1'
+        },
         messages: [
           {
             id: 'prompt-1',
@@ -2364,7 +2371,13 @@ describe('session store', () => {
         ]
       })
 
-      useSessionStore.getState().markResumed('resumable-session', 'codex', 'codex:codex-isolated')
+      useSessionStore.getState().markResumed('resumable-session', {
+        agentFrameworkId: 'codex',
+        agentBackendId: 'codex:codex-isolated',
+        providerSessionId: 'provider-session-new',
+        providerContinuityToken: 'bridge-generation-new',
+        pendingHistoryReplay: { kind: 'before-message', messageId: 'prompt-1' }
+      })
       const session = useSessionStore.getState().sessions[0]
 
       expect(session.interrupted).toBeUndefined()
@@ -2372,6 +2385,13 @@ describe('session store', () => {
       expect(session.status).toBe('idle')
       expect(session.agentFrameworkId).toBe('codex')
       expect(session.agentBackendId).toBe('codex:codex-isolated')
+      expect(session.providerSessionId).toBe('provider-session-new')
+      expect(session.providerContinuityToken).toBe('bridge-generation-new')
+      expect(session.resumeRecovery).toBeUndefined()
+      expect(session.pendingHistoryReplay).toEqual({
+        kind: 'before-message',
+        messageId: 'prompt-1'
+      })
       expect(session.messages[1]).toMatchObject({
         responseToMessageId: 'prompt-1',
         completedAt: 13,
@@ -2384,6 +2404,105 @@ describe('session store', () => {
         completedAt: 13,
         turnUsage: { inputTokens: 31, cacheTokens: 15, outputTokens: 14, turnCount: 3 }
       })
+    })
+
+    it('keeps recovery durable until a resumed continuation is accepted', () => {
+      hydrateInterrupted({
+        agentFrameworkId: 'codex',
+        agentBackendId: 'codex:provider-a',
+        resumeRecovery: {
+          kind: 'resume-required',
+          cause: 'app-restart',
+          promptMessageId: 'prompt-1'
+        },
+        messages: [
+          {
+            id: 'prompt-1',
+            role: 'user',
+            content: 'Continue the analysis',
+            status: 'complete',
+            eventIds: [],
+            interrupted: true,
+            createdAt: 10,
+            updatedAt: 11
+          }
+        ]
+      })
+
+      const prepared = useSessionStore.getState().prepareInterruptedTurnContinuation(
+        'resumable-session',
+        'prompt-1',
+        {
+          agentFrameworkId: 'codex',
+          agentBackendId: 'codex:provider-a',
+          providerSessionId: 'provider-session-new',
+          providerContinuityToken: 'bridge-generation-new'
+        },
+        true
+      )
+      const running = useSessionStore.getState().sessions[0]
+
+      expect(prepared?.runtimeSegmentId).toBeTruthy()
+      expect(running).toMatchObject({
+        status: 'running',
+        interrupted: true,
+        resumeRecovery: { promptMessageId: 'prompt-1' },
+        pendingHistoryReplay: { kind: 'before-message', messageId: 'prompt-1' },
+        activeRun: { promptMessageId: 'prompt-1' },
+        activeRunRuntimeSegmentId: prepared?.runtimeSegmentId
+      })
+      expect(toPersistedSession(running).resumeRecovery).toMatchObject({
+        promptMessageId: 'prompt-1'
+      })
+      expect(toPersistedSession(running).pendingHistoryReplay).toEqual({
+        kind: 'before-message',
+        messageId: 'prompt-1'
+      })
+
+      useSessionStore.getState().completeInterruptedTurnResume('resumable-session')
+      const accepted = useSessionStore.getState().sessions[0]
+      expect(accepted.status).toBe('running')
+      expect(accepted.activeRun?.promptMessageId).toBe('prompt-1')
+      expect(accepted.interrupted).toBeUndefined()
+      expect(accepted.resumeRecovery).toBeUndefined()
+      expect(accepted.pendingHistoryReplay).toBeUndefined()
+      expect(accepted.messages[0]).toMatchObject({ interrupted: true })
+    })
+
+    it('abandons stale Resume authority when the user starts a newer turn', () => {
+      hydrateInterrupted({
+        resumeRecovery: {
+          kind: 'resume-required',
+          cause: 'app-restart',
+          promptMessageId: 'prompt-1'
+        },
+        messages: [
+          {
+            id: 'prompt-1',
+            role: 'user',
+            content: 'Analyze the first cohort',
+            status: 'complete',
+            eventIds: [],
+            interrupted: true,
+            createdAt: 10,
+            updatedAt: 11
+          }
+        ]
+      })
+
+      const appended = useSessionStore.getState().appendUserMessage({
+        sessionId: 'resumable-session',
+        content: 'Analyze the second cohort instead'
+      })
+      const session = useSessionStore.getState().sessions[0]
+
+      expect(appended?.messageId).toBeTruthy()
+      expect(session.interrupted).toBeUndefined()
+      expect(session.resumeRecovery).toBeUndefined()
+      expect(session.activeRun?.promptMessageId).toBe(appended?.messageId)
+      expect(session.messages).toHaveLength(2)
+      expect(session.messages[0]).toMatchObject({ id: 'prompt-1', interrupted: true })
+      expect(toPersistedSession(session).resumeRecovery).toBeUndefined()
     })
 
     it('markDisconnected flags a live drop and settles the half-streamed reply, keeping the user turn', () => {
@@ -2407,9 +2526,54 @@ describe('session store', () => {
       expect(session.interrupted).toBe(true)
       expect(session.error).toBe('Connection lost — Resume to reconnect and continue.')
       expect(session.activeRun).toBeUndefined()
-      // The user prompt is preserved so Resume can continue it; the streamed reply is failed off.
-      expect(session.messages[0]).toMatchObject({ role: 'user', content: 'Read the files' })
+      expect(session.resumeRecovery).toMatchObject({
+        kind: 'resume-required',
+        cause: 'connection-lost',
+        promptMessageId: session.messages[0].id
+      })
+      // The exact user node remains visible and is never re-sent by Resume; the partial reply fails off.
+      expect(session.messages[0]).toMatchObject({
+        role: 'user',
+        content: 'Read the files',
+        interrupted: true
+      })
+      expect(
+        session.conversationGraph?.messages.find((message) => message.id === session.messages[0].id)
+      ).toMatchObject({ interrupted: true })
       expect(session.messages[1]).toMatchObject({ content: 'I started', status: 'error' })
+      const persisted = toPersistedSession(session)
+      expect(persisted.resumeRecovery).toEqual(session.resumeRecovery)
+      expect(
+        persisted.conversationGraph?.messages.find(
+          (message) => message.id === session.messages[0].id
+        )
+      ).toMatchObject({ interrupted: true })
+    })
+
+    it('interruptRun preserves a cancelled prompt for Resume', () => {
+      useSessionStore.getState().appendUserMessage({
+        sessionId: 'transport-session-1',
+        content: 'Read the files',
+        cwd: '/workspace/project'
+      })
+      const promptMessageId = useSessionStore.getState().sessions[0].activeRun?.promptMessageId
+
+      useSessionStore
+        .getState()
+        .interruptRun(
+          'transport-session-1',
+          'cancelled',
+          'This turn was interrupted. Resume to continue.'
+        )
+
+      const session = useSessionStore.getState().sessions[0]
+      expect(session.resumeRecovery).toEqual({
+        kind: 'resume-required',
+        cause: 'cancelled',
+        promptMessageId
+      })
+      expect(session.messages[0]).toMatchObject({ id: promptMessageId, interrupted: true })
+      expect(toPersistedSession(session).resumeRecovery).toEqual(session.resumeRecovery)
     })
 
     it('markDisconnected preserves a specific reason in the Resume banner', () => {
@@ -2554,19 +2718,23 @@ describe('session store public contract', () => {
         'clearArtifactError',
         'clearBranchContextReset',
         'clearPendingContextReplay',
+        'clearPendingHistoryReplay',
         'clearPermissionPending',
         'clearSelection',
         'clearSpecialistSwitchResetRequired',
         'completeActivityGroup',
+        'completeInterruptedTurnResume',
         'deleteSession',
         'failCompaction',
         'failRun',
         'finishCompaction',
         'finishRun',
         'hydrateSessions',
+        'interruptRun',
         'markDisconnected',
         'markResumed',
         'markSpecialistSwitchResetRequired',
+        'prepareInterruptedTurnContinuation',
         'recordArtifactError',
         'removeMessage',
         'removeSessionsForProject',

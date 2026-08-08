@@ -57,6 +57,8 @@ type TaskPreviewResourcePort = {
 
 type TaskAgentSession = {
   sessionId: string
+  providerSessionId?: string
+  providerContinuityToken?: string
   cwd?: string
   frameworkId?: AgentFrameworkId
   backendId?: string
@@ -70,6 +72,8 @@ type TaskAgentCreateSessionRequest = {
 
 type TaskAgentResumeSessionRequest = {
   sessionId: string
+  providerSessionId?: string
+  providerContinuityToken?: string
   cwd: string
   projectId: string
   permissionProfile: PermissionProfileId
@@ -209,13 +213,39 @@ const toPersistedArtifact = (artifact: ArtifactFile): PersistedArtifact => ({
   mtimeMs: artifact.mtimeMs
 })
 
-const createHistoryPreamble = (session: PersistedChatSession): string | undefined => {
-  if (session.messages.length === 0) return undefined
-  const transcript = session.messages
-    .filter((message) => message.content.trim())
+const selectTaskHistoryMessages = (session: PersistedChatSession): PersistedChatMessage[] => {
+  const cutoffMessageIds = [
+    session.pendingHistoryReplay?.kind === 'before-message'
+      ? session.pendingHistoryReplay.messageId
+      : undefined,
+    session.resumeRecovery?.promptMessageId
+  ].filter((messageId): messageId is string => Boolean(messageId))
+  let cutoffIndex = session.messages.length
+
+  for (const messageId of cutoffMessageIds) {
+    const index = session.messages.findIndex((message) => message.id === messageId)
+    // A stale recovery reference must not turn an interrupted prompt into replay history.
+    if (index < 0) return []
+    cutoffIndex = Math.min(cutoffIndex, index)
+  }
+
+  return session.messages.slice(0, cutoffIndex)
+}
+
+const createHistoryPreamble = (messages: PersistedChatMessage[]): string | undefined => {
+  if (messages.length === 0) return undefined
+  const transcript = messages
+    .filter((message) => message.status !== 'error' && message.content.trim())
     .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}`)
     .join('\n\n')
   return transcript ? `Previous conversation:\n\n${transcript}` : undefined
+}
+
+const consumePendingHistoryReplay = (session: PersistedChatSession): PersistedChatSession => {
+  if (!session.pendingHistoryReplay) return session
+  const accepted = { ...session }
+  delete accepted.pendingHistoryReplay
+  return accepted
 }
 
 const summarizeSession = (session: PersistedChatSession): TaskSessionSummary => ({
@@ -497,7 +527,9 @@ class TaskRunner {
           sessionId: existing.id,
           cwd: existing.cwd,
           frameworkId: existing.agentFrameworkId,
-          backendId: existing.agentBackendId
+          backendId: existing.agentBackendId,
+          providerSessionId: existing.providerSessionId,
+          providerContinuityToken: existing.providerContinuityToken
         }
       } else {
         sessionInfo = await this.dependencies.agent.resumeSession({
@@ -506,7 +538,9 @@ class TaskRunner {
           projectId: project.id,
           permissionProfile,
           previousFrameworkId: existing.agentFrameworkId,
-          previousBackendId: existing.agentBackendId
+          previousBackendId: existing.agentBackendId,
+          providerSessionId: existing.providerSessionId,
+          providerContinuityToken: existing.providerContinuityToken
         })
       }
     } else {
@@ -525,6 +559,8 @@ class TaskRunner {
           permissionProfile,
           agentFrameworkId: sessionInfo.frameworkId ?? existing.agentFrameworkId,
           agentBackendId: sessionInfo.backendId ?? existing.agentBackendId,
+          providerSessionId: sessionInfo.providerSessionId ?? existing.providerSessionId,
+          providerContinuityToken: sessionInfo.providerContinuityToken,
           messages: [...existing.messages, userMessage],
           activeRun: { promptMessageId: userMessageId, startedAt: now },
           error: undefined,
@@ -539,18 +575,29 @@ class TaskRunner {
           permissionProfile,
           agentFrameworkId: sessionInfo.frameworkId,
           agentBackendId: sessionInfo.backendId,
+          providerSessionId: sessionInfo.providerSessionId,
+          providerContinuityToken: sessionInfo.providerContinuityToken,
           messages: [userMessage],
           activeRun: { promptMessageId: userMessageId, startedAt: now },
           createdAt: now,
           updatedAt: now
         }
 
+    // Starting a new authored turn consumes the old Resume authority. History replay remains durable
+    // until the provider accepts this replacement turn, so a pre-acceptance rejection can retry it.
+    if (existing) {
+      delete session.resumeRecovery
+    }
+
     await this.dependencies.sessions.save(session)
-    const previousHistoryPreamble = existing ? createHistoryPreamble(existing) : undefined
+    const previousHistoryPreamble = existing
+      ? createHistoryPreamble(selectTaskHistoryMessages(existing))
+      : undefined
+    const contextReset = Boolean(sessionInfo.contextReset || existing?.pendingHistoryReplay)
     return {
       session,
-      historyPreamble: sessionInfo.contextReset ? previousHistoryPreamble : undefined,
-      contextReset: sessionInfo.contextReset,
+      historyPreamble: contextReset ? previousHistoryPreamble : undefined,
+      contextReset,
       resumeFallback:
         request.skillIds?.length && previousHistoryPreamble
           ? { historyPreamble: previousHistoryPreamble }
@@ -594,10 +641,13 @@ class TaskRunner {
       cancellationAtPromptFailure = run.cancellation
     }
 
+    const acceptedSession =
+      promptError === undefined ? consumePendingHistoryReplay(session) : session
+
     let completed: CompletedTaskSession | undefined
     let completionError: unknown
     try {
-      completed = await this.completeSession(session, run.events)
+      completed = await this.completeSession(acceptedSession, run.events)
     } catch (error) {
       if (error instanceof PartialTaskCompletionError) {
         completed = error.completion
@@ -612,14 +662,14 @@ class TaskRunner {
     const promptFailureWasCancelled = cancellationAtPromptFailure?.accepted === true
     const failure = completionError ?? (promptFailureWasCancelled ? undefined : promptError)
     if (failure) {
-      await this.failRun(run, session, completed, failure)
+      await this.failRun(run, acceptedSession, completed, failure)
       return
     }
 
     try {
       await this.dependencies.sessions.save(completed!.session)
     } catch (error) {
-      await this.failRun(run, session, completed, error)
+      await this.failRun(run, acceptedSession, completed, error)
       return
     }
     const terminalCancellation = run.cancellation

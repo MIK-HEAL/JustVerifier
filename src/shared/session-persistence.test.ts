@@ -173,6 +173,47 @@ describe('message part persistence', () => {
   })
 })
 
+describe('interrupted turn intent persistence', () => {
+  it('preserves only the closed Plan-first intent on user messages', () => {
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      messages: [
+        {
+          id: 'user-plan',
+          role: 'user',
+          content: 'Plan the analysis',
+          turnIntent: 'plan-first',
+          createdAt: 1,
+          updatedAt: 1
+        },
+        {
+          id: 'user-unknown',
+          role: 'user',
+          content: 'Do not restore arbitrary intent',
+          turnIntent: 'hidden-injection',
+          createdAt: 2,
+          updatedAt: 2
+        },
+        {
+          id: 'agent-plan',
+          role: 'agent',
+          content: 'No user intent here',
+          turnIntent: 'plan-first',
+          createdAt: 3,
+          updatedAt: 3
+        }
+      ]
+    })
+
+    expect(restored?.messages).toEqual([
+      expect.objectContaining({ id: 'user-plan', turnIntent: 'plan-first' }),
+      expect.not.objectContaining({ turnIntent: expect.anything() }),
+      expect.not.objectContaining({ turnIntent: expect.anything() })
+    ])
+  })
+})
+
 describe('message terminal time persistence', () => {
   it('backfills stable terminal timestamps for legacy agent messages', () => {
     const restored = normalizeSessionFile({
@@ -900,6 +941,117 @@ describe('normalizeSessionFile with activities', () => {
     expect(restored?.conversationGraph?.messages[0]?.failedAt).toBe(7)
   })
 
+  it('restores an active user turn as one durable interrupted message', () => {
+    const restored = normalizeSessionFile({
+      id: 'session-1',
+      projectId: 'project-a',
+      title: 'Interrupted session',
+      cwd: '/workspace',
+      status: 'running',
+      activeRun: { promptMessageId: 'prompt-1', startedAt: 5 },
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Continue the analysis',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 5,
+          updatedAt: 5
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 5
+    })
+
+    expect(restored?.messages).toEqual([
+      expect.objectContaining({ id: 'prompt-1', interrupted: true })
+    ])
+    expect(restored?.conversationGraph?.messages).toEqual([
+      expect.objectContaining({ id: 'prompt-1', interrupted: true })
+    ])
+    expect(restored?.resumeRecovery).toEqual({
+      kind: 'resume-required',
+      cause: 'app-restart',
+      promptMessageId: 'prompt-1'
+    })
+  })
+
+  it('preserves a cancelled turn as resumable state', () => {
+    const restored = normalizeSessionFile({
+      id: 'session-1',
+      projectId: 'project-a',
+      title: 'Cancelled session',
+      cwd: '/workspace',
+      status: 'error',
+      interrupted: true,
+      resumeRecovery: {
+        kind: 'resume-required',
+        cause: 'cancelled',
+        promptMessageId: 'prompt-1'
+      },
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Continue the analysis',
+          status: 'complete',
+          interrupted: true,
+          eventIds: [],
+          createdAt: 5,
+          updatedAt: 5
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 5
+    })
+
+    expect(restored?.resumeRecovery).toEqual({
+      kind: 'resume-required',
+      cause: 'cancelled',
+      promptMessageId: 'prompt-1'
+    })
+  })
+
+  it('restores explicit full and cutoff history replay scopes', () => {
+    const base = {
+      id: 'session-1',
+      projectId: 'project-a',
+      title: 'Replay state',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Earlier prompt',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 2
+    }
+
+    expect(
+      normalizeSessionFile({ ...base, pendingHistoryReplay: { kind: 'all' } })?.pendingHistoryReplay
+    ).toEqual({ kind: 'all' })
+    expect(
+      normalizeSessionFile({
+        ...base,
+        pendingHistoryReplay: { kind: 'before-message', messageId: 'prompt-1' }
+      })?.pendingHistoryReplay
+    ).toEqual({ kind: 'before-message', messageId: 'prompt-1' })
+    expect(
+      normalizeSessionFile({
+        ...base,
+        pendingHistoryReplayBeforeMessageId: 'prompt-1'
+      })?.pendingHistoryReplay
+    ).toEqual({ kind: 'before-message', messageId: 'prompt-1' })
+  })
+
   it('loads sessions that predate persisted activities', () => {
     const session = normalizeSessionFile({
       id: 'session-1',
@@ -932,17 +1084,21 @@ describe('normalizeSessionFile with activities', () => {
     expect(malformed?.filesRevision).toBeUndefined()
   })
 
-  it('round-trips the agent backend identity and run model used for diagnostics', () => {
+  it('round-trips agent, provider, backend, and model identity', () => {
     const session = normalizeSessionFile({
       ...createSessionWithActivity(undefined),
       activities: undefined,
       agentFrameworkId: 'codex',
       agentBackendId: 'codex:codex-isolated',
+      providerSessionId: '019fb8c8-6c66-7f22-9653-17b5b287dbbb',
+      providerContinuityToken: 'bridge-generation-1',
       agentModel: 'gpt-5.6-sol'
     })
 
     expect(session?.agentFrameworkId).toBe('codex')
     expect(session?.agentBackendId).toBe('codex:codex-isolated')
+    expect(session?.providerSessionId).toBe('019fb8c8-6c66-7f22-9653-17b5b287dbbb')
+    expect(session?.providerContinuityToken).toBe('bridge-generation-1')
     expect(session?.agentModel).toBe('gpt-5.6-sol')
   })
 

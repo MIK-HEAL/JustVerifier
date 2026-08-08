@@ -30,6 +30,7 @@ export type AppendUserMessageInput = {
   content: string
   attachments?: PersistedUploadedAttachment[]
   parts?: MessagePart[]
+  turnIntent?: PersistedChatMessage['turnIntent']
   cwd?: string
   projectId?: string
   permissionProfile?: ChatSession['permissionProfile']
@@ -47,6 +48,7 @@ export type BranchInNewSessionInput = {
   content: string
   attachments?: PersistedUploadedAttachment[]
   parts?: MessagePart[]
+  turnIntent?: PersistedChatMessage['turnIntent']
   permissionProfile?: ChatSession['permissionProfile']
   agentFrameworkId?: PersistedChatSession['agentFrameworkId']
   agentBackendId?: PersistedChatSession['agentBackendId']
@@ -60,6 +62,8 @@ export type BindPendingSessionInput = {
   cwd?: string
   agentFrameworkId?: PersistedChatSession['agentFrameworkId']
   agentBackendId?: PersistedChatSession['agentBackendId']
+  providerSessionId?: PersistedChatSession['providerSessionId']
+  providerContinuityToken?: PersistedChatSession['providerContinuityToken']
 }
 
 export type AppendMessageResult = {
@@ -97,7 +101,8 @@ export const projectSessionGraph = (
   runtimeSegmentId: string,
   frameworkId = session.agentFrameworkId ?? 'claude-code',
   backendId = session.agentBackendId,
-  model = session.agentModel
+  model = session.agentModel,
+  forceRuntimeSegment = false
 ): NonNullable<PersistedChatSession['conversationGraph']> => {
   const projection = messages.map(stripTransientMessageState)
   const initial =
@@ -116,16 +121,27 @@ export const projectSessionGraph = (
     frameworkId,
     backendId,
     model,
-    startedAt: now
+    startedAt: now,
+    forceNew: forceRuntimeSegment
   })
-  const withMessages = synchronizeActiveConversationMessages(withSegment, projection, now)
+  const withMessages = synchronizeActiveConversationMessages(
+    withSegment,
+    projection,
+    now,
+    session.activeRunRuntimeSegmentId
+  )
   const persistedActivities = (session.activities ?? [])
     .map(sanitizeToolActivity)
     .filter((activity): activity is PersistedToolActivity => Boolean(activity))
   const persistedGroups = (session.activityGroups ?? [])
     .map(sanitizeActivityGroup)
     .filter((group): group is PersistedActivityGroup => Boolean(group))
-  return synchronizeActiveConversationActivities(withMessages, persistedActivities, persistedGroups)
+  return synchronizeActiveConversationActivities(
+    withMessages,
+    persistedActivities,
+    persistedGroups,
+    session.activeRunRuntimeSegmentId
+  )
 }
 
 export const createTitleFromMessage = (content: string): string => {
@@ -175,6 +191,7 @@ export const buildMessage = (input: {
   eventIds: string[]
   uploads: PersistedUploadedAttachment[]
   parts?: MessagePart[]
+  turnIntent?: PersistedChatMessage['turnIntent']
   sortIndex: number
   now: number
 }): ChatMessage => {
@@ -188,6 +205,7 @@ export const buildMessage = (input: {
     eventIds: input.eventIds,
     uploads: persistedUploads.length > 0 ? persistedUploads : undefined,
     parts: input.parts && input.parts.length > 0 ? input.parts : undefined,
+    turnIntent: input.turnIntent,
     sortIndex: input.sortIndex,
     createdAt: input.now,
     updatedAt: input.now

@@ -1,4 +1,5 @@
 import type {
+  AcpContinueInterruptedTurnRequest,
   AcpCreateSessionResponse,
   AcpPermissionResponse,
   AcpPromptRequest,
@@ -56,8 +57,11 @@ const useAcpRuntime = (): {
     permissionProfile?: PermissionProfileId,
     previousFrameworkId?: AcpResumeSessionRequest['previousFrameworkId'],
     previousBackendId?: AcpResumeSessionRequest['previousBackendId'],
-    specialistId?: AcpResumeSessionRequest['specialistId']
+    specialistId?: AcpResumeSessionRequest['specialistId'],
+    providerSessionId?: AcpResumeSessionRequest['providerSessionId'],
+    providerContinuityToken?: AcpResumeSessionRequest['providerContinuityToken']
   ) => Promise<AcpCreateSessionResponse>
+  continueInterruptedTurn: (request: AcpContinueInterruptedTurnRequest) => Promise<AcpStateSnapshot>
   resetSessionContext: (
     sessionId: AcpResumeSessionRequest['sessionId'],
     cwd: AcpResumeSessionRequest['cwd'],
@@ -233,7 +237,9 @@ const useAcpRuntime = (): {
       permissionProfile?: PermissionProfileId,
       previousFrameworkId?: AcpResumeSessionRequest['previousFrameworkId'],
       previousBackendId?: AcpResumeSessionRequest['previousBackendId'],
-      specialistId?: AcpResumeSessionRequest['specialistId']
+      specialistId?: AcpResumeSessionRequest['specialistId'],
+      providerSessionId?: AcpResumeSessionRequest['providerSessionId'],
+      providerContinuityToken?: AcpResumeSessionRequest['providerContinuityToken']
     ) =>
       runValueAction(setIsConnecting, () =>
         window.api.acp.resumeSession({
@@ -243,10 +249,18 @@ const useAcpRuntime = (): {
           permissionProfile,
           previousFrameworkId,
           previousBackendId,
-          specialistId
+          specialistId,
+          providerSessionId,
+          providerContinuityToken
         })
       ),
     [runValueAction]
+  )
+
+  const continueInterruptedTurn = useCallback(
+    (request: AcpContinueInterruptedTurnRequest) =>
+      runSendPromptAction(() => window.api.acp.continueInterruptedTurn(request)),
+    [runSendPromptAction]
   )
 
   // Drops the agent-side context for a session whose accumulated history outgrew the request limit,
@@ -375,6 +389,7 @@ const useAcpRuntime = (): {
     disconnect,
     createSession,
     resumeSession,
+    continueInterruptedTurn,
     resetSessionContext,
     compactSession,
     deleteSession,

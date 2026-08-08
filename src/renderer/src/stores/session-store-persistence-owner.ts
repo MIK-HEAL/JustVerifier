@@ -73,6 +73,8 @@ export type ChatSession = Omit<
   agentStatus?: string
   awaitingFirstAgentOutput?: boolean
   agentPromptInFlight?: boolean
+  // Transient provenance owner for responses emitted while an interrupted turn is resumed.
+  activeRunRuntimeSegmentId?: string
   branchContextResetRequired?: boolean
   specialistSwitchResetRequired?: boolean
   branchSwitchBlocked?: boolean
@@ -139,6 +141,7 @@ export const toPersistedSession = (session: ChatSession): PersistedChatSession =
     agentStatus,
     awaitingFirstAgentOutput,
     agentPromptInFlight,
+    activeRunRuntimeSegmentId,
     branchContextResetRequired,
     specialistSwitchResetRequired,
     branchSwitchBlocked,
@@ -158,6 +161,7 @@ export const toPersistedSession = (session: ChatSession): PersistedChatSession =
   void agentStatus
   void awaitingFirstAgentOutput
   void agentPromptInFlight
+  void activeRunRuntimeSegmentId
   void branchContextResetRequired
   void specialistSwitchResetRequired
   void branchSwitchBlocked
@@ -200,7 +204,11 @@ export const hydrateSession = (session: PersistedChatSession): ChatSession => ({
   ...session,
   permissionProfile: session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
   activities: session.activities?.map(hydrateToolActivity),
-  interrupted: session.error === INTERRUPTED_SESSION_ERROR ? true : undefined
+  interrupted:
+    session.resumeRecovery?.kind === 'resume-required' ||
+    session.error === INTERRUPTED_SESSION_ERROR
+      ? true
+      : undefined
 })
 
 const matchesPersistedPlanProjection = (
@@ -233,12 +241,13 @@ const withTransientSessionState = (
       sortIndex: sourceMessages.get(message.id)?.sortIndex
     })),
     isPending: source.isPending,
-    interrupted: source.interrupted,
+    interrupted: source.interrupted ?? hydrated.interrupted,
     fixLoopActive: source.fixLoopActive,
     compacting: source.compacting,
     agentStatus: source.agentStatus,
     awaitingFirstAgentOutput: source.awaitingFirstAgentOutput,
     agentPromptInFlight: source.agentPromptInFlight,
+    activeRunRuntimeSegmentId: source.activeRunRuntimeSegmentId,
     branchContextResetRequired: source.branchContextResetRequired,
     specialistSwitchResetRequired: source.specialistSwitchResetRequired,
     branchSwitchBlocked: source.branchSwitchBlocked,

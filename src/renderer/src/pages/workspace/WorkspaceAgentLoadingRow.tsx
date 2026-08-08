@@ -8,7 +8,7 @@ import type { AgentLoadingPhase } from './agent-loading-message'
 
 type WorkspaceAgentLoadingRowProps = {
   sessionId: string
-  phase: Exclude<AgentLoadingPhase, 'hidden'>
+  phase: Exclude<AgentLoadingPhase, 'hidden'> | 'resuming'
 }
 
 const assistantMessageSurfaceClassName =
@@ -78,7 +78,7 @@ const AgentLoadingIndicator = ({
       ) : (
         <div className="flex items-center gap-2 text-xs text-text-000/70">
           <OpenScienceThinkingIndicator />
-          <span>Interacting with tools</span>
+          <span>{phase === 'resuming' ? 'Resuming session' : 'Interacting with tools'}</span>
         </div>
       )}
     </div>
