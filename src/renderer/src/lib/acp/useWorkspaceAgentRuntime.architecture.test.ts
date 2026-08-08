@@ -15,6 +15,7 @@ import {
   isPropertyAccessExpression,
   isReturnStatement,
   isStringLiteralLike,
+  isTypeAliasDeclaration,
   isTypeLiteralNode,
   isVariableDeclaration,
   ScriptKind,
@@ -22,7 +23,8 @@ import {
   SyntaxKind,
   type ArrowFunction,
   type Node,
-  type SourceFile
+  type SourceFile,
+  type TypeLiteralNode
 } from 'typescript'
 import { describe, expect, it } from 'vitest'
 
@@ -186,6 +188,20 @@ const variableArrow = (sourceFile: SourceFile, name: string): ArrowFunction => {
   return found
 }
 
+const typeLiteralAlias = (sourceFile: SourceFile, name: string): TypeLiteralNode => {
+  const declaration = sourceFile.statements.find(
+    (statement) => isTypeAliasDeclaration(statement) && statement.name.text === name
+  )
+  if (
+    !declaration ||
+    !isTypeAliasDeclaration(declaration) ||
+    !isTypeLiteralNode(declaration.type)
+  ) {
+    throw new Error(`${name} type literal not found`)
+  }
+  return declaration.type
+}
+
 const propertyNames = (object: Node): string[] => {
   if (!isObjectLiteralExpression(object)) throw new Error('expected object literal')
   return object.properties.map((property) => {
@@ -260,16 +276,17 @@ describe('workspace runtime architecture', () => {
   })
 
   it('keeps the established 18-key hook interface', () => {
-    const hook = variableArrow(facadeFile, 'useWorkspaceAgentRuntime')
-    if (!hook.type || !isTypeLiteralNode(hook.type)) {
-      throw new Error('workspace runtime hook return type not found')
-    }
-    const declaredKeys = hook.type.members.map((member) => {
+    const runtimeType = typeLiteralAlias(facadeFile, 'WorkspaceAgentRuntime')
+    const owner = variableArrow(facadeFile, 'useOwnedWorkspaceAgentRuntime')
+    const consumer = variableArrow(facadeFile, 'useWorkspaceAgentRuntime')
+    const declaredKeys = runtimeType.members.map((member) => {
       if (!member.name) throw new Error('expected named hook property')
       return member.name.getText()
     })
     expectSameNames(declaredKeys, hookKeys)
-    expectSameNames(propertyNames(directReturnObject(hook)), hookKeys)
+    expect(owner.type?.getText()).toBe('WorkspaceAgentRuntime')
+    expect(consumer.type?.getText()).toBe('WorkspaceAgentRuntime')
+    expectSameNames(propertyNames(directReturnObject(owner)), hookKeys)
   })
 
   it('keeps React composition in the facade and lifecycle state in its owner', () => {

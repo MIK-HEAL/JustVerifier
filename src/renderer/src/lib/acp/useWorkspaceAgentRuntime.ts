@@ -1,4 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PropsWithChildren,
+  type ReactElement
+} from 'react'
 
 import type {
   AcpContextUsage,
@@ -63,7 +74,7 @@ const setWorkspacePermissionProfile = async (
   return true
 }
 
-const useWorkspaceAgentRuntime = (): {
+type WorkspaceAgentRuntime = {
   actionError: string | null
   isConnecting: boolean
   pendingPermissions: AcpPermissionRequest[]
@@ -86,7 +97,11 @@ const useWorkspaceAgentRuntime = (): {
   respondToPermission: (requestId: string, optionId?: string) => Promise<void>
   setPermissionProfile: (sessionId: string, profile: PermissionProfileId) => Promise<boolean>
   revokePermissionGrant: (sessionId: string, categoryKey: string) => Promise<void>
-} => {
+}
+
+const WorkspaceAgentRuntimeContext = createContext<WorkspaceAgentRuntime | null>(null)
+
+const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   const runtime = useAcpRuntime()
   const activeProvider = useSettingsStore((state) =>
     state.providers.find((candidate) => candidate.id === state.activeProviderId)
@@ -310,7 +325,23 @@ const useWorkspaceAgentRuntime = (): {
   }
 }
 
+const WorkspaceAgentRuntimeProvider = ({ children }: PropsWithChildren): ReactElement =>
+  createElement(
+    WorkspaceAgentRuntimeContext.Provider,
+    { value: useOwnedWorkspaceAgentRuntime() },
+    children
+  )
+
+const useWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
+  const runtime = useContext(WorkspaceAgentRuntimeContext)
+  if (!runtime) {
+    throw new Error('useWorkspaceAgentRuntime must be used within WorkspaceAgentRuntimeProvider.')
+  }
+  return runtime
+}
+
 export {
+  WorkspaceAgentRuntimeProvider,
   createWorkspaceRuntimeEventProcessor,
   drainWorkspaceRuntimeEventsForPersistence,
   getResumeFailureMessage,

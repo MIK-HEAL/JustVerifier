@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -83,6 +83,7 @@ const mocks = vi.hoisted(() => {
     syncWindowFindAppearance: vi.fn(),
     syncUnreadTaskView: vi.fn(),
     globalSearch: { props: undefined as { open: boolean } | undefined },
+    homePage: { props: undefined as { onOpenGlobalSearch: () => void } | undefined },
     closeActiveModal: { handler: undefined as (() => boolean) | undefined }
   }
 })
@@ -193,20 +194,28 @@ vi.mock('@/components/LifecycleToast', () => ({
 vi.mock('@/components/UpdateDialog', () => ({
   UpdateDialog: (): React.JSX.Element => <div data-testid="update-dialog" />
 }))
+vi.mock('@/lib/acp/useWorkspaceAgentRuntime', () => ({
+  WorkspaceAgentRuntimeProvider: ({ children }: { children: ReactNode }): ReactNode => children
+}))
 vi.mock('@/pages/home/HomePage', () => ({
   HomePage: ({
     canDeleteProjects,
-    hasCompleteSessionCatalog
+    hasCompleteSessionCatalog,
+    onOpenGlobalSearch
   }: {
     canDeleteProjects: boolean
     hasCompleteSessionCatalog: boolean
-  }): React.JSX.Element => (
-    <div
-      data-testid="home-page"
-      data-can-delete-projects={String(canDeleteProjects)}
-      data-has-complete-session-catalog={String(hasCompleteSessionCatalog)}
-    />
-  )
+    onOpenGlobalSearch: () => void
+  }): React.JSX.Element => {
+    mocks.homePage.props = { onOpenGlobalSearch }
+    return (
+      <div
+        data-testid="home-page"
+        data-can-delete-projects={String(canDeleteProjects)}
+        data-has-complete-session-catalog={String(hasCompleteSessionCatalog)}
+      />
+    )
+  }
 }))
 vi.mock('@/pages/onboarding/OnboardingWizard', () => ({
   OnboardingWizard: (): React.JSX.Element => <div data-testid="onboarding-page" />
@@ -339,6 +348,7 @@ describe('App startup routing', () => {
     mocks.notifications.takePendingOpenSession.mockReset().mockResolvedValue(null)
     mocks.notificationNudgeBox.current = undefined
     mocks.globalSearch.props = undefined
+    mocks.homePage.props = undefined
     mocks.closeActiveModal.handler = undefined
   })
 
@@ -412,6 +422,17 @@ describe('App startup routing', () => {
       )
     })
     expect(mocks.globalSearch.props?.open).toBe(false)
+  })
+
+  it('opens the same global search from the Home header action', async () => {
+    mocks.settings.isLoaded = true
+    await render()
+
+    expect(mocks.globalSearch.props?.open).toBe(false)
+
+    await act(async () => mocks.homePage.props?.onOpenGlobalSearch())
+
+    expect(mocks.globalSearch.props?.open).toBe(true)
   })
 
   it('does not open Settings over global search', async () => {

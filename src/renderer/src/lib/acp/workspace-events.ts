@@ -11,6 +11,7 @@ import {
 } from '../../../../shared/session-persistence'
 import { createPreviewFileItemFromArtifact } from '../../pages/workspace/preview-file-item'
 import { getPreviewFormatForFile } from '../../pages/workspace/preview-support'
+import { useNavigationStore } from '../../stores/navigation-store'
 import { usePreviewWorkbenchStore } from '../../stores/preview-workbench-store'
 import { isMediaOverflowError } from '../../../../shared/media-overflow'
 import {
@@ -287,22 +288,63 @@ const finalizeArtifactEvent = async (
 // viewer renders them without a manual click. Only molecule-format files auto-open; other artifacts
 // (charts, tables, …) still wait for an explicit click. Fires only on live-run artifact events.
 const openMoleculePreviews = (sessionId: string, artifacts: ArtifactFile[]): void => {
-  const workbench = usePreviewWorkbenchStore.getState()
   const projectId = useSessionStore
     .getState()
     .sessions.find((session) => session.id === sessionId)?.projectId
+  const navigation = useNavigationStore.getState()
+  const items = projectId
+    ? artifacts.flatMap((artifact) => {
+        const format = getPreviewFormatForFile({ name: artifact.name, mimeType: artifact.mimeType })
+        if (format !== 'molecule') return []
 
-  for (const artifact of artifacts) {
-    const format = getPreviewFormatForFile({ name: artifact.name, mimeType: artifact.mimeType })
-    if (format !== 'molecule') continue
+        const item = createPreviewFileItemFromArtifact(artifact, sessionId, projectId)
+        return item ? [item] : []
+      })
+    : []
 
-    const item = createPreviewFileItemFromArtifact(
-      artifact,
-      sessionId,
-      projectId || artifact.projectName
-    )
-    if (item) workbench.upsertAndActivateItem(item)
+  // Background runs keep finalizing artifacts on every route, but only the owning foreground
+  // Workspace may change the visible preview slice or steal preview focus.
+  if (
+    !projectId ||
+    items.length === 0 ||
+    navigation.view !== 'workspace' ||
+    navigation.activeProjectId !== projectId
+  ) {
+    return
   }
+
+  const openItems = (): void => {
+    const workbench = usePreviewWorkbenchStore.getState()
+    for (const item of items) workbench.upsertAndActivateItem(item)
+  }
+
+  if (usePreviewWorkbenchStore.getState().activeProjectId === projectId) {
+    openItems()
+    return
+  }
+
+  // Project navigation commits before the persisted preview slice finishes loading. Wait for that
+  // existing activation instead of initializing the slice early and suppressing its restore.
+  let unsubscribeWorkbench = (): void => undefined
+  let unsubscribeNavigation = (): void => undefined
+  const dispose = (): void => {
+    unsubscribeWorkbench()
+    unsubscribeNavigation()
+  }
+  const tryOpen = (): void => {
+    const currentNavigation = useNavigationStore.getState()
+    if (currentNavigation.view !== 'workspace' || currentNavigation.activeProjectId !== projectId) {
+      dispose()
+      return
+    }
+    if (usePreviewWorkbenchStore.getState().activeProjectId !== projectId) return
+
+    dispose()
+    openItems()
+  }
+
+  unsubscribeWorkbench = usePreviewWorkbenchStore.subscribe(tryOpen)
+  unsubscribeNavigation = useNavigationStore.subscribe(tryOpen)
 }
 
 // Assembles a ReviewRunRequest for the last completed agent turn of a session.
