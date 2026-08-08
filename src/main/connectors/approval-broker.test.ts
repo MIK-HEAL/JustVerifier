@@ -78,6 +78,29 @@ describe('ApprovalBroker', () => {
     expect(() => broker.respond('nope', 'once')).not.toThrow()
   })
 
+  it('exposes a pending request until it settles', async () => {
+    const timer = makeTimer()
+    const broker = new ApprovalBroker({
+      generateId: () => 'id-1',
+      broadcast: () => undefined,
+      setTimer: timer.set,
+      clearTimer: timer.clear
+    })
+
+    const decision = broker.request({ connector: 'biomart', method: 'get_data', argsPreview: '{}' })
+    expect(broker.getPending('id-1')).toEqual({
+      id: 'id-1',
+      connector: 'biomart',
+      method: 'get_data',
+      argsPreview: '{}',
+      availableScopes: ['once']
+    })
+
+    broker.respond('id-1', 'deny')
+    await decision
+    expect(broker.getPending('id-1')).toBeNull()
+  })
+
   it('runs concurrent requests independently', async () => {
     const timers: Array<() => void> = []
     let n = 0
@@ -131,5 +154,32 @@ describe('ApprovalBroker', () => {
 
     broker.respond('id-1', 'global')
     await expect(decision).resolves.toBe('global')
+  })
+
+  it('reports allowed, denied, and timeout settlement states to durable notification adapters', async () => {
+    const timer = makeTimer()
+    const onSettled = vi.fn()
+    let sequence = 0
+    const broker = new ApprovalBroker({
+      generateId: () => `id-${++sequence}`,
+      broadcast: () => undefined,
+      setTimer: timer.set,
+      clearTimer: timer.clear,
+      onSettled
+    })
+
+    const responded = broker.request({ connector: 'x', method: 'one', argsPreview: '{}' })
+    broker.respond('id-1', 'once')
+    await responded
+    const denied = broker.request({ connector: 'x', method: 'two', argsPreview: '{}' })
+    broker.respond('id-2', 'deny')
+    await denied
+    const expired = broker.request({ connector: 'x', method: 'three', argsPreview: '{}' })
+    timer.fire()
+    await expired
+
+    expect(onSettled).toHaveBeenNthCalledWith(1, 'id-1', 'resolved')
+    expect(onSettled).toHaveBeenNthCalledWith(2, 'id-2', 'rejected')
+    expect(onSettled).toHaveBeenNthCalledWith(3, 'id-3', 'expired')
   })
 })

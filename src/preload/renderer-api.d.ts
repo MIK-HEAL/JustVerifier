@@ -72,6 +72,10 @@ import type { LocalDirListing, LocalRoots } from '../shared/local-fs'
 import type { RendererFailureReport } from '../shared/diagnostics'
 import type { OpenLogFileResult, RevealLogFileResult } from '../shared/logs'
 import type {
+  NotificationInboxChanged,
+  NotificationInboxSnapshot,
+  NotificationMarkAllReadRequest,
+  NotificationMarkReadRequest,
   OpenSessionFromNotificationRequest,
   UnreadTaskViewState
 } from '../shared/notifications'
@@ -471,6 +475,7 @@ export interface OpenScienceAPI {
     ): RemoveListener
     onSkillImportApprovalSettled(listener: AcpListener<string>): RemoveListener
     replayPendingSkillImportApprovals(): Promise<void>
+    replayConnectorApproval(id: string): Promise<ConnectorApprovalRequest | null>
     respondSkillImportApproval(response: ConversationSkillImportApprovalResponse): Promise<void>
     respondConnectorApproval(request: RespondApprovalRequest): Promise<void>
     onInstallLog(listener: AcpListener<ClaudeInstallEvent>): RemoveListener
@@ -530,6 +535,10 @@ export interface OpenScienceAPI {
     revealInFolder(): Promise<RevealLogFileResult>
   }
   notifications: {
+    getSnapshot(): Promise<NotificationInboxSnapshot>
+    markAllRead(request: NotificationMarkAllReadRequest): Promise<void>
+    markRead(request: NotificationMarkReadRequest): Promise<void>
+    onChanged(listener: AcpListener<NotificationInboxChanged>): RemoveListener
     onOpenSession(listener: () => void): RemoveListener
     peekPendingOpenSession(): Promise<OpenSessionFromNotificationRequest | null>
     takePendingOpenSession(
@@ -606,6 +615,7 @@ export interface OpenScienceAPI {
     onApprovalRequest(listener: (request: ComputeApprovalRequest) => void): () => void
     // Renderer sends back the user's decision (once / conversation / project / deny).
     respondApproval(request: { id: string; decision: ComputeApprovalDecision }): Promise<void>
+    replayApproval(id: string): Promise<ComputeApprovalRequest | null>
     // Lists a remote directory (browse experience).
     listDir(providerId: string, path: string): Promise<DirListing>
     // Downloads a remote file to OS Downloads or project artifact. No approval gate for UI actions.

@@ -72,6 +72,10 @@ import { registerNetworkIpcHandlers } from './network-ipc'
 import { registerWindowIpcHandlers } from './window-ipc'
 import { registerWindowFindIpcHandlers } from './window-find-ipc'
 import { TaskNotificationService } from './notifications/task-notifications'
+import { createNotificationInboxController } from './notifications/notification-inbox-controller'
+import { registerNotificationInboxIpcAdapter } from './notifications/notification-inbox-ipc'
+import { NotificationInboxDbRepository } from './notifications/notification-inbox-repository'
+import { bindNotificationInboxDeletionRuntime } from './notifications/notification-inbox-runtime'
 import {
   buildSkillImportApprovalBroadcast,
   buildConnectorApprovalBroadcast,
@@ -259,7 +263,11 @@ export type ApplicationRuntimeInterfaces = {
   bindRemoteAccess: ApplicationCommandComposition['bindRemoteAccess']
   taskNotifications: Pick<
     TaskNotificationService,
-    'setActivationHandler' | 'setAttentionHandlers' | 'setPendingOpenSession' | 'setUnreadHandler'
+    'setActivationHandler' | 'setAttentionHandlers' | 'setPendingOpenSession'
+  >
+  notificationInbox: Pick<
+    import('./notifications/notification-inbox-controller').NotificationInboxController,
+    'configureDesktop' | 'syncViewState' | 'handleAppFocus' | 'handleWindowCreated' | 'refreshBadge'
   >
   settingsService: WindowSettingsCapabilities
   taskAgent: TaskAgentPort
@@ -331,6 +339,14 @@ const createApplicationModules = async (
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
   initDataRoot(storedSettings.dataRoot)
+  const notificationInbox = createNotificationInboxController({
+    headless,
+    repository: new NotificationInboxDbRepository(() => getProjectDbClient(resolveStorageRoot())),
+    onChanged: (event) => applicationEvents.publish('notifications:changed', event),
+    onError: (error) =>
+      createLogger('notifications').warn('message center operation failed', errorLogFields(error))
+  })
+  await notificationInbox.restore()
   // Record only the location class. Absolute paths (including reversible code-point renderings) can
   // expose usernames and folder names in a support bundle.
   storageLog.info('data root resolved', {
@@ -524,6 +540,16 @@ const createApplicationModules = async (
       liveSessionProjectId: (sessionId) => runtimeRef.current?.liveSessionProjectId(sessionId)
     }
   )
+  notificationInbox.setSessionAvailability((sessionId) =>
+    archiveCoordinator.isSessionAvailableById(sessionId)
+  )
+  archiveCoordinator.setMarkReadSessions((sessionIds) =>
+    notificationInbox.markSessionsRead(sessionIds)
+  )
+  bindNotificationInboxDeletionRuntime({
+    inbox: notificationInbox,
+    sessionPersistenceCoordinator
+  })
   const projectHandlers = createProjectHandlers(projectRepository, projectDeletionCoordinator, {
     updateArchive: (request) => archiveCoordinator.updateProjectArchive(request)
   })
@@ -777,13 +803,15 @@ const createApplicationModules = async (
       notificationsLog.warn('task notification delivery failed', errorLogFields(error)),
     onAttentionError: (error) =>
       notificationsLog.warn('desktop attention handler failed', errorLogFields(error)),
-    onUnreadError: (error) =>
-      notificationsLog.warn('unread task handler failed', errorLogFields(error))
+    inbox: notificationInbox,
+    onInboxError: (error) =>
+      notificationsLog.warn('message center recording failed', errorLogFields(error))
   })
   // The renderer peeks once sessions are hydrated, then conditionally consumes the same target.
   // This lets partial recovery open an already-loaded conversation while retaining an omitted one
   // for retry, without an older IPC round trip clearing a newer click target.
   declareElectronAdapter('task-notifications', () => {
+    registerNotificationInboxIpcAdapter(notificationInbox)
     ipcMainHandle('notifications:peek-pending-open-session', () =>
       taskNotifications.peekPendingOpenSession()
     )
@@ -830,6 +858,7 @@ const createApplicationModules = async (
   // pre-allowed or skip-approved is held here until the user decides (or it auto-denies on timeout).
   const approvalBroker = new ApprovalBroker({
     generateId: () => randomUUID(),
+    onSettled: (id, state) => void taskNotifications.settleAuthorization('connector', id, state),
     broadcast: buildConnectorApprovalBroadcast({
       broadcastToRenderers,
       taskNotifications,
@@ -847,7 +876,9 @@ const createApplicationModules = async (
       onNotificationError: (error) =>
         notificationsLog.warn('skill import approval notification failed', errorLogFields(error))
     }),
-    onSettled: (id) => broadcastToRenderers('skills:conversation-import-settled', id)
+    onSettled: (id) => broadcastToRenderers('skills:conversation-import-settled', id),
+    onLifecycleSettled: (id, state) =>
+      void taskNotifications.settleAuthorization('skill-import', id, state)
   })
   const conversationSkillImporter = new ConversationSkillImporter({
     uploads: uploadRepository,
@@ -1057,6 +1088,9 @@ const createApplicationModules = async (
     ipcMainHandle('connectors:approval-respond', (_event, request: RespondApprovalRequest) => {
       approvalBroker.respond(request.id, request.decision)
     })
+    ipcMainHandle('connectors:approval-replay', (_event, id: unknown) =>
+      typeof id === 'string' ? approvalBroker.getPending(id) : null
+    )
     ipcMainHandle(
       'skills:conversation-import-respond',
       (_event, response: ConversationSkillImportApprovalResponse) => {
@@ -1130,6 +1164,7 @@ const createApplicationModules = async (
       settingsService,
       permissionGrantRegistry,
       taskNotifications,
+      notificationInbox,
       onSessionTurnStarted: (sessionId, turnToken) =>
         skillImportApprovalBroker.beginSessionTurn(sessionId, turnToken),
       onSessionTurnEnded: (sessionId, turnToken) =>
@@ -1786,7 +1821,11 @@ const createApplicationModules = async (
     return sender
   }
   const applicationCommandDependencies: ApplicationCommandCompositionDependencies = {
-    acp: { runtime, workflows: acpHandlerWorkflows, archiveAvailability: archiveCoordinator },
+    acp: {
+      runtime,
+      workflows: acpHandlerWorkflows,
+      archiveAvailability: archiveCoordinator
+    },
     notebook: {
       workflows: notebookCommands,
       readInputPreview: (request) => notebookInputRegistry.readPreview(request)
@@ -1857,6 +1896,9 @@ const createApplicationModules = async (
       localFs: localFsService,
       logs: logsCommandOwner,
       notifications: {
+        getSnapshot: () => notificationInbox.getSnapshot(),
+        markRead: (request) => notificationInbox.markRead(request.ids),
+        markAllRead: (request) => notificationInbox.markAllRead(request.throughSequence),
         peekPendingOpenSession: () => taskNotifications.peekPendingOpenSession(),
         takePendingOpenSession: (expectedToken) =>
           taskNotifications.takePendingOpenSession(expectedToken)
@@ -1897,6 +1939,7 @@ const createApplicationModules = async (
     applicationEvents,
     bindRemoteAccess: applicationCommandComposition.bindRemoteAccess,
     taskNotifications,
+    notificationInbox,
     settingsService,
     taskAgent,
     sessionDeletionCapability: sessionPersistenceCoordinator,

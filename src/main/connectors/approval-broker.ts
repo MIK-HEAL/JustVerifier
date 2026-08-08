@@ -24,6 +24,7 @@ type ApprovalBrokerDeps = {
   // Injectable timer for tests.
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (handle: ReturnType<typeof setTimeout>) => void
+  onSettled?: (id: string, state: 'resolved' | 'rejected' | 'expired') => void
 }
 
 // Bridges the main-process connector gate to the renderer approval card: it holds a connector call
@@ -32,7 +33,11 @@ type ApprovalBrokerDeps = {
 export class ApprovalBroker {
   private readonly pending = new Map<
     string,
-    { resolve: (decision: ApprovalDecision) => void; timer: ReturnType<typeof setTimeout> }
+    {
+      request: ConnectorApprovalRequest
+      resolve: (decision: ApprovalDecision) => void
+      timer: ReturnType<typeof setTimeout>
+    }
   >()
   private readonly timeoutMs: number
   private readonly setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
@@ -47,24 +52,34 @@ export class ApprovalBroker {
   // Broadcasts an approval request and resolves once the renderer responds (or the timeout denies it).
   request(info: ApprovalInfo): Promise<ApprovalDecision> {
     const id = this.deps.generateId()
+    const request = { id, ...info, availableScopes: info.availableScopes ?? ['once'] }
 
     return new Promise<ApprovalDecision>((resolve) => {
-      const timer = this.setTimer(() => this.settle(id, 'deny'), this.timeoutMs)
-      this.pending.set(id, { resolve, timer })
-      this.deps.broadcast({ id, ...info, availableScopes: info.availableScopes ?? ['once'] })
+      const timer = this.setTimer(() => this.settle(id, 'deny', 'expired'), this.timeoutMs)
+      this.pending.set(id, { request, resolve, timer })
+      this.deps.broadcast(request)
     })
+  }
+
+  getPending(id: string): ConnectorApprovalRequest | null {
+    return this.pending.get(id)?.request ?? null
   }
 
   // Called from the IPC handler when the renderer responds. Unknown ids are ignored (already settled).
   respond(id: string, decision: ApprovalDecision): void {
-    this.settle(id, decision)
+    this.settle(id, decision, decision === 'deny' ? 'rejected' : 'resolved')
   }
 
-  private settle(id: string, decision: ApprovalDecision): void {
+  private settle(
+    id: string,
+    decision: ApprovalDecision,
+    state: 'resolved' | 'rejected' | 'expired'
+  ): void {
     const entry = this.pending.get(id)
     if (!entry) return
     this.clearTimer(entry.timer)
     this.pending.delete(id)
     entry.resolve(decision)
+    this.deps.onSettled?.(id, state)
   }
 }

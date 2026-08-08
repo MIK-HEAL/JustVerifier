@@ -273,6 +273,7 @@ describe('preload bridge — public surface inventory', () => {
       'compute.onApprovalRequest',
       'compute.onJobUpdated',
       'compute.probe',
+      'compute.replayApproval',
       'compute.respondApproval',
       'compute.revealInFolder',
       'compute.scratchSet',
@@ -313,6 +314,10 @@ describe('preload bridge — public surface inventory', () => {
       'notebookEnv.onProgress',
       'notebookEnv.provision',
       'notebookEnv.repair',
+      'notifications.getSnapshot',
+      'notifications.markAllRead',
+      'notifications.markRead',
+      'notifications.onChanged',
       'notifications.onOpenSession',
       'notifications.onViewProbe',
       'notifications.peekPendingOpenSession',
@@ -441,6 +446,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.previewSkillZip',
       'settings.refreshProviderModels',
       'settings.removeCustomServer',
+      'settings.replayConnectorApproval',
       'settings.replayPendingSkillImportApprovals',
       'settings.respondConnectorApproval',
       'settings.respondSkillImportApproval',
@@ -553,10 +559,10 @@ describe('preload bridge — Connector configuration files', () => {
 })
 
 describe('preload bridge — runtime renderer contract catalog', () => {
-  it('routes all 180 owned methods through their cataloged Electron channels', async () => {
+  it('routes all 182 owned methods through their cataloged Electron channels', async () => {
     const requestContracts = runtimeContracts.filter(({ kind }) => kind === 'method')
 
-    expect(runtimeContracts).toHaveLength(181)
+    expect(runtimeContracts).toHaveLength(183)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -622,7 +628,7 @@ describe('preload bridge — runtime renderer contract catalog', () => {
 })
 
 describe('preload bridge — core renderer contract catalog', () => {
-  it('pins the exact 22-group, 135-callable T1d complement', () => {
+  it('pins the exact 22-group, 139-callable T1d complement', () => {
     expect(coreContractGroups.map(({ capability }) => capability)).toEqual([
       'artifacts',
       'cli',
@@ -647,7 +653,7 @@ describe('preload bridge — core renderer contract catalog', () => {
       'uploads',
       'window'
     ])
-    expect(coreContracts).toHaveLength(135)
+    expect(coreContracts).toHaveLength(139)
     expect({
       requests: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
@@ -659,16 +665,16 @@ describe('preload bridge — core renderer contract catalog', () => {
       surfaceNative: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'surface-native'
       ).length
-    }).toEqual({ requests: 99, events: 25, sends: 10, surfaceNative: 1 })
+    }).toEqual({ requests: 102, events: 26, sends: 10, surfaceNative: 1 })
   })
 
-  it('routes all 99 request methods through their cataloged Electron channels', async () => {
+  it('routes all 102 request methods through their cataloged Electron channels', async () => {
     const requestContracts = coreContracts.filter(
       ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
     )
     const localFile = { name: 'catalog.csv' } as File
 
-    expect(requestContracts).toHaveLength(99)
+    expect(requestContracts).toHaveLength(102)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -691,8 +697,8 @@ describe('preload bridge — core renderer contract catalog', () => {
       ({ lifecycleDispatch }) => lifecycleDispatch == null
     )
 
-    expect(eventContracts).toHaveLength(25)
-    expect(genericEventContracts).toHaveLength(24)
+    expect(eventContracts).toHaveLength(26)
+    expect(genericEventContracts).toHaveLength(25)
 
     for (const contract of genericEventContracts) {
       onMock.mockClear()

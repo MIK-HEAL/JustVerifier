@@ -13,6 +13,7 @@ import type {
   AcpDeleteSessionRequest,
   AcpPermissionRequest,
   AcpPermissionResponse,
+  AcpPermissionSettlementState,
   AcpPromptRequest,
   AcpResumeSessionRequest,
   AcpRevokePermissionGrantRequest,
@@ -88,7 +89,7 @@ import type { AcpPromptTurnWorkflow } from './prompt-turn-workflow'
 import type { AcpContextCompactionWorkflow } from './context-compaction-workflow'
 import type { AcpProviderPromptExecutor } from './provider-prompt-executor'
 import type { AcpTurnSkillHooks, AcpTurnSkillOwner } from './turn-skill-owner'
-import type { PlanResponseResult } from '../session-plan/plan-service'
+import type { PlanResponseResult, PlanServiceDependencies } from '../session-plan/plan-service'
 import type { ActivePlanProjection, PlanResponseCommand } from '../../shared/session-plan/contract'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 import type { AcpRuntimeBaseOwners } from './runtime-base-composition'
@@ -108,6 +109,7 @@ export type AcpRuntimeCallbacks = {
   onStateChanged?: (state: AcpStateSnapshot) => void
   onEvent?: (event: AcpRuntimeEvent) => void
   onPermissionRequest?: (request: AcpPermissionRequest) => void
+  onPermissionSettled?: (requestId: string, state: AcpPermissionSettlementState) => void
   onPromptStarted?: (sessionId: string, turnToken: string, promptAttemptId?: string) => void
   // Fires after the provider prompt yields its first update/terminal response. Reaching this point
   // proves startup did not reject before the provider accepted the request.
@@ -258,6 +260,8 @@ type AcpRuntimePlanOptions = {
     | 'appendUserMessageToInteraction'
     | 'containsMessageOnActiveBranch'
   >
+  onApprovalRequested?: PlanServiceDependencies['onApprovalRequested']
+  onApprovalSettled?: PlanServiceDependencies['onApprovalSettled']
 }
 // Converts unknown thrown values into user-visible error text. Total AND always returns a string: a
 // hostile message getter or a throwing String() coercion (e.g. a Proxy-wrapped Error) must not escape,

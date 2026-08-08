@@ -114,7 +114,9 @@ const setup = (): PlanServiceHarness => {
       updatedAt: 42
     })),
     now: () => 42,
-    createId: () => 'a91f30c2'
+    createId: () => 'a91f30c2',
+    onApprovalRequested: vi.fn(),
+    onApprovalSettled: vi.fn()
   }
   return {
     service: new PlanService(dependencies),
@@ -206,10 +208,16 @@ describe('PlanService', () => {
     expect(result.projection.lifecycle).toBe('awaiting_approval')
     expect(result.projection.originatingPromptMessageId).toBe('interaction-1')
     expect(result.pauseInteraction).toBe(true)
+    expect(dependencies.onApprovalRequested).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: 'version-1',
+      summary: content.task_summary
+    })
   })
 
   it('uses one irreversible idempotent transition for approval and completes the exact step', async () => {
-    const { service, context } = setup()
+    const { service, context, dependencies } = setup()
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
@@ -225,6 +233,12 @@ describe('PlanService', () => {
 
     const approved = await service.respond({ ...identity, decision: 'approved' })
     expect(approved.changed).toBe(true)
+    expect(dependencies.onApprovalSettled).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      state: 'resolved'
+    })
     const duplicate = await service.respond({
       ...identity,
       expectedRevision: approved.projection.revision,
@@ -506,7 +520,7 @@ describe('PlanService', () => {
   })
 
   it('rejects irreversibly, releases the Session block, and treats duplicate delivery as idempotent', async () => {
-    const { service, context, status } = setup()
+    const { service, context, dependencies, status } = setup()
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
@@ -524,6 +538,12 @@ describe('PlanService', () => {
     expect(rejected).toMatchObject({ changed: true, projection: { lifecycle: 'rejected' } })
     expect(status()).toBe('idle')
     expect(context().plan?.approval).toBe('rejected')
+    expect(dependencies.onApprovalSettled).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      state: 'rejected'
+    })
 
     const duplicate = await service.respond({ ...identity, decision: 'rejected' })
     expect(duplicate.changed).toBe(false)
