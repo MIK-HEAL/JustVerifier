@@ -125,9 +125,38 @@ export const projectAgentPromptInFlight = (
   inFlight: boolean
 ): ChatSession => {
   const agentPromptInFlight = inFlight ? true : undefined
-  return session.agentPromptInFlight === agentPromptInFlight
+  const status =
+    inFlight && session.status === 'idle'
+      ? 'running'
+      : !inFlight && session.status === 'running' && !session.activeRun
+        ? 'idle'
+        : session.status
+  return session.agentPromptInFlight === agentPromptInFlight && session.status === status
     ? session
-    : { ...session, agentPromptInFlight }
+    : {
+        ...session,
+        agentPromptInFlight,
+        status,
+        ...(status !== session.status ? { updatedAt: Date.now() } : {})
+      }
+}
+
+export const projectElicitationPending = (session: ChatSession, pending: boolean): ChatSession => {
+  if (pending) {
+    if (session.status === 'waiting-for-user') return session
+    return { ...session, status: 'waiting-for-user', updatedAt: Date.now() }
+  }
+  if (session.status !== 'waiting-for-user') return session
+  return {
+    ...session,
+    status:
+      session.activePlanProjection?.lifecycle === 'awaiting_approval'
+        ? 'waiting-plan-approval'
+        : session.activeRun || session.agentPromptInFlight
+          ? 'running'
+          : 'idle',
+    updatedAt: Date.now()
+  }
 }
 
 export const projectArtifactError = (session: ChatSession, error: string): ChatSession => ({

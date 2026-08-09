@@ -26,6 +26,7 @@ const createSnapshot = (overrides: Partial<AcpStateSnapshot> = {}): AcpStateSnap
   sessionIds: ['session-1'],
   events: [],
   pendingPermissions: [],
+  pendingElicitations: [],
   permissionProfiles: {},
   permissionGrants: {},
   contextUsageBySession: {},
@@ -106,9 +107,102 @@ describe('workspace Agent first-output runtime sync', () => {
     await act(async () => root.render(<Harness />))
 
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'running',
       activeRun: undefined,
       agentPromptInFlight: true,
       awaitingFirstAgentOutput: true
+    })
+    expect(container.textContent).toBe('thinking')
+  })
+
+  it('projects a pending user choice and resumes running before the next Agent output', async () => {
+    await act(async () => root.render(<Harness />))
+
+    runtimeMock.current = createRuntime(
+      createSnapshot({
+        promptInFlight: true,
+        promptInFlightSessionIds: ['session-1'],
+        agentPromptInFlightSessionIds: ['session-1'],
+        pendingElicitations: [
+          {
+            requestId: 'choice-1',
+            sessionId: 'session-1',
+            toolCallId: 'choice-tool-1',
+            message: 'Choose an approach',
+            fields: [{ id: 'approach', label: 'Approach', kind: 'text' }],
+            durable: { kind: 'agent-user-choice', requestId: 'choice-1' }
+          }
+        ]
+      })
+    )
+    await act(async () => root.render(<Harness />))
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-for-user',
+      agentPromptInFlight: true
+    })
+    expect(container.textContent).toBe('')
+
+    runtimeMock.current = createRuntime(
+      createSnapshot({
+        promptInFlight: true,
+        promptInFlightSessionIds: ['session-1'],
+        agentPromptInFlightSessionIds: ['session-1']
+      })
+    )
+    await act(async () => root.render(<Harness />))
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'running',
+      agentPromptInFlight: true,
+      awaitingFirstAgentOutput: true
+    })
+    expect(container.textContent).toBe('thinking')
+
+    runtimeMock.current = createRuntime(
+      createSnapshot({
+        events: [
+          {
+            id: 'choice-continuation-stop',
+            timestamp: 1710000000000,
+            kind: 'stop',
+            level: 'info',
+            sessionId: 'session-1',
+            text: 'end_turn'
+          }
+        ]
+      })
+    )
+    await act(async () => root.render(<Harness />))
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({ status: 'idle' })
+    expect(container.textContent).toBe('')
+  })
+
+  it('does not project an unrendered generic ACP form as waiting for the user', async () => {
+    await act(async () => root.render(<Harness />))
+
+    runtimeMock.current = createRuntime(
+      createSnapshot({
+        promptInFlight: true,
+        promptInFlightSessionIds: ['session-1'],
+        agentPromptInFlightSessionIds: ['session-1'],
+        pendingElicitations: [
+          {
+            requestId: 'generic-form-1',
+            sessionId: 'session-1',
+            toolCallId: 'generic-form-tool-1',
+            message: 'Provide additional input',
+            fields: [{ id: 'detail', label: 'Detail', kind: 'text' }]
+          }
+        ]
+      })
+    )
+    await act(async () => root.render(<Harness />))
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'running',
+      agentPromptInFlight: true
     })
     expect(container.textContent).toBe('thinking')
   })

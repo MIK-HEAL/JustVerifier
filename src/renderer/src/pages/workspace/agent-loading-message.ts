@@ -54,6 +54,7 @@ const getAgentThinkingStartedAt = (session: ChatSession | undefined): number | u
 // transcript, while tool activity and the silent gaps around it use their own indicator phases.
 const getAgentLoadingPhase = (session: ChatSession | undefined): AgentLoadingPhase => {
   if (!session) return 'hidden'
+  if (session.status === 'waiting-for-user') return 'hidden'
 
   const hasLocalRun =
     Boolean(session.activeRun) &&

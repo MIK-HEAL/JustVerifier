@@ -1239,6 +1239,46 @@ describe('session store', () => {
     expect(useSessionStore.getState().sessions[0].status).toBe('running')
   })
 
+  it('tracks user-input waiting and resumes a runtime-owned continuation immediately', () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'Help me choose an approach'
+    })
+    useSessionStore.getState().finishRun('transport-session-1')
+    useSessionStore.getState().setAgentPromptInFlight('transport-session-1', true)
+    expect(useSessionStore.getState().sessions[0].status).toBe('running')
+
+    useSessionStore.getState().setElicitationPending('transport-session-1', true)
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-for-user')
+
+    useSessionStore.getState().setElicitationPending('transport-session-1', false)
+    expect(useSessionStore.getState().sessions[0].status).toBe('running')
+
+    useSessionStore.getState().setAgentPromptInFlight('transport-session-1', false)
+    expect(useSessionStore.getState().sessions[0].status).toBe('idle')
+  })
+
+  it('keeps user input and Plan approval ahead of a simultaneous permission wait', () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'Run the workflow'
+    })
+    useSessionStore.getState().setElicitationPending('transport-session-1', true)
+    useSessionStore.getState().setPermissionPending('transport-session-1')
+
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-for-user')
+
+    useSessionStore
+      .getState()
+      .setActivePlanProjection('transport-session-1', createPlanProjection('version-1'))
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-for-user')
+
+    useSessionStore.getState().setElicitationPending('transport-session-1', false)
+    useSessionStore.getState().setPermissionPending('transport-session-1')
+
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-plan-approval')
+  })
+
   it('keeps Plan approval waiting sticky across late generate_plan activity updates', () => {
     useSessionStore.getState().appendUserMessage({
       sessionId: 'transport-session-1',
@@ -2752,6 +2792,7 @@ describe('session store public contract', () => {
         'setContextUsage',
         'setElicitationDraftAnswers',
         'setElicitationHistoryReplayRequest',
+        'setElicitationPending',
         'setEnabledComputeHosts',
         'setFixLoopActive',
         'setPermissionPending',

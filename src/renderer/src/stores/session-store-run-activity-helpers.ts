@@ -85,7 +85,11 @@ const hasKnownPrompt = (session: ChatSession, promptMessageId: string | undefine
     : Boolean(session.activeRun)
 
 const getToolActivitySessionStatus = (session: ChatSession): SessionStatus => {
-  if (session.status === 'waiting-permission' || session.status === 'waiting-plan-approval') {
+  if (
+    session.status === 'waiting-for-user' ||
+    session.status === 'waiting-permission' ||
+    session.status === 'waiting-plan-approval'
+  ) {
     return session.status
   }
   return session.activeRun ? 'running' : session.status
@@ -127,27 +131,30 @@ export const projectActivePlan = (
     ...session,
     ...(replaced ? { planHistoryProjections: replaced } : {}),
     activePlanProjection: projection,
-    status: session.compacting
-      ? session.status
-      : projection.lifecycle === 'awaiting_approval'
-        ? session.activeRun || session.status === 'waiting-plan-approval'
-          ? 'waiting-plan-approval'
-          : 'idle'
-        : projection.lifecycle === 'rejected'
-          ? session.activeRun
-            ? 'running'
+    status:
+      session.compacting || session.status === 'waiting-for-user'
+        ? session.status
+        : projection.lifecycle === 'awaiting_approval'
+          ? session.activeRun ||
+            session.status === 'waiting-plan-approval' ||
+            session.status === 'waiting-permission'
+            ? 'waiting-plan-approval'
             : 'idle'
-          : projection.lifecycle === 'blocked'
-            ? 'idle'
-            : projection.lifecycle === 'completed'
-              ? session.activeRun
-                ? 'running'
-                : 'idle'
-              : projection.approval === 'approved'
+          : projection.lifecycle === 'rejected'
+            ? session.activeRun
+              ? 'running'
+              : 'idle'
+            : projection.lifecycle === 'blocked'
+              ? 'idle'
+              : projection.lifecycle === 'completed'
                 ? session.activeRun
                   ? 'running'
                   : 'idle'
-                : session.status,
+                : projection.approval === 'approved'
+                  ? session.activeRun
+                    ? 'running'
+                    : 'idle'
+                  : session.status,
     updatedAt: Date.now()
   }
 }
