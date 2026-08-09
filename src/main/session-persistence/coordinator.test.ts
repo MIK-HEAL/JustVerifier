@@ -18,6 +18,7 @@ import {
   type PersistedArtifact,
   type PersistedChatMessage,
   type PersistedChatSession,
+  type PersistedSideChat,
   type SessionPermissionRuntimeContext,
   type SessionPlanRuntimeContext
 } from '../../shared/session-persistence'
@@ -76,6 +77,24 @@ const createRuntimePermission = (): SessionPermissionRuntimeContext => ({
   originatingPromptMessageId: 'prompt-1',
   fingerprint: 'a'.repeat(64),
   createdAt: 1
+})
+
+const createSideChatProjection = (
+  overrides: Partial<PersistedSideChat> = {}
+): PersistedSideChat => ({
+  version: 1,
+  id: 'side-chat-1',
+  lifecycle: 'open',
+  frameworkId: 'codex',
+  backendId: 'codex-responses',
+  providerSessionId: 'provider-side-chat-1',
+  providerContinuityToken: 'continuity-1',
+  model: 'gpt-5.6-sol',
+  historyPreamble: 'Main context',
+  entries: [],
+  createdAt: 10,
+  updatedAt: 10,
+  ...overrides
 })
 
 const createLegacyUploadSession = (sessionId: string): PersistedChatSession =>
@@ -340,6 +359,239 @@ describe('SessionPersistenceCoordinator', () => {
       plan: createRuntimePlan()
     })
     expect(durable.status).toBe('waiting-plan-approval')
+  })
+
+  it('persists Side chat projection and relays without overwriting concurrent authority', async () => {
+    let durable = createSession({
+      runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await coordinator.saveSideChatProjection({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      sideChat: createSideChatProjection()
+    })
+    await coordinator.appendSideChatRelay({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      sideChatId: 'side-chat-1',
+      relay: { id: 'relay-1', text: 'Use a black line.', createdAt: 11 }
+    })
+    await coordinator.saveSideChatProjection({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      sideChat: createSideChatProjection({
+        entries: [{ id: 'user-1', kind: 'message', role: 'user', text: 'Follow up' }],
+        updatedAt: 12
+      })
+    })
+
+    expect(durable.runtimeContext).toMatchObject({
+      revision: 5,
+      plan: createRuntimePlan(),
+      sideChat: {
+        id: 'side-chat-1',
+        entries: [{ id: 'user-1', kind: 'message', role: 'user', text: 'Follow up' }]
+      },
+      sideChatRelays: [
+        {
+          id: 'relay-1',
+          sideChatId: 'side-chat-1',
+          text: 'Use a black line.',
+          createdAt: 11
+        }
+      ]
+    })
+  })
+
+  it('keeps durable relays deliverable after clearing their producer Side chat', async () => {
+    let durable = createSession({
+      runtimeContext: {
+        version: 1,
+        revision: 5,
+        plan: createRuntimePlan(),
+        sideChat: createSideChatProjection({ updatedAt: 12 }),
+        sideChatRelays: [
+          {
+            id: 'relay-1',
+            sideChatId: 'side-chat-1',
+            text: 'Use a black line.',
+            createdAt: 11
+          },
+          {
+            id: 'relay-2',
+            sideChatId: 'side-chat-1',
+            text: 'Keep this queued.',
+            createdAt: 12
+          }
+        ]
+      }
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    const delivered = await coordinator.commitSideChatRelays({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      relayIds: ['relay-1'],
+      promptMessageId: 'main-prompt-1'
+    })
+
+    expect(delivered).toEqual([
+      expect.objectContaining({
+        content: 'Use a black line.',
+        responseToMessageId: 'main-prompt-1',
+        relayedFrom: { kind: 'side-chat', direction: 'to-main' }
+      })
+    ])
+    expect(durable.runtimeContext).toMatchObject({
+      sideChatRelays: [
+        {
+          id: 'relay-2',
+          sideChatId: 'side-chat-1',
+          text: 'Keep this queued.',
+          createdAt: 12
+        }
+      ]
+    })
+    expect(durable.messages).toContainEqual(delivered[0])
+
+    await expect(
+      coordinator.clearSideChat({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        sideChatId: 'side-chat-1'
+      })
+    ).resolves.toBe(true)
+    expect(durable.runtimeContext).toEqual({
+      version: 1,
+      revision: 7,
+      plan: createRuntimePlan(),
+      sideChatRelays: [
+        {
+          id: 'relay-2',
+          sideChatId: 'side-chat-1',
+          text: 'Keep this queued.',
+          createdAt: 12
+        }
+      ]
+    })
+
+    await expect(
+      coordinator.commitSideChatRelays({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        relayIds: ['relay-2'],
+        promptMessageId: 'main-prompt-2'
+      })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        content: 'Keep this queued.',
+        responseToMessageId: 'main-prompt-2'
+      })
+    ])
+    expect(durable.runtimeContext).toEqual({
+      version: 1,
+      revision: 8,
+      plan: createRuntimePlan()
+    })
+  })
+
+  it('loads a read-only durable Side chat catalog without starting recovery work', async () => {
+    const session = createSession({
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        sideChat: createSideChatProjection(),
+        sideChatRelays: [
+          {
+            id: 'relay-open',
+            sideChatId: 'side-chat-1',
+            text: 'From open chat',
+            createdAt: 12
+          }
+        ]
+      }
+    })
+    const closedSession = createSession({
+      id: 'session-closed-side-chat',
+      runtimeContext: {
+        version: 1,
+        revision: 2,
+        sideChatRelays: [
+          {
+            id: 'relay-closed',
+            sideChatId: 'side-chat-closed',
+            text: 'From closed chat',
+            createdAt: 13
+          }
+        ]
+      }
+    })
+    const loadAllWithDiagnostics = vi.fn().mockResolvedValue({
+      result: { sessions: [session, closedSession], manifest: { version: 1 } },
+      isComplete: true
+    })
+    const coordinator = new SessionPersistenceCoordinator(
+      createSessionRepository({ loadAllWithDiagnostics }),
+      createFileIndex()
+    )
+
+    await expect(coordinator.loadPersistedSideChats()).resolves.toEqual({
+      sideChats: [
+        {
+          projectId: 'project-1',
+          parentSessionId: 'session-1',
+          sideChat: createSideChatProjection()
+        }
+      ],
+      relays: [
+        {
+          projectId: 'project-1',
+          parentSessionId: 'session-1',
+          relays: [
+            {
+              id: 'relay-open',
+              sideChatId: 'side-chat-1',
+              text: 'From open chat',
+              createdAt: 12
+            }
+          ]
+        },
+        {
+          projectId: 'project-1',
+          parentSessionId: 'session-closed-side-chat',
+          relays: [
+            {
+              id: 'relay-closed',
+              sideChatId: 'side-chat-closed',
+              text: 'From closed chat',
+              createdAt: 13
+            }
+          ]
+        }
+      ],
+      isComplete: true
+    })
+    expect(loadAllWithDiagnostics).toHaveBeenCalledWith({ mode: 'read-only' })
   })
 
   it('does not persist Plan feedback when its interaction commit precondition fails', async () => {
@@ -612,6 +864,52 @@ describe('SessionPersistenceCoordinator', () => {
     })
     expect(durable.status).toBe('running')
     expect(durable.runtimeContext?.permission).toEqual(continuingPermission)
+  })
+
+  it('preserves committed Side chat relays on a stale renderer save', async () => {
+    const prompt: PersistedChatMessage = {
+      id: 'main-prompt-1',
+      role: 'user',
+      content: 'Draw a cosine curve.',
+      status: 'complete',
+      eventIds: [],
+      createdAt: 3,
+      updatedAt: 3
+    }
+    const relay: PersistedChatMessage = {
+      id: 'side-chat-relay-1',
+      role: 'user',
+      content: 'Use a black line.',
+      status: 'complete',
+      eventIds: [],
+      responseToMessageId: prompt.id,
+      relayedFrom: { kind: 'side-chat', direction: 'to-main' },
+      createdAt: 4,
+      updatedAt: 4
+    }
+    let durable = materializeSessionConversationGraph(
+      createSession({ messages: [prompt, relay], updatedAt: 4 })
+    )
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await coordinator.saveSession(
+      materializeSessionConversationGraph(
+        createSession({ title: 'Renamed by renderer', messages: [prompt], updatedAt: 3 })
+      )
+    )
+
+    expect(durable.title).toBe('Renamed by renderer')
+    expect(durable.messages).toEqual([prompt, relay])
+    expect(durable.conversationGraph?.messages.map((message) => message.id)).toContain(relay.id)
   })
 
   it('preserves main-owned archive state on a stale whole-session save', async () => {

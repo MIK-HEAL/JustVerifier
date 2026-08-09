@@ -39,7 +39,7 @@ import { opencodeConfigDir } from '../agent-framework/opencode'
 import { broadcastToRenderers } from '../renderer-broadcast'
 import type { TaskNotificationService } from '../notifications/task-notifications'
 import { buildComputeApprovalBroadcast } from '../notifications/electron-wiring'
-import { ComputeApprovalBroker } from './compute-approval-broker'
+import { ComputeApprovalBroker, type ComputeApprovalContext } from './compute-approval-broker'
 import { ComputeService, type ArtifactResolver } from './compute-service'
 import { ConcurrencyManager } from './concurrency-manager'
 import { ComputeHostRepository } from './repository'
@@ -187,6 +187,8 @@ type ComputeHandlers = {
   // 'conversation' and 'project' scopes in addition to 'once' and 'deny' (issue 05).
   approvalRespond: (id: string, decision: ComputeApprovalDecision) => void
   approvalReplay: (id: string) => ComputeApprovalRequest | null
+  approvalPauseSession: (sessionId: string) => void
+  approvalResumeSession: (sessionId: string) => void
   // Returns JobSummary[] for a session, optionally filtered by status (renderer feed, issue 05).
   jobsList: (filter: { sessionId: string; status?: string[] }) => Promise<JobSummary[]>
   // Returns jobs with notifiedAt set and notificationConsumedAt null (issue 05 restart recovery).
@@ -235,10 +237,13 @@ const createComputeHandlers = (
             onNotificationError: (error) =>
               log.warn('compute approval notification failed', errorLogFields(error))
           })
-        : (request: ComputeApprovalRequest) => {
+        : (request: ComputeApprovalRequest, context?: ComputeApprovalContext) => {
             // Tests and isolated registrations without the notification service still receive cards.
             for (const win of BrowserWindow.getAllWindows()) {
-              win.webContents.send('compute:approval-request', request)
+              win.webContents.send('compute:approval-request', {
+                ...request,
+                ...(context?.sessionId ? { session_id: context.sessionId } : {})
+              })
             }
           },
       onSettled: taskNotifications
@@ -376,6 +381,8 @@ const createComputeHandlers = (
     computeService: service,
     approvalRespond: (id, decision) => broker.respond(id, decision),
     approvalReplay: (id) => broker.getPending(id),
+    approvalPauseSession: (sessionId) => broker.pauseSession(sessionId),
+    approvalResumeSession: (sessionId) => broker.resumeSession(sessionId),
     jobsList: async (filter) => {
       if (!jobRepository || !storageRoot) return []
       const hosts = await repository.list()
