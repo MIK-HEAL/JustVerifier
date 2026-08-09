@@ -26,6 +26,7 @@ import { ContextUsageTracker, type TokenCounter } from './context-usage-tracker'
 import {
   ACP_PROMPT_FAILED_EVENT_TITLE,
   type AcpContextUsage,
+  type AcpPermissionResponse,
   type AcpPermissionRequest,
   type AcpRuntimeEvent,
   type AcpStateSnapshot
@@ -53,12 +54,13 @@ import { createArtifactVersionLocator } from '../../shared/artifact-provenance'
 import { BEGIN_ACTIVITY_GROUP_TOOL_NAME } from '../../shared/activity-groups'
 import type { UploadedAttachment } from '../../shared/uploads'
 import { projectConversationMessage } from '../../shared/conversation-graph'
-import type { PersistedChatSession } from '../../shared/session-persistence'
+import type { PersistedChatSession, SessionRuntimeContext } from '../../shared/session-persistence'
 import type { ActivePlanProjection } from '../../shared/session-plan/contract'
 import { UploadRepository } from '../uploads/repository'
 import { stageUploadFixtures } from '../uploads/repository.test-utils'
 import { MAX_INLINE_IMAGE_TOTAL_BASE64_BYTES } from '../uploads/attachment-media'
 import { ConversationSkillImporter, SkillImportApprovalBroker } from '../skills/conversation-import'
+import type { PermissionGrantRegistry } from '../permission-grants/registry'
 import { createProjectDbClient, ensureProjectSchema } from '../projects/prisma-client'
 import { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
 import { NotebookRuntimeService } from '../notebook/runtime-service'
@@ -1591,6 +1593,772 @@ describe('ACP runtime provider prompt acceptance', () => {
       expect(onProviderPromptAccepted).toHaveBeenCalledWith(session.sessionId, undefined)
     }
   )
+})
+
+describe('ACP runtime restored permission continuation', () => {
+  it('cancels restored pending authority without a live ACP interaction', async () => {
+    let runtimeContext: SessionRuntimeContext = {
+      version: 1,
+      revision: 1,
+      permission: {
+        state: 'pending',
+        request: {
+          requestId: 'permission-restored',
+          sessionId: 'restored-session',
+          toolCallId: 'tool-restored',
+          title: 'Run npm test',
+          options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        },
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: 'a'.repeat(64),
+        createdAt: 1
+      }
+    }
+    const patchSessionRuntimeContext = vi.fn(async (command) => {
+      runtimeContext = {
+        ...runtimeContext,
+        ...command.patch,
+        revision: runtimeContext.revision + 1
+      }
+      return structuredClone(runtimeContext)
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext,
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay: vi.fn(),
+          sessionProjectId: vi.fn(async () => 'project-1')
+        }
+      }
+    })
+
+    await runtime.cancelPrompt({ sessionId: 'restored-session' })
+
+    expect(runtimeContext.permission).toBeUndefined()
+    expect(patchSessionRuntimeContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-1',
+        sessionId: 'restored-session',
+        patch: { permission: undefined },
+        sessionStatus: 'idle'
+      })
+    )
+  })
+
+  it.each([
+    ['Claude Code', claudeCodeFramework, 'claude-anthropic', 'claude-code:provider-a'],
+    ['OpenCode', opencodeFramework, 'opencode-openai', 'opencode:provider-a'],
+    ['Codex Responses', codexFramework, 'codex-responses', 'codex:provider-a'],
+    ['Codex Bridge', codexFramework, 'codex-bridge', 'codex:provider-a']
+  ] as const)(
+    'continues an approved restored wait through %s and then clears its authority',
+    async (_name, framework, modelRoute, backendId) => {
+      const process = new FakeAgentProcess()
+      const receivedPrompts: ContentBlock[][] = []
+      const fakeAgent = startFakeAgent(process, ['restored-session'], {
+        ...(framework.id === 'codex'
+          ? { modes: createModes(['read-only', 'agent', 'agent-full-access'], 'agent') }
+          : {}),
+        onPrompt: ({ prompt }) => {
+          receivedPrompts.push(prompt)
+        }
+      })
+      const bridgeLease =
+        modelRoute === 'codex-bridge' ? createBackendLeaseHarness().lease : undefined
+      let runtimeContext: SessionRuntimeContext = {
+        version: 1,
+        revision: 1,
+        permission: {
+          state: 'pending',
+          request: {
+            requestId: 'permission-restored',
+            sessionId: 'restored-session',
+            toolCallId: 'tool-restored',
+            title: 'Run npm test',
+            providerToolName: 'Bash',
+            rawInput: { command: 'npm test' },
+            options: [
+              {
+                optionId: 'allow-once',
+                name: 'Allow once',
+                kind: 'allow_once',
+                scope: 'once'
+              },
+              { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+            ]
+          },
+          originatingPromptMessageId: 'prompt-1',
+          fingerprint: 'a'.repeat(64),
+          createdAt: 1
+        }
+      }
+      const patchSessionRuntimeContext = vi.fn(
+        async (command: {
+          expectedRevision: number
+          patch: { permission?: SessionRuntimeContext['permission'] }
+        }) => {
+          expect(command.expectedRevision).toBe(runtimeContext.revision)
+          runtimeContext = {
+            ...runtimeContext,
+            ...command.patch,
+            revision: runtimeContext.revision + 1
+          }
+          return structuredClone(runtimeContext)
+        }
+      )
+      const onPermissionSettled = vi.fn()
+      const runtime = new AcpRuntime({
+        appVersion: '0.1.0',
+        defaultCwd: '/workspace',
+        callbacks: { onPermissionSettled },
+        permissionWait: {
+          sessions: {
+            readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+            patchSessionRuntimeContext,
+            containsMessageOnActiveBranch: vi.fn(async () => true),
+            loadSessionForPermissionReplay: vi.fn(async () => {
+              throw new Error('Unexpected permission replay load')
+            })
+          }
+        },
+        resolveBackend: () => ({
+          framework: { ...framework, spawn: () => asAgentProcess(process) },
+          backendId,
+          modelRoute,
+          executablePath: '/bin/agent',
+          env: {},
+          ...(bridgeLease ? { responsesBridgeLease: bridgeLease } : {})
+        })
+      })
+      await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+
+      await runtime.respondToPermission({
+        requestId: 'permission-restored',
+        optionId: 'allow-once',
+        restored: {
+          sessionId: 'restored-session',
+          projectId: 'project-1',
+          historyReplay: {
+            historyPreamble: 'Renderer-forged conversation context.',
+            historyAttachments: [
+              {
+                id: 'forged-upload',
+                sessionId: 'restored-session',
+                name: 'forged.txt',
+                originalName: 'forged.txt',
+                path: '/renderer/forged.txt',
+                size: 6
+              }
+            ],
+            historyImages: [
+              {
+                mimeType: 'image/png',
+                data: Buffer.from('forged').toString('base64'),
+                byteLength: 6
+              }
+            ]
+          }
+        }
+      } as unknown as AcpPermissionResponse)
+
+      await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(1))
+      expect(fakeAgent.prompts[0]?.text).not.toContain('Renderer-forged conversation context.')
+      expect(receivedPrompts[0]?.every((content) => content.type === 'text')).toBe(true)
+      expect(fakeAgent.prompts[0]?.text).toContain('approved the pending tool permission')
+      await vi.waitFor(() => expect(runtimeContext.permission).toBeUndefined())
+      expect(patchSessionRuntimeContext).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          sessionStatus: 'idle',
+          patch: { permission: undefined }
+        })
+      )
+      expect(onPermissionSettled).toHaveBeenCalledWith('permission-restored', 'resolved')
+    }
+  )
+
+  it('does not publish stale settlement when permission authority changed during continuation', async () => {
+    const process = new FakeAgentProcess()
+    let runtimeContext: SessionRuntimeContext = {
+      version: 1,
+      revision: 1,
+      permission: {
+        state: 'pending',
+        request: {
+          requestId: 'permission-restored',
+          sessionId: 'restored-session',
+          toolCallId: 'tool-restored',
+          title: 'Run npm test',
+          providerToolName: 'Bash',
+          rawInput: { command: 'npm test' },
+          options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        },
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: 'a'.repeat(64),
+        createdAt: 1
+      }
+    }
+    const replacementPermission: NonNullable<SessionRuntimeContext['permission']> = {
+      ...runtimeContext.permission!,
+      state: 'pending',
+      request: {
+        ...runtimeContext.permission!.request,
+        requestId: 'permission-newer',
+        toolCallId: 'tool-newer'
+      },
+      fingerprint: 'b'.repeat(64),
+      createdAt: 2
+    }
+    const fakeAgent = startFakeAgent(process, ['restored-session'], {
+      onPrompt: () => {
+        runtimeContext = {
+          ...runtimeContext,
+          revision: runtimeContext.revision + 1,
+          permission: replacementPermission
+        }
+      }
+    })
+    const patchSessionRuntimeContext = vi.fn(
+      async (command: {
+        expectedRevision: number
+        patch: { permission?: SessionRuntimeContext['permission'] }
+      }) => {
+        expect(command.expectedRevision).toBe(runtimeContext.revision)
+        runtimeContext = {
+          ...runtimeContext,
+          ...command.patch,
+          revision: runtimeContext.revision + 1
+        }
+        return structuredClone(runtimeContext)
+      }
+    )
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext,
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay: vi.fn(async () => {
+            throw new Error('Unexpected permission replay load')
+          })
+        }
+      },
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        backendId: 'claude-code:provider-a',
+        modelRoute: 'claude-anthropic',
+        executablePath: '/bin/agent',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+
+    await runtime.respondToPermission({
+      requestId: 'permission-restored',
+      optionId: 'allow-once',
+      restored: { sessionId: 'restored-session', projectId: 'project-1' }
+    })
+
+    await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(1))
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot().promptInFlightSessionIds).not.toContain('restored-session')
+    )
+    expect(runtimeContext.permission).toMatchObject({
+      state: 'pending',
+      request: { requestId: 'permission-newer' }
+    })
+    expect(runtime.getSnapshot().events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'permission',
+          sessionId: 'restored-session',
+          title: 'Restored permission continuation settled'
+        })
+      ])
+    )
+  })
+
+  it('builds restored permission replay from Main-owned Session history after context reset', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['adopted-provider-session'], {
+      resumeNotFound: true
+    })
+    let runtimeContext: SessionRuntimeContext = {
+      version: 1,
+      revision: 1,
+      permission: {
+        state: 'pending',
+        request: {
+          requestId: 'permission-restored',
+          sessionId: 'restored-session',
+          toolCallId: 'tool-restored',
+          title: 'Run npm test',
+          providerToolName: 'Bash',
+          rawInput: { command: 'npm test' },
+          options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        },
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: 'a'.repeat(64),
+        createdAt: 1
+      }
+    }
+    const persistedSession: PersistedChatSession = {
+      id: 'restored-session',
+      projectId: 'project-1',
+      title: 'Restored permission',
+      cwd: '/workspace',
+      status: 'waiting-permission',
+      messages: [
+        {
+          id: 'prompt-0',
+          role: 'user',
+          content: 'Main-owned earlier request.',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        },
+        {
+          id: 'reply-0',
+          role: 'agent',
+          content: 'Main-owned earlier response.',
+          status: 'complete',
+          responseToMessageId: 'prompt-0',
+          eventIds: [],
+          createdAt: 2,
+          updatedAt: 2
+        },
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Run the requested test command.',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 3,
+          updatedAt: 3
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 3
+    }
+    const patchSessionRuntimeContext = vi.fn(
+      async (command: { patch: { permission?: SessionRuntimeContext['permission'] } }) => {
+        runtimeContext = {
+          ...runtimeContext,
+          ...command.patch,
+          revision: runtimeContext.revision + 1
+        }
+        return structuredClone(runtimeContext)
+      }
+    )
+    const loadSessionForPermissionReplay = vi.fn(async () => structuredClone(persistedSession))
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext,
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay
+        }
+      },
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        backendId: 'claude-code:provider-a',
+        modelRoute: 'claude-anthropic',
+        executablePath: '/bin/agent',
+        env: {},
+        contextWindow: 200_000,
+        supportsImageInput: true
+      })
+    })
+
+    await expect(
+      runtime.resumeSession({
+        sessionId: 'restored-session',
+        cwd: '/workspace',
+        projectName: 'project-1'
+      })
+    ).resolves.toMatchObject({ sessionId: 'restored-session', contextReset: true })
+    await runtime.respondToPermission({
+      requestId: 'permission-restored',
+      optionId: 'allow-once',
+      restored: { sessionId: 'restored-session', projectId: 'project-1' }
+    })
+
+    await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(1))
+    expect(loadSessionForPermissionReplay).toHaveBeenCalledWith('project-1', 'restored-session')
+    expect(fakeAgent.prompts[0]?.text).toContain('Main-owned earlier request.')
+    expect(fakeAgent.prompts[0]?.text).toContain('approved the pending tool permission')
+  })
+
+  it('marks restored authority continuing before committing a persistent grant', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['restored-session'])
+    const journal: string[] = []
+    let runtimeContext: SessionRuntimeContext = {
+      version: 1,
+      revision: 1,
+      permission: {
+        state: 'pending',
+        request: {
+          requestId: 'permission-restored',
+          sessionId: 'restored-session',
+          toolCallId: 'tool-restored',
+          title: 'Run npm test',
+          providerToolName: 'Bash',
+          rawInput: { command: 'npm test' },
+          options: [
+            {
+              optionId: 'allow-project',
+              name: 'Allow for project',
+              kind: 'allow_always',
+              scope: 'project'
+            }
+          ]
+        },
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: 'a'.repeat(64),
+        capability: { kind: 'execution', key: 'exec:agent/shell' },
+        createdAt: 1
+      }
+    }
+    const patchSessionRuntimeContext = vi.fn(
+      async (command: { patch: { permission?: SessionRuntimeContext['permission'] } }) => {
+        if (command.patch.permission?.state === 'continuing') journal.push('authority')
+        runtimeContext = {
+          ...runtimeContext,
+          ...command.patch,
+          revision: runtimeContext.revision + 1
+        }
+        return structuredClone(runtimeContext)
+      }
+    )
+    const permissionGrantRegistry = {
+      resolve: vi.fn(),
+      remember: vi.fn(async () => {
+        journal.push('grant')
+        return undefined as never
+      }),
+      list: vi.fn().mockResolvedValue([]),
+      listCached: vi.fn().mockReturnValue([]),
+      revoke: vi.fn(),
+      extendUndo: vi.fn(),
+      restore: vi.fn(),
+      prune: vi.fn(),
+      finalizeOwnerDeletion: vi.fn(),
+      subscribe: vi.fn().mockReturnValue(() => undefined)
+    } satisfies PermissionGrantRegistry
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      permissionGrantRegistry,
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext,
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay: vi.fn(async () => {
+            throw new Error('Unexpected permission replay load')
+          })
+        }
+      },
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        backendId: 'claude-code:provider-a',
+        modelRoute: 'claude-anthropic',
+        executablePath: '/bin/agent',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+
+    await runtime.respondToPermission({
+      requestId: 'permission-restored',
+      optionId: 'allow-project',
+      restored: { sessionId: 'restored-session', projectId: 'project-1' }
+    })
+
+    expect(journal.slice(0, 2)).toEqual(['authority', 'grant'])
+  })
+
+  it('releases the restored decision lock after a failed continuation so the card can retry', async () => {
+    const process = new FakeAgentProcess()
+    let continuationAttempts = 0
+    const fakeAgent = startFakeAgent(process, ['restored-session'], {
+      onPrompt: () => {
+        continuationAttempts += 1
+        if (continuationAttempts === 1) throw new Error('continuation unavailable')
+      }
+    })
+    let runtimeContext: SessionRuntimeContext = {
+      version: 1,
+      revision: 1,
+      permission: {
+        state: 'pending',
+        request: {
+          requestId: 'permission-restored',
+          sessionId: 'restored-session',
+          toolCallId: 'tool-restored',
+          title: 'Run npm test',
+          providerToolName: 'Bash',
+          rawInput: { command: 'npm test' },
+          options: [
+            {
+              optionId: 'allow-once',
+              name: 'Allow once',
+              kind: 'allow_once',
+              scope: 'once'
+            },
+            { optionId: 'deny', name: 'Deny', kind: 'reject_once' }
+          ]
+        },
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: 'a'.repeat(64),
+        createdAt: 1
+      }
+    }
+    const patchSessionRuntimeContext = vi.fn(
+      async (command: {
+        expectedRevision: number
+        patch: { permission?: SessionRuntimeContext['permission'] }
+      }) => {
+        runtimeContext = {
+          ...runtimeContext,
+          ...command.patch,
+          revision: runtimeContext.revision + 1
+        }
+        return structuredClone(runtimeContext)
+      }
+    )
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext,
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay: vi.fn(async () => {
+            throw new Error('Unexpected permission replay load')
+          })
+        }
+      },
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        backendId: 'claude-code:provider-a',
+        modelRoute: 'claude-anthropic',
+        executablePath: '/bin/agent',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+    const response = {
+      requestId: 'permission-restored',
+      optionId: 'allow-once',
+      restored: { sessionId: 'restored-session', projectId: 'project-1' }
+    }
+
+    await runtime.respondToPermission(response)
+    await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(1))
+    await vi.waitFor(() =>
+      expect(
+        runtime
+          .getSnapshot()
+          .events.some(
+            (event) => event.kind === 'error' && event.title === 'Could not continue the Agent task'
+          )
+      ).toBe(true)
+    )
+    expect(runtimeContext.permission).toBeDefined()
+
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await expect(runtime.respondToPermission(response)).resolves.toBeDefined()
+    await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(2))
+    await vi.waitFor(() => expect(runtimeContext.permission).toBeUndefined())
+    expect(patchSessionRuntimeContext).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionStatus: 'idle', patch: { permission: undefined } })
+    )
+  })
+
+  it('keeps a successful continuation non-replayable when clearing its authority fails', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['restored-session'])
+    let runtimeContext: SessionRuntimeContext = {
+      version: 1,
+      revision: 1,
+      permission: {
+        state: 'pending',
+        request: {
+          requestId: 'permission-restored',
+          sessionId: 'restored-session',
+          toolCallId: 'tool-restored',
+          title: 'Run npm test',
+          providerToolName: 'Bash',
+          rawInput: { command: 'npm test' },
+          options: [
+            {
+              optionId: 'allow-once',
+              name: 'Allow once',
+              kind: 'allow_once',
+              scope: 'once'
+            }
+          ]
+        },
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: 'a'.repeat(64),
+        createdAt: 1
+      }
+    }
+    const patchSessionRuntimeContext = vi.fn(
+      async (command: {
+        expectedRevision: number
+        patch: { permission?: SessionRuntimeContext['permission'] }
+      }) => {
+        if (command.patch.permission === undefined) throw new Error('disk unavailable')
+        runtimeContext = {
+          ...runtimeContext,
+          ...command.patch,
+          revision: runtimeContext.revision + 1
+        }
+        return structuredClone(runtimeContext)
+      }
+    )
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext,
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay: vi.fn(async () => {
+            throw new Error('Unexpected permission replay load')
+          })
+        }
+      },
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        backendId: 'claude-code:provider-a',
+        modelRoute: 'claude-anthropic',
+        executablePath: '/bin/agent',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+
+    await runtime.respondToPermission({
+      requestId: 'permission-restored',
+      optionId: 'allow-once',
+      restored: { sessionId: 'restored-session', projectId: 'project-1' }
+    })
+
+    await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(1))
+    await vi.waitFor(() =>
+      expect(
+        runtime
+          .getSnapshot()
+          .events.some(
+            (event) =>
+              event.kind === 'permission' &&
+              event.title === 'Permission continuation completed but its wait could not be cleared'
+          )
+      ).toBe(true)
+    )
+    expect(runtimeContext.permission).toMatchObject({ state: 'continuing' })
+  })
+
+  it('clears durable restored authority when its active continuation is cancelled', async () => {
+    const process = new FakeAgentProcess()
+    const continuationGate = createDeferred()
+    const fakeAgent = startFakeAgent(process, ['restored-session'], {
+      onPrompt: async () => {
+        await continuationGate.promise
+      }
+    })
+    let runtimeContext: SessionRuntimeContext = {
+      version: 1,
+      revision: 1,
+      permission: {
+        state: 'pending',
+        request: {
+          requestId: 'permission-restored',
+          sessionId: 'restored-session',
+          toolCallId: 'tool-restored',
+          title: 'Run npm test',
+          providerToolName: 'Bash',
+          rawInput: { command: 'npm test' },
+          options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+        },
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: 'a'.repeat(64),
+        createdAt: 1
+      }
+    }
+    const patchSessionRuntimeContext = vi.fn(
+      async (command: { patch: { permission?: SessionRuntimeContext['permission'] } }) => {
+        runtimeContext = {
+          ...runtimeContext,
+          ...command.patch,
+          revision: runtimeContext.revision + 1
+        }
+        return structuredClone(runtimeContext)
+      }
+    )
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext,
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay: vi.fn(async () => {
+            throw new Error('Unexpected permission replay load')
+          })
+        }
+      },
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        backendId: 'claude-code:provider-a',
+        modelRoute: 'claude-anthropic',
+        executablePath: '/bin/agent',
+        env: {}
+      })
+    })
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+    await runtime.respondToPermission({
+      requestId: 'permission-restored',
+      optionId: 'allow-once',
+      restored: { sessionId: 'restored-session', projectId: 'project-1' }
+    })
+    await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(1))
+
+    await runtime.cancelPrompt({ sessionId: 'restored-session' })
+
+    expect(runtimeContext.permission).toBeUndefined()
+    continuationGate.resolve()
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot().promptInFlightSessionIds).not.toContain('restored-session')
+    )
+    expect(runtimeContext.permission).toBeUndefined()
+    expect(runtime.getSnapshot().events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'permission',
+          sessionId: 'restored-session',
+          title: 'Restored permission continuation settled',
+          text: 'cancelled'
+        })
+      ])
+    )
+  })
 })
 
 describe('ACP runtime session management', () => {
@@ -7527,6 +8295,67 @@ describe('ACP runtime session management', () => {
     expect(emittedUnknownPermission).toBe(false)
     expect(permissionError).toBeDefined()
     expect(runtime.getSnapshot().pendingPermissions).toEqual([])
+  })
+
+  it('keeps a durable permission wait active for Session safety but excludes it from quit warnings', async () => {
+    const process = new FakeAgentProcess()
+    const permissionSeen = createDeferred<AcpPermissionRequest>()
+    startPermissionProbeAgent(process, {
+      newSessionId: 'durable-permission-session',
+      toolCallId: 'durable-permission-tool',
+      toolTitle: 'Run command',
+      modes: createModes(['default', 'bypassPermissions'])
+    })
+    let runtimeContext: SessionRuntimeContext = { version: 1, revision: 0 }
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      callbacks: { onPermissionRequest: (request) => permissionSeen.resolve(request) },
+      permissionWait: {
+        sessions: {
+          readSessionRuntimeContext: vi.fn(async () => structuredClone(runtimeContext)),
+          patchSessionRuntimeContext: vi.fn(
+            async (command: {
+              patch: { permission?: SessionRuntimeContext['permission'] }
+              expectedRevision: number
+            }) => {
+              expect(command.expectedRevision).toBe(runtimeContext.revision)
+              runtimeContext = {
+                ...runtimeContext,
+                ...command.patch,
+                revision: runtimeContext.revision + 1
+              }
+              return structuredClone(runtimeContext)
+            }
+          ),
+          containsMessageOnActiveBranch: vi.fn(async () => true),
+          loadSessionForPermissionReplay: vi.fn(async () => {
+            throw new Error('Unexpected permission replay load')
+          })
+        }
+      }
+    })
+    const session = await runtime.createSession({
+      cwd: '/workspace',
+      projectName: 'project-1',
+      permissionProfile: 'ask'
+    })
+    const prompting = runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'run a command',
+      provenanceContext: { promptMessageId: 'prompt-1' }
+    })
+    const permission = await permissionSeen.promise
+
+    expect(permission.durable).toBe(true)
+    expect(runtime.getActivePromptSessions()).toEqual([
+      { projectName: 'project-1', sessionId: session.sessionId }
+    ])
+    expect(runtime.getQuitBlockingPromptSessions()).toEqual([])
+
+    await runtime.respondToPermission({ requestId: permission.requestId, cancelled: true })
+    await expect(prompting).resolves.toMatchObject({ stopReason: 'end_turn' })
   })
 
   it('changes permission profile while a prompt is waiting and releases the eligible request', async () => {

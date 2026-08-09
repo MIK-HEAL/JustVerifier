@@ -105,7 +105,7 @@ const seedHomeActivitySessions = async (page: Page, cwd: string): Promise<void> 
           projectId: project.id,
           title: 'Review a long session result on iPhone',
           cwd: sessionCwd,
-          status: 'waiting-permission',
+          status: 'waiting-for-user',
           messages: [],
           createdAt: now - 2_000,
           updatedAt: now - 1_000

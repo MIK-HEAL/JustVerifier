@@ -14,14 +14,16 @@ import {
 import type {
   AcpContextUsage,
   AcpPermissionGrant,
-  AcpPermissionRequest
+  AcpPermissionRequest,
+  AcpPermissionResponse
 } from '../../../../shared/acp'
 import {
+  DEFAULT_PERMISSION_PROFILE,
   type PermissionProfileId,
   type SessionPermissionProfileState
 } from '../../../../shared/permission-profiles'
 import { resolveModelContextWindow } from '../../../../shared/provider-registry'
-import { useSessionStore } from '../../stores/session-store'
+import { useSessionStore, type ChatSession } from '../../stores/session-store'
 import { useSettingsStore } from '../../stores/settings-store'
 import { useAcpRuntime } from './useAcpRuntime'
 import {
@@ -59,6 +61,27 @@ type WorkspacePermissionProfileRuntime = Pick<
 const EMPTY_AGENT_PROMPT_IN_FLIGHT_SESSION_IDS: string[] = []
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
+
+const pendingWorkspacePermissions = (
+  sessions: ChatSession[],
+  liveRequests: AcpPermissionRequest[]
+): AcpPermissionRequest[] => {
+  const liveRequestIds = new Set(liveRequests.map((request) => request.requestId))
+  const restoredRequests: AcpPermissionRequest[] = []
+  for (const session of sessions) {
+    const permission = session.runtimeContext?.permission
+    const request = permission?.request
+    if (
+      (session.status === 'waiting-permission' || session.status === 'error') &&
+      permission?.state === 'pending' &&
+      request?.sessionId === session.id &&
+      !liveRequestIds.has(request.requestId)
+    ) {
+      restoredRequests.push(request)
+    }
+  }
+  return restoredRequests.length > 0 ? [...liveRequests, ...restoredRequests] : liveRequests
+}
 
 const setWorkspacePermissionProfile = async (
   runtime: WorkspacePermissionProfileRuntime,
@@ -105,6 +128,28 @@ const WorkspaceAgentRuntimeContext = createContext<WorkspaceAgentRuntime | null>
 
 const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   const runtime = useAcpRuntime()
+  const restoredPermissionProjectionKey = useSessionStore((state) =>
+    JSON.stringify(
+      state.sessions.flatMap((session) => {
+        const permission = session.runtimeContext?.permission
+        return permission?.state === 'pending'
+          ? [
+              [
+                session.id,
+                session.runtimeContext?.revision,
+                permission.request.requestId,
+                session.status
+              ]
+            ]
+          : []
+      })
+    )
+  )
+  const restoredPermissionSessions = useMemo(() => {
+    // The primitive projection key intentionally controls when this store snapshot is refreshed.
+    void restoredPermissionProjectionKey
+    return useSessionStore.getState().sessions
+  }, [restoredPermissionProjectionKey])
   const activeProvider = useSettingsStore((state) =>
     state.providers.find((candidate) => candidate.id === state.activeProviderId)
   )
@@ -142,6 +187,10 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
     [agentFrameworks, providers]
   )
   const [lifecycleOwner] = useState(createWorkspaceRuntimeSessionLifecycleOwner)
+  const pendingPermissions = useMemo(
+    () => pendingWorkspacePermissions(restoredPermissionSessions, runtime.state.pendingPermissions),
+    [restoredPermissionSessions, runtime.state.pendingPermissions]
+  )
   const [sendPreparationInFlightSessionIds, setSendPreparationInFlightSessionIds] = useState<
     string[]
   >([])
@@ -158,6 +207,27 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   const drainRuntimeEvents = drainWorkspaceRuntimeEventsForPersistence
   const previousStatusRef = useRef(runtime.state.status)
   const previousSessionStatusesRef = useRef(runtime.state.sessionConnectionStatuses)
+  const previousDurablePermissionSessionIdsRef = useRef<ReadonlySet<string>>(new Set())
+  const durablePermissionSessionIdsKey = JSON.stringify(
+    Array.from(
+      new Set([
+        ...runtime.state.pendingPermissions
+          .filter((request) => request.durable)
+          .map((request) => request.sessionId),
+        ...restoredPermissionSessions
+          .filter(
+            (session) =>
+              (session.status === 'waiting-permission' || session.status === 'error') &&
+              session.runtimeContext?.permission?.state === 'pending'
+          )
+          .map((session) => session.id)
+      ])
+    ).sort()
+  )
+  const durablePermissionSessionIds = useMemo<ReadonlySet<string>>(
+    () => new Set(JSON.parse(durablePermissionSessionIdsKey) as string[]),
+    [durablePermissionSessionIdsKey]
+  )
 
   // Recover overflow before the event projection can surface its raw error or clear the neutral lock.
   useEffect(() => {
@@ -176,9 +246,9 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   }, [agentPromptInFlightSessionIds, runtime.state.events])
 
   useEffect(() => {
-    syncWorkspacePermissionState(runtime.state.pendingPermissions)
+    syncWorkspacePermissionState(pendingPermissions)
     syncWorkspaceElicitationState(runtime.state.pendingElicitations ?? [])
-  }, [runtime.state.pendingElicitations, runtime.state.pendingPermissions])
+  }, [pendingPermissions, runtime.state.pendingElicitations])
 
   useEffect(() => {
     syncWorkspaceContextUsage(runtime.state.sessionIds, runtime.state.contextUsageBySession)
@@ -187,15 +257,18 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   useEffect(() => {
     const previousStatus = previousStatusRef.current
     const previousSessionStatuses = previousSessionStatusesRef.current
+    const previousDurablePermissionSessionIds = previousDurablePermissionSessionIdsRef.current
     previousStatusRef.current = runtime.state.status
     previousSessionStatusesRef.current = runtime.state.sessionConnectionStatuses
+    previousDurablePermissionSessionIdsRef.current = durablePermissionSessionIds
     markRunningSessionsDisconnectedOnDrop(
       previousStatus,
       runtime.state.status,
       previousSessionStatuses,
-      runtime.state.sessionConnectionStatuses
+      runtime.state.sessionConnectionStatuses,
+      new Set([...previousDurablePermissionSessionIds, ...durablePermissionSessionIds])
     )
-  }, [runtime.state.status, runtime.state.sessionConnectionStatuses])
+  }, [durablePermissionSessionIds, runtime.state.status, runtime.state.sessionConnectionStatuses])
 
   const sendMessage = useCallback(
     (input: SendWorkspaceMessageInput): Promise<SendWorkspaceMessageResult | undefined> => {
@@ -284,14 +357,81 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   )
   const respondToPermission = useCallback(
     async (requestId: string, optionId?: string): Promise<void> => {
-      const request = runtime.state.pendingPermissions.find((item) => item.requestId === requestId)
+      const request = pendingPermissions.find((item) => item.requestId === requestId)
+      const isRestoredRequest = Boolean(
+        request &&
+        !runtime.state.pendingPermissions.some((item) => item.requestId === request.requestId)
+      )
       try {
-        await runtime.respondToPermission(requestId, optionId)
+        let restored: AcpPermissionResponse['restored']
+        if (request && isRestoredRequest) {
+          let session = useSessionStore
+            .getState()
+            .sessions.find((candidate) => candidate.id === request.sessionId)
+          if (!session) throw new Error(`Session not found: ${request.sessionId}`)
+          if (!runtime.state.sessionIds.includes(request.sessionId)) {
+            const cwd = session.cwd || runtime.state.cwd
+            if (!cwd) throw new Error('Choose a workspace folder before resuming this Session.')
+            const resumed = await runtime.resumeSession(
+              session.id,
+              cwd,
+              session.projectId,
+              session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+              session.agentFrameworkId,
+              session.agentBackendId,
+              session.specialistId,
+              session.providerSessionId,
+              session.providerContinuityToken
+            )
+            useSessionStore.getState().markResumed(
+              session.id,
+              resumed
+                ? {
+                    agentFrameworkId: resumed.frameworkId,
+                    agentBackendId: resumed.backendId,
+                    providerSessionId: resumed.providerSessionId,
+                    providerContinuityToken: resumed.providerContinuityToken
+                  }
+                : undefined
+            )
+            // markResumed clears generic interrupted state to idle. Re-arm this main-owned wait
+            // until the restored decision is accepted so a retryable response failure cannot make
+            // the card disappear from the renderer projection.
+            useSessionStore.getState().setPermissionPending(session.id)
+            session = useSessionStore
+              .getState()
+              .sessions.find((candidate) => candidate.id === request.sessionId)
+            if (!session) throw new Error(`Session not found: ${request.sessionId}`)
+          }
+          restored = {
+            sessionId: session.id,
+            projectId: session.projectId
+          }
+        }
+        await runtime.respondToPermission(requestId, optionId, restored)
+        if (request && restored) {
+          useSessionStore.getState().clearPermissionPending(request.sessionId, {
+            authority: 'continuing',
+            requestId
+          })
+        }
       } catch (error) {
-        if (request) useSessionStore.getState().failRun(request.sessionId, getErrorMessage(error))
+        if (request && isRestoredRequest) {
+          // The main-owned authority is still valid. Keep the card actionable; useAcpRuntime retains
+          // the transient action error separately for the active Session to display.
+          const permission = useSessionStore
+            .getState()
+            .sessions.find((session) => session.id === request.sessionId)
+            ?.runtimeContext?.permission
+          if (permission?.state === 'pending') {
+            useSessionStore.getState().setPermissionPending(request.sessionId)
+          }
+        } else if (request) {
+          useSessionStore.getState().failRun(request.sessionId, getErrorMessage(error))
+        }
       }
     },
-    [runtime]
+    [pendingPermissions, runtime]
   )
   const setPermissionProfile = useCallback(
     (sessionId: string, profile: PermissionProfileId): Promise<boolean> =>
@@ -309,7 +449,7 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   return {
     actionError: runtime.actionError,
     isConnecting: runtime.isConnecting,
-    pendingPermissions: runtime.state.pendingPermissions,
+    pendingPermissions,
     permissionProfiles: runtime.state.permissionProfiles,
     permissionGrants: runtime.state.permissionGrants,
     contextUsageBySession: runtime.state.contextUsageBySession,
@@ -351,6 +491,7 @@ export {
   markRunningSessionsDisconnectedOnDrop,
   processVisibleWorkspaceRuntimeEvents,
   setWorkspacePermissionProfile,
+  pendingWorkspacePermissions,
   syncWorkspaceContextUsage,
   syncWorkspaceInteractionState,
   useWorkspaceAgentRuntime

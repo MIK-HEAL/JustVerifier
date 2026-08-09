@@ -6,7 +6,11 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import type { AcpCreateSessionResponse, AcpStateSnapshot } from '../../../../shared/acp'
-import { createInitialSessionState, useSessionStore } from '../../stores/session-store'
+import {
+  createInitialSessionState,
+  toPersistedSession,
+  useSessionStore
+} from '../../stores/session-store'
 import { createInitialSettingsState, useSettingsStore } from '../../stores/settings-store'
 import { resetDeferredArtifactEventsForTests } from './workspace-events'
 import { resetWorkspaceRuntimeEventOwnerForTests } from './workspace-runtime-event-owner'
@@ -295,9 +299,246 @@ describe('workspace Agent Runtime hook contract', () => {
       await latest.revokePermissionGrant('session-1', 'shell:git')
     })
 
-    expect(runtime.respondToPermission).toHaveBeenCalledWith('permission-1', 'allow-once')
+    expect(runtime.respondToPermission).toHaveBeenCalledWith(
+      'permission-1',
+      'allow-once',
+      undefined
+    )
     expect(runtime.setPermissionProfile).toHaveBeenCalledWith('session-1', 'full')
     expect(runtime.revokePermissionGrant).toHaveBeenCalledWith('session-1', 'shell:git')
     expect(useSessionStore.getState().sessions[0]?.permissionProfile).toBe('auto')
+  })
+
+  it('reattaches a restored permission wait before sending its main-validated decision', async () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Run the verification',
+      cwd: workspacePath,
+      projectId: 'project-1',
+      agentFrameworkId: 'claude-code'
+    })
+    const request = {
+      requestId: 'permission-restored',
+      sessionId: 'session-1',
+      toolCallId: 'tool-1',
+      title: 'Run npm test',
+      options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+    }
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        status: 'waiting-permission',
+        activeRun: undefined,
+        runtimeContext: {
+          version: 1,
+          revision: 1,
+          permission: {
+            state: 'pending',
+            request,
+            originatingPromptMessageId: session.messages[0].id,
+            fingerprint: 'a'.repeat(64),
+            createdAt: 1
+          }
+        }
+      }))
+    }))
+    const runtime = createRuntime(createSnapshot())
+    runtime.resumeSession.mockResolvedValue({
+      sessionId: 'session-1',
+      cwd: workspacePath,
+      frameworkId: 'claude-code',
+      backendId: 'claude-code:anthropic',
+      contextReset: false
+    })
+    runtimeMock.current = runtime
+    await render()
+
+    expect(latest.pendingPermissions).toEqual([request])
+    await act(async () => {
+      await latest.respondToPermission('permission-restored', 'allow-once')
+    })
+
+    expect(runtime.resumeSession).toHaveBeenCalledWith(
+      'session-1',
+      workspacePath,
+      'project-1',
+      'ask',
+      'claude-code',
+      undefined,
+      undefined,
+      undefined,
+      undefined
+    )
+    expect(runtime.respondToPermission).toHaveBeenCalledWith('permission-restored', 'allow-once', {
+      sessionId: 'session-1',
+      projectId: 'project-1'
+    })
+    expect(useSessionStore.getState().sessions[0].status).toBe('idle')
+  })
+
+  it('keeps a restored permission card actionable when its response fails', async () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Run the verification',
+      cwd: workspacePath,
+      projectId: 'project-1',
+      agentFrameworkId: 'claude-code'
+    })
+    const request = {
+      requestId: 'permission-restored',
+      sessionId: 'session-1',
+      toolCallId: 'tool-1',
+      title: 'Run npm test',
+      options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+    }
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        status: 'waiting-permission',
+        activeRun: undefined,
+        runtimeContext: {
+          version: 1,
+          revision: 1,
+          permission: {
+            state: 'pending',
+            request,
+            originatingPromptMessageId: session.messages[0].id,
+            fingerprint: 'a'.repeat(64),
+            createdAt: 1
+          }
+        }
+      }))
+    }))
+    const runtime = createRuntime(createSnapshot({ sessionIds: ['session-1'] }))
+    runtime.respondToPermission.mockRejectedValue(new Error('Permission continuation unavailable'))
+    runtimeMock.current = runtime
+    await render()
+
+    await act(async () => {
+      await latest.respondToPermission('permission-restored', 'allow-once')
+    })
+
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-permission')
+    expect(latest.pendingPermissions).toEqual([request])
+    expect(runtime.respondToPermission).toHaveBeenCalledWith('permission-restored', 'allow-once', {
+      sessionId: 'session-1',
+      projectId: 'project-1'
+    })
+  })
+
+  it('keeps a newly persisted permission card when its provider disconnects in-process', async () => {
+    const prompt = useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Run the verification',
+      cwd: workspacePath,
+      projectId: 'project-1',
+      agentFrameworkId: 'claude-code'
+    })
+    const request = {
+      requestId: 'permission-live',
+      sessionId: 'session-1',
+      toolCallId: 'tool-1',
+      title: 'Run npm test',
+      durable: true as const,
+      options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+    }
+    const runtime = createRuntime(
+      createSnapshot({ sessionIds: ['session-1'], pendingPermissions: [request] })
+    )
+    runtimeMock.current = runtime
+    await render()
+
+    const source = useSessionStore.getState().sessions[0]
+    act(() =>
+      useSessionStore.getState().applyDurableSessionProjection({
+        source,
+        session: {
+          ...toPersistedSession(source),
+          status: 'waiting-permission',
+          runtimeContext: {
+            version: 1,
+            revision: 1,
+            permission: {
+              state: 'pending',
+              request,
+              originatingPromptMessageId: prompt!.messageId,
+              fingerprint: 'a'.repeat(64),
+              createdAt: 1
+            }
+          }
+        },
+        mode: 'permission-authority'
+      })
+    )
+
+    runtime.state = createSnapshot({
+      status: 'closed',
+      sessionConnectionStatuses: { 'session-1': 'closed' }
+    })
+    await render()
+
+    expect(latest.pendingPermissions).toEqual([request])
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-permission',
+      runtimeContext: { permission: { state: 'pending' } }
+    })
+    expect(useSessionStore.getState().sessions[0].interrupted).toBeUndefined()
+  })
+
+  it('mirrors restored continuation settlement before re-arming an asynchronous failure', async () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-1',
+      content: 'Run the verification',
+      cwd: workspacePath,
+      projectId: 'project-1',
+      agentFrameworkId: 'claude-code'
+    })
+    const request = {
+      requestId: 'permission-restored',
+      sessionId: 'session-1',
+      toolCallId: 'tool-1',
+      title: 'Run npm test',
+      options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+    }
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        status: 'waiting-permission',
+        activeRun: undefined,
+        runtimeContext: {
+          version: 1,
+          revision: 1,
+          permission: {
+            state: 'pending',
+            request,
+            originatingPromptMessageId: session.messages[0].id,
+            fingerprint: 'a'.repeat(64),
+            createdAt: 1
+          }
+        }
+      }))
+    }))
+    const runtime = createRuntime(createSnapshot({ sessionIds: ['session-1'] }))
+    runtimeMock.current = runtime
+    await render()
+
+    await act(async () => {
+      await latest.respondToPermission('permission-restored', 'allow-once')
+    })
+    expect(latest.pendingPermissions).toEqual([])
+    expect(useSessionStore.getState().sessions[0].runtimeContext?.permission?.state).toBe(
+      'continuing'
+    )
+
+    act(() => useSessionStore.getState().failRun('session-1', 'Unrelated later failure'))
+    await act(async () => Promise.resolve())
+    expect(latest.pendingPermissions).toEqual([])
+
+    act(() =>
+      useSessionStore.getState().setPermissionPending('session-1', { rearmAuthority: true })
+    )
+    await act(async () => Promise.resolve())
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-permission')
+    expect(latest.pendingPermissions).toEqual([request])
   })
 })

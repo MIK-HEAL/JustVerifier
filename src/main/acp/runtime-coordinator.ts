@@ -268,6 +268,10 @@ class AcpRuntimeCoordinator {
     return Array.from(this.runtimes).flatMap((runtime) => runtime.getActivePromptSessions())
   }
 
+  getQuitBlockingPromptSessions(): { projectName: string; sessionId: string }[] {
+    return Array.from(this.runtimes).flatMap((runtime) => runtime.getQuitBlockingPromptSessions())
+  }
+
   hasLiveSession(projectId: string, sessionId: string): boolean {
     const runtime = this.sessionRuntimes.get(sessionId)
     return runtime?.hasLiveSession(projectId, sessionId) ?? false
@@ -343,13 +347,22 @@ class AcpRuntimeCoordinator {
     timeoutMs = QUIT_PREPARATION_TIMEOUT_MS
   ): Promise<Extract<ShutdownStepOutcome, 'completed' | 'timeout' | 'failed'>> {
     this.promptAdmissionClosedForQuit = true
+    const activePromptSessionIds = new Set(
+      this.getActivePromptSessions().map(({ sessionId }) => sessionId)
+    )
+    const quitBlockingSessionIds = new Set(
+      this.getQuitBlockingPromptSessions().map(({ sessionId }) => sessionId)
+    )
+    const durablePermissionWaitSessionIds = new Set(
+      [...activePromptSessionIds].filter((sessionId) => !quitBlockingSessionIds.has(sessionId))
+    )
     const sessionIds = Array.from(
       new Set([
         ...this.activePromptRequests.keys(),
         ...this.pendingPromptStarts.keys(),
         ...this.getSnapshot().promptInFlightSessionIds
       ])
-    )
+    ).filter((sessionId) => !durablePermissionWaitSessionIds.has(sessionId))
     if (sessionIds.length === 0) return 'completed'
 
     const cancelAndDrain = async (): Promise<void> => {
@@ -737,6 +750,7 @@ class AcpRuntimeCoordinator {
           .getSnapshot()
           .pendingPermissions.some((request) => request.requestId === response.requestId)
       ) ??
+      (response.restored ? this.sessionRuntimes.get(response.restored.sessionId) : undefined) ??
       this.getActiveRuntime()
     try {
       await runtime.respondToPermission(response)

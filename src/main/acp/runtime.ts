@@ -9,23 +9,27 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
-import type {
-  AcpCancelPromptRequest,
-  AcpCompactSessionRequest,
-  AcpConnectRequest,
-  AcpCreateSessionRequest,
-  AcpCreateSessionResponse,
-  AcpRuntimeEvent,
-  AcpDeleteSessionRequest,
-  AcpPermissionRequest,
-  AcpPermissionResponse,
-  AcpPermissionSettlementState,
-  ElicitationResponse,
-  AcpPromptRequest,
-  AcpResumeSessionRequest,
-  AcpRevokePermissionGrantRequest,
-  AcpSetPermissionProfileRequest,
-  AcpStateSnapshot
+import {
+  ACP_RESTORED_PERMISSION_CLEAR_FAILED_EVENT_TITLE,
+  ACP_RESTORED_PERMISSION_REARMED_EVENT_TITLE,
+  ACP_RESTORED_PERMISSION_REARM_FAILED_EVENT_TITLE,
+  ACP_RESTORED_PERMISSION_SETTLED_EVENT_TITLE,
+  type AcpCancelPromptRequest,
+  type AcpCompactSessionRequest,
+  type AcpConnectRequest,
+  type AcpCreateSessionRequest,
+  type AcpCreateSessionResponse,
+  type AcpRuntimeEvent,
+  type AcpDeleteSessionRequest,
+  type AcpPermissionRequest,
+  type AcpPermissionResponse,
+  type AcpPermissionSettlementState,
+  type ElicitationResponse,
+  type AcpPromptRequest,
+  type AcpResumeSessionRequest,
+  type AcpRevokePermissionGrantRequest,
+  type AcpSetPermissionProfileRequest,
+  type AcpStateSnapshot
 } from '../../shared/acp'
 import { type AgentFrameworkId } from '../../shared/settings'
 import {
@@ -63,6 +67,7 @@ import type { UploadRepository } from '../uploads/repository'
 import type { UploadedAttachment } from '../../shared/uploads'
 import type { ArtifactFile, FileReference } from '../../shared/artifacts'
 import type { ArtifactRpcCapabilityBinding } from '../../shared/artifact-provenance'
+import type { HistoryReplayDescriptor } from '../../shared/history-preamble'
 import type { AcpRuntimeActivity, AcpRuntimeActivityOptions } from './runtime-activity'
 import type { AcpAppContinuationOwner } from './app-continuation-owner'
 import type { ContextUsageTracker } from './context-usage-tracker'
@@ -159,6 +164,17 @@ type AcpRuntimeOptions = {
   skillImport?: AcpRuntimeSkillImportOptions
   skills?: AcpTurnSkillHooks
   plan?: AcpRuntimePlanOptions
+  permissionWait?: {
+    sessions: Pick<
+      SessionPersistenceCoordinator,
+      | 'readSessionRuntimeContext'
+      | 'patchSessionRuntimeContext'
+      | 'containsMessageOnActiveBranch'
+      | 'loadSessionForPermissionReplay'
+    > &
+      Partial<Pick<SessionPersistenceCoordinator, 'sessionProjectId'>>
+    onSessionUpdated?: import('./permission-wait-owner').PublishPermissionWaitSession
+  }
   // The agent backend to drive. Defaults to Claude Code; selecting another (opencode) swaps only the
   // framework-coupled behavior (spawn, session meta, permission-mode mapping) via AgentFramework.
   framework?: AgentFramework
@@ -322,6 +338,12 @@ class AcpRuntime {
   private readonly sessionInteractions: AcpSessionInteractionOwner
   private readonly elicitationOwner: AcpElicitationOwner
   private readonly appContinuations: AcpAppContinuationOwner
+  private readonly permissionWaitOwner: AcpRuntimeSessionOwners['permissionWaitOwner']
+  private durablePermissionContinuations?: Map<
+    string,
+    { projectId: string; requestId: string; cancellationRequested?: boolean }
+  >
+  private restoredPermissionContextResetSessionIds?: Set<string>
   // Ephemeral Reviewer identity, isolation, permission, and resource state lives behind one owner.
   private readonly reviewerSessions: ReviewerSessionOwner
   private readonly turnSkills: AcpTurnSkillOwner
@@ -376,6 +398,7 @@ class AcpRuntime {
     this.publication = session.publication
     this.permissionContext = session.permissionContext
     this.elicitationOwner = session.elicitationOwner
+    this.permissionWaitOwner = session.permissionWaitOwner
     this.appContinuations = session.appContinuations
     this.reviewerSessions = session.reviewerSessions
     this.sessionUpdateProjector = session.sessionUpdateProjector
@@ -484,6 +507,17 @@ class AcpRuntime {
     }))
   }
 
+  // A permission-blocked prompt whose authority reached durable storage is quiescent for app quit:
+  // teardown loses only the dead provider RPC, while the card remains actionable after restart.
+  getQuitBlockingPromptSessions(): { projectName: string; sessionId: string }[] {
+    return this.getInFlightSessionIds()
+      .filter((sessionId) => !this.permissionContext.hasDurablePendingForSession(sessionId))
+      .map((sessionId) => ({
+        projectName: this.resolveSessionProjectName(sessionId),
+        sessionId
+      }))
+  }
+
   hasLiveSession(projectId: string, sessionId: string): boolean {
     return (
       this.activeSessionFor(sessionId) !== undefined &&
@@ -580,7 +614,17 @@ class AcpRuntime {
 
   // Reattaches a persisted protocol session after an app restart so later prompts can stream.
   async resumeSession(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse> {
-    return this.withOperationLease(() => this.providerSessionResumer.resume(request))
+    return this.withOperationLease(async () => {
+      this.restoredPermissionContextResetSessionIds?.delete(request.sessionId)
+      const resumed = await this.providerSessionResumer.resume(request)
+      if (resumed.contextReset) {
+        const contextResetSessionIds =
+          this.restoredPermissionContextResetSessionIds ?? new Set<string>()
+        this.restoredPermissionContextResetSessionIds = contextResetSessionIds
+        contextResetSessionIds.add(request.sessionId)
+      }
+      return resumed
+    })
   }
 
   // Forcibly drops the agent-side context for a session whose accumulated history can no longer be sent
@@ -947,13 +991,46 @@ class AcpRuntime {
       request.sessionId
     )
     const interactionInFlight = this.sessionInteractions.current(request.sessionId) !== undefined
-    const cancelledPendingContinuation = this.appContinuations.delete(request.sessionId)
+    const durablePermission = this.durablePermissionContinuations?.get(request.sessionId)
+    if (durablePermission) durablePermission.cancellationRequested = true
+    const continuationWasPending = this.appContinuations.get(request.sessionId) !== undefined
+    const cancelledContinuation = this.appContinuations.delete(request.sessionId)
 
-    if (cancelledPendingContinuation && !interactionInFlight) {
+    if (continuationWasPending && cancelledContinuation && !interactionInFlight) {
+      await this.settleCancelledDurablePermissionContinuation(request.sessionId)
       this.emitState()
       return this.getSnapshot()
     }
 
+    if (!interactionInFlight && !durablePermission) {
+      try {
+        if (await this.permissionWaitOwner.cancelPendingSession(request.sessionId)) {
+          this.restoredPermissionContextResetSessionIds?.delete(request.sessionId)
+          this.permissionContext.clearRestoredDecision(request.sessionId)
+          this.pushEvent({
+            kind: 'permission',
+            level: 'info',
+            sessionId: request.sessionId,
+            title: ACP_RESTORED_PERMISSION_SETTLED_EVENT_TITLE,
+            text: 'cancelled'
+          })
+          this.emitState()
+          return this.getSnapshot()
+        }
+      } catch (error) {
+        this.pushEvent({
+          kind: 'permission',
+          level: 'error',
+          sessionId: request.sessionId,
+          title: ACP_RESTORED_PERMISSION_CLEAR_FAILED_EVENT_TITLE,
+          text: errorMessage(error)
+        })
+        this.emitState()
+        return this.getSnapshot()
+      }
+    }
+
+    let cancellationAccepted = false
     if (connection && activeSession) {
       await this.sessionInteractions.cancelPrompt({
         sessionId: request.sessionId,
@@ -962,6 +1039,7 @@ class AcpRuntime {
             sessionId: activeSession.sessionId
           }),
         onAccepted: () => {
+          cancellationAccepted = true
           cancelPlanInteraction()
           this.cancelPermissionFlowForSession(request.sessionId)
           this.pushEvent({
@@ -984,6 +1062,10 @@ class AcpRuntime {
         }
       })
     }
+    if (cancellationAccepted) {
+      await this.settleCancelledDurablePermissionContinuation(request.sessionId)
+      this.emitState()
+    }
 
     return this.getSnapshot()
   }
@@ -999,6 +1081,9 @@ class AcpRuntime {
     const permissionRequest = this.permissionContext
       .getPendingRequests()
       .find((request) => request.requestId === response.requestId)
+    if (!permissionRequest && response.restored) {
+      return this.respondToRestoredPermission(response)
+    }
     const selectedOption = permissionRequest?.options.find(
       (option) => option.optionId === response.optionId
     )
@@ -1060,6 +1145,127 @@ class AcpRuntime {
     }
     this.emitState()
 
+    return this.getSnapshot()
+  }
+
+  private async respondToRestoredPermission(
+    response: AcpPermissionResponse
+  ): Promise<AcpStateSnapshot> {
+    const restored = response.restored!
+    const activeSession = this.activeSessionFor(restored.sessionId)
+    if (!activeSession) throw new Error(`ACP session not found: ${restored.sessionId}`)
+    const projectId = this.sessionEnvironment.projectName(restored.sessionId)
+    const decision = await this.permissionWaitOwner.resolveRestored(
+      response,
+      projectId,
+      restored.sessionId
+    )
+    const historyReplay = this.restoredPermissionContextResetSessionIds?.has(restored.sessionId)
+      ? await this.permissionWaitOwner.buildRestoredContinuationReplay(
+          projectId,
+          restored.sessionId,
+          decision.permission,
+          this.restoredPermissionHistoryReplayDescriptor(),
+          this.backendGeneration.current.context.supportsImageInput
+        )
+      : undefined
+    const durablePermissionContinuations =
+      this.durablePermissionContinuations ??
+      new Map<string, { projectId: string; requestId: string; cancellationRequested?: boolean }>()
+    this.durablePermissionContinuations = durablePermissionContinuations
+    if (durablePermissionContinuations.has(restored.sessionId)) {
+      throw new Error('The restored permission request is already being continued.')
+    }
+    durablePermissionContinuations.set(restored.sessionId, {
+      projectId,
+      requestId: response.requestId
+    })
+    let continuationBegan = false
+    try {
+      // Persist the consumed/non-replayable marker before starting provider work. A process loss or
+      // grant failure must never leave a reusable approval without consuming its authority first.
+      await this.permissionWaitOwner.beginContinuation(
+        projectId,
+        restored.sessionId,
+        response.requestId
+      )
+      continuationBegan = true
+      await this.permissionContext.prepareRestoredDecision(
+        decision.permission,
+        decision.option,
+        projectId
+      )
+    } catch (error) {
+      this.permissionContext.clearRestoredDecision(restored.sessionId)
+      if (continuationBegan) {
+        try {
+          await this.permissionWaitOwner.rearmContinuation(
+            projectId,
+            restored.sessionId,
+            response.requestId
+          )
+          this.pushEvent({
+            kind: 'permission',
+            level: 'info',
+            sessionId: restored.sessionId,
+            title: ACP_RESTORED_PERMISSION_REARMED_EVENT_TITLE
+          })
+        } catch (rearmError) {
+          this.pushEvent({
+            kind: 'permission',
+            level: 'error',
+            sessionId: restored.sessionId,
+            title: ACP_RESTORED_PERMISSION_REARM_FAILED_EVENT_TITLE,
+            text: errorMessage(rearmError)
+          })
+        }
+        this.emitState()
+      }
+      durablePermissionContinuations.delete(restored.sessionId)
+      throw error
+    }
+
+    const scope = decision.option?.scope
+    const text = decision.denied
+      ? 'The user denied the pending tool permission. Continue the current task without that tool ' +
+        'call. Use an alternative that does not require the denied permission, or explain what ' +
+        'cannot be completed. Do not request the same permission again unless the user explicitly asks.'
+      : `The user approved the pending tool permission${scope ? ` for ${scope}` : ''}. Retry only ` +
+        'the exact parked tool call and continue the current task. Do not broaden or reinterpret the approval.'
+    this.appContinuations.set(restored.sessionId, {
+      condition: 'always',
+      request: {
+        sessionId: restored.sessionId,
+        text,
+        suppressUserMessage: true,
+        provenanceContext: {
+          promptMessageId: decision.permission.originatingPromptMessageId
+        },
+        ...(historyReplay?.historyPreamble
+          ? { historyPreamble: historyReplay.historyPreamble }
+          : {}),
+        ...(historyReplay?.historyAttachments.length
+          ? { historyAttachments: historyReplay.historyAttachments }
+          : {}),
+        ...(historyReplay?.historyImages.length
+          ? { historyImages: historyReplay.historyImages }
+          : {})
+      }
+    })
+    this.schedulePendingAppContinuation(restored.sessionId)
+    this.options.callbacks?.onPermissionSettled?.(
+      response.requestId,
+      response.cancelled ? 'cancelled' : decision.denied ? 'rejected' : 'resolved'
+    )
+    this.pushEvent({
+      kind: 'permission',
+      level: 'info',
+      sessionId: restored.sessionId,
+      promptMessageId: decision.permission.originatingPromptMessageId,
+      title: 'Restored permission response accepted',
+      text: response.cancelled ? 'cancelled' : response.optionId
+    })
+    this.emitState()
     return this.getSnapshot()
   }
 
@@ -1268,8 +1474,10 @@ class AcpRuntime {
     if (!pending || this.sessionInteractions.current(sessionId)) return
     const continuation = this.appContinuations.takeAndActivate(sessionId)
     if (!continuation) return
+    let completed = false
     try {
       await this.sendAppContinuation(continuation.request)
+      completed = true
     } catch (error) {
       this.pushEvent({
         kind: 'error',
@@ -1281,6 +1489,65 @@ class AcpRuntime {
       })
       this.emitState()
     } finally {
+      const durablePermission = this.durablePermissionContinuations?.get(sessionId)
+      this.permissionContext.clearRestoredDecision(sessionId)
+      if (durablePermission?.cancellationRequested) {
+        await this.settleCancelledDurablePermissionContinuation(sessionId)
+      } else if (completed && durablePermission) {
+        this.restoredPermissionContextResetSessionIds?.delete(sessionId)
+        try {
+          const cleared = await this.permissionWaitOwner.clearAfterContinuation(
+            durablePermission.projectId,
+            sessionId,
+            durablePermission.requestId
+          )
+          if (cleared) {
+            this.pushEvent({
+              kind: 'permission',
+              level: 'info',
+              sessionId,
+              title: ACP_RESTORED_PERMISSION_SETTLED_EVENT_TITLE,
+              text: 'completed'
+            })
+          }
+        } catch (error) {
+          this.pushEvent({
+            kind: 'permission',
+            level: 'error',
+            sessionId,
+            title: ACP_RESTORED_PERMISSION_CLEAR_FAILED_EVENT_TITLE,
+            text: errorMessage(error)
+          })
+        } finally {
+          this.durablePermissionContinuations?.delete(sessionId)
+        }
+      } else if (durablePermission) {
+        try {
+          // A retry is safe only after durable authority returns from consumed to pending. If this
+          // write fails, retain `continuing` as a fail-closed tombstone and do not expose the card.
+          await this.permissionWaitOwner.rearmContinuation(
+            durablePermission.projectId,
+            sessionId,
+            durablePermission.requestId
+          )
+          this.pushEvent({
+            kind: 'permission',
+            level: 'info',
+            sessionId,
+            title: ACP_RESTORED_PERMISSION_REARMED_EVENT_TITLE
+          })
+        } catch (error) {
+          this.pushEvent({
+            kind: 'permission',
+            level: 'error',
+            sessionId,
+            title: ACP_RESTORED_PERMISSION_REARM_FAILED_EVENT_TITLE,
+            text: errorMessage(error)
+          })
+        } finally {
+          this.durablePermissionContinuations?.delete(sessionId)
+        }
+      }
       this.appContinuations.complete(sessionId)
       this.emitState()
     }
@@ -1422,6 +1689,54 @@ class AcpRuntime {
     this.permissionContext.cancelForSession(sessionId)
     this.elicitationOwner.cancelForSession(sessionId)
     this.appContinuations.delete(sessionId)
+  }
+
+  private async settleCancelledDurablePermissionContinuation(sessionId: string): Promise<void> {
+    const durablePermission = this.durablePermissionContinuations?.get(sessionId)
+    if (!durablePermission) return
+    try {
+      await this.permissionWaitOwner.cancelContinuation(
+        durablePermission.projectId,
+        sessionId,
+        durablePermission.requestId
+      )
+    } catch (error) {
+      this.pushEvent({
+        kind: 'permission',
+        level: 'error',
+        sessionId,
+        title: ACP_RESTORED_PERMISSION_CLEAR_FAILED_EVENT_TITLE,
+        text: errorMessage(error)
+      })
+      return
+    }
+    if (this.durablePermissionContinuations?.get(sessionId) !== durablePermission) return
+    this.durablePermissionContinuations.delete(sessionId)
+    this.restoredPermissionContextResetSessionIds?.delete(sessionId)
+    this.permissionContext.clearRestoredDecision(sessionId)
+    this.pushEvent({
+      kind: 'permission',
+      level: 'info',
+      sessionId,
+      title: ACP_RESTORED_PERMISSION_SETTLED_EVENT_TITLE,
+      text: 'cancelled'
+    })
+  }
+
+  private restoredPermissionHistoryReplayDescriptor(): HistoryReplayDescriptor {
+    const backend = this.backendGeneration.current
+    const target =
+      backend.framework.id === 'opencode'
+        ? 'opencode'
+        : backend.framework.id === 'codex'
+          ? backend.modelRoute === 'codex-bridge'
+            ? 'codex-bridge'
+            : 'codex-response'
+          : 'claude-code'
+    return {
+      target,
+      ...(backend.context.window ? { contextWindow: backend.context.window } : {})
+    }
   }
 
   private processEventDisposition(

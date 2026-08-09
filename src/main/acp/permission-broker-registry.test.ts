@@ -142,6 +142,59 @@ const controlledEmptyGrantRegistry = (): {
 }
 
 describe('ACP permission broker with durable grants', () => {
+  it.each([
+    ['session', { kind: 'session', projectId: 'project-1', sessionId: 'session-1' }],
+    ['project', { kind: 'project', projectId: 'project-1' }],
+    ['global', { kind: 'global' }]
+  ] as const)(
+    'commits a restored %s selection through the durable grant registry',
+    async (scope, expectedScope) => {
+      const registry = {
+        resolve: vi.fn().mockResolvedValue(undefined),
+        remember: vi.fn().mockResolvedValue(undefined),
+        list: vi.fn().mockResolvedValue([]),
+        listCached: vi.fn().mockReturnValue([]),
+        revoke: vi.fn(),
+        extendUndo: vi.fn(),
+        restore: vi.fn(),
+        prune: vi.fn(),
+        finalizeOwnerDeletion: vi.fn(),
+        subscribe: vi.fn().mockReturnValue(() => undefined)
+      } satisfies PermissionGrantRegistry
+      const broker = new AcpPermissionBroker(() => undefined, undefined, registry)
+      const option = {
+        optionId: `allow-${scope}`,
+        name: `Allow for ${scope}`,
+        kind: 'allow_always',
+        scope
+      } as const
+
+      await broker.prepareRestoredDecision(
+        {
+          state: 'pending',
+          request: {
+            requestId: 'permission-1',
+            sessionId: 'session-1',
+            toolCallId: 'tool-1',
+            title: 'Inspect repository status',
+            options: [option]
+          },
+          originatingPromptMessageId: 'prompt-1',
+          fingerprint: 'a'.repeat(64),
+          capability: { kind: 'execution', key: 'shell:git-status' },
+          createdAt: 1
+        },
+        option,
+        'project-1'
+      )
+
+      expect(registry.remember).toHaveBeenCalledWith({
+        capability: { kind: 'execution', key: 'shell:git-status' },
+        scope: expectedScope
+      })
+    }
+  )
+
   it('cancels a request while its durable grant lookup is still pending', async () => {
     let finishResolve: (() => void) | undefined
     const registry = {
@@ -292,6 +345,100 @@ describe('ACP permission broker with durable grants', () => {
     await expect(rendererResponse).rejects.toThrow(
       'Permission approval could not be saved; the tool call was cancelled.'
     )
+    await expect(providerResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+
+  it('settles durable Session authority before committing a persistent grant', async () => {
+    const journal: string[] = []
+    const registry = {
+      resolve: vi.fn().mockResolvedValue(undefined),
+      remember: vi.fn(async () => {
+        journal.push('grant')
+        return undefined as never
+      }),
+      list: vi.fn().mockResolvedValue([]),
+      listCached: vi.fn().mockReturnValue([]),
+      revoke: vi.fn(),
+      extendUndo: vi.fn(),
+      restore: vi.fn(),
+      prune: vi.fn(),
+      finalizeOwnerDeletion: vi.fn(),
+      subscribe: vi.fn().mockReturnValue(() => undefined)
+    } satisfies PermissionGrantRegistry
+    const emitted: Parameters<ConstructorParameters<typeof AcpPermissionBroker>[0]>[0][] = []
+    const broker = new AcpPermissionBroker(
+      (request) => emitted.push(request),
+      undefined,
+      registry,
+      undefined,
+      {
+        persist: vi.fn(async () => true),
+        settleLive: vi.fn(async () => {
+          journal.push('authority')
+        })
+      }
+    )
+    const providerResponse = broker.requestPermission(shellRequest('session-1'), {
+      profile: 'ask',
+      projectId: 'project-1',
+      promptMessageId: 'prompt-1'
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const projectOption = emitted[0].options.find((option) => option.scope === 'project')
+    await broker.respond({
+      requestId: emitted[0].requestId,
+      optionId: projectOption?.optionId
+    })
+
+    expect(journal).toEqual(['authority', 'grant'])
+    await expect(providerResponse).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'provider-allow-once' }
+    })
+  })
+
+  it('does not commit a persistent grant when durable Session settlement fails', async () => {
+    const registry = {
+      resolve: vi.fn().mockResolvedValue(undefined),
+      remember: vi.fn(),
+      list: vi.fn().mockResolvedValue([]),
+      listCached: vi.fn().mockReturnValue([]),
+      revoke: vi.fn(),
+      extendUndo: vi.fn(),
+      restore: vi.fn(),
+      prune: vi.fn(),
+      finalizeOwnerDeletion: vi.fn(),
+      subscribe: vi.fn().mockReturnValue(() => undefined)
+    } satisfies PermissionGrantRegistry
+    const emitted: Parameters<ConstructorParameters<typeof AcpPermissionBroker>[0]>[0][] = []
+    const broker = new AcpPermissionBroker(
+      (request) => emitted.push(request),
+      undefined,
+      registry,
+      undefined,
+      {
+        persist: vi.fn(async () => true),
+        settleLive: vi.fn(async () => {
+          throw new Error('Session write failed')
+        })
+      }
+    )
+    const providerResponse = broker.requestPermission(shellRequest('session-1'), {
+      profile: 'ask',
+      projectId: 'project-1',
+      promptMessageId: 'prompt-1'
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const projectOption = emitted[0].options.find((option) => option.scope === 'project')
+    await expect(
+      broker.respond({
+        requestId: emitted[0].requestId,
+        optionId: projectOption?.optionId
+      })
+    ).rejects.toThrow('Permission approval could not be saved')
+
+    expect(registry.remember).not.toHaveBeenCalled()
     await expect(providerResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
