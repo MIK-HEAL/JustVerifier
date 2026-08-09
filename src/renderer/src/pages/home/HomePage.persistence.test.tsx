@@ -86,6 +86,21 @@ describe('HomePage persistence recovery', () => {
   let deleteProject: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        projectFiles: {
+          getOverview: vi.fn().mockResolvedValue({
+            totalCount: 0,
+            uploadCount: 0,
+            artifactCount: 0,
+            artifactGroupCount: 0,
+            isIndexComplete: true
+          }),
+          onChanged: vi.fn(() => vi.fn())
+        }
+      }
+    })
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
