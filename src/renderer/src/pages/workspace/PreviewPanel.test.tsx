@@ -201,6 +201,7 @@ describe('PreviewPanel', () => {
     const headerFileName = header?.querySelector('[data-testid="file-name-root"]')
     const tabBar = container.querySelector('[aria-label="Open previews"]')
     const fileTab = tabBar?.querySelector(`[role="tab"][title="${name}"]`)
+    const fileTabContainer = fileTab?.parentElement
 
     expect(card?.className).toContain('rounded-md')
     expect(card?.className).toContain('shadow-card')
@@ -227,8 +228,13 @@ describe('PreviewPanel', () => {
     expect(tabBar?.getAttribute('role')).toBe('tablist')
     expect(tabBar?.className).toContain('min-w-0')
     expect(tabBar?.className).toContain('flex-1')
+    expect(fileTabContainer?.className).toContain('max-w-[160px]')
+    expect(fileTabContainer?.className.split(' ')).not.toContain('w-[160px]')
+    expect(fileTab?.className.split(' ')).not.toContain('flex-1')
     expect(tabBar?.querySelector('[role="tab"][aria-selected="true"]')).not.toBeNull()
-    expect(fileTab?.querySelector('[data-testid="file-name-head"]')?.textContent).toBe(
+    const tabFileName = fileTab?.querySelector('[data-testid="file-name-root"]')
+    expect(tabFileName?.className.split(' ')).not.toContain('flex-1')
+    expect(tabFileName?.querySelector('[data-testid="file-name-head"]')?.textContent).toBe(
       'global_climate_anomaly_analysis_1850'
     )
     expect(fileTab?.querySelector('[data-testid="file-name-ellipsis"]')).toBeNull()
