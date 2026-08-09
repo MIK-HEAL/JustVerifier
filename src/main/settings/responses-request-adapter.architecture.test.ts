@@ -144,7 +144,6 @@ describe('Responses request adapter ownership', () => {
   it('keeps a small, exact conversion interface', () => {
     expect(rawLineCount(readSource(adapterPath))).toBeLessThanOrEqual(600)
     expect(exportInventoryFrom(adapterPath)).toEqual([
-      'type:ResponsesBridgeNamespacedTool',
       'type:ResponsesRequestAdapterOptions',
       'value:inputToMessages',
       'value:responsesToChatRequest',
