@@ -134,6 +134,7 @@ describe('Provider runtime projection ownership', () => {
     }
     expect(manifest.modules.settings_provider_accounts.ownerPaths).toEqual([
       'src/main/settings/provider-accounts.ts',
+      'src/main/settings/provider-auth-lifecycle.ts',
       'src/main/settings/provider-runtime-projection.ts'
     ])
     expect(manifest.modules.settings_provider_accounts.testFiles.owner).toEqual(
