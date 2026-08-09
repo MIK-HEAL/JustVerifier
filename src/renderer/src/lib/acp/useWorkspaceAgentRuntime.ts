@@ -47,7 +47,7 @@ import {
   resendEditedWorkspaceMessage,
   sendWorkspaceMessage,
   type ResendEditedMessageInput,
-  type SendWorkspaceMessageInput,
+  type SendWorkspaceMessageIntent,
   type SendWorkspaceMessageResult
 } from './workspace-runtime-command-owner'
 import { createWorkspaceRuntimeSessionLifecycleOwner } from './workspace-runtime-session-lifecycle-owner'
@@ -110,7 +110,9 @@ type WorkspaceAgentRuntime = {
   sendPreparationInFlightSessionIds: string[]
   nativeContextCompactionSessionIds: string[]
   compactContext: (sessionId: string) => Promise<boolean>
-  sendMessage: (input: SendWorkspaceMessageInput) => Promise<SendWorkspaceMessageResult | undefined>
+  sendMessage: (
+    input: SendWorkspaceMessageIntent
+  ) => Promise<SendWorkspaceMessageResult | undefined>
   resendEditedMessage: (
     sessionId: string,
     messageId: string,
@@ -271,7 +273,7 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   }, [durablePermissionSessionIds, runtime.state.status, runtime.state.sessionConnectionStatuses])
 
   const sendMessage = useCallback(
-    (input: SendWorkspaceMessageInput): Promise<SendWorkspaceMessageResult | undefined> => {
+    (input: SendWorkspaceMessageIntent): Promise<SendWorkspaceMessageResult | undefined> => {
       lifecycleOwner.recordPromptPlanAuthority(input)
       return sendWorkspaceMessage(
         runtime,
