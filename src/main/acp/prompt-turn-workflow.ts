@@ -13,7 +13,7 @@ import type { ArtifactTurnHandle } from './artifact-turn-owner'
 import type { AcpBackendGenerationView } from './backend-generation-owner'
 import type {
   ContextUsageTracker,
-  ContextUsageTurnHandle,
+  ContextWindowTurnHandle,
   SessionEstimateInput
 } from './context-usage-tracker'
 import type { AcpPermissionContext } from './permission-context'
@@ -279,7 +279,7 @@ class AcpPromptTurnWorkflow {
       : {}
     let artifact: ArtifactTurnHandle | undefined
     let prepared: PreparedPromptHandle | undefined
-    let context: ContextUsageTurnHandle | undefined
+    let context: ContextWindowTurnHandle | undefined
     let skillInputs: Array<{ name: string; path: string }> = []
     let skillStarted = false
     let skillFinalized = false
@@ -442,9 +442,11 @@ class AcpPromptTurnWorkflow {
             this.options.providerReconnectPending() ||
             interactions.current(sessionId) !== interaction
           ) {
-            return
+            return false
           }
-          if (this.options.contextUsage.reconcileUsed(sessionId, used)) this.options.emitState()
+          const reconciled = this.options.contextUsage.reconcileUsed(sessionId, used)
+          if (reconciled) this.options.emitState()
+          return reconciled
         },
         errorMessage: finalization.errorMessage,
         errorKind: finalization.errorKind,
