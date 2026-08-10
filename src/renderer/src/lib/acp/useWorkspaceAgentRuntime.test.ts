@@ -1,4 +1,8 @@
-import type { AcpRuntimeEvent, AcpStateSnapshot } from '../../../../shared/acp'
+import type {
+  AcpPermissionRequest,
+  AcpRuntimeEvent,
+  AcpStateSnapshot
+} from '../../../../shared/acp'
 import type { UploadedAttachment } from '../../../../shared/uploads'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -29,7 +33,8 @@ import {
 import { respondToWorkspaceElicitation } from './workspace-elicitation-runtime'
 import {
   resetWorkspaceRuntimeEventOwnerForTests,
-  syncWorkspaceElicitationState
+  syncWorkspaceElicitationState,
+  syncWorkspacePermissionState
 } from './workspace-runtime-event-owner'
 import {
   cancelWorkspaceRun,
@@ -710,6 +715,122 @@ describe('workspace durable elicitation', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps another session waiting on a restored permission after answering a durable question', async () => {
+    const permissionRequest: AcpPermissionRequest = {
+      requestId: 'permission-restored',
+      sessionId: 'session-permission-1',
+      toolCallId: 'tool-permission-1',
+      title: 'Run npm test',
+      options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }],
+      durable: true
+    }
+    useSessionStore.getState().appendUserMessage({
+      sessionId: permissionRequest.sessionId,
+      content: 'Run the verification',
+      cwd: '/workspace/project',
+      projectId: 'project-1'
+    })
+    useSessionStore.getState().finishRun(permissionRequest.sessionId)
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === permissionRequest.sessionId
+          ? {
+              ...session,
+              status: 'waiting-permission',
+              runtimeContext: {
+                version: 1,
+                revision: 1,
+                permission: {
+                  state: 'pending',
+                  request: permissionRequest,
+                  originatingPromptMessageId: session.messages[0].id,
+                  fingerprint: 'a'.repeat(64),
+                  createdAt: 1
+                }
+              }
+            }
+          : session
+      )
+    }))
+    syncWorkspacePermissionState([permissionRequest])
+    useSessionStore.getState().setElicitationPending('session-choice-1', true)
+
+    await respondToWorkspaceElicitation(
+      {
+        state: createSnapshot(['session-choice-1']),
+        resumeSession: vi.fn(),
+        respondToElicitation: vi.fn().mockResolvedValue(createSnapshot(['session-choice-1']))
+      },
+      {
+        requestId: 'choice-1',
+        action: 'accept',
+        answers: [{ fieldId: 'question_0', value: 'Minimal' }],
+        request: {
+          requestId: 'choice-1',
+          sessionId: 'session-choice-1',
+          toolCallId: 'tool-choice-1',
+          message: 'Choose an approach',
+          fields: [{ id: 'question_0', label: 'Approach', kind: 'text' }],
+          durable: { kind: 'agent-user-choice', requestId: 'choice-1' }
+        }
+      }
+    )
+
+    expect(
+      useSessionStore
+        .getState()
+        .sessions.find((session) => session.id === permissionRequest.sessionId)
+    ).toMatchObject({
+      status: 'waiting-permission',
+      runtimeContext: { permission: { state: 'pending', request: permissionRequest } }
+    })
+  })
+
+  it('falls back to a pending permission in the same session after answering a durable question', async () => {
+    const permissionRequest: AcpPermissionRequest = {
+      requestId: 'permission-live',
+      sessionId: 'session-choice-1',
+      toolCallId: 'tool-permission-live',
+      title: 'Run npm test',
+      options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+    }
+    const elicitationRequest = {
+      requestId: 'choice-1',
+      sessionId: 'session-choice-1',
+      toolCallId: 'tool-choice-1',
+      message: 'Choose an approach',
+      fields: [{ id: 'question_0', label: 'Approach', kind: 'text' as const }],
+      durable: { kind: 'agent-user-choice' as const, requestId: 'choice-1' }
+    }
+    syncWorkspacePermissionState([permissionRequest])
+    syncWorkspaceElicitationState([elicitationRequest])
+    const continued = {
+      ...createSnapshot(['session-choice-1']),
+      pendingPermissions: [permissionRequest],
+      pendingElicitations: []
+    }
+
+    await respondToWorkspaceElicitation(
+      {
+        state: {
+          ...createSnapshot(['session-choice-1']),
+          pendingPermissions: [permissionRequest],
+          pendingElicitations: [elicitationRequest]
+        },
+        resumeSession: vi.fn(),
+        respondToElicitation: vi.fn().mockResolvedValue(continued)
+      },
+      {
+        requestId: elicitationRequest.requestId,
+        action: 'accept',
+        answers: [{ fieldId: 'question_0', value: 'Minimal' }],
+        request: elicitationRequest
+      }
+    )
+
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-permission')
+  })
+
   it('returns to running when no actionable user choice remains', async () => {
     useSessionStore.getState().setElicitationPending('session-choice-1', true)
     const response = {
@@ -844,6 +965,56 @@ describe('workspace durable elicitation', () => {
     syncWorkspaceElicitationState([])
 
     expect(useSessionStore.getState().sessions[0].status).toBe('waiting-for-user')
+  })
+
+  it('does not rearm an answered durable question when Permission becomes pending', () => {
+    const request = {
+      requestId: 'choice-1',
+      sessionId: 'session-choice-1',
+      toolCallId: 'tool-choice-1',
+      message: 'Choose an approach',
+      fields: [{ id: 'question_0', label: 'Approach', kind: 'text' as const }],
+      durable: { kind: 'agent-user-choice' as const, requestId: 'choice-1' }
+    }
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === request.sessionId
+          ? {
+              ...session,
+              status: 'waiting-for-user',
+              activities: [
+                {
+                  id: request.toolCallId,
+                  kind: 'tool',
+                  title: 'Waiting for an answer',
+                  status: 'in_progress',
+                  sortIndex: 1,
+                  eventIds: [],
+                  elicitation: {
+                    message: request.message,
+                    fields: request.fields,
+                    state: 'pending',
+                    durable: request.durable
+                  },
+                  createdAt: Date.now(),
+                  updatedAt: Date.now()
+                }
+              ]
+            }
+          : session
+      )
+    }))
+
+    syncWorkspaceElicitationState([request])
+    useSessionStore.getState().setElicitationPending(request.sessionId, false)
+    useSessionStore.getState().setPermissionPending(request.sessionId)
+    syncWorkspaceElicitationState([])
+    useSessionStore.getState().clearPermissionPending(request.sessionId)
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'idle',
+      interactionState: { permission: false, elicitation: false }
+    })
   })
 
   it('reattaches a restored session before submitting its durable answer', async () => {

@@ -354,6 +354,107 @@ describe('session store', () => {
     })
   })
 
+  it('reconciles a pending durable Plan while Permission is waiting', () => {
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Plan approval',
+        cwd: '/workspace',
+        status: 'idle',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ])
+    useSessionStore.getState().setPermissionPending('session-1')
+    const source = useSessionStore.getState().sessions[0]
+
+    useSessionStore.getState().applyDurableSessionProjection({
+      source,
+      session: {
+        ...toPersistedSession(source),
+        status: 'waiting-plan-approval',
+        runtimeContext: {
+          version: 1,
+          revision: 1,
+          plan: {
+            artifactId: 'plan-1',
+            artifactVersionId: 'plan-version-1',
+            artifactChecksum: 'a'.repeat(64),
+            approval: 'pending',
+            stepStatuses: {}
+          }
+        },
+        updatedAt: source.updatedAt + 10
+      }
+    })
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-permission',
+      interactionState: { permission: true, plan: true }
+    })
+
+    useSessionStore.getState().clearPermissionPending('session-1')
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-plan-approval')
+  })
+
+  it('drops a settled durable Plan while Permission is waiting', () => {
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Plan approval',
+        cwd: '/workspace',
+        status: 'waiting-plan-approval',
+        runtimeContext: {
+          version: 1,
+          revision: 1,
+          plan: {
+            artifactId: 'plan-1',
+            artifactVersionId: 'plan-version-1',
+            artifactChecksum: 'a'.repeat(64),
+            approval: 'pending',
+            stepStatuses: {}
+          }
+        },
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ])
+    useSessionStore.getState().setPermissionPending('session-1')
+    const source = useSessionStore.getState().sessions[0]
+
+    useSessionStore.getState().applyDurableSessionProjection({
+      source,
+      session: {
+        ...toPersistedSession(source),
+        status: 'idle',
+        runtimeContext: {
+          version: 1,
+          revision: 2,
+          plan: {
+            artifactId: 'plan-1',
+            artifactVersionId: 'plan-version-1',
+            artifactChecksum: 'a'.repeat(64),
+            approval: 'approved',
+            stepStatuses: {}
+          }
+        },
+        updatedAt: source.updatedAt + 10
+      }
+    })
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-permission',
+      interactionState: { permission: true, plan: false }
+    })
+
+    useSessionStore.getState().clearPermissionPending('session-1')
+    expect(useSessionStore.getState().sessions[0].status).toBe('idle')
+  })
+
   it('does not replace newer local conversation state when a durable Plan authority arrives', () => {
     const prompt = useSessionStore.getState().appendUserMessage({
       sessionId: 'session-1',
@@ -716,8 +817,16 @@ describe('session store', () => {
 
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
       status: 'waiting-plan-approval',
-      activePlanProjection: { approval: 'pending' }
+      activePlanProjection: { approval: 'pending' },
+      interactionState: { plan: true }
     })
+
+    useSessionStore.getState().setPermissionPending('session-1')
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-permission')
+
+    useSessionStore.getState().clearPermissionPending('session-1')
+
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-plan-approval')
   })
 
   it('returns a settled blocked Plan session to idle', () => {
@@ -1597,7 +1706,7 @@ describe('session store', () => {
     expect(useSessionStore.getState().sessions[0].status).toBe('idle')
   })
 
-  it('keeps user input and Plan approval ahead of a simultaneous permission wait', () => {
+  it('projects simultaneous blocking interactions in Permission, Ask, then Plan order', () => {
     useSessionStore.getState().appendUserMessage({
       sessionId: 'transport-session-1',
       content: 'Run the workflow'
@@ -1605,17 +1714,166 @@ describe('session store', () => {
     useSessionStore.getState().setElicitationPending('transport-session-1', true)
     useSessionStore.getState().setPermissionPending('transport-session-1')
 
-    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-for-user')
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-permission')
 
     useSessionStore
       .getState()
       .setActivePlanProjection('transport-session-1', createPlanProjection('version-1'))
+    expect(useSessionStore.getState().sessions[0].status).toBe('waiting-permission')
+
+    useSessionStore.getState().clearPermissionPending('transport-session-1')
     expect(useSessionStore.getState().sessions[0].status).toBe('waiting-for-user')
 
     useSessionStore.getState().setElicitationPending('transport-session-1', false)
-    useSessionStore.getState().setPermissionPending('transport-session-1')
-
     expect(useSessionStore.getState().sessions[0].status).toBe('waiting-plan-approval')
+  })
+
+  it('does not restore obsolete Ask and Plan waits after a new turn starts', () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: 'session-restored-interactions',
+          projectId: 'project-1',
+          title: 'Restored interactions',
+          cwd: '/workspace',
+          status: 'waiting-for-user',
+          interactionState: { permission: false, elicitation: true, plan: true },
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2
+        }
+      ],
+      selectedSessionId: 'session-restored-interactions'
+    })
+
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'session-restored-interactions',
+      content: 'Continue with the selected choices'
+    })
+    useSessionStore.getState().setPermissionPending('session-restored-interactions')
+    useSessionStore.getState().clearPermissionPending('session-restored-interactions')
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'running',
+      interactionState: { permission: false, elicitation: false, plan: false }
+    })
+  })
+
+  it('does not restore obsolete Ask and Plan waits after a Session resumes', () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: 'session-restored-interactions',
+          projectId: 'project-1',
+          title: 'Restored interactions',
+          cwd: '/workspace',
+          status: 'waiting-for-user',
+          interactionState: { permission: false, elicitation: true, plan: true },
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2
+        }
+      ],
+      selectedSessionId: 'session-restored-interactions'
+    })
+
+    useSessionStore.getState().markResumed('session-restored-interactions')
+    useSessionStore.getState().setPermissionPending('session-restored-interactions')
+    useSessionStore.getState().clearPermissionPending('session-restored-interactions')
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'idle',
+      interactionState: { permission: false, elicitation: false, plan: false }
+    })
+  })
+
+  it('restores simultaneous durable Permission, Ask, and Plan state without persisting the transient index', () => {
+    const restored: PersistedChatSession = {
+      id: 'session-restored-interactions',
+      projectId: 'project-1',
+      title: 'Restored interactions',
+      cwd: '/workspace',
+      status: 'waiting-permission',
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        permission: {
+          state: 'pending',
+          request: {
+            requestId: 'permission-restored',
+            sessionId: 'session-restored-interactions',
+            toolCallId: 'permission-tool',
+            title: 'Run npm test',
+            options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }]
+          },
+          originatingPromptMessageId: 'prompt-1',
+          fingerprint: 'a'.repeat(64),
+          createdAt: 1
+        },
+        plan: {
+          artifactId: 'plan-artifact',
+          artifactVersionId: 'plan-version',
+          artifactChecksum: 'b'.repeat(64),
+          approval: 'pending',
+          stepStatuses: {}
+        }
+      },
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Run the workflow',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      activities: [
+        {
+          id: 'ask-tool',
+          kind: 'tool',
+          title: 'Choose an approach',
+          status: 'in_progress',
+          eventIds: [],
+          sortIndex: 1,
+          elicitation: {
+            message: 'Choose an approach',
+            fields: [{ id: 'question_0', label: 'Approach', kind: 'text' }],
+            state: 'pending',
+            durable: { kind: 'agent-user-choice', requestId: 'choice-restored' }
+          },
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 2
+    }
+
+    useSessionStore.getState().hydrateSessions([restored])
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-permission',
+      interactionState: { permission: true, elicitation: true, plan: true }
+    })
+    expect(toPersistedSession(useSessionStore.getState().sessions[0])).not.toHaveProperty(
+      'interactionState'
+    )
+
+    useSessionStore.getState().clearPermissionPending('session-restored-interactions', {
+      authority: 'settled'
+    })
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-for-user',
+      interactionState: { permission: false, elicitation: true, plan: true }
+    })
+
+    useSessionStore.getState().setElicitationPending('session-restored-interactions', false)
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-plan-approval',
+      interactionState: { permission: false, elicitation: false, plan: true }
+    })
   })
 
   it('keeps Plan approval waiting sticky across late generate_plan activity updates', () => {
