@@ -89,15 +89,45 @@ test('resolves Agent permission requests through both Allow and Deny decisions',
   await page.getByRole('button', { name: 'Send message' }).click()
 
   await expect(page.getByText('Write fixture output', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('permission-composer')).toBeVisible()
+  await expect(composer).toBeHidden()
+  const permissionHeader = page.getByTestId('permission-header')
+  await expect(permissionHeader).toHaveCSS('position', 'sticky')
+  await expect(permissionHeader).toHaveCSS('top', '0px')
+  const permissionActions = page.getByTestId('permission-actions')
+  await expect(permissionActions).toHaveCSS('position', 'sticky')
+  await expect(permissionActions).toHaveCSS('bottom', '0px')
+  const resizeHandle = page.getByRole('button', { name: 'Resize permission panel' })
+  const handleBounds = await resizeHandle.boundingBox()
+  expect(handleBounds).not.toBeNull()
+  const restingHandleBackground = await resizeHandle.evaluate(
+    (element) => getComputedStyle(element).backgroundColor
+  )
+  await page.mouse.move(
+    (handleBounds?.x ?? 0) + (handleBounds?.width ?? 0) / 2,
+    (handleBounds?.y ?? 0) + (handleBounds?.height ?? 0) / 2
+  )
+  await page.mouse.down()
+  try {
+    expect(
+      await resizeHandle.evaluate((element) => getComputedStyle(element).backgroundColor)
+    ).toBe(restingHandleBackground)
+  } finally {
+    await page.mouse.up()
+  }
   await page.getByRole('button', { name: /^Allow/ }).click()
   await expect(page.getByText('Fixture permission allowed.', { exact: true })).toBeVisible()
+  await expect(composer).toBeVisible()
 
   await composer.fill(`${PERMISSION_PROMPT} deny`)
   await page.getByRole('button', { name: 'Send message' }).click()
 
   await expect(page.getByText('Write fixture output', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('permission-composer')).toBeVisible()
+  await expect(composer).toBeHidden()
   await page.getByRole('button', { name: 'Deny', exact: true }).click()
   await expect(page.getByText('Fixture permission denied.', { exact: true })).toBeVisible()
+  await expect(composer).toBeVisible()
 })
 
 test('shows context compaction loading and completion inside the Session transcript', async ({

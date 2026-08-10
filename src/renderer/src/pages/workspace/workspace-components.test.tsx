@@ -395,20 +395,26 @@ describe('conversation message scroller integration', () => {
   it('keeps permission prompts constrained to the conversation content width', () => {
     const permissionApprovalControlsSource = readFileSync(permissionApprovalControlsPath, 'utf8')
 
-    // Outer container maintains width constraints (overflow-visible so the scope dropdown is not clipped)
+    // Common content stays width-constrained; standalone chrome is omitted by embedded callers.
     expect(permissionApprovalControlsSource).toContain(
-      'className="mb-2 flex w-full max-w-full flex-col gap-3 rounded-xl border border-border bg-card'
+      "'flex w-full max-w-full flex-col gap-3 bg-card"
     )
-    // Header maintains min-w-0 for text truncation
     expect(permissionApprovalControlsSource).toContain(
-      'className="flex min-w-0 items-center gap-2"'
+      "'mb-2 rounded-xl border border-border shadow-dialog"
+    )
+    expect(permissionApprovalControlsSource).toContain('!embedded &&')
+    // Header maintains min-w-0 for text truncation
+    expect(permissionApprovalControlsSource).toContain("'flex min-w-0 items-center gap-2'")
+    expect(permissionApprovalControlsSource).toContain(
+      "'sticky top-0 z-10 -mx-4 -mt-4 -mb-3 bg-card"
     )
     // Code block uses WorkspaceToolCodeBlock with max-height constraint
     expect(permissionApprovalControlsSource).toContain('WorkspaceToolCodeBlock')
     // Button row maintains layout constraints
     expect(permissionApprovalControlsSource).toContain(
-      'className="flex flex-wrap items-center justify-end gap-2"'
+      "'flex flex-wrap items-center justify-end gap-2'"
     )
+    expect(permissionApprovalControlsSource).toContain("'sticky bottom-0 z-10 -mx-4 -mb-4 bg-card")
   })
 
   it('keeps composer attachment UI inline with the composer', () => {
