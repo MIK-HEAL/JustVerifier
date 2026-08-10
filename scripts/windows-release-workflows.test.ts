@@ -34,6 +34,7 @@ type Workflow = {
   jobs: Record<string, WorkflowJob>
   on?: {
     push?: { branches?: string[]; tags?: string[] }
+    schedule?: Array<{ cron: string }>
     workflow_call?: unknown
     workflow_dispatch?: unknown
   }
@@ -59,15 +60,21 @@ describe('post-merge Windows validation', () => {
     expect(stage.run).toContain('"$compatibility_path" --version')
   })
 
-  it('runs the complete Windows suite independently after changes land on main', () => {
+  it('batches complete Windows coverage independently against the latest main head', () => {
     const build = readWorkflow('build.yml')
     const workflow = readWorkflow('windows-full-test.yml')
+    const plan = workflow.jobs.plan
     const job = workflow.jobs.windows_full_test
 
     expect(build.jobs.windows_full_test).toBeUndefined()
-    expect(workflow.on?.push).toMatchObject({ branches: ['main'] })
+    expect(workflow.on?.push).toBeUndefined()
+    expect(workflow.on?.schedule).toEqual([{ cron: '47 * * * *' }])
+    expect(workflow.on).toHaveProperty('workflow_dispatch')
     expect(workflow.on).not.toHaveProperty('workflow_call')
+    expect(findStep(plan, 'Check for untested main changes').run).toContain('status=success')
     expect(job).toMatchObject({
+      needs: 'plan',
+      if: "needs.plan.outputs.should_test == 'true'",
       'runs-on': 'windows-latest'
     })
     expect(job['continue-on-error']).toBeUndefined()

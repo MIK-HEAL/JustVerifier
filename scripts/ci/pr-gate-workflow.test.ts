@@ -90,7 +90,17 @@ describe('PR Gate workflow', () => {
     })
     expect(workflow.on?.pull_request?.['paths-ignore']).toBeUndefined()
     expect(workflow.on?.merge_group).toEqual({ types: ['checks_requested'] })
-    expect(workflow.on).toHaveProperty('workflow_dispatch')
+    expect(workflow.on?.workflow_dispatch).toEqual({
+      inputs: {
+        dry_run: {
+          description: 'Focused no-side-effect validation plan',
+          required: false,
+          default: 'classified',
+          type: 'choice',
+          options: ['classified', 'unit-coverage']
+        }
+      }
+    })
     expect(workflow.permissions).toEqual({ contents: 'read', 'pull-requests': 'read' })
     expect(workflow.concurrency).toEqual({
       group:
@@ -135,9 +145,16 @@ describe('PR Gate workflow', () => {
     expect(prepare?.run).toContain('git show "${BASE_SHA}:${file}"')
     expect(prepare?.run).toContain('source=bootstrap')
     expect(classify?.env).toMatchObject({
+      DRY_RUN_MODE: "${{ inputs.dry_run || 'classified' }}",
+      EVENT_NAME: '${{ github.event_name }}',
       TRUSTED_CLASSIFIER_DIR: '${{ steps.trusted_classifier.outputs.dir }}',
       TRUSTED_CLASSIFIER_SOURCE: '${{ steps.trusted_classifier.outputs.source }}'
     })
+    expect(classify?.run).toContain(
+      '[[ "$EVENT_NAME" == "workflow_dispatch" && "$DRY_RUN_MODE" == "unit-coverage" ]]'
+    )
+    expect(classify?.run).toContain('"lanes":["policy","unit_macos"]')
+    expect(classify?.run).toContain('"bundles":["policy","unit"]')
     expect(classify?.run).toContain(
       'node "$TRUSTED_CLASSIFIER_DIR/classify-pr-changes.mjs" --base "$BASE_SHA" --head "$HEAD_SHA"'
     )
@@ -303,9 +320,9 @@ describe('PR Gate workflow', () => {
     )
     expect(legacyCoverage.steps?.filter(({ run }) => run === 'npm ci')).toHaveLength(1)
     expect(unit).toMatchObject({
-      name: 'Module tests (macOS)',
+      name: 'Module tests and coverage',
       needs: ['preflight', 'unit_shard'],
-      'runs-on': 'macos-14'
+      'runs-on': "${{ needs.unit_shard.result != 'skipped' && 'ubuntu-latest' || 'macos-14' }}"
     })
     expect(unit.if).toContain('always()')
     expect(unit.env?.VITEST_DEFER_COVERAGE_THRESHOLDS).toBeUndefined()
@@ -356,7 +373,7 @@ describe('PR Gate workflow', () => {
       id: 'unit_macos_full',
       'continue-on-error': true,
       if: "${{ needs.unit_shard.result != 'skipped' }}",
-      run: 'npx vitest run --merge-reports=vitest-reports --coverage'
+      run: 'npx vitest run --merge-reports=vitest-reports --coverage --passWithNoTests'
     })
     expect(unit.steps?.some(({ name }) => name === 'Test Renderer (blocking)')).toBe(false)
     expect(unit.steps?.filter(({ run }) => run === 'npm run test:coverage')).toHaveLength(0)
@@ -487,7 +504,7 @@ describe('PR Gate workflow', () => {
     )
     expect(portable).toMatchObject({
       'continue-on-error': true,
-      run: 'npx vitest run --merge-reports=vitest-reports --coverage'
+      run: 'npx vitest run --merge-reports=vitest-reports --coverage --passWithNoTests'
     })
 
     expect(workflow.jobs.windows_core).toMatchObject({
