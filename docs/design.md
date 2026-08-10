@@ -526,7 +526,15 @@ Workspace-only tokens without a shadcn counterpart, plus shadow tokens. For shar
   height, remaining content scrolls inside the panel while the title banner and Allow/Deny action bar
   stay pinned to the panel top and bottom. Pressing the resize hit area changes only the visible
   handle, not the full hit-area background.
-- Ask-User elicitation uses the same content-bounded bottom resize behavior. While Permission
+- Ask-User elicitation uses the same content-bounded bottom resize behavior. Key the resize shell to
+  the elicitation request so a new question starts at its natural height instead of inheriting the
+  previous question's manual height.
+- Plan approval uses the same content-bounded bottom panel shell and single-border embedded surface.
+  Its compact summary normally has no hidden overflow, so the top resize handle cannot stretch it
+  into empty space. The card shows the Plan lifecycle, task summary, confidence, and inline revision
+  field; keep only Open and Approve in its top action group. Open activates the Plan in the right
+  Preview panel, where the complete Plan and the separate Dismiss action remain available.
+- While Permission
   approval, Ask-User elicitation, or Plan approval owns the composer lane, hide the Notebook, jobs,
   and Plan status chrome above it. Restore that status chrome only with the ordinary composer.
 - Textarea: `min-h-[36px] max-h-[200px] py-1.5 text-[15px] leading-relaxed text-text-000 placeholder:text-text-100`.
