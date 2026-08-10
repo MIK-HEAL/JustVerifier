@@ -14,6 +14,12 @@ type AcpSessionResumePolicyInput = Readonly<{
   resumeCapabilityAdvertised: boolean
 }>
 
+type AcpSessionResumeFailureContext = Readonly<{
+  currentFrameworkId: AgentFrameworkId
+  currentModelRoute?: AgentModelRoute
+  providerSessionIdPersisted: boolean
+}>
+
 type AcpSessionResumeAdoptionReason =
   | 'framework-changed'
   | 'backend-changed'
@@ -50,6 +56,8 @@ type AcpSessionResumeAdoptableFailureReason =
   | 'session-service-failure'
   | 'unresumable-error-kind'
   | 'legacy-unresumable-details'
+  | 'legacy-codex-session-unavailable'
+  | 'legacy-opencode-session-unavailable'
 
 type AcpSessionResumeAuthoritativeFailureReason =
   | 'unrecognized-error'
@@ -230,7 +238,10 @@ class AcpSessionResumePolicy {
     })
   }
 
-  classifyFailure(error: unknown): AcpSessionResumeFailureClassification {
+  classifyFailure(
+    error: unknown,
+    context?: AcpSessionResumeFailureContext
+  ): AcpSessionResumeFailureClassification {
     const code = readProperty(error, 'code')
     if (!code.readable) return authoritativeFailure('uninspectable-error')
     if (code.value === -32002) return adoptableFailure('resource-not-found-code')
@@ -258,6 +269,27 @@ class AcpSessionResumePolicy {
     if (service.value === 'session') return adoptableFailure('session-service-failure')
     if (service.value !== undefined) return authoritativeFailure('non-session-service-failure')
 
+    if (
+      context?.providerSessionIdPersisted === false &&
+      typeof message.value === 'string' &&
+      /^unknown error\.?$/i.test(message.value.trim())
+    ) {
+      if (
+        context.currentFrameworkId === 'codex' &&
+        (context.currentModelRoute === 'codex-responses' ||
+          context.currentModelRoute === 'codex-responses-compatibility')
+      ) {
+        return adoptableFailure('legacy-codex-session-unavailable')
+      }
+      if (
+        context.currentFrameworkId === 'opencode' &&
+        (context.currentModelRoute === 'opencode-anthropic' ||
+          context.currentModelRoute === 'opencode-openai')
+      ) {
+        return adoptableFailure('legacy-opencode-session-unavailable')
+      }
+    }
+
     if (typeof message.value !== 'string' || !/^internal error\.?$/i.test(message.value.trim())) {
       return authoritativeFailure('non-internal-error')
     }
@@ -280,6 +312,7 @@ class AcpSessionResumePolicy {
 
 export { AcpSessionResumePolicy }
 export type {
+  AcpSessionResumeFailureContext,
   AcpSessionResumeAdoptionReason,
   AcpSessionResumeAdoptableFailureReason,
   AcpSessionResumeAuthoritativeFailureReason,

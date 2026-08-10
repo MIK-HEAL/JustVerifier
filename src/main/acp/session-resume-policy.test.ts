@@ -224,6 +224,143 @@ describe('ACP Session resume policy', () => {
     })
   })
 
+  it.each(['codex-responses', 'codex-responses-compatibility'] as const)(
+    'classifies a legacy %s Unknown error as adoptable',
+    (currentModelRoute) => {
+      const policy = new AcpSessionResumePolicy()
+
+      expect(
+        policy.classifyFailure(
+          { code: -32603, message: 'Unknown error' },
+          {
+            currentFrameworkId: 'codex',
+            currentModelRoute,
+            providerSessionIdPersisted: false
+          }
+        )
+      ).toEqual({
+        disposition: 'adoptable',
+        reason: 'legacy-codex-session-unavailable'
+      })
+    }
+  )
+  it.each(['opencode-anthropic', 'opencode-openai'] as const)(
+    'classifies a legacy %s Unknown error as adoptable',
+    (currentModelRoute) => {
+      const policy = new AcpSessionResumePolicy()
+
+      expect(
+        policy.classifyFailure(
+          { code: -32603, message: 'Unknown error' },
+          {
+            currentFrameworkId: 'opencode',
+            currentModelRoute,
+            providerSessionIdPersisted: false
+          }
+        )
+      ).toEqual({
+        disposition: 'adoptable',
+        reason: 'legacy-opencode-session-unavailable'
+      })
+    }
+  )
+
+  it.each([
+    [
+      'non-internal Codex',
+      { code: -32001, message: 'Unknown error' },
+      {
+        currentFrameworkId: 'codex',
+        currentModelRoute: 'codex-responses',
+        providerSessionIdPersisted: false
+      },
+      'non-internal-error'
+    ],
+    [
+      'missing-code OpenCode',
+      { message: 'Unknown error' },
+      {
+        currentFrameworkId: 'opencode',
+        currentModelRoute: 'opencode-openai',
+        providerSessionIdPersisted: false
+      },
+      'non-internal-error'
+    ],
+    [
+      'non-session OpenCode service',
+      { code: -32603, message: 'Unknown error', data: { service: 'transport' } },
+      {
+        currentFrameworkId: 'opencode',
+        currentModelRoute: 'opencode-anthropic',
+        providerSessionIdPersisted: false
+      },
+      'non-session-service-failure'
+    ]
+  ] as const)('keeps a %s Unknown error authoritative', (_label, error, context, reason) => {
+    const policy = new AcpSessionResumePolicy()
+
+    expect(policy.classifyFailure(error, context)).toEqual({
+      disposition: 'authoritative',
+      reason
+    })
+  })
+
+  it.each([
+    ['Claude Code', 'claude-code', undefined],
+    ['Codex Bridge', 'codex', 'codex-bridge']
+  ] as const)(
+    'keeps an Unknown error authoritative for legacy %s Sessions',
+    (_label, currentFrameworkId, currentModelRoute) => {
+      const policy = new AcpSessionResumePolicy()
+
+      expect(
+        policy.classifyFailure(
+          { code: -32603, message: 'Unknown error' },
+          { currentFrameworkId, currentModelRoute, providerSessionIdPersisted: false }
+        )
+      ).toEqual({
+        disposition: 'authoritative',
+        reason: 'non-internal-error'
+      })
+    }
+  )
+
+  it('keeps an Unknown error authoritative for a persisted Codex Responses identity', () => {
+    const policy = new AcpSessionResumePolicy()
+
+    expect(
+      policy.classifyFailure(
+        { code: -32603, message: 'Unknown error' },
+        {
+          currentFrameworkId: 'codex',
+          currentModelRoute: 'codex-responses',
+          providerSessionIdPersisted: true
+        }
+      )
+    ).toEqual({
+      disposition: 'authoritative',
+      reason: 'non-internal-error'
+    })
+  })
+
+  it('keeps an Unknown error authoritative for a persisted OpenCode identity', () => {
+    const policy = new AcpSessionResumePolicy()
+
+    expect(
+      policy.classifyFailure(
+        { code: -32603, message: 'Unknown error' },
+        {
+          currentFrameworkId: 'opencode',
+          currentModelRoute: 'opencode-openai',
+          providerSessionIdPersisted: true
+        }
+      )
+    ).toEqual({
+      disposition: 'authoritative',
+      reason: 'non-internal-error'
+    })
+  })
+
   it('treats the provider session-service marker as an adoptable failure', () => {
     const policy = new AcpSessionResumePolicy()
 
