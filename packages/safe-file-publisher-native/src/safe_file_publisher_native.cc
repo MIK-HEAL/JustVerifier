@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -117,6 +118,24 @@ bool SamePath(const std::wstring& left, const std::wstring& right) {
   return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
 
+bool IsRemoteHandle(HANDLE handle) {
+  FILE_REMOTE_PROTOCOL_INFO info{};
+  info.StructureVersion = 2;
+  info.StructureSize = sizeof(info);
+  return GetFileInformationByHandleEx(handle, FileRemoteProtocolInfo, &info, sizeof(info)) &&
+         info.Protocol != 0;
+}
+
+bool QueryHardLinkSupport(HANDLE handle, bool* supports_hard_links) {
+  DWORD file_system_flags = 0;
+  if (!GetVolumeInformationByHandleW(
+          handle, nullptr, 0, nullptr, nullptr, &file_system_flags, nullptr, 0)) {
+    return false;
+  }
+  *supports_hard_links = (file_system_flags & FILE_SUPPORTS_HARD_LINKS) != 0;
+  return true;
+}
+
 bool IsSameOrDescendant(const std::wstring& root, const std::wstring& candidate) {
   if (SamePath(root, candidate)) return true;
   if (candidate.size() <= root.size() ||
@@ -137,6 +156,8 @@ const char* WindowsErrorCode(DWORD error) {
       return "ENOENT";
     case ERROR_NOT_SAME_DEVICE:
       return "EXDEV";
+    case ERROR_INVALID_FUNCTION:
+    case ERROR_INVALID_PARAMETER:
     case ERROR_NOT_SUPPORTED:
       return "ENOTSUP";
     case ERROR_ACCESS_DENIED:
@@ -146,6 +167,27 @@ const char* WindowsErrorCode(DWORD error) {
       return "EIO";
   }
 }
+
+struct NativeIoStatusBlock {
+  union {
+    LONG status;
+    void* pointer;
+  };
+  ULONG_PTR information;
+};
+
+struct NativeFileLinkInformation {
+  BOOLEAN replace_if_exists;
+  HANDLE root_directory;
+  ULONG file_name_length;
+  WCHAR file_name[1];
+};
+
+using NtSetInformationFileFunction = LONG(NTAPI*)(
+    HANDLE, NativeIoStatusBlock*, void*, ULONG, ULONG);
+using RtlNtStatusToDosErrorFunction = ULONG(NTAPI*)(LONG);
+
+constexpr ULONG kFileLinkInformation = 11;
 
 napi_value PublishWindows(
     napi_env env,
@@ -181,6 +223,17 @@ napi_value PublishWindows(
   if (root_handle == INVALID_HANDLE_VALUE) {
     const DWORD error = GetLastError();
     return ThrowError(env, "Could not open the storage root.", WindowsErrorCode(error));
+  }
+
+  if (IsRemoteHandle(root_handle)) {
+    CloseHandle(root_handle);
+    return ThrowError(env, "Network storage roots are not supported for atomic publication.",
+                      "ENOTSUP");
+  }
+  bool supports_hard_links = false;
+  if (!QueryHardLinkSupport(root_handle, &supports_hard_links) || !supports_hard_links) {
+    CloseHandle(root_handle);
+    return ThrowError(env, "The storage root file system does not support hard links.", "ENOTSUP");
   }
 
   FILE_ATTRIBUTE_TAG_INFO root_attributes{};
@@ -260,27 +313,67 @@ napi_value PublishWindows(
     return ThrowError(env, "The publication source is outside the anchored parent.", "ELOOP");
   }
 
-  const DWORD destination_bytes =
-      static_cast<DWORD>(destination_name.size() * sizeof(wchar_t));
-  const size_t rename_size = offsetof(FILE_RENAME_INFO, FileName) + destination_bytes;
-  std::vector<unsigned char> rename_buffer(rename_size);
-  auto* rename_info = reinterpret_cast<FILE_RENAME_INFO*>(rename_buffer.data());
-  rename_info->ReplaceIfExists = FALSE;
-  rename_info->RootDirectory = parent_handle;
-  rename_info->FileNameLength = destination_bytes;
-  std::memcpy(rename_info->FileName, destination_name.data(), destination_bytes);
+  const size_t destination_bytes = destination_name.size() * sizeof(wchar_t);
+  const size_t link_prefix_size = offsetof(NativeFileLinkInformation, file_name);
+  const size_t max_native_buffer = (std::numeric_limits<ULONG>::max)();
+  if (destination_bytes > max_native_buffer - link_prefix_size) {
+    CloseHandle(source_handle);
+    CloseHandle(parent_handle);
+    CloseHandle(root_handle);
+    return ThrowError(env, "The publication destination name is too long.", "EINVAL");
+  }
+  size_t link_size = link_prefix_size + destination_bytes;
+  if (link_size < sizeof(NativeFileLinkInformation)) {
+    link_size = sizeof(NativeFileLinkInformation);
+  }
+  std::vector<unsigned char> link_buffer(link_size);
+  auto* link_info = reinterpret_cast<NativeFileLinkInformation*>(link_buffer.data());
+  link_info->replace_if_exists = FALSE;
+  link_info->root_directory = parent_handle;
+  link_info->file_name_length = static_cast<ULONG>(destination_bytes);
+  std::memcpy(link_info->file_name, destination_name.data(), destination_bytes);
 
-  const BOOL renamed = SetFileInformationByHandle(
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  const auto nt_set_information_file =
+      ntdll == nullptr
+          ? nullptr
+          : reinterpret_cast<NtSetInformationFileFunction>(
+                GetProcAddress(ntdll, "NtSetInformationFile"));
+  const auto rtl_nt_status_to_dos_error =
+      ntdll == nullptr
+          ? nullptr
+          : reinterpret_cast<RtlNtStatusToDosErrorFunction>(
+                GetProcAddress(ntdll, "RtlNtStatusToDosError"));
+  if (nt_set_information_file == nullptr || rtl_nt_status_to_dos_error == nullptr) {
+    CloseHandle(source_handle);
+    CloseHandle(parent_handle);
+    CloseHandle(root_handle);
+    return ThrowError(env, "Handle-relative publication is unavailable.", "ENOTSUP");
+  }
+
+  // FileLinkInformation binds both the already-open source and parent handles while creating the
+  // destination atomically without replacement. Removing the temporary alias is best effort.
+  NativeIoStatusBlock io_status{};
+  const LONG link_status = nt_set_information_file(
       source_handle,
-      FileRenameInfo,
-      rename_info,
-      static_cast<DWORD>(rename_buffer.size()));
-  const DWORD rename_error = renamed ? ERROR_SUCCESS : GetLastError();
+      &io_status,
+      link_info,
+      static_cast<ULONG>(link_buffer.size()),
+      kFileLinkInformation);
+  const bool linked = link_status >= 0;
+  const DWORD link_error =
+      linked ? ERROR_SUCCESS : rtl_nt_status_to_dos_error(link_status);
+  if (linked) {
+    FILE_DISPOSITION_INFO disposition{};
+    disposition.DeleteFile = TRUE;
+    (void)SetFileInformationByHandle(
+        source_handle, FileDispositionInfo, &disposition, sizeof(disposition));
+  }
   CloseHandle(source_handle);
   CloseHandle(parent_handle);
   CloseHandle(root_handle);
-  if (!renamed) {
-    return ThrowError(env, "Atomic no-replace publication failed.", WindowsErrorCode(rename_error));
+  if (!linked) {
+    return ThrowError(env, "Atomic no-replace publication failed.", WindowsErrorCode(link_error));
   }
 
   napi_value undefined;
@@ -402,6 +495,59 @@ napi_value PublishPosix(
 
 #endif
 
+napi_value InspectPath(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 1) {
+    return ThrowError(env, "inspectPath requires a path.", "EINVAL");
+  }
+
+  std::string path;
+  if (!ReadString(env, argv[0], &path) || path.empty()) {
+    return ThrowError(env, "Invalid storage-path query.", "EINVAL");
+  }
+
+  bool is_remote = false;
+  bool supports_hard_links = true;
+#ifdef _WIN32
+  const std::wstring wide_path = Utf8ToWide(path);
+  if (wide_path.empty()) {
+    return ThrowError(env, "Invalid UTF-8 path for storage-path query.", "EINVAL");
+  }
+  HANDLE handle = CreateFileW(
+      wide_path.c_str(),
+      FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr,
+      OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS,
+      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    const DWORD error = GetLastError();
+    return ThrowError(env, "Could not inspect the storage path.", WindowsErrorCode(error));
+  }
+  is_remote = IsRemoteHandle(handle);
+  if (is_remote) {
+    supports_hard_links = false;
+  } else if (!QueryHardLinkSupport(handle, &supports_hard_links)) {
+    const DWORD error = GetLastError();
+    CloseHandle(handle);
+    return ThrowError(env, "Could not inspect the storage volume.", WindowsErrorCode(error));
+  }
+  CloseHandle(handle);
+#endif
+
+  napi_value result;
+  napi_create_object(env, &result);
+  napi_value is_remote_value;
+  napi_get_boolean(env, is_remote, &is_remote_value);
+  napi_set_named_property(env, result, "isRemote", is_remote_value);
+  napi_value supports_hard_links_value;
+  napi_get_boolean(env, supports_hard_links, &supports_hard_links_value);
+  napi_set_named_property(env, result, "supportsHardLinks", supports_hard_links_value);
+  return result;
+}
+
 napi_value PublishNoReplace(napi_env env, napi_callback_info info) {
   size_t argc = 4;
   napi_value argv[4];
@@ -435,6 +581,10 @@ napi_value Init(napi_env env, napi_value exports) {
   napi_create_function(
       env, "publishNoReplace", NAPI_AUTO_LENGTH, PublishNoReplace, nullptr, &publish);
   napi_set_named_property(env, exports, "publishNoReplace", publish);
+  napi_value inspect_path;
+  napi_create_function(
+      env, "inspectPath", NAPI_AUTO_LENGTH, InspectPath, nullptr, &inspect_path);
+  napi_set_named_property(env, exports, "inspectPath", inspect_path);
   return exports;
 }
 
