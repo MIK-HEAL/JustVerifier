@@ -23,6 +23,7 @@ import {
   ArrowUp,
   BookOpen,
   ChevronDown,
+  CircleHelp,
   FileText,
   Flag,
   GitBranch,
@@ -120,6 +121,7 @@ const attachmentRemoveButtonClassName = cn(
   'flex size-6 shrink-0 items-center justify-center rounded-md text-text-300 hover:bg-bg-300 hover:text-text-000 disabled:cursor-not-allowed disabled:opacity-50',
   composerInteractiveTransitionClassName
 )
+const attachmentLimitsText = `Any file type · ${formatUploadSizeLimit(MAX_UPLOAD_FILE_BYTES)} per file. Large files are linked, not embedded.`
 
 const ResizableElicitationComposer = ({ children }: React.PropsWithChildren): React.JSX.Element => (
   <ResizableBottomPanel
@@ -1001,21 +1003,45 @@ const ConversationPanel = ({
                               </TooltipContent>
                             </Tooltip>
                           </TooltipProvider>
-                          <DropdownMenuContent side="top" align="start" className="w-64">
-                            <DropdownMenuItem
-                              data-testid="menu-attach-files"
-                              disabled={!canEditDraft || isUploadingAttachments}
-                              onSelect={() => fileInputRef.current?.click()}
-                            >
-                              <FileText className="mr-2 size-4 text-text-300" aria-hidden="true" />
-                              Attach files
-                            </DropdownMenuItem>
+                          <DropdownMenuContent side="top" align="start" className="w-56">
+                            <TooltipProvider delayDuration={200}>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <DropdownMenuItem
+                                    data-testid="menu-attach-files"
+                                    disabled={!canEditDraft || isUploadingAttachments}
+                                    onSelect={() => fileInputRef.current?.click()}
+                                  >
+                                    <FileText
+                                      className="mr-2 size-4 text-text-300"
+                                      aria-hidden="true"
+                                    />
+                                    <span className="flex-1">Attach files</span>
+                                    <CircleHelp
+                                      className="size-3.5 text-text-300"
+                                      aria-hidden="true"
+                                    />
+                                  </DropdownMenuItem>
+                                </TooltipTrigger>
+                                <TooltipContent
+                                  side="right"
+                                  className="max-w-[280px] px-3 py-2 leading-5 whitespace-normal"
+                                  data-testid="attachment-limits"
+                                >
+                                  {attachmentLimitsText}
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
                             <div
-                              className="px-2 py-1.5 text-[11px] leading-4 text-text-300"
-                              data-testid="attachment-limits"
+                              className={cn(
+                                'px-2 py-1.5 text-[11px] leading-4 text-text-300',
+                                canEditDraft && !isUploadingAttachments
+                                  ? 'hidden [@media(pointer:coarse)]:block'
+                                  : 'block'
+                              )}
+                              data-testid="attachment-limits-touch"
                             >
-                              Any file type · {formatUploadSizeLimit(MAX_UPLOAD_FILE_BYTES)} per
-                              file. Large files are linked, not embedded.
+                              {attachmentLimitsText}
                             </div>
                             <DropdownMenuSeparator />
                             {activeSession && activeBranchPlan ? (
