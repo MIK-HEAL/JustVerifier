@@ -984,11 +984,14 @@ const createApplicationModules = async (
   const connectorRuntimeSettings = new ConnectorRuntimeSettingsProjection({
     readConnectors: () => settingsService.getConnectors(),
     skillsDir: join(getAppClaudeConfigDir(resolveStorageRoot()), 'skills'),
-    mcpClientManager
+    mcpClientManager,
+    notifyStatusChanged: () => broadcastToRenderers('settings:connector-runtime-changed', undefined)
   })
-  settingsService.setMaterializedCustomSkillNamesProvider(() =>
-    connectorRuntimeSettings.materializedCustomSkillNames()
-  )
+  settingsService.setCustomServerRuntimeProjectionProvider({
+    materializedSkillNames: () => connectorRuntimeSettings.materializedCustomSkillNames(),
+    availability: (id) => connectorRuntimeSettings.customServerAvailability(id),
+    isRefreshing: () => connectorRuntimeSettings.isRefreshing()
+  })
   settingsService.setCustomServerAuthenticator(
     async (serverId) => {
       const server = (await settingsService.getConnectors())?.customMcpServers?.find(
@@ -1068,6 +1071,8 @@ const createApplicationModules = async (
         return undefined
       }
     },
+    onCustomServerAvailabilityChanged: (serverId, availability) =>
+      connectorRuntimeSettings.setCustomServerDispatchAvailability(serverId, availability),
     localToolHandlers: { 'molecule/preview_molecule': moleculePreviewHandler }
   })
   // Register compute IPC handlers early so computeService can be wired into the notebook RPC server.
@@ -1183,6 +1188,7 @@ const createApplicationModules = async (
       listSkillCatalog: () => settingsService.listSpecialistSkillCatalog(),
       getConnectors: () => settingsService.getConnectors()
     },
+    customServerAvailability: (id) => connectorRuntimeSettings.customServerAvailability(id),
     sessionBinding: sessionBindingService,
     approvalGateway: specialistApprovalGateway,
     approvalLifecycle: completionHandoffLifecycle,
@@ -1698,7 +1704,8 @@ const createApplicationModules = async (
         permissionGrantRegistry.prune({ kind: 'mcp_server', serverId }).then(() => undefined),
       beginCustomServerSecurityChange: (serverId) =>
         connectorService.beginCustomServerSecurityChange(serverId),
-      clearCustomServerFailure: (serverId) => connectorService.clearCustomServerFailure(serverId)
+      clearCustomServerFailure: (serverId) => connectorService.clearCustomServerFailure(serverId),
+      resetCustomServerClient: (serverId) => mcpClientManager.close(serverId)
     },
     appearance: { applyAppIconVariant: onAppIconVariantChanged ?? (() => undefined) }
   })

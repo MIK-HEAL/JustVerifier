@@ -178,9 +178,54 @@ describe('ConnectorSettingsModule', () => {
 
     expect(await service.provisionedConnectorSkillNames()).not.toContain('mcp-custom-catalog')
 
-    service.setMaterializedCustomSkillNamesProvider(() => ['mcp-custom-catalog'])
+    service.setCustomServerRuntimeProjectionProvider({
+      materializedSkillNames: () => ['mcp-custom-catalog'],
+      availability: () => undefined,
+      isRefreshing: () => false
+    })
 
     expect(await service.provisionedConnectorSkillNames()).toContain('mcp-custom-catalog')
+  })
+
+  it('projects runtime availability separately from logical enablement', async () => {
+    const added = await service.addCustomServer({
+      name: 'offline-server',
+      transport: 'stdio',
+      command: 'example-mcp'
+    })
+    const id = added.customServers[0].id
+    service.setCustomServerRuntimeProjectionProvider({
+      materializedSkillNames: () => [],
+      availability: (serverId) => (serverId === id ? 'unavailable' : undefined),
+      isRefreshing: () => false
+    })
+
+    const [server] = (await service.listConnectors()).customServers
+
+    expect(server).toMatchObject({ id, enabled: true, availability: 'unavailable' })
+
+    const [disabled] = (await service.setCustomServerEnabled({ id, enabled: false })).customServers
+    expect(disabled).toMatchObject({ id, enabled: false })
+    expect(disabled.availability).toBeUndefined()
+  })
+
+  it('does not block listing while the current runtime refresh is still pending', async () => {
+    const added = await service.addCustomServer({
+      name: 'late-offline-server',
+      transport: 'stdio',
+      command: 'example-mcp'
+    })
+    const id = added.customServers[0].id
+    const runtimeProjection = {
+      materializedSkillNames: () => [],
+      availability: () => undefined,
+      isRefreshing: () => true
+    }
+    service.setCustomServerRuntimeProjectionProvider(runtimeProjection)
+
+    const [server] = (await service.listConnectors()).customServers
+
+    expect(server).toMatchObject({ id, enabled: true, checking: true })
   })
 
   it('rejects duplicate and built-in custom connector names', async () => {
