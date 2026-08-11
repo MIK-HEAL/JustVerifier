@@ -101,7 +101,11 @@ describe('project prisma client (integration)', () => {
 
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
       adoptedLegacy: true,
-      applied: ['0001_runtime_schema_baseline', '0002_project_agent_context']
+      applied: [
+        '0001_runtime_schema_baseline',
+        '0002_project_agent_context',
+        '0003_granted_local_roots'
+      ]
     })
 
     await expect(
@@ -146,6 +150,44 @@ describe('project prisma client (integration)', () => {
     await expect(
       client.$queryRawUnsafe<Array<{ id: string }>>('SELECT "id" FROM "PermissionGrant"')
     ).resolves.toEqual([])
+  })
+
+  it('creates the Granted Local Root table with a unique path index', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-granted-root-schema-'))
+
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+
+    await migrateApplicationDatabase(client)
+
+    const columns = await client.$queryRawUnsafe<Array<{ name: string }>>(
+      'PRAGMA table_info("GrantedLocalRoot")'
+    )
+    expect(columns.map((column) => column.name)).toEqual([
+      'id',
+      'path',
+      'name',
+      'access',
+      'createdAt',
+      'updatedAt'
+    ])
+
+    const indexes = await client.$queryRawUnsafe<Array<{ name: string }>>(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'GrantedLocalRoot'`
+    )
+    expect(indexes.map((index) => index.name)).toContain('GrantedLocalRoot_path_key')
+
+    await client.$executeRawUnsafe(
+      `INSERT INTO "GrantedLocalRoot" ("id", "path", "name", "access", "updatedAt") VALUES ('root-1', '/data/one', 'one', 'ro', CURRENT_TIMESTAMP)`
+    )
+    await expect(
+      client.$executeRawUnsafe(
+        `INSERT INTO "GrantedLocalRoot" ("id", "path", "name", "access", "updatedAt") VALUES ('root-2', '/data/one', 'one', 'rw', CURRENT_TIMESTAMP)`
+      )
+    ).rejects.toThrow()
+
+    // Migrating again is idempotent against the now-populated table.
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
   })
 
   it('creates an unread-task table that rejects duplicate session IDs', async () => {
@@ -957,7 +999,11 @@ describe('project prisma client (integration)', () => {
 
     // Run migrateApplicationDatabase — the migration guard must add reflagCount without error.
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
-      applied: ['0001_runtime_schema_baseline', '0002_project_agent_context']
+      applied: [
+        '0001_runtime_schema_baseline',
+        '0002_project_agent_context',
+        '0003_granted_local_roots'
+      ]
     })
 
     // Running it again is idempotent (guard catches duplicate-column error).

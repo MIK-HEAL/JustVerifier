@@ -50,6 +50,7 @@ const expectedChannels = [
   'settings:set-default-permission-profile',
   'settings:set-notifications-enabled',
   'settings:set-package-mirror',
+  'settings:set-project-files-filter',
   'settings:validate-provider'
 ] as const
 
@@ -113,7 +114,7 @@ const createDependencies = (): Readonly<{
 }
 
 describe('Settings core application commands', () => {
-  it('installs the exact 35-command inventory and dispatches a remote-safe preflight query', async () => {
+  it('installs the exact 36-command inventory and dispatches a remote-safe preflight query', async () => {
     const { dependencies, serviceMethod } = createDependencies()
     const preflight = { agentReady: true }
     serviceMethod('getPreflight').mockResolvedValue(preflight)

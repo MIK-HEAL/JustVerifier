@@ -7,6 +7,7 @@ export type SettingsWriteKey =
   | 'closePreference'
   | 'defaultPermissionProfile'
   | 'appIcon'
+  | 'projectFilesFilter'
 
 export type OptimisticSettingsWriteKey =
   | 'reasoningEffort'
@@ -15,6 +16,7 @@ export type OptimisticSettingsWriteKey =
   | 'closePreference'
   | 'defaultPermissionProfile'
   | 'appIcon'
+  | 'projectFilesFilter'
 
 type SettingsWriteToken = {
   key: SettingsWriteKey

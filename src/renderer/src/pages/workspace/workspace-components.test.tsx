@@ -70,7 +70,8 @@ describe('workspace page component boundaries', () => {
     }
 
     expect(rawLineCount(facadeSource)).toBeLessThanOrEqual(900)
-    expect(rawLineCount(presentationSource)).toBeLessThanOrEqual(660)
+    // The granted-roots menu rows (access badge, manage submenu) added 90 presentation lines.
+    expect(rawLineCount(presentationSource)).toBeLessThanOrEqual(750)
     expect(facadeSource).toContain("from './project-files-presentation-owner'")
     expect(presentationSource).not.toContain("from './ProjectFilesView'")
     expect(facadeSource.match(/export \{ ProjectFilesView \}/g)).toHaveLength(1)

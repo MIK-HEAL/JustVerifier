@@ -118,7 +118,11 @@ describe('compute host prisma client (integration)', () => {
     // the existing Project row.
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
       adoptedLegacy: true,
-      applied: ['0001_runtime_schema_baseline', '0002_project_agent_context']
+      applied: [
+        '0001_runtime_schema_baseline',
+        '0002_project_agent_context',
+        '0003_granted_local_roots'
+      ]
     })
     // Idempotent second run.
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })

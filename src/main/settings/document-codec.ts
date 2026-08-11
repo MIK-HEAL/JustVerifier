@@ -12,8 +12,10 @@ import {
   isReasoningEffort
 } from '../../shared/settings'
 import { isPermissionProfileId } from '../../shared/permission-profiles'
+import type { GrantedLocalRoot } from '../../shared/local-fs'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement, RuntimeSelection } from '../../shared/notebook-runtime'
+import type { ProjectFilesFilterPreference } from '../../shared/settings'
 import {
   createEmptySettings,
   type StoredComputeGrant,
@@ -44,6 +46,35 @@ const asStringArray = (value: unknown): string[] =>
 
 const asBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined
+
+// Rebuilds one legacy granted local root, dropping records with missing required fields or an
+// unknown access level. Kept only for the one-time import into the GrantedLocalRoot table.
+const sanitizeGrantedLocalRoot = (value: unknown): GrantedLocalRoot | undefined => {
+  if (!isRecord(value)) return undefined
+  const id = asString(value.id)
+  const path = asString(value.path)
+  const name = asString(value.name)
+  const access = asString(value.access)
+  if (!id || !path || !name || (access !== 'ro' && access !== 'rw')) return undefined
+  return { id, path, name, access }
+}
+
+// Rebuilds the persisted Files-tab source filter from untrusted JSON. Returns undefined unless a
+// known sourceMode survives; the optional ids are kept only as plain strings.
+const sanitizeProjectFilesFilter = (value: unknown): ProjectFilesFilterPreference | undefined => {
+  if (!isRecord(value)) return undefined
+
+  const sourceMode = asString(value.sourceMode)
+  if (sourceMode !== 'artifacts' && sourceMode !== 'local') return undefined
+
+  const optionId = asString(value.optionId)
+  const localRootId = asString(value.localRootId)
+  return {
+    sourceMode,
+    ...(optionId === undefined ? {} : { optionId }),
+    ...(localRootId === undefined ? {} : { localRootId })
+  }
+}
 
 // Rebuilds a record<string,boolean>, dropping any key whose value isn't a boolean. Returns an empty
 // record (never undefined) for a non-record input so callers get a stable, always-mergeable map.
@@ -243,6 +274,10 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
   if (closePreference === 'minimize' || closePreference === 'quit') {
     settings.closePreference = closePreference
   }
+  // Files-tab source filter; only a well-shaped value survives so a hand-edited settings.json
+  // cannot crash the restore path.
+  const projectFilesFilter = sanitizeProjectFilesFilter(value.projectFilesFilter)
+  if (projectFilesFilter !== undefined) settings.projectFilesFilter = projectFilesFilter
   if (isAppIconVariant(value.appIconVariant)) settings.appIconVariant = value.appIconVariant
   if (isPermissionProfileId(value.defaultPermissionProfile)) {
     settings.defaultPermissionProfile = value.defaultPermissionProfile
@@ -268,6 +303,16 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
         .filter((grant): grant is StoredComputeGrant => grant !== undefined)
     : undefined
   if (computeGrants?.length) settings.computeGrants = computeGrants
+
+  // Legacy granted local roots ("Grant folder access"): well-formed entries are preserved so the
+  // one-time import into the GrantedLocalRoot table can read them; corrupt entries are dropped.
+  // Production never appends to this field — the import removes it once the rows land in the DB.
+  const grantedLocalRoots = Array.isArray(value.grantedLocalRoots)
+    ? value.grantedLocalRoots
+        .map(sanitizeGrantedLocalRoot)
+        .filter((root): root is GrantedLocalRoot => root !== undefined)
+    : undefined
+  if (grantedLocalRoots?.length) settings.grantedLocalRoots = grantedLocalRoots
   return settings
 }
 

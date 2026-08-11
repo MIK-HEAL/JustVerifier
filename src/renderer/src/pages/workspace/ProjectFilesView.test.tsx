@@ -9,6 +9,10 @@ import {
   usePreviewWorkbenchStore
 } from '@/stores/preview-workbench-store'
 import { createInitialComputeState, useComputeStore } from '@/stores/compute-store'
+import {
+  createInitialGrantedFoldersState,
+  useGrantedFoldersStore
+} from '@/stores/granted-folders-store'
 import { createInitialSettingsState, useSettingsStore } from '@/stores/settings-store'
 import type { ComputeHost } from '../../../../shared/compute'
 import {
@@ -310,6 +314,10 @@ describe('ProjectFilesView', () => {
 
   beforeEach(() => {
     usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
+    useSettingsStore.setState({
+      ...createInitialSettingsState(),
+      setProjectFilesFilter: vi.fn()
+    } as unknown as typeof useSettingsStore extends { getState: () => infer S } ? S : never)
     projectFilesChangedListener = undefined
     container = document.createElement('div')
     document.body.appendChild(container)
@@ -3749,7 +3757,8 @@ describe('ProjectFilesView — Remote section in source dropdown', () => {
     useSettingsStore.setState({
       ...createInitialSettingsState(),
       openSettings: vi.fn(),
-      openSettingsToCompute: vi.fn()
+      openSettingsToCompute: vi.fn(),
+      setProjectFilesFilter: vi.fn()
     } as unknown as typeof useSettingsStore extends { getState: () => infer S } ? S : never)
     container = document.createElement('div')
     document.body.appendChild(container)
@@ -4068,5 +4077,402 @@ describe('ProjectFilesView — Remote section in source dropdown', () => {
     })
 
     expect(openSettingsToCompute).toHaveBeenCalled()
+  })
+})
+
+describe('ProjectFilesView — granted local folders', () => {
+  let container: HTMLDivElement
+  let root: Root
+  let listDir: ReturnType<typeof vi.fn>
+  let grantRoot: ReturnType<typeof vi.fn>
+  let setGrantedRootAccess: ReturnType<typeof vi.fn>
+  let removeGrantedRoot: ReturnType<typeof vi.fn>
+  let setProjectFilesFilter: ReturnType<typeof vi.fn>
+
+  const grantedRoot = {
+    id: 'root-1',
+    path: '/Users/roxi/Projects',
+    name: 'Projects',
+    access: 'ro' as const
+  }
+
+  beforeEach(() => {
+    setProjectFilesFilter = vi.fn()
+    usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
+    useComputeStore.setState({ ...createInitialComputeState(), isLoaded: true })
+    useSettingsStore.setState({
+      ...createInitialSettingsState(),
+      openSettings: vi.fn(),
+      openSettingsToCompute: vi.fn(),
+      setProjectFilesFilter
+    } as unknown as typeof useSettingsStore extends { getState: () => infer S } ? S : never)
+    useGrantedFoldersStore.setState(createInitialGrantedFoldersState())
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    listDir = vi.fn(async (path: string) => ({
+      entries:
+        path === '/Users/roxi'
+          ? [
+              { name: 'Projects', isDirectory: true, size: 0, mtimeMs: 1710000000000 },
+              { name: 'notes.md', isDirectory: false, size: 2048, mtimeMs: 1710000001000 }
+            ]
+          : [],
+      resolvedPath: path,
+      truncated: false
+    }))
+    grantRoot = vi.fn().mockResolvedValue([grantedRoot])
+    setGrantedRootAccess = vi.fn().mockResolvedValue([{ ...grantedRoot, access: 'rw' }])
+    removeGrantedRoot = vi.fn().mockResolvedValue([])
+    window.api = {
+      saveManagedFile: vi.fn().mockResolvedValue({ saved: true }),
+      previewResources: {
+        acquire: vi.fn().mockResolvedValue({
+          id: 'resource:test',
+          url: 'open-science-preview://resource/test',
+          size: 100,
+          mimeType: 'text/plain',
+          version: 1
+        }),
+        readRange: vi.fn(),
+        release: vi.fn().mockResolvedValue(undefined)
+      },
+      artifacts: {
+        readPreview: vi.fn().mockResolvedValue({
+          content: 'dGVzdA==',
+          encoding: 'base64',
+          size: 4,
+          truncated: false
+        })
+      },
+      uploads: {
+        readPreview: vi.fn().mockResolvedValue({
+          content: 'dGVzdA==',
+          encoding: 'base64',
+          size: 4,
+          truncated: false
+        })
+      },
+      compute: {
+        bookmarksGet: vi.fn().mockResolvedValue([]),
+        bookmarksSet: vi.fn().mockResolvedValue(undefined)
+      },
+      localFs: {
+        getRoots: vi.fn().mockResolvedValue({ home: '/Users/roxi', machineName: 'TychoStation' }),
+        listDir,
+        listGrantedRoots: vi.fn().mockResolvedValue([grantedRoot]),
+        grantRoot,
+        setGrantedRootAccess,
+        removeGrantedRoot
+      },
+      projectFiles: {
+        getOverview: vi.fn().mockResolvedValue({
+          totalCount: 0,
+          uploadCount: 0,
+          artifactCount: 0,
+          artifactGroupCount: 0,
+          isIndexComplete: true
+        }),
+        listFiles: vi.fn().mockResolvedValue({ items: [], totalCount: 0 }),
+        listArtifactGroups: vi.fn().mockResolvedValue({ items: [], totalCount: 0 }),
+        repairIndex: vi.fn().mockResolvedValue(undefined),
+        onChanged: vi.fn(() => vi.fn())
+      }
+    } as unknown as Window['api']
+  })
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount()
+    })
+    container.remove()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  const renderFilesView = async (): Promise<void> => {
+    const { useSessionStore } = await import('@/stores/session-store')
+    const { useNavigationStore } = await import('@/stores/navigation-store')
+    const { createInitialSessionState } = await import('@/stores/session-store')
+    const { ProjectFilesView } = await import('./ProjectFilesView')
+
+    useSessionStore.setState({ ...createInitialSessionState(), sessions: [] })
+    useNavigationStore.setState({ view: 'workspace', activeProjectId: 'default' })
+    root = createRoot(container)
+    await act(async () => {
+      root.render(<ProjectFilesView />)
+      await flushEffects()
+    })
+  }
+
+  // Lets in-flight API mock resolutions (roots fetch, granted-roots refresh) settle inside act.
+  const flushEffects = async (): Promise<void> => {
+    for (let index = 0; index < 6; index += 1) await Promise.resolve()
+  }
+
+  const openFilterMenu = async (): Promise<void> => {
+    const filterButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Filter project files"]'
+    )
+    await act(async () => {
+      filterButton?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }))
+      filterButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flushEffects()
+    })
+  }
+
+  const clickElement = async (element: Element | null | undefined): Promise<void> => {
+    await act(async () => {
+      element?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flushEffects()
+    })
+  }
+
+  // Radix's submenu trigger opens on pointermove only when pointerType is 'mouse' (whenMouse
+  // guard); jsdom has no PointerEvent, so forge one from a MouseEvent.
+  const hoverElement = async (element: Element | null | undefined): Promise<void> => {
+    await act(async () => {
+      const event = new MouseEvent('pointermove', { bubbles: true })
+      Object.defineProperty(event, 'pointerType', { value: 'mouse' })
+      element?.dispatchEvent(event)
+      await flushEffects()
+    })
+  }
+
+  it('renders granted roots with an access badge and an enabled Add folder item', async () => {
+    await renderFilesView()
+    await openFilterMenu()
+
+    const row = document.body.querySelector('[data-testid="granted-root-root-1"]')
+    expect(row?.textContent).toContain('Projects')
+    expect(row?.textContent).toContain('/Users/roxi/Projects')
+    expect(row?.textContent).toContain('ro')
+
+    const addItem = document.body.querySelector('[data-testid="add-local-folder"]')
+    expect(addItem?.textContent).toContain('Add folder…')
+    expect(addItem?.getAttribute('data-disabled')).toBeNull()
+    expect(document.body.textContent).not.toContain('Soon')
+  })
+
+  it('offers Allow writes and Remove access in the manage submenu', async () => {
+    await renderFilesView()
+    await openFilterMenu()
+
+    // The row itself is the trigger: hovering it opens the manage submenu.
+    const row = document.body.querySelector('[data-testid="granted-root-root-1"]')
+    await hoverElement(row)
+    await vi.waitFor(
+      () => {
+        expect(document.body.textContent).toContain('Allow writes')
+      },
+      { timeout: 1000 }
+    )
+    expect(document.body.textContent).toContain('Remove access')
+
+    await clickElement(
+      document.body.querySelector('[data-testid="granted-root-allow-writes-root-1"]')
+    )
+    expect(setGrantedRootAccess).toHaveBeenCalledWith({ id: 'root-1', access: 'rw' })
+    expect(useGrantedFoldersStore.getState().roots[0]?.access).toBe('rw')
+
+    // The toggle flips to "Make read-only" once the root is rw.
+    await openFilterMenu()
+    const rowAgain = document.body.querySelector('[data-testid="granted-root-root-1"]')
+    await hoverElement(rowAgain)
+    await vi.waitFor(
+      () => {
+        expect(document.body.textContent).toContain('Make read-only')
+      },
+      { timeout: 1000 }
+    )
+
+    await clickElement(document.body.querySelector('[data-testid="granted-root-remove-root-1"]'))
+    expect(removeGrantedRoot).toHaveBeenCalledWith({ id: 'root-1' })
+    expect(useGrantedFoldersStore.getState().roots).toEqual([])
+  })
+
+  it('opens the manage submenu when the row itself is hovered', async () => {
+    await renderFilesView()
+    await openFilterMenu()
+
+    const row = document.body.querySelector('[data-testid="granted-root-root-1"]')
+    await hoverElement(row)
+
+    // The submenu opens after the hover-intent delay, without touching the manage button.
+    await vi.waitFor(
+      () => {
+        expect(document.body.textContent).toContain('Allow writes')
+      },
+      { timeout: 1000 }
+    )
+  })
+
+  it('switches to the local browser at the granted path when a folder row is clicked', async () => {
+    await renderFilesView()
+    await openFilterMenu()
+
+    await clickElement(document.body.querySelector('[data-testid="granted-root-root-1"]'))
+
+    expect(container.querySelector('[aria-label="Local file browser"]')).not.toBeNull()
+    expect(listDir).toHaveBeenCalledWith('/Users/roxi/Projects')
+    const address = container.querySelector<HTMLInputElement>('[aria-label="Directory path"]')
+    expect(address?.value).toBe('/Users/roxi/Projects')
+  })
+
+  it('grants a folder through the dialog and browses it', async () => {
+    useGrantedFoldersStore.setState({ roots: [], loaded: true })
+    vi.mocked(window.api.localFs.listGrantedRoots).mockResolvedValue([])
+
+    await renderFilesView()
+    await openFilterMenu()
+    await clickElement(document.body.querySelector('[data-testid="add-local-folder"]'))
+
+    // The dialog opens at home: subfolders listed, Grant disabled with the home hint.
+    expect(document.body.textContent).toContain('Grant folder access')
+    expect(document.body.textContent).toContain(
+      "Your home folder itself can't be granted — pick a subfolder."
+    )
+    expect(
+      document.body.querySelector<HTMLButtonElement>('[data-testid="grant-access-grant"]')?.disabled
+    ).toBe(true)
+
+    await clickElement(document.body.querySelector('[data-testid="grant-access-folder-Projects"]'))
+    await clickElement(document.body.querySelector('[data-testid="grant-access-grant"]'))
+
+    expect(grantRoot).toHaveBeenCalledWith({ path: '/Users/roxi/Projects', access: 'ro' })
+    // Dialog closed; the new root is selected in the local browser.
+    expect(document.body.textContent).not.toContain('Grant folder access')
+    expect(container.querySelector('[aria-label="Local file browser"]')).not.toBeNull()
+    expect(listDir).toHaveBeenCalledWith('/Users/roxi/Projects')
+    // And the store picked it up for the next menu open.
+    expect(useGrantedFoldersStore.getState().roots).toEqual([grantedRoot])
+  })
+
+  const filterButton = (): HTMLButtonElement | null =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Filter project files"]')
+
+  const machineRow = (): HTMLElement | undefined =>
+    Array.from(document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')).find((el) =>
+      el.textContent?.includes('TychoStation')
+    )
+
+  it('moves the selected check between the machine row and a picked folder row', async () => {
+    await renderFilesView()
+    await openFilterMenu()
+
+    // Artifacts mode: neither local row is checked.
+    expect(machineRow()?.getAttribute('aria-checked')).toBe('false')
+    expect(document.body.querySelector('[data-testid="granted-root-check-root-1"]')).toBeNull()
+
+    // Picking the folder checks its row, unchecks the machine, and persists the choice.
+    await clickElement(document.body.querySelector('[data-testid="granted-root-root-1"]'))
+    expect(setProjectFilesFilter).toHaveBeenLastCalledWith({
+      sourceMode: 'local',
+      localRootId: 'root-1'
+    })
+    expect(filterButton()?.textContent).toContain('Projects')
+
+    await openFilterMenu()
+    const rootRow = document.body.querySelector('[data-testid="granted-root-root-1"]')
+    expect(rootRow?.getAttribute('aria-checked')).toBe('true')
+    expect(document.body.querySelector('[data-testid="granted-root-check-root-1"]')).not.toBeNull()
+    expect(machineRow()?.getAttribute('aria-checked')).toBe('false')
+
+    // Picking the machine moves the check back and persists the plain local mode.
+    await clickElement(machineRow())
+    expect(setProjectFilesFilter).toHaveBeenLastCalledWith({ sourceMode: 'local' })
+    expect(filterButton()?.textContent).toContain('TychoStation')
+
+    await openFilterMenu()
+    expect(machineRow()?.getAttribute('aria-checked')).toBe('true')
+    expect(document.body.querySelector('[data-testid="granted-root-check-root-1"]')).toBeNull()
+    expect(
+      document.body
+        .querySelector('[data-testid="granted-root-root-1"]')
+        ?.getAttribute('aria-checked')
+    ).toBe('false')
+
+    // Picking an artifact filter clears the local selection entirely.
+    await clickElement(document.body.querySelector('[data-filter-id="all"]'))
+    expect(setProjectFilesFilter).toHaveBeenLastCalledWith({
+      sourceMode: 'artifacts',
+      optionId: 'all'
+    })
+    expect(container.querySelector('[data-testid="project-files-scroll"]')).not.toBeNull()
+
+    await openFilterMenu()
+    expect(machineRow()?.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('restores a persisted artifact filter on mount without writing it back', async () => {
+    useSettingsStore.setState({
+      projectFilesFilter: { sourceMode: 'artifacts', optionId: 'uploads' }
+    })
+
+    await renderFilesView()
+
+    expect(filterButton()?.textContent).toContain('Your uploads')
+    expect(container.querySelector('[aria-label="Local file browser"]')).toBeNull()
+    expect(setProjectFilesFilter).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the default when a persisted artifact option no longer exists', async () => {
+    useSettingsStore.setState({
+      projectFilesFilter: { sourceMode: 'artifacts', optionId: 'session:gone' }
+    })
+
+    await renderFilesView()
+
+    expect(filterButton()?.textContent).toContain('Artifacts')
+    expect(container.querySelector('[data-testid="project-files-scroll"]')).not.toBeNull()
+  })
+
+  it('restores a persisted machine local mode on mount', async () => {
+    useSettingsStore.setState({
+      projectFilesFilter: { sourceMode: 'local' }
+    })
+
+    await renderFilesView()
+
+    expect(container.querySelector('[aria-label="Local file browser"]')).not.toBeNull()
+    expect(listDir).toHaveBeenLastCalledWith('/Users/roxi')
+    expect(filterButton()?.textContent).toContain('TychoStation')
+
+    await openFilterMenu()
+    expect(machineRow()?.getAttribute('aria-checked')).toBe('true')
+    expect(document.body.querySelector('[data-testid="granted-root-check-root-1"]')).toBeNull()
+  })
+
+  it('restores a persisted granted folder once the roots refresh confirms it', async () => {
+    useSettingsStore.setState({
+      projectFilesFilter: { sourceMode: 'local', localRootId: 'root-1' }
+    })
+
+    await renderFilesView()
+
+    expect(container.querySelector('[aria-label="Local file browser"]')).not.toBeNull()
+    expect(listDir).toHaveBeenLastCalledWith('/Users/roxi/Projects')
+    const address = container.querySelector<HTMLInputElement>('[aria-label="Directory path"]')
+    expect(address?.value).toBe('/Users/roxi/Projects')
+    expect(filterButton()?.textContent).toContain('Projects')
+
+    await openFilterMenu()
+    expect(document.body.querySelector('[data-testid="granted-root-check-root-1"]')).not.toBeNull()
+    expect(machineRow()?.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('degrades a revoked persisted folder to plain machine local mode', async () => {
+    useSettingsStore.setState({
+      projectFilesFilter: { sourceMode: 'local', localRootId: 'root-revoked' }
+    })
+
+    await renderFilesView()
+
+    expect(container.querySelector('[aria-label="Local file browser"]')).not.toBeNull()
+    expect(listDir).toHaveBeenLastCalledWith('/Users/roxi')
+    expect(filterButton()?.textContent).toContain('TychoStation')
+
+    await openFilterMenu()
+    expect(machineRow()?.getAttribute('aria-checked')).toBe('true')
+    expect(document.body.querySelector('[data-testid="granted-root-check-root-1"]')).toBeNull()
   })
 })

@@ -337,6 +337,14 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
     "detailsUpdatedBy" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
+);`,
+  `CREATE TABLE IF NOT EXISTS "GrantedLocalRoot" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "path" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "access" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
 );`
 ] as const
 
@@ -386,7 +394,8 @@ const RUNTIME_SCHEMA_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS "ComputeJob_providerId_idx" ON "ComputeJob"("providerId");`,
   `CREATE INDEX IF NOT EXISTS "ComputeJob_sessionId_idx" ON "ComputeJob"("sessionId");`,
   `CREATE INDEX IF NOT EXISTS "ComputeJob_status_idx" ON "ComputeJob"("status");`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS "ComputeHost_providerId_key" ON "ComputeHost"("providerId");`
+  `CREATE UNIQUE INDEX IF NOT EXISTS "ComputeHost_providerId_key" ON "ComputeHost"("providerId");`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "GrantedLocalRoot_path_key" ON "GrantedLocalRoot"("path");`
 ] as const
 
 const RUNTIME_SCHEMA_TARGET_SQL = [
@@ -416,7 +425,8 @@ const RUNTIME_SCHEMA_TABLES = [
   'ReviewFindingDisposition',
   'ReviewScopeSnapshot',
   'ComputeJob',
-  'ComputeHost'
+  'ComputeHost',
+  'GrantedLocalRoot'
 ] as const
 
 export {

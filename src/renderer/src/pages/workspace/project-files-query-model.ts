@@ -10,12 +10,14 @@ import {
 } from 'react'
 
 import { useSessionStore, type ChatSession } from '@/stores/session-store'
+import { useSettingsStore } from '@/stores/settings-store'
 import type {
   ArtifactGroupItem,
   ProjectFileItem,
   ProjectFileOriginSession,
   ProjectFilesChangedEvent
 } from '../../../../shared/project-files'
+import type { ProjectFilesFilterPreference } from '../../../../shared/settings'
 
 import {
   FILE_PAGE_SIZE,
@@ -116,6 +118,10 @@ const useProjectFileInfiniteLoad = (
   return sentinelRef
 }
 
+// Reads the persisted Files-tab filter; the settings store is loaded before the workspace mounts.
+const readPersistedProjectFilesFilter = (): ProjectFilesFilterPreference | undefined =>
+  useSettingsStore.getState().projectFilesFilter
+
 /**
  * Owns ProjectFilesView's query scopes and their presentation-neutral selection/pagination state.
  *
@@ -126,8 +132,35 @@ const useProjectFileInfiniteLoad = (
 const useProjectFilesQueryModel = (activeProjectId: string | undefined): ProjectFilesQueryModel => {
   const allSessions = useSessionStore((state) => state.sessions)
   const [collapsedSectionIds, setCollapsedSectionIds] = useState<Set<string>>(() => new Set())
-  const [selectedFilterId, setSelectedFilterId] = useState('all')
-  const [selectedSessionFallback, setSelectedSessionFallback] = useState<ProjectFilesFilterOption>()
+  // Restore the persisted artifact filter as initial state; an option id that no longer exists
+  // falls back to the default ('all') via effectiveFilterId.
+  const [selectedFilterId, setSelectedFilterId] = useState(() => {
+    const persisted = readPersistedProjectFilesFilter()
+    return persisted?.sourceMode === 'artifacts' && persisted.optionId ? persisted.optionId : 'all'
+  })
+  // Keep a restored session filter reachable while its group header is still beyond the loaded page.
+  const [selectedSessionFallback, setSelectedSessionFallback] = useState<
+    ProjectFilesFilterOption | undefined
+  >(() => {
+    const persisted = readPersistedProjectFilesFilter()
+    if (persisted?.sourceMode !== 'artifacts' || !persisted.optionId?.startsWith('session:')) {
+      return undefined
+    }
+    const sessionId = persisted.optionId.slice('session:'.length)
+    const session = useSessionStore
+      .getState()
+      .sessions.find(
+        (candidate) => candidate.projectId === activeProjectId && candidate.id === sessionId
+      )
+    return session
+      ? {
+          id: persisted.optionId,
+          label: session.title,
+          count: session.artifacts?.length ?? 0,
+          kind: 'session'
+        }
+      : undefined
+  })
   const [allVisibleItemLimits, setAllVisibleItemLimits] = useState<Record<string, number>>({})
   const [searchQuery, setSearchQuery] = useState('')
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('')
@@ -553,5 +586,5 @@ const useProjectFilesQueryModel = (activeProjectId: string | undefined): Project
   }
 }
 
-export { useProjectFileInfiniteLoad, useProjectFilesQueryModel }
+export { readPersistedProjectFilesFilter, useProjectFileInfiniteLoad, useProjectFilesQueryModel }
 export type { ProjectFilesFilterOption }

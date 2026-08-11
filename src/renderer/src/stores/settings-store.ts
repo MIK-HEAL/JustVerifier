@@ -65,6 +65,7 @@ import type {
   AgentFrameworkView,
   ChatApiEndpoint,
   OpencodeInfo,
+  ProjectFilesFilterPreference,
   ProviderType,
   ProviderView,
   ReasoningEffort,
@@ -113,6 +114,8 @@ type SettingsStoreData = RuntimeSetupState &
     closePreference: CloseActionPreference | undefined
     // Selected built-in app-icon look, applied to the window and dock/taskbar. Defaults to 'light'.
     appIconVariant: AppIconVariant
+    // Last Files-tab source filter; undefined means the default ("All artifacts").
+    projectFilesFilter: ProjectFilesFilterPreference | undefined
     // Approval profile applied only when creating a new conversation.
     defaultPermissionProfile: PermissionProfileId
   }
@@ -162,6 +165,7 @@ export const createInitialSettingsState = (): SettingsStoreData => ({
   conversationSkillImportEnabled: DEFAULT_CONVERSATION_SKILL_IMPORT_ENABLED,
   closePreference: undefined,
   appIconVariant: DEFAULT_APP_ICON_VARIANT,
+  projectFilesFilter: undefined,
   defaultPermissionProfile: DEFAULT_PERMISSION_PROFILE
 })
 
@@ -182,7 +186,9 @@ const applySnapshot = (snapshot: SettingsSnapshot): Partial<SettingsStoreData> =
     snapshot.conversationSkillImportEnabled ?? DEFAULT_CONVERSATION_SKILL_IMPORT_ENABLED,
   closePreference: snapshot.closePreference,
   appIconVariant: snapshot.appIconVariant ?? DEFAULT_APP_ICON_VARIANT,
+  projectFilesFilter: snapshot.projectFilesFilter,
   defaultPermissionProfile: getDefaultPermissionProfile(snapshot),
+
   agentFrameworkId: snapshot.agentFrameworkId,
   agentFrameworks: snapshot.agentFrameworks,
   opencode: snapshot.opencode,

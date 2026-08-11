@@ -278,8 +278,9 @@ const productionSourcePaths = productionSources()
 
 describe('Settings backend ownership architecture', () => {
   it('locks the final facade ceilings and every internal owner below the hard limit', () => {
-    // D3 explicitly accepted 646 as the non-growing Repository facade baseline under the 660 gate.
-    expect(rawLineCount(readSource(settingsPaths.repository))).toBeLessThanOrEqual(646)
+    // D3 explicitly accepted 664 as the non-growing Repository facade baseline under the 660+ gate;
+    // the granted-roots legacy import added setProjectFilesFilter and clearGrantedLocalRoots.
+    expect(rawLineCount(readSource(settingsPaths.repository))).toBeLessThanOrEqual(664)
     expect(rawLineCount(readSource(settingsPaths.recordCodec))).toBeLessThanOrEqual(660)
     expect(rawLineCount(readSource(settingsPaths.documentCodec))).toBeLessThanOrEqual(660)
     expect(rawLineCount(readSource(settingsPaths.documentStore))).toBeLessThanOrEqual(660)
@@ -299,7 +300,8 @@ describe('Settings backend ownership architecture', () => {
     expect(rawLineCount(readSource(settingsPaths.responsesResponseAdapter))).toBeLessThanOrEqual(
       660
     )
-    expect(rawLineCount(readSource(settingsPaths.service))).toBeLessThanOrEqual(1003)
+    // The granted-roots legacy store and Files-filter preference added 33 facade lines.
+    expect(rawLineCount(readSource(settingsPaths.service))).toBeLessThanOrEqual(1036)
   })
 
   it('locks the stable module export inventories', () => {
@@ -368,6 +370,7 @@ describe('Settings backend ownership architecture', () => {
       'addCustomServer',
       'clearCodexInfo',
       'clearComputeGrants',
+      'clearGrantedLocalRoots',
       'clearOpencodeInfo',
       'deleteProvider',
       'getSettings',
@@ -396,6 +399,7 @@ describe('Settings backend ownership architecture', () => {
       'setNotificationsEnabled',
       'setOpencodeInfo',
       'setPackageMirror',
+      'setProjectFilesFilter',
       'setReasoningEffort',
       'setRuntimeEnablement',
       'setRuntimeSelection',
@@ -473,10 +477,10 @@ describe('Settings backend ownership architecture', () => {
     expect(publicOperationsOf(settingsPaths.service, 'SettingsService')).toEqual(
       `
         addCustomServer addManualInterpreter authenticateCustomServer buildCustomServerTemplateExport
-        buildSkillExport cancelClaudeIsolatedLogin cancelClaudeLogin cancelCodexLogin cancelCustomServerAuthentication captureActiveAgentBackendSelection captureActiveExplicitAgentBackendTarget checkEnvironment codexSkillCatalog
+        buildSkillExport cancelClaudeIsolatedLogin cancelClaudeLogin cancelCodexLogin cancelCustomServerAuthentication captureActiveAgentBackendSelection captureActiveExplicitAgentBackendTarget checkEnvironment clearGrantedLocalRoots codexSkillCatalog
         codexSkillDescriptorsForIds createSkill deleteProvider deleteSkill detectClaude detectCodex
         detectOpencode dismissLegacyDataMovePrompt getAppIconVariant getClosePreference
-        getComputeBookmarks getConnectorDetail getConnectors getConversationSkillImportEnabled getGitHubTokenStatus getManualInterpreters getNotificationsEnabled getPackageMirror
+        getComputeBookmarks getConnectorDetail getConnectors getConversationSkillImportEnabled getGitHubTokenStatus getGrantedLocalRoots getManualInterpreters getNotificationsEnabled getPackageMirror
         getPreflight getRuntimeEnablement getRuntimeSelection getSettingsView getSkillDetail
         getStoredSettings importAgentHomeSkills importSkill importSkillArchiveBatch importSkillZip
         importSkillZipBatch installClaude installCodex installOpencode isEncryptionAvailable
@@ -493,7 +497,7 @@ describe('Settings backend ownership architecture', () => {
         setConversationSkillImportEnabled setCustomServerAuthenticator setCustomServerEnabled
         setDataRoot setDefaultPermissionProfile setEnvironmentEnabled setInstallAuthorized
         setCustomServerRuntimeProjectionProvider setNcbiCredentials setNotificationsEnabled
-        setPackageMirror setReasoningEffort setRuntimeSelection setSkillDeletionGuard setSkillEnabled
+        setPackageMirror setProjectFilesFilter setReasoningEffort setRuntimeSelection setSkillDeletionGuard setSkillEnabled
         setToolPermission skillNudgeNamesForIds skillsNeedingForceLoad uninstallClaude uninstallCodex
         uninstallOpencode updateCustomServer updateSkill upsertProvider validateProvider withHostSkillRead
       `
@@ -639,6 +643,7 @@ describe('Settings backend ownership architecture', () => {
       'disabledSkillIds',
       'githubTokenMask',
       'githubTokenRef',
+      'grantedLocalRoots',
       'legacyDataMovePromptDismissedAt',
       'notebookManualInterpreters',
       'notebookRuntimeEnablement',
@@ -649,6 +654,7 @@ describe('Settings backend ownership architecture', () => {
       'opencodeVersion',
       'packageMirror',
       'pathsNormalizedAt',
+      'projectFilesFilter',
       'providers',
       'reasoningEffort',
       'version'

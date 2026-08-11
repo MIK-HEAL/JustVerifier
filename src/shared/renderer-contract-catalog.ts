@@ -211,8 +211,9 @@ export const RENDERER_CONTRACT_GROUPS = Object.freeze([
     ['getClientId', 'lifecycle:client-id'],
   ]),
   group('local-fs', 'localFs', [
-    ['getRoots', 'local-fs:get-roots', LOCAL], ['listDir', 'local-fs:list-dir', LOCAL], ['openPath', 'local-fs:open-path', LOCAL],
-    ['readPreview', 'local-fs:read-preview', LOCAL], ['reveal', 'local-fs:reveal', LOCAL],
+    ['getRoots', 'local-fs:get-roots', LOCAL], ['grantRoot', 'local-fs:grant-root', LOCAL], ['listDir', 'local-fs:list-dir', LOCAL],
+    ['listGrantedRoots', 'local-fs:granted-roots:list', LOCAL], ['openPath', 'local-fs:open-path', LOCAL], ['readPreview', 'local-fs:read-preview', LOCAL],
+    ['removeGrantedRoot', 'local-fs:granted-roots:remove', LOCAL], ['reveal', 'local-fs:reveal', LOCAL], ['setGrantedRootAccess', 'local-fs:granted-roots:set-access', LOCAL],
   ]),
   group('logs', 'logs', [
     ['getPath', 'logs:get-path'], ['openFile', 'logs:open-file', LOCAL], ['revealInFolder', 'logs:reveal-in-folder', LOCAL],
@@ -341,7 +342,8 @@ export const RENDERER_CONTRACT_GROUPS = Object.freeze([
     ['retryCustomServer', 'settings:retry-custom-server', LOCAL],
     ['setConversationSkillImportEnabled', 'settings:set-conversation-skill-import-enabled'], ['setCustomServerEnabled', 'settings:set-custom-server-enabled'],
     ['setNcbiCredentials', 'settings:set-ncbi-credentials'], ['setNotificationsEnabled', 'settings:set-notifications-enabled', LOCAL],
-    ['setPackageMirror', 'settings:set-package-mirror', LOCAL], ['setReasoningEffort', 'settings:set-reasoning-effort'],
+    ['setPackageMirror', 'settings:set-package-mirror', LOCAL], ['setProjectFilesFilter', 'settings:set-project-files-filter', LOCAL],
+    ['setReasoningEffort', 'settings:set-reasoning-effort'],
     ['setSkillEnabled', 'settings:set-skill-enabled'], ['setToolPermission', 'settings:set-tool-permission'],
     ['uninstallClaude', 'settings:uninstall-claude', LOCAL], ['uninstallCodex', 'settings:uninstall-codex', LOCAL],
     ['uninstallOpencode', 'settings:uninstall-opencode', LOCAL], ['updateCustomServer', 'settings:update-custom-server'],

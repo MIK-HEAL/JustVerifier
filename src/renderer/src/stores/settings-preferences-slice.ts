@@ -1,5 +1,10 @@
 import type { PackageMirror } from '../../../shared/mirror'
-import type { AppIconVariant, ReasoningEffort, SettingsSnapshot } from '../../../shared/settings'
+import type {
+  AppIconVariant,
+  ProjectFilesFilterPreference,
+  ReasoningEffort,
+  SettingsSnapshot
+} from '../../../shared/settings'
 import type { CloseActionPreference } from '../../../shared/window-controls'
 import type { PermissionProfileId } from '../../../shared/permission-profiles'
 import { isMirrorConfigured } from '../pages/settings/mirror-view'
@@ -16,6 +21,7 @@ type SettingsPreferencesState = {
   conversationSkillImportEnabled: boolean
   closePreference: CloseActionPreference | undefined
   appIconVariant: AppIconVariant
+  projectFilesFilter: ProjectFilesFilterPreference | undefined
   defaultPermissionProfile: PermissionProfileId
 }
 
@@ -25,6 +31,7 @@ type OptimisticPreferenceField =
   | 'conversationSkillImportEnabled'
   | 'closePreference'
   | 'appIconVariant'
+  | 'projectFilesFilter'
   | 'defaultPermissionProfile'
 
 export type SettingsPreferencesActions = {
@@ -33,7 +40,9 @@ export type SettingsPreferencesActions = {
   setConversationSkillImportEnabled: (enabled: boolean) => Promise<void>
   setClosePreference: (preference: CloseActionPreference | undefined) => Promise<void>
   setAppIconVariant: (variant: AppIconVariant) => Promise<void>
+  setProjectFilesFilter: (filter: ProjectFilesFilterPreference | undefined) => Promise<void>
   setDefaultPermissionProfile: (profile: PermissionProfileId) => Promise<void>
+
   completeOnboarding: () => Promise<void>
   setPackageMirror: (mirror: PackageMirror) => Promise<void>
 }
@@ -45,6 +54,7 @@ type SettingsPreferencesCommands = Pick<
   | 'setConversationSkillImportEnabled'
   | 'setClosePreference'
   | 'setAppIconVariant'
+  | 'setProjectFilesFilter'
   | 'setDefaultPermissionProfile'
   | 'markOnboardingComplete'
   | 'setPackageMirror'
@@ -64,6 +74,7 @@ const SETTINGS_WRITE_ERRORS: Record<OptimisticSettingsWriteKey, string> = {
   conversationSkillImport: 'Could not save conversation Skill import preference. Try again.',
   closePreference: 'Could not save window close preference. Try again.',
   appIcon: 'Could not save app icon preference. Try again.',
+  projectFilesFilter: 'Could not save files filter preference. Try again.',
   defaultPermissionProfile: 'Could not save the default permission mode. Try again.'
 }
 
@@ -146,6 +157,15 @@ export const createSettingsPreferencesSlice = ({
         variant,
         () => getCommands().setAppIconVariant({ variant }),
         'Failed to set app icon variant'
+      ),
+
+    setProjectFilesFilter: (filter) =>
+      runOptimisticWrite(
+        'projectFilesFilter',
+        'projectFilesFilter',
+        filter,
+        () => getCommands().setProjectFilesFilter({ filter }),
+        'Failed to set project files filter'
       ),
 
     setDefaultPermissionProfile: (profile) =>

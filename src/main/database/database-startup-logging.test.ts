@@ -97,7 +97,11 @@ describe('database startup logging', () => {
           level: 'info',
           message: 'database migration completed',
           data: expect.objectContaining({
-            applied: ['0001_runtime_schema_baseline', '0002_project_agent_context'],
+            applied: [
+              '0001_runtime_schema_baseline',
+              '0002_project_agent_context',
+              '0003_granted_local_roots'
+            ],
             adoptedLegacy: true
           })
         })

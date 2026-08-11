@@ -79,7 +79,9 @@ type PreloadApi = {
     setNotificationsEnabled: (request: unknown) => unknown
     setConversationSkillImportEnabled: (request: unknown) => unknown
     setClosePreference: (request: unknown) => unknown
+    setProjectFilesFilter: (request: unknown) => unknown
     setDefaultPermissionProfile: (request: unknown) => unknown
+
     setAppIconVariant: (request: unknown) => unknown
     listAppIcons: () => unknown
     uninstallClaude: () => unknown
@@ -304,10 +306,14 @@ describe('preload bridge — public surface inventory', () => {
       'handoff.retry',
       'lifecycle.getClientId',
       'localFs.getRoots',
+      'localFs.grantRoot',
       'localFs.listDir',
+      'localFs.listGrantedRoots',
       'localFs.openPath',
       'localFs.readPreview',
+      'localFs.removeGrantedRoot',
       'localFs.reveal',
+      'localFs.setGrantedRootAccess',
       'logs.getPath',
       'logs.openFile',
       'logs.revealInFolder',
@@ -489,6 +495,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.setNcbiCredentials',
       'settings.setNotificationsEnabled',
       'settings.setPackageMirror',
+      'settings.setProjectFilesFilter',
       'settings.setReasoningEffort',
       'settings.setSkillEnabled',
       'settings.setToolPermission',
@@ -594,7 +601,7 @@ describe('preload bridge — runtime renderer contract catalog', () => {
   it('routes every owned method through its cataloged Electron channel', async () => {
     const requestContracts = runtimeContracts.filter(({ kind }) => kind === 'method')
 
-    expect(runtimeContracts).toHaveLength(189)
+    expect(runtimeContracts).toHaveLength(190)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -660,7 +667,7 @@ describe('preload bridge — runtime renderer contract catalog', () => {
 })
 
 describe('preload bridge — core renderer contract catalog', () => {
-  it('pins the exact 23-group, 152-callable T1d complement', () => {
+  it('pins the exact 23-group, 156-callable T1d complement', () => {
     expect(coreContractGroups.map(({ capability }) => capability)).toEqual([
       'artifacts',
       'cli',
@@ -687,7 +694,8 @@ describe('preload bridge — core renderer contract catalog', () => {
       'uploads',
       'window'
     ])
-    expect(coreContracts).toHaveLength(152)
+    expect(coreContracts).toHaveLength(156)
+
     expect({
       requests: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
@@ -699,16 +707,16 @@ describe('preload bridge — core renderer contract catalog', () => {
       surfaceNative: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'surface-native'
       ).length
-    }).toEqual({ requests: 112, events: 29, sends: 10, surfaceNative: 1 })
+    }).toEqual({ requests: 116, events: 29, sends: 10, surfaceNative: 1 })
   })
 
-  it('routes all 112 request methods through their cataloged Electron channels', async () => {
+  it('routes all 116 request methods through their cataloged Electron channels', async () => {
     const requestContracts = coreContracts.filter(
       ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
     )
     const localFile = { name: 'catalog.csv' } as File
 
-    expect(requestContracts).toHaveLength(112)
+    expect(requestContracts).toHaveLength(116)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -1123,6 +1131,12 @@ const cases: ForwardingCase[] = [
     invoke: (a) => a.settings.setClosePreference({ preference: 'minimize' }),
     channel: 'settings:set-close-preference',
     args: [{ preference: 'minimize' }]
+  },
+  {
+    name: 'settings.setProjectFilesFilter → settings:set-project-files-filter',
+    invoke: (a) => a.settings.setProjectFilesFilter({ filter: { sourceMode: 'local' } }),
+    channel: 'settings:set-project-files-filter',
+    args: [{ filter: { sourceMode: 'local' } }]
   },
   {
     name: 'settings.setDefaultPermissionProfile → settings:set-default-permission-profile',

@@ -42,6 +42,7 @@ import {
   type SetDefaultPermissionProfileRequest,
   type SetConversationSkillImportEnabledRequest,
   type SetNotificationsEnabledRequest,
+  type SetProjectFilesFilterRequest,
   type SetReasoningEffortRequest,
   type SetSkillEnabledRequest,
   type SetToolPermissionRequest,
@@ -62,6 +63,7 @@ import {
   readConversationSkillImportEnabled,
   readIsolatedClaudeToken,
   readNotificationsEnabled,
+  readProjectFilesFilter,
   readReasoningEffort
 } from './transport-validation'
 
@@ -179,6 +181,14 @@ const registerSettingsIpcHandlers = ({
       const preference = readClosePreference(request)
       log.info('set close preference requested', { preference: preference ?? 'ask' })
       return service.setClosePreference(preference)
+    }
+  )
+  ipcMainHandle(
+    'settings:set-project-files-filter',
+    async (_event, request: SetProjectFilesFilterRequest) => {
+      const filter = readProjectFilesFilter(request)
+      log.info('set project files filter requested', { filter: filter ?? 'default' })
+      return service.setProjectFilesFilter(filter)
     }
   )
   ipcMainHandle(

@@ -15,6 +15,7 @@ import { DatabaseValidationError } from './database-validation-error'
 import { migrationSqlExecutor } from './migration-sql-executor'
 import { runtimeSchemaBaselineMigration } from './migrations/0001-runtime-schema-baseline'
 import { projectAgentContextMigration } from './migrations/0002-project-agent-context'
+import { grantedLocalRootsMigration } from './migrations/0003-granted-local-roots'
 
 type MigrationVerifierDescriptor =
   | {
@@ -89,6 +90,11 @@ const PROJECT_AGENT_CONTEXT_CHECKSUM = checksumMigrationPayload(
   projectAgentContextMigration.statements,
   projectAgentContextMigration.verifiers
 )
+const GRANTED_LOCAL_ROOTS_CHECKSUM = checksumMigrationPayload(
+  grantedLocalRootsMigration.id,
+  grantedLocalRootsMigration.statements,
+  grantedLocalRootsMigration.verifiers
+)
 const MIGRATION_MANIFEST = [
   {
     ...runtimeSchemaBaselineMigration,
@@ -99,6 +105,12 @@ const MIGRATION_MANIFEST = [
   {
     ...projectAgentContextMigration,
     checksum: PROJECT_AGENT_CONTEXT_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...grantedLocalRootsMigration,
+    checksum: GRANTED_LOCAL_ROOTS_CHECKSUM,
     backupOnApply: 'required',
     backupRetention: 'retain'
   }

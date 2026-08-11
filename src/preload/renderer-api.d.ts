@@ -81,7 +81,14 @@ import type {
   ProbeResult
 } from '../shared/compute'
 import type { DirListing, DownloadDest, LocalFile } from '../shared/remote-fs'
-import type { LocalDirListing, LocalRoots } from '../shared/local-fs'
+import type {
+  GrantLocalRootRequest,
+  GrantedLocalRoot,
+  LocalDirListing,
+  LocalRoots,
+  RemoveGrantedLocalRootRequest,
+  SetGrantedLocalRootAccessRequest
+} from '../shared/local-fs'
 import type { RendererFailureReport } from '../shared/diagnostics'
 import type { OpenLogFileResult, RevealLogFileResult } from '../shared/logs'
 import type {
@@ -211,6 +218,7 @@ import type {
   SetConversationSkillImportEnabledRequest,
   SetNotificationsEnabledRequest,
   SetClosePreferenceRequest,
+  SetProjectFilesFilterRequest,
   SetDefaultPermissionProfileRequest,
   SetAppIconVariantRequest,
   SetReasoningEffortRequest,
@@ -444,9 +452,11 @@ export interface OpenScienceAPI {
       request: SetConversationSkillImportEnabledRequest
     ): Promise<SettingsSnapshot>
     setClosePreference(request: SetClosePreferenceRequest): Promise<SettingsSnapshot>
+    setProjectFilesFilter(request: SetProjectFilesFilterRequest): Promise<SettingsSnapshot>
     setDefaultPermissionProfile(
       request: SetDefaultPermissionProfileRequest
     ): Promise<SettingsSnapshot>
+
     setAppIconVariant(request: SetAppIconVariantRequest): Promise<SettingsSnapshot>
     listAppIcons(): Promise<AppIconPreview[]>
     validateProvider(request: ValidateProviderRequest): Promise<ValidateProviderResult>
@@ -760,6 +770,11 @@ export interface OpenScienceAPI {
     reveal(path: string): Promise<void>
     // Opens a local file with the OS default application; resolves to '' on success.
     openPath(path: string): Promise<string>
+    // Folders the user granted the app access to; mutations resolve to the updated list.
+    listGrantedRoots(): Promise<GrantedLocalRoot[]>
+    grantRoot(request: GrantLocalRootRequest): Promise<GrantedLocalRoot[]>
+    setGrantedRootAccess(request: SetGrantedLocalRootAccessRequest): Promise<GrantedLocalRoot[]>
+    removeGrantedRoot(request: RemoveGrantedLocalRootRequest): Promise<GrantedLocalRoot[]>
   }
   notebook: {
     state(request: NotebookSessionRequest): Promise<NotebookSessionState>

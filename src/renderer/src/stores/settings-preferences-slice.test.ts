@@ -2,7 +2,12 @@ import { createStore, type StoreApi } from 'zustand/vanilla'
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 import type { PackageMirror } from '../../../shared/mirror'
-import type { AppIconVariant, ReasoningEffort, SettingsSnapshot } from '../../../shared/settings'
+import type {
+  AppIconVariant,
+  ProjectFilesFilterPreference,
+  ReasoningEffort,
+  SettingsSnapshot
+} from '../../../shared/settings'
 import type { CloseActionPreference } from '../../../shared/window-controls'
 import type { PermissionProfileId } from '../../../shared/permission-profiles'
 import {
@@ -18,6 +23,7 @@ type PreferencesCommands = Pick<
   | 'setConversationSkillImportEnabled'
   | 'setClosePreference'
   | 'setAppIconVariant'
+  | 'setProjectFilesFilter'
   | 'setDefaultPermissionProfile'
   | 'markOnboardingComplete'
   | 'setPackageMirror'
@@ -33,7 +39,9 @@ type TestStore = SettingsPreferencesActions & {
   conversationSkillImportEnabled: boolean
   closePreference: CloseActionPreference | undefined
   appIconVariant: AppIconVariant
+  projectFilesFilter: ProjectFilesFilterPreference | undefined
   defaultPermissionProfile: PermissionProfileId
+
   settingsWriteError: string | undefined
 }
 
@@ -70,31 +78,34 @@ const deferred = <T>(): {
   return { promise, resolve, reject }
 }
 
-const createCommands = (): CommandMocks => ({
-  setReasoningEffort: vi.fn(({ effort }) => Promise.resolve(snapshot({ reasoningEffort: effort }))),
-  setNotificationsEnabled: vi.fn(({ enabled }) =>
-    Promise.resolve(snapshot({ notificationsEnabled: enabled }))
-  ),
-  setConversationSkillImportEnabled: vi.fn(({ enabled }) =>
-    Promise.resolve(snapshot({ conversationSkillImportEnabled: enabled }))
-  ),
-  setClosePreference: vi.fn(({ preference }) =>
-    Promise.resolve(snapshot({ closePreference: preference }))
-  ),
-  setAppIconVariant: vi.fn(({ variant }) => Promise.resolve(snapshot({ appIconVariant: variant }))),
-  setDefaultPermissionProfile: vi.fn(({ profile }) =>
-    Promise.resolve(snapshot({ defaultPermissionProfile: profile }))
-  ),
-  markOnboardingComplete: vi.fn().mockResolvedValue(snapshot({ onboardingCompletedAt: 42 })),
-  setPackageMirror: vi.fn((mirror) => Promise.resolve(mirror))
-})
+// Preference writes accumulate like the real settings.json: a later command's snapshot still
+// carries earlier writes, so reconcile never clobbers a sibling preference back to its default.
+const createCommands = (persisted: Partial<SettingsSnapshot>): CommandMocks => {
+  const save = <K extends keyof SettingsSnapshot>(key: K, value: SettingsSnapshot[K]) =>
+    Promise.resolve(snapshot({ ...persisted, [key]: (persisted[key] = value) }))
+
+  return {
+    setReasoningEffort: vi.fn(({ effort }) => save('reasoningEffort', effort)),
+    setNotificationsEnabled: vi.fn(({ enabled }) => save('notificationsEnabled', enabled)),
+    setConversationSkillImportEnabled: vi.fn(({ enabled }) =>
+      save('conversationSkillImportEnabled', enabled)
+    ),
+    setClosePreference: vi.fn(({ preference }) => save('closePreference', preference)),
+    setAppIconVariant: vi.fn(({ variant }) => save('appIconVariant', variant)),
+    setProjectFilesFilter: vi.fn(({ filter }) => save('projectFilesFilter', filter)),
+    setDefaultPermissionProfile: vi.fn(({ profile }) => save('defaultPermissionProfile', profile)),
+    markOnboardingComplete: vi.fn().mockResolvedValue(snapshot({ onboardingCompletedAt: 42 })),
+    setPackageMirror: vi.fn((mirror) => Promise.resolve(mirror))
+  }
+}
 
 const createHarness = (): {
   commands: CommandMocks
   reconcileSnapshot: Mock
   store: StoreApi<TestStore>
 } => {
-  const commands = createCommands()
+  const persisted: Partial<SettingsSnapshot> = {}
+  const commands = createCommands(persisted)
   const reconcileSnapshot = vi.fn((next: SettingsSnapshot) => {
     store.setState({
       onboardingCompletedAt: next.onboardingCompletedAt,
@@ -104,6 +115,7 @@ const createHarness = (): {
       conversationSkillImportEnabled: next.conversationSkillImportEnabled,
       closePreference: next.closePreference,
       appIconVariant: next.appIconVariant,
+      projectFilesFilter: next.projectFilesFilter,
       defaultPermissionProfile: next.defaultPermissionProfile ?? 'ask'
     })
   })
@@ -113,7 +125,9 @@ const createHarness = (): {
     conversationSkillImportEnabled: true,
     closePreference: undefined,
     appIconVariant: 'light',
+    projectFilesFilter: undefined,
     defaultPermissionProfile: 'ask',
+
     settingsWriteError: undefined,
     ...createSettingsPreferencesSlice({
       getState: get,
@@ -145,6 +159,7 @@ describe('settings preferences slice', () => {
     await store.getState().setConversationSkillImportEnabled(false)
     await store.getState().setClosePreference('minimize')
     await store.getState().setAppIconVariant('dark')
+    await store.getState().setProjectFilesFilter({ sourceMode: 'local', localRootId: 'root-1' })
     await store.getState().setDefaultPermissionProfile('auto')
 
     expect(commands.setReasoningEffort).toHaveBeenCalledWith({ effort: 'high' })
@@ -152,8 +167,16 @@ describe('settings preferences slice', () => {
     expect(commands.setConversationSkillImportEnabled).toHaveBeenCalledWith({ enabled: false })
     expect(commands.setClosePreference).toHaveBeenCalledWith({ preference: 'minimize' })
     expect(commands.setAppIconVariant).toHaveBeenCalledWith({ variant: 'dark' })
+    expect(commands.setProjectFilesFilter).toHaveBeenCalledWith({
+      filter: { sourceMode: 'local', localRootId: 'root-1' }
+    })
+    expect(store.getState().projectFilesFilter).toEqual({
+      sourceMode: 'local',
+      localRootId: 'root-1'
+    })
     expect(commands.setDefaultPermissionProfile).toHaveBeenCalledWith({ profile: 'auto' })
-    expect(reconcileSnapshot).toHaveBeenCalledTimes(6)
+
+    expect(reconcileSnapshot).toHaveBeenCalledTimes(7)
   })
 
   it('applies immediately, then rolls back and exposes the unchanged failure copy', async () => {

@@ -8,16 +8,21 @@ import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { formatRelativeTime } from '@/lib/format-relative-time'
 import { cn } from '@/lib/utils'
+import { useGrantedFoldersStore } from '@/stores/granted-folders-store'
 import { useNavigationStore } from '@/stores/navigation-store'
+import { useSettingsStore } from '@/stores/settings-store'
 import {
   PROJECT_FILES_PREVIEW_ID,
   usePreviewWorkbenchStore
 } from '@/stores/preview-workbench-store'
 import type { ArtifactPreviewResult } from '../../../../shared/artifacts'
 import type { ArtifactGroupItem, ProjectFileItem } from '../../../../shared/project-files'
+import type { GrantedLocalRoot } from '../../../../shared/local-fs'
+import type { ProjectFilesFilterPreference } from '../../../../shared/settings'
 
 import { createPreviewFileItem } from './preview-file-item'
 import { FileBrowserModal } from '../settings/FileBrowserModal'
+import { GrantFolderAccessDialog } from './GrantFolderAccessDialog'
 import { LocalFileBrowser } from './LocalFileBrowser'
 import {
   useProjectFilePreviewReader,
@@ -29,7 +34,11 @@ import {
   ProjectFilesFilterMenu,
   type ProjectFilesViewMode
 } from './project-files-presentation-owner'
-import { useProjectFileInfiniteLoad, useProjectFilesQueryModel } from './project-files-query-model'
+import {
+  readPersistedProjectFilesFilter,
+  useProjectFileInfiniteLoad,
+  useProjectFilesQueryModel
+} from './project-files-query-model'
 import { FILE_PAGE_SIZE, type PageState } from './use-project-files-index'
 
 type FilePageLoadMode = 'manual' | 'scroll'
@@ -279,9 +288,67 @@ const ProjectFilesViewContent = ({
   // Device name for the "this computer" source entry; undefined until roots resolve.
   const [localMachineName, setLocalMachineName] = useState<string | undefined>(undefined)
   // Which container the tab body shows: the artifacts list or the local ("this computer") browser.
-  const [sourceMode, setSourceMode] = useState<'artifacts' | 'local'>('artifacts')
+  // A persisted local filter only applies where localFs exists (Electron).
+  const [sourceMode, setSourceMode] = useState<'artifacts' | 'local'>(() => {
+    const persisted = readPersistedProjectFilesFilter()
+    return persisted?.sourceMode === 'local' && window.api?.localFs ? 'local' : 'artifacts'
+  })
   // Entry count reported by the local browser, so the header count tracks the visible container.
   const [localEntryCount, setLocalEntryCount] = useState<number | undefined>(undefined)
+  // One-shot navigation request for the local browser, set when a granted folder is picked in the
+  // filter menu. The nonce makes repeated picks of the same folder observable.
+  const [localRequestedPath, setLocalRequestedPath] = useState<
+    { path: string; nonce: number } | undefined
+  >(undefined)
+  // Granted folder the local browser is scoped to; undefined means the machine itself.
+  const [selectedLocalRootId, setSelectedLocalRootId] = useState<string | undefined>(undefined)
+  const [grantDialogOpen, setGrantDialogOpen] = useState(false)
+
+  // Load the granted folders once so the filter menu can list them; localFs is absent outside
+  // Electron, where the section just shows the machine entry and "Add folder…" stays inert. A
+  // persisted granted-folder filter is re-applied only when its root survives this refresh; a
+  // revoked folder degrades to plain machine local mode.
+  useEffect(() => {
+    if (!window.api?.localFs) return
+    void useGrantedFoldersStore
+      .getState()
+      .refresh()
+      .then((roots) => {
+        const persisted = useSettingsStore.getState().projectFilesFilter
+        if (persisted?.sourceMode !== 'local' || persisted.localRootId === undefined) return
+        const root = roots.find((candidate) => candidate.id === persisted.localRootId)
+        if (!root) return
+        setSelectedLocalRootId(root.id)
+        setLocalRequestedPath({ path: root.path, nonce: 1 })
+      })
+      .catch(() => undefined)
+  }, [])
+
+  // Persists the Files-tab source filter so the tab restores it on the next launch. Called only
+  // from user actions, never during mount restoration, so a restore can never trigger a write loop.
+  const persistFilter = useCallback((filter: ProjectFilesFilterPreference): void => {
+    void useSettingsStore.getState().setProjectFilesFilter(filter)
+  }, [])
+
+  // Picking a granted folder (or granting a new one) switches to the local browser at that path.
+  const handleSelectGrantedRoot = useCallback(
+    (root: GrantedLocalRoot): void => {
+      setSourceMode('local')
+      setSelectedLocalRootId(root.id)
+      setLocalRequestedPath((previous) => ({ path: root.path, nonce: (previous?.nonce ?? 0) + 1 }))
+      persistFilter({ sourceMode: 'local', localRootId: root.id })
+    },
+    [persistFilter]
+  )
+
+  // Picking the machine itself returns to the default Home landing; a stale requestedPath must not
+  // re-trigger afterwards.
+  const handleBrowseLocal = useCallback((): void => {
+    setSourceMode('local')
+    setSelectedLocalRootId(undefined)
+    setLocalRequestedPath(undefined)
+    persistFilter({ sourceMode: 'local' })
+  }, [persistFilter])
 
   // Resolve the device name once so the dropdown entry reads as the machine it browses.
   // localFs is absent in non-Electron test/build contexts, so guard the surface before calling it.
@@ -349,6 +416,8 @@ const ProjectFilesViewContent = ({
   const selectFilter = (filterId: string): void => {
     selectQueryFilter(filterId)
     setSourceMode('artifacts')
+    setSelectedLocalRootId(undefined)
+    persistFilter({ sourceMode: 'artifacts', optionId: filterId })
   }
 
   // Keep the indexed file identity and source so both destinations use the same bounded preview path.
@@ -376,7 +445,12 @@ const ProjectFilesViewContent = ({
     workbench.openPanel()
   }
 
+  const grantedRoots = useGrantedFoldersStore((state) => state.roots)
   const isLocalMode = sourceMode === 'local'
+  // The granted folder the local browser is scoped to; a revoked root reads as the machine itself.
+  const selectedLocalRoot = selectedLocalRootId
+    ? grantedRoots.find((root) => root.id === selectedLocalRootId)
+    : undefined
 
   return (
     <div data-testid="files-view" className="flex h-full min-h-0 w-full flex-col bg-bg-10">
@@ -390,7 +464,7 @@ const ProjectFilesViewContent = ({
         <ProjectFilesFilterMenu
           label={
             isLocalMode
-              ? localMachineName || 'This computer'
+              ? (selectedLocalRoot?.name ?? localMachineName ?? 'This computer')
               : isAllFilter
                 ? 'Artifacts'
                 : selectedFilterOption.label
@@ -409,9 +483,12 @@ const ProjectFilesViewContent = ({
           optionsLoadError={sessionOptionsIndex.groups.error}
           onLoadMoreOptions={() => void sessionOptionsIndex.loadMoreGroups()}
           onBrowseRemoteHost={(providerId) => setBrowseProviderId(providerId)}
-          onBrowseLocal={() => setSourceMode('local')}
+          onBrowseLocal={handleBrowseLocal}
+          onAddFolder={() => setGrantDialogOpen(true)}
+          onSelectGrantedRoot={handleSelectGrantedRoot}
           localMachineName={localMachineName}
           isLocalSelected={isLocalMode}
+          selectedLocalRootId={selectedLocalRoot?.id}
         />
         <TooltipProvider delayDuration={200}>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -529,7 +606,10 @@ const ProjectFilesViewContent = ({
       ) : null}
 
       {isLocalMode ? (
-        <LocalFileBrowser onEntryCountChange={setLocalEntryCount} />
+        <LocalFileBrowser
+          onEntryCountChange={setLocalEntryCount}
+          requestedPath={localRequestedPath}
+        />
       ) : (
         <div data-testid="project-files-scroll" className="min-h-0 flex-1 overflow-y-auto pb-4">
           {!catalogIndex.overview.isIndexComplete ? (
@@ -691,6 +771,11 @@ const ProjectFilesViewContent = ({
         open={browseProviderId !== undefined}
         onClose={() => setBrowseProviderId(undefined)}
         initialProviderId={browseProviderId}
+      />
+      <GrantFolderAccessDialog
+        open={grantDialogOpen}
+        onOpenChange={setGrantDialogOpen}
+        onGranted={handleSelectGrantedRoot}
       />
     </div>
   )

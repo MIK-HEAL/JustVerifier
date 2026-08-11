@@ -341,7 +341,10 @@ const TARGET_TABLES = createTargetTables(RUNTIME_SCHEMA_BASELINE_TARGET_SQL)
 const TARGET_INDEXES = createTargetIndexes(RUNTIME_SCHEMA_BASELINE_TARGET_SQL)
 const CURRENT_TARGET_TABLES = createTargetTables(CURRENT_RUNTIME_SCHEMA_TARGET_SQL)
 const CURRENT_TARGET_INDEXES = createTargetIndexes(CURRENT_RUNTIME_SCHEMA_TARGET_SQL)
-const TARGET_INDEX_NAMES = new Set(TARGET_INDEXES.keys())
+// Post-baseline migrations can add indexes (e.g. 0003's GrantedLocalRoot_path_key), so a pre-ledger
+// database carrying them must still classify: known indexes are the baseline ∪ current target union,
+// mirroring the unknown-table check, which already classifies against the current target.
+const TARGET_INDEX_NAMES = new Set([...TARGET_INDEXES.keys(), ...CURRENT_TARGET_INDEXES.keys()])
 
 type RuntimeSchemaTarget = {
   tableNames: readonly string[]

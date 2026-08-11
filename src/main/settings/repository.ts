@@ -5,6 +5,7 @@ import type {
   AppIconVariant,
   ClaudeSubscriptionProviderId,
   ClaudeInfo,
+  ProjectFilesFilterPreference,
   ReasoningEffort
 } from '../../shared/settings'
 import {
@@ -284,6 +285,23 @@ class SettingsRepository {
   // Persists the approval profile applied to conversations created after this preference changes.
   async setDefaultPermissionProfile(profile: PermissionProfileId): Promise<StoredSettings> {
     return this.mutate((settings) => ({ ...settings, defaultPermissionProfile: profile }))
+  }
+
+  // Persists the Files-tab source filter; undefined restores the default ("All artifacts").
+  async setProjectFilesFilter(
+    filter: ProjectFilesFilterPreference | undefined
+  ): Promise<StoredSettings> {
+    return this.mutate((settings) => ({ ...settings, projectFilesFilter: filter }))
+  }
+
+  // Removes the legacy settings.grantedLocalRoots field after the one-time import into the
+  // GrantedLocalRoot table has landed every row. Production never writes this field again.
+  async clearGrantedLocalRoots(): Promise<void> {
+    await this.mutate((settings) => {
+      const next = { ...settings }
+      delete next.grantedLocalRoots
+      return next
+    })
   }
 
   // Records the detected opencode executable path + version for later spawns + the settings status card.

@@ -46,6 +46,7 @@ import type {
   PreviewAgentHomeSkillRequest,
   PreviewGitHubSkillRequest,
   PreviewSkillZipRequest,
+  ProjectFilesFilterPreference,
   ReasoningEffort,
   SkillBundlePreviewResult,
   SkillImportPreviewContent,
@@ -58,6 +59,7 @@ import type {
   ValidateProviderResult
 } from '../../shared/settings'
 import type { PackageMirror } from '../../shared/mirror'
+import type { GrantedLocalRoot } from '../../shared/local-fs'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement, RuntimeSelection } from '../../shared/notebook-runtime'
 import type { ResolvedReasoningEffort } from '../../shared/reasoning-effort'
@@ -284,7 +286,9 @@ class SettingsService {
       conversationSkillImportEnabled: preferences.conversationSkillImportEnabled,
       closePreference: preferences.closePreference,
       appIconVariant: preferences.appIconVariant,
+      projectFilesFilter: preferences.projectFilesFilter,
       defaultPermissionProfile: preferences.defaultPermissionProfile,
+
       agentFrameworkId: settings.agentFrameworkId ?? DEFAULT_AGENT_FRAMEWORK_ID,
       agentFrameworks: listAgentFrameworks().map((framework) => ({
         id: framework.id,
@@ -435,6 +439,14 @@ class SettingsService {
     preference: CloseActionPreference | undefined
   ): Promise<SettingsSnapshot> {
     await this.preferences.setClosePreference(preference)
+
+    return this.getSettingsView()
+  }
+
+  async setProjectFilesFilter(
+    filter: ProjectFilesFilterPreference | undefined
+  ): Promise<SettingsSnapshot> {
+    await this.preferences.setProjectFilesFilter(filter)
 
     return this.getSettingsView()
   }
@@ -955,6 +967,27 @@ class SettingsService {
   // Sets the bookmark folders for a provider. Replaces the full array for that provider.
   async setComputeBookmarks(providerId: string, folders: string[]): Promise<void> {
     await this.repository.setComputeBookmarks(providerId, folders)
+  }
+
+  // Reads the legacy settings.json granted-roots field for the one-time import into the
+  // GrantedLocalRoot table (see local-fs/granted-roots-repository.ts). Malformed entries (e.g. from
+  // a hand-edited settings.json) are dropped rather than failing the import. Production reads and
+  // writes of granted roots go through the SQLite repository, never here.
+  async getGrantedLocalRoots(): Promise<GrantedLocalRoot[]> {
+    const settings = await this.repository.getSettings()
+    return (settings.grantedLocalRoots ?? []).filter(
+      (root): root is GrantedLocalRoot =>
+        typeof root?.id === 'string' &&
+        typeof root?.path === 'string' &&
+        typeof root?.name === 'string' &&
+        (root?.access === 'ro' || root?.access === 'rw')
+    )
+  }
+
+  // Removes the legacy settings.json granted-roots field once the import into the GrantedLocalRoot
+  // table has completed (see getGrantedLocalRoots).
+  async clearGrantedLocalRoots(): Promise<void> {
+    await this.repository.clearGrantedLocalRoots()
   }
 
   // Captures only non-secret backend identity. Runtime generations resolve credentials again at spawn,

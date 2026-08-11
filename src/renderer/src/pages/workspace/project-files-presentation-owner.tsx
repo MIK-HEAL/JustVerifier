@@ -5,12 +5,15 @@ import {
   ChevronDown,
   File,
   Folder,
+  Lock,
+  LockOpen,
   Monitor,
   Paperclip,
   Plus,
-  Server
+  Server,
+  Trash2
 } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -20,17 +23,23 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn, formatByteSize } from '@/lib/utils'
 import { useComputeStore } from '@/stores/compute-store'
+import { useGrantedFoldersStore } from '@/stores/granted-folders-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import type { ArtifactPreviewResult } from '../../../../shared/artifacts'
+import type { GrantedLocalRoot } from '../../../../shared/local-fs'
 import type { ProjectFileItem } from '../../../../shared/project-files'
 
 import { ArtifactPreview } from './artifact-preview'
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
+import { grantedRootAccessBadgeClassName } from './granted-root-access-badge'
 import { ManagedFileDownloadButton } from './ManagedFileDownloadButton'
 import type { MessageArtifact } from './preview-file-item'
 import { createProjectFilePreviewArtifact } from './project-files-preview-owner'
@@ -401,6 +410,110 @@ const FilterMenuItem = ({
   </DropdownMenuItem>
 )
 
+// One granted local folder in the "This computer" section: two-line row (name + truncated path)
+// with an ro/rw badge. Clicking the row browses the folder; the trailing "…" opens a submenu with
+// the access-level toggle and removal. The "…" stops propagation so it never selects the row.
+// A selected row shows the same trailing Check as the machine row.
+const GrantedRootMenuRow = ({
+  root,
+  isSelected,
+  onSelect,
+  onCloseMenu
+}: {
+  root: GrantedLocalRoot
+  isSelected: boolean
+  onSelect: (root: GrantedLocalRoot) => void
+  onCloseMenu: () => void
+}): React.JSX.Element => {
+  const setAccess = useGrantedFoldersStore((state) => state.setAccess)
+  const remove = useGrantedFoldersStore((state) => state.remove)
+
+  // The whole row is the submenu trigger: hovering it opens the manage submenu (Radix hover
+  // intent), while clicking still selects the folder. Clicking a sub-trigger would normally open
+  // the submenu instead, so the click is default-prevented and the menu closed manually.
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger asChild>
+        <div
+          role="menuitemradio"
+          aria-checked={isSelected}
+          className="gap-2"
+          data-testid={`granted-root-${root.id}`}
+          onClick={(event) => {
+            event.preventDefault()
+            onSelect(root)
+            onCloseMenu()
+          }}
+        >
+          <Folder
+            className="mt-0.5 size-4 shrink-0 self-start text-text-300"
+            strokeWidth={1.8}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{root.name}</span>
+            <span title={root.path} className="block truncate font-mono text-[11px] text-text-300">
+              {root.path}
+            </span>
+          </span>
+          {/* Trailing cluster: badge and check sit 2px apart. */}
+          <span className="flex shrink-0 items-center gap-0.5">
+            <span className={grantedRootAccessBadgeClassName(root.access)}>{root.access}</span>
+            {isSelected ? (
+              <Check
+                className="size-4 shrink-0 text-primary"
+                strokeWidth={2}
+                aria-hidden="true"
+                data-testid={`granted-root-check-${root.id}`}
+              />
+            ) : null}
+          </span>
+        </div>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="z-[70] w-[220px]">
+        <DropdownMenuLabel
+          title={root.path}
+          className="truncate font-mono text-[11px] text-text-300"
+        >
+          {root.path}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {root.access === 'ro' ? (
+          <DropdownMenuItem
+            className="gap-2"
+            data-testid={`granted-root-allow-writes-${root.id}`}
+            onSelect={() => void setAccess(root.id, 'rw').catch(() => undefined)}
+          >
+            <LockOpen
+              className="size-4 shrink-0 text-text-300"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            />
+            <span>Allow writes</span>
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem
+            className="gap-2"
+            data-testid={`granted-root-make-read-only-${root.id}`}
+            onSelect={() => void setAccess(root.id, 'ro').catch(() => undefined)}
+          >
+            <Lock className="size-4 shrink-0 text-text-300" strokeWidth={1.8} aria-hidden="true" />
+            <span>Make read-only</span>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem
+          className="gap-2 text-danger-000 data-[highlighted]:text-danger-000"
+          data-testid={`granted-root-remove-${root.id}`}
+          onSelect={() => void remove(root.id).catch(() => undefined)}
+        >
+          <Trash2 className="size-4 shrink-0" strokeWidth={1.8} aria-hidden="true" />
+          <span>Remove access</span>
+        </DropdownMenuItem>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
+
 // Keeps all/uploads filters fixed while session choices expand through their own group-header cursor,
 // preventing menu exploration from advancing any file collection shown in the content area.
 const ProjectFilesFilterMenu = ({
@@ -416,8 +529,11 @@ const ProjectFilesFilterMenu = ({
   onLoadMoreOptions,
   onBrowseRemoteHost,
   onBrowseLocal,
+  onAddFolder,
+  onSelectGrantedRoot,
   localMachineName,
-  isLocalSelected
+  isLocalSelected,
+  selectedLocalRootId
 }: {
   label: string
   options: ProjectFilesFilterOption[]
@@ -431,11 +547,16 @@ const ProjectFilesFilterMenu = ({
   onLoadMoreOptions: () => void
   onBrowseRemoteHost: (providerId: string) => void
   onBrowseLocal: () => void
+  onAddFolder: () => void
+  onSelectGrantedRoot: (root: GrantedLocalRoot) => void
   localMachineName: string | undefined
   isLocalSelected: boolean
+  // Id of the granted folder the local browser is scoped to; undefined means the machine itself.
+  selectedLocalRootId: string | undefined
 }): React.JSX.Element => {
   const hosts = useComputeStore((state) => state.hosts)
   const openSettingsToCompute = useSettingsStore((state) => state.openSettingsToCompute)
+  const grantedRoots = useGrantedFoldersStore((state) => state.roots)
   const fixedOptions = options.filter((option) => option.kind !== 'session')
   const sessionOptions = options.filter((option) => option.kind === 'session')
   const visibleSessionOptions = showAllSessions
@@ -443,14 +564,22 @@ const ProjectFilesFilterMenu = ({
     : getCollapsedSessionOptions(sessionOptions, selectedOptionId)
   const showSessionOptionsToggle = sessionOptionCount > COLLAPSED_SESSION_OPTION_COUNT
   const selectedOptionKind = options.find((option) => option.id === selectedOptionId)?.kind ?? 'all'
+  // A revoked folder can leave a stale selection id behind; only a root that still exists counts.
+  const selectedLocalRoot = selectedLocalRootId
+    ? grantedRoots.find((root) => root.id === selectedLocalRootId)
+    : undefined
+  // The machine row is checked only when the local browser is not scoped to a granted folder.
+  const isMachineSelected = isLocalSelected && selectedLocalRoot === undefined
 
   useEffect(() => {
     // Expanded menus consume one existing cursor page per render until every session is available.
     if (showAllSessions && canLoadMoreOptions) onLoadMoreOptions()
   }, [canLoadMoreOptions, onLoadMoreOptions, showAllSessions])
 
+  const [menuOpen, setMenuOpen] = useState(false)
+
   return (
-    <DropdownMenu>
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
         <Button
           type="button"
@@ -459,11 +588,19 @@ const ProjectFilesFilterMenu = ({
           aria-label="Filter project files"
         >
           {isLocalSelected ? (
-            <Monitor
-              className="size-3.5 shrink-0 text-text-300"
-              strokeWidth={1.8}
-              aria-hidden="true"
-            />
+            selectedLocalRoot ? (
+              <Folder
+                className="size-3.5 shrink-0 text-text-300"
+                strokeWidth={1.8}
+                aria-hidden="true"
+              />
+            ) : (
+              <Monitor
+                className="size-3.5 shrink-0 text-text-300"
+                strokeWidth={1.8}
+                aria-hidden="true"
+              />
+            )
           ) : (
             <ProjectFilesFilterIcon
               kind={selectedOptionKind}
@@ -533,7 +670,7 @@ const ProjectFilesFilterMenu = ({
         <DropdownMenuGroup>
           <DropdownMenuItem
             role="menuitemradio"
-            aria-checked={isLocalSelected}
+            aria-checked={isMachineSelected}
             className="gap-2"
             onSelect={() => onBrowseLocal()}
           >
@@ -543,14 +680,26 @@ const ProjectFilesFilterMenu = ({
               aria-hidden="true"
             />
             <span className="min-w-0 flex-1 truncate">{localMachineName || 'This computer'}</span>
-            {isLocalSelected ? (
+            {isMachineSelected ? (
               <Check className="size-4 shrink-0 text-primary" strokeWidth={2} aria-hidden="true" />
             ) : null}
           </DropdownMenuItem>
-          <DropdownMenuItem disabled className="gap-2 text-muted-foreground">
+          {grantedRoots.map((root) => (
+            <GrantedRootMenuRow
+              key={root.id}
+              root={root}
+              isSelected={root.id === selectedLocalRootId}
+              onSelect={onSelectGrantedRoot}
+              onCloseMenu={() => setMenuOpen(false)}
+            />
+          ))}
+          <DropdownMenuItem
+            className="gap-2 text-muted-foreground"
+            data-testid="add-local-folder"
+            onSelect={() => onAddFolder()}
+          >
             <Plus className="size-4 shrink-0" strokeWidth={1.8} aria-hidden="true" />
-            <span>Add local folder…</span>
-            <span className="ml-auto shrink-0 text-[11px]">Soon</span>
+            <span>Add folder…</span>
           </DropdownMenuItem>
         </DropdownMenuGroup>
 

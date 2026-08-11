@@ -7,6 +7,7 @@ import type {
   ElicitationResponse,
   PendingElicitationRequest
 } from '../../../../shared/acp'
+import type { LinkedFolderFileReference } from '../../../../shared/artifacts'
 import type { NotebookSessionReference } from '../../../../shared/notebook'
 import type {
   PermissionProfileId,
@@ -63,12 +64,13 @@ import { useSpecialistStore } from '@/stores/specialist-store'
 
 import { ComposerEditor } from './composer/ComposerEditor'
 import type { ComposerUploadTransfer } from './composer-upload-transfer'
-import { docToSkillIds, type ComposerDoc } from './composer/composer-doc'
+import { appendArtifactMention, docToSkillIds, type ComposerDoc } from './composer/composer-doc'
 import { ComposerAgentControlsMenu } from './ComposerAgentControlsMenu'
 import { NotificationBell } from '@/components/NotificationBell'
 import { ComposerContextUsage } from './ComposerContextUsage'
 import { ContextWindowDialog } from './ContextWindowDialog'
 import { ComposerModelPicker } from './ComposerModelPicker'
+import { ComposerYourFilesMenu } from './ComposerYourFilesMenu'
 import { PermissionApprovalControls } from './PermissionApprovalControls'
 import { normalizeRunFailureError } from './error-report'
 import { ReportErrorDialog } from './ReportErrorDialog'
@@ -459,6 +461,13 @@ const ConversationPanel = ({
   const handleSubmit = (): void => {
     if (!canEditDraft) return
     onSendMessage(docToSkillIds(draftDoc))
+  }
+
+  // The "Your files" menu appends a linked-folder mention straight into the owned draft doc (the
+  // same appendArtifactMention path Global Search uses); ComposerEditor syncs the chip into the DOM.
+  const handleInsertFileReference = (reference: LinkedFolderFileReference): void => {
+    if (!canEditDraft) return
+    onDraftDocChange(appendArtifactMention(draftDoc, reference))
   }
 
   const handleBranchInNewSession = (): void => {
@@ -1005,6 +1014,11 @@ const ConversationPanel = ({
                           isHistoryBrowsing={isHistoryBrowsing}
                           historyStatus={historyStatus}
                           onNavigateHistory={onNavigateHistory}
+                          mentionPreviewContext={
+                            activeSession
+                              ? { sessionId: activeSession.id, projectId: activeSession.projectId }
+                              : undefined
+                          }
                           focusRequest={composerFocusRequest}
                         />
                       </div>
@@ -1014,7 +1028,18 @@ const ConversationPanel = ({
                         <DropdownMenu>
                           <TooltipProvider delayDuration={200}>
                             <Tooltip>
-                              <TooltipTrigger asChild>
+                              {/* Radix opens tooltips on focus as well as hover, and a dropdown
+                                  close returns programmatic focus to the trigger — which would
+                                  re-open the tooltip with the pointer elsewhere. Only real keyboard
+                                  focus (":focus-visible") may open it (radix-ui/primitives#2248). */}
+                              <TooltipTrigger
+                                asChild
+                                onFocus={(event) => {
+                                  if (!event.currentTarget.matches(':focus-visible')) {
+                                    event.preventDefault()
+                                  }
+                                }}
+                              >
                                 <DropdownMenuTrigger asChild>
                                   <button
                                     type="button"
@@ -1081,6 +1106,9 @@ const ConversationPanel = ({
                             >
                               {attachmentLimitsText}
                             </div>
+                            <ComposerYourFilesMenu
+                              onInsertFileReference={handleInsertFileReference}
+                            />
                             <DropdownMenuSeparator />
                             {activeSession && activeBranchPlan ? (
                               <>
@@ -1117,9 +1145,16 @@ const ConversationPanel = ({
                               onSelect={() => {
                                 if (canEditDraft && !isRequestReviewDisabled) onRequestReview()
                               }}
+                              className="items-center gap-2"
                             >
-                              <ScanEye className="mr-2 size-4 text-text-300" aria-hidden="true" />
-                              Request review
+                              <ScanEye
+                                className="size-4 shrink-0 text-text-200"
+                                strokeWidth={2}
+                                aria-hidden="true"
+                              />
+                              <span className="text-[13px] font-medium leading-5">
+                                Request review
+                              </span>
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
@@ -1308,7 +1343,16 @@ const ConversationPanel = ({
                               </Tooltip>
                               <DropdownMenu>
                                 <Tooltip>
-                                  <TooltipTrigger asChild>
+                                  {/* Same focus guard as the + trigger: a dropdown close returns
+                                      programmatic focus, which must not re-open the tooltip. */}
+                                  <TooltipTrigger
+                                    asChild
+                                    onFocus={(event) => {
+                                      if (!event.currentTarget.matches(':focus-visible')) {
+                                        event.preventDefault()
+                                      }
+                                    }}
+                                  >
                                     <DropdownMenuTrigger asChild>
                                       <Button
                                         type="button"

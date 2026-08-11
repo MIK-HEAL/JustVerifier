@@ -399,9 +399,20 @@ export type SettingsSnapshot = {
   closePreference?: CloseActionPreference
   // The selected built-in app-icon look for non-macOS windows and the Windows tray. Defaults to 'light'.
   appIconVariant: AppIconVariant
+  // Last Files-tab source filter. Undefined means the default ("All artifacts").
+  projectFilesFilter?: ProjectFilesFilterPreference
   // The default permission profile for new sessions. Valid values: 'ask', 'auto', 'full'.
   // Absent or invalid falls back to 'ask' (the most restrictive mode).
   defaultPermissionProfile?: PermissionProfileId
+}
+
+// Persisted Files-tab source filter: an artifact collection, the machine's local browser, or a
+// granted folder inside it. `optionId` is the artifact filter id ('all', 'uploads', 'session:<id>');
+// `localRootId` is a GrantedLocalRoot id.
+export type ProjectFilesFilterPreference = {
+  sourceMode: 'artifacts' | 'local'
+  optionId?: string
+  localRootId?: string
 }
 
 // Request to set (or clear, via omitted fields) the package-mirror configuration.
@@ -425,6 +436,10 @@ export type SetConversationSkillImportEnabledRequest = {
 
 export type SetClosePreferenceRequest = {
   preference?: CloseActionPreference
+}
+
+export type SetProjectFilesFilterRequest = {
+  filter?: ProjectFilesFilterPreference
 }
 
 export type SetAppIconVariantRequest = {

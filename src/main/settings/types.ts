@@ -5,6 +5,7 @@ import type {
   ClaudeInfo,
   CodexSubscriptionAuthMode,
   CodexInfo,
+  ProjectFilesFilterPreference,
   ProviderType,
   ProviderValidationFailure,
   ReasoningEffort
@@ -17,6 +18,7 @@ import type {
   ReasoningEffortPresetSetting
 } from '../../shared/reasoning-effort'
 import type { PackageMirror } from '../../shared/mirror'
+import type { GrantedLocalRoot } from '../../shared/local-fs'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement, RuntimeSelection } from '../../shared/notebook-runtime'
 import type { CloseActionPreference } from '../../shared/window-controls'
@@ -155,6 +157,9 @@ export type StoredSettings = {
   conversationSkillImportEnabled?: boolean
   // Windows titlebar-close behavior. Absent means ask every time.
   closePreference?: CloseActionPreference
+  // Last Files-tab source filter (artifact collection, this computer, or a granted folder).
+  // Absent means the default ("All artifacts").
+  projectFilesFilter?: ProjectFilesFilterPreference
   // Selected built-in app-icon look. Absent means the default ('light').
   appIconVariant?: AppIconVariant
   // Default approval profile for new conversations. Absent means the safe 'ask' default.
@@ -210,6 +215,10 @@ export type StoredSettings = {
   // Pinned bookmark folders for the remote file browser, keyed by provider_id.
   // Each value is an ordered array of absolute paths the user has pinned via Go-to.
   computeBookmarks?: Record<string, string[]>
+  // Legacy settings-persisted granted local roots ("Grant folder access"), read only for one-time
+  // migration into the GrantedLocalRoot SQLite table (see local-fs/granted-roots-repository.ts).
+  // Production never appends to this field; it is removed after a successful import.
+  grantedLocalRoots?: GrantedLocalRoot[]
   // Legacy project-scope compute grants, read only for one-time migration into PermissionGrant.
   // Production authorization never appends to this field; it is removed after a successful import.
   computeGrants?: StoredComputeGrant[]

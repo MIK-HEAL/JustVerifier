@@ -140,7 +140,17 @@ const REMOTE_LOCAL_ONLY_CHANNELS: GroupedInventory = {
   artifacts: ['open-file'],
   cli: ['install', 'uninstall'],
   compute: ['download', 'reveal-in-folder'],
-  'local-fs': ['get-roots', 'list-dir', 'open-path', 'read-preview', 'reveal'],
+  'local-fs': [
+    'get-roots',
+    'grant-root',
+    'granted-roots:list',
+    'granted-roots:remove',
+    'granted-roots:set-access',
+    'list-dir',
+    'open-path',
+    'read-preview',
+    'reveal'
+  ],
   logs: ['open-file', 'reveal-in-folder'],
   'notebook-env': ['cancel', 'provision', 'repair'],
   notebook: ['export-ipynb', 'export-ipynb-all'],
@@ -177,6 +187,7 @@ const REMOTE_LOCAL_ONLY_CHANNELS: GroupedInventory = {
     'set-default-permission-profile',
     'set-notifications-enabled',
     'set-package-mirror',
+    'set-project-files-filter',
     'uninstall-claude',
     'uninstall-codex',
     'uninstall-opencode'
@@ -231,12 +242,13 @@ describe('renderer surface inventory', () => {
       ...Object.keys(WEB_EVENT_CHANNELS)
     ])
 
-    expect(electronPaths).toHaveLength(341)
+    expect(electronPaths).toHaveLength(346)
+
     expectSameSet(
       electronPaths,
       RENDERER_CONTRACT_CATALOG.map(({ publicPath }) => publicPath)
     )
-    expect(Object.keys(WEB_INVOKE_CHANNELS)).toHaveLength(245)
+    expect(Object.keys(WEB_INVOKE_CHANNELS)).toHaveLength(250)
     expect(Object.keys(WEB_EVENT_CHANNELS)).toHaveLength(34)
     expectSameSet(
       electronPaths.filter((path) => !generatedPaths.has(path)),
@@ -272,7 +284,7 @@ describe('renderer surface inventory', () => {
     const expectedRemoteLocalOnly = expand(REMOTE_LOCAL_ONLY_CHANNELS, ':')
 
     expectSameSet(REMOTE_LOCAL_ONLY_RPC_CHANNELS, expectedRemoteLocalOnly)
-    expect(expectedRemoteLocalOnly).toHaveLength(63)
+    expect(expectedRemoteLocalOnly).toHaveLength(68)
     expect(
       expectedRemoteLocalOnly.every((channel) => WEB_RPC_ALLOWED_CHANNELS.includes(channel))
     ).toBe(true)
