@@ -122,6 +122,7 @@ gate('host.agents repl runtime whitelist consumption', () => {
   let token: string
   let profileStorage: string
   let runtimeStorage: string
+  let releaseControl: (() => void) | undefined
 
   beforeAll(async () => {
     profileStorage = await mkdtemp(join(tmpdir(), 'os-agents-rt-profile-'))
@@ -150,12 +151,18 @@ gate('host.agents repl runtime whitelist consumption', () => {
       token: 'integration-token',
       agentsService
     })
-    const connection = await rpcServer.ensureStarted()
+    const connection = await rpcServer.issueControlConnection(
+      'runtime-session',
+      'default-project',
+      'root-frame-runtime-session'
+    )
     endpoint = connection.endpoint
     token = connection.token
+    releaseControl = connection.release
   })
 
   afterAll(async () => {
+    releaseControl?.()
     await rpcServer?.close()
     await rm(profileStorage, { recursive: true, force: true })
     await rm(runtimeStorage, { recursive: true, force: true })
@@ -252,19 +259,19 @@ gate('host.agents repl runtime whitelist consumption', () => {
       const created = JSON.parse(
         (
           await send(
-            "return JSON.stringify(await host.agents.create({ name: 'CONN_SET', connectorNames: ['cust-1'] }))"
+            "return JSON.stringify(await host.agents.create({ name: 'CONN_SET', connectorNames: ['my-server'] }))"
           )
         ).result ?? '{}'
       )
-      // Read-back resolved the connector reference to the stable id 'cust-1'.
-      expect(created.selectedCapabilities.connectorIds).toEqual(['cust-1'])
-      // The Connector gate consumes the post-write config: the provisioned `mcp-cust-1` connector
+      // Read-back resolves the immutable connector name to its public stable id.
+      expect(created.selectedCapabilities.connectorIds).toEqual(['my-server'])
+      // The Connector gate consumes the post-write config: the provisioned `mcp-my-server` connector
       // skill is allowed, any other connector is filtered out.
       const allowed = filterSpecialistConnectorSkills(
-        ['mcp-cust-1', 'mcp-other'],
+        ['mcp-my-server', 'mcp-other'],
         asProfile(created)
       )
-      expect(allowed).toEqual(['mcp-cust-1'])
+      expect(allowed).toEqual(['mcp-my-server'])
     })
   })
 
