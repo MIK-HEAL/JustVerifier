@@ -127,7 +127,12 @@ export function renderConnectorInstructions(skillNames: string[]): string {
   )
 }
 
-export type CustomSkillDocServer = { name: string; slug?: string; description?: string }
+export type CustomSkillDocServer = {
+  name: string
+  slug?: string
+  description?: string
+  oauth?: unknown
+}
 export type CustomSkillDocTool = { name: string; description?: string; inputSchema?: unknown }
 
 // Same shape as renderSkillDoc, but for a user-added custom MCP server: schema comes from
@@ -140,6 +145,15 @@ export function renderCustomSkillDoc(
   tools: CustomSkillDocTool[]
 ): string {
   const slug = customConnectorSlug(server)
+  const authenticationConvention = server.oauth
+    ? ' If a call reports `connector_unauthenticated` or says sign-in is required, ask the user to sign in from Settings > Connectors, wait for sign-in to complete, then retry the original call. Do not treat an authentication requirement as connector unavailability or call a connector-managed login tool; this connector uses host-managed OAuth.'
+    : tools.some((tool) =>
+          /(?:^|[_-])(?:log[_-]?in|sign[_-]?in|authenticate|authentication)(?:$|[_-])/i.test(
+            tool.name
+          )
+        )
+      ? ' If a call reports `connector_unauthenticated` or says sign-in is required, use a login or authentication tool listed in this Skill, wait for it to complete, then retry the original call. Do not treat an authentication requirement as connector unavailability; this connector manages its own sign-in.'
+      : ''
   const useWhen =
     server.description ??
     `Use when you need tools from the ${server.name} MCP server — ${tools.map((t) => t.name).join(', ')}.`
@@ -153,6 +167,6 @@ export function renderCustomSkillDoc(
     .join('\n')
   return (
     `${header}\n> This connector is rate-limited at the upstream API.\n\n` +
-    `${CUSTOM_SKILL_CONVENTIONS}\n\n## Tools\n\n${methods}`
+    `${CUSTOM_SKILL_CONVENTIONS}${authenticationConvention}\n\n## Tools\n\n${methods}`
   )
 }

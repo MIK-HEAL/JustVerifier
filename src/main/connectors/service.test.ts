@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { ConnectorService } from './service'
 import { ParserEngine } from './engine'
+import { McpToolCallError } from './mcp-client-manager'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import type { CustomMcpServerConfig } from './mcp-client-manager'
 
@@ -995,6 +996,72 @@ describe('ConnectorService', () => {
       )
       expect(mcpClientManager.listTools).not.toHaveBeenCalled()
       expect(call).not.toHaveBeenCalled()
+    })
+
+    it('records structured authentication failures for a host-managed OAuth connector', async () => {
+      const call = vi.fn().mockRejectedValue(new McpToolCallError('Not logged in. Sign in again.'))
+      const onCustomServerAvailabilityChanged = vi.fn()
+      const svc = new ConnectorService({
+        mcpClientManager: manager(call, ['lookup']),
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'oauth-1',
+              name: 'oauth-server',
+              transport: 'streamable_http',
+              url: 'https://mcp.example.test',
+              oauth: {},
+              oauthState: { tokens: { access_token: 'stale', token_type: 'Bearer' } },
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined,
+        onCustomServerAvailabilityChanged
+      })
+
+      await expect(svc.call('oauth-server', 'lookup', {}, internal)).rejects.toThrow(
+        'connector_unauthenticated'
+      )
+      await expect(svc.call('oauth-server', 'lookup', {}, internal)).rejects.toThrow(
+        'connector_unauthenticated'
+      )
+      expect(call).toHaveBeenCalledOnce()
+      expect(onCustomServerAvailabilityChanged).toHaveBeenCalledWith('oauth-1', 'unauthenticated')
+    })
+
+    it('keeps a connector-managed authentication tool reachable after a sign-in error', async () => {
+      const call = vi
+        .fn()
+        .mockRejectedValueOnce(new McpToolCallError('Not logged in. Call login first.'))
+        .mockResolvedValueOnce({ authenticated: true })
+      const svc = new ConnectorService({
+        mcpClientManager: manager(call, ['status', 'login']),
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'content-service-id',
+              name: 'content-service',
+              transport: 'stdio',
+              command: 'content-service-mcp',
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+
+      await expect(svc.call('content-service', 'status', {}, internal)).rejects.toThrow(
+        'connector_unauthenticated'
+      )
+      await expect(svc.call('content-service', 'login', {}, internal)).resolves.toEqual({
+        authenticated: true
+      })
+      expect(call).toHaveBeenCalledTimes(2)
     })
 
     it('recovers from a cached authentication failure after successful sign-in', async () => {
