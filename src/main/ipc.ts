@@ -9,6 +9,7 @@ import {
   net,
   Notification,
   protocol,
+  session,
   shell,
   webContents,
   type WebContents
@@ -59,6 +60,7 @@ import { SessionEnabledComputeHostsOwner } from './compute/session-enabled-hosts
 import { createComputeJobRuntime } from './compute/job-runtime'
 import { waitForInitialConnectorRefresh } from './connector-reload'
 import { ApprovalBroker } from './connectors/approval-broker'
+import { ParserEngine } from './connectors/engine'
 import { McpClientManager } from './connectors/mcp-client-manager'
 import { isCustomMcpServerRouteSafe, toCustomMcpConfig } from './connectors/custom-mcp-bootstrap'
 import { createMoleculePreviewHandler } from './connectors/molecule-preview'
@@ -195,6 +197,7 @@ import { LocalFsService } from './local-fs/service'
 import { getAppClaudeConfigDir } from './settings/provider-env'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
+import { NetworkProxyRuntime } from './settings/network-proxy-runtime'
 import type { NotebookRuntimeSettings } from './settings/capabilities'
 import type { WindowSettingsCapabilities } from './settings/service-capabilities'
 import { createProductionDelegatedWorkComposition } from './delegation/production-composition'
@@ -216,6 +219,7 @@ import {
 import { UserSkillSpecialistPackageAdapter } from './skills/specialist-package-adapter'
 import { BundledSkillSpecialistPackageAdapter } from './skills/builtin-specialist-package-adapter'
 import { saveSkillExport } from './skills/export'
+import { netFetchStandard } from './skills/net-fetch'
 import { AgentsService } from './agents/agents-service'
 import {
   CompletionGateCoordinator,
@@ -377,11 +381,20 @@ const createApplicationModules = async (
   )
   // One settings service backs both the settings IPC and the ACP spawn config (single source of truth).
   const settingsRepository = new SettingsRepository(resolveStorageRoot())
+  const networkProxyRuntime = new NetworkProxyRuntime({
+    setProxy: (config) => session.defaultSession.setProxy(config)
+  })
   const settingsService = await modules.add(undefined, () => ({
-    capability: new SettingsService({ repository: settingsRepository })
+    capability: new SettingsService({
+      repository: settingsRepository,
+      applyNetworkProxy: (settings) => networkProxyRuntime.apply(settings).then(() => undefined),
+      resolveCodexProxyEnvironment: () =>
+        Promise.resolve(networkProxyRuntime.getChildProcessProxyEnvironment())
+    })
   }))
   const storedSettings = await settingsService.getStoredSettings()
   const storageLog = createLogger('storage')
+  await networkProxyRuntime.apply(storedSettings.networkProxy)
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
   initDataRoot(storedSettings.dataRoot)
@@ -1125,6 +1138,7 @@ const createApplicationModules = async (
     }
   })
   const connectorService = new ConnectorService({
+    engine: new ParserEngine({ fetchImpl: netFetchStandard }),
     getConnectors: () => connectorRuntimeSettings.current(),
     getConnectorsFresh: () => settingsService.getConnectors(),
     resolveApiKey: (ref) => tryDecryptKey(ref),
@@ -1715,7 +1729,7 @@ const createApplicationModules = async (
   // Reconcile an existing legacy AppImage shim before startup completes. The owner scopes the
   // operation to Linux AppImage and records any filesystem failure without aborting the app.
   await cliCommandOwner.ensureCurrent()
-  const githubCommandOwner = createGithubCommandOwner()
+  const githubCommandOwner = createGithubCommandOwner({ fetch: netFetchStandard })
   const logsCommandOwner = createLogsCommandOwner()
   declareElectronAdapter('desktop-utilities', () => {
     registerFileSaveHandlers({ resolveManagedFilePath, resolveSessionArtifactFilePath })
