@@ -768,6 +768,49 @@ describe('WorkspaceMessageScroller loading render', () => {
     expect(html).not.toContain('Input</dt>')
   })
 
+  it('keeps persisted completed and failed timestamps outside live regions', async () => {
+    const completedHtml = await renderScroller(
+      createSession({
+        status: 'idle',
+        messages: [
+          createMessage({ id: 'prompt-complete' }),
+          createMessage({
+            id: 'reply-complete',
+            role: 'agent',
+            content: 'Done',
+            responseToMessageId: 'prompt-complete',
+            completedAt: 1710000001000
+          })
+        ]
+      })
+    )
+    const failedHtml = await renderScroller(
+      createSession({
+        status: 'error',
+        messages: [
+          createMessage({ id: 'prompt-failed' }),
+          createMessage({
+            id: 'reply-failed',
+            role: 'agent',
+            content: 'Could not finish',
+            status: 'error',
+            responseToMessageId: 'prompt-failed',
+            failedAt: 1710000001000
+          })
+        ]
+      })
+    )
+
+    const completedTimestamp = completedHtml.match(/<time[^>]*>Completed [^<]*<\/time>/)?.[0]
+    const failedTimestamp = failedHtml.match(/<time[^>]*>Failed [^<]*<\/time>/)?.[0]
+
+    expect(completedTimestamp).toBeDefined()
+    expect(completedTimestamp).not.toContain('role=')
+    expect(completedTimestamp).not.toContain('aria-live=')
+    expect(failedTimestamp).toBeDefined()
+    expect(failedTimestamp).not.toContain('role=')
+    expect(failedTimestamp).not.toContain('aria-live=')
+  })
   it('does not expose the fallback framework from a synthesized legacy graph', async () => {
     const messages = [
       createMessage({ id: 'prompt-1' }),
