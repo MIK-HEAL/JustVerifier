@@ -980,6 +980,163 @@ describe('SessionPersistenceCoordinator', () => {
     expect(durable).toMatchObject({ title: 'Renderer rename', archivedAt: 10 })
   })
 
+  it('updates enabled Compute Hosts through the durable Session owner', async () => {
+    const previousUpdatedAt = Date.now() + 10_000
+    let durable = createSession({
+      title: 'Authoritative session',
+      enabledComputeHosts: ['ssh:old'],
+      updatedAt: previousUpdatedAt
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    const result = await coordinator.setSessionEnabledComputeHosts('project-1', 'session-1', [
+      'ssh:new'
+    ])
+
+    expect(result).toEqual(durable)
+    expect(durable).toMatchObject({
+      id: 'session-1',
+      projectId: 'project-1',
+      title: 'Authoritative session',
+      enabledComputeHosts: ['ssh:new']
+    })
+    expect(durable.updatedAt).toBeGreaterThan(previousUpdatedAt)
+  })
+
+  it('preserves enabled Compute Host authority on an ordinary existing-Session save', async () => {
+    const authorityUpdatedAt = Date.now() + 10_000
+    let durable = createSession({
+      title: 'Before rename',
+      enabledComputeHosts: ['ssh:authoritative'],
+      updatedAt: authorityUpdatedAt
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    const result = await coordinator.saveSession(
+      createSession({
+        title: 'Renamed',
+        enabledComputeHosts: ['ssh:stale'],
+        updatedAt: authorityUpdatedAt - 1_000
+      })
+    )
+
+    expect(result).toMatchObject({
+      title: 'Renamed',
+      enabledComputeHosts: ['ssh:authoritative']
+    })
+    expect(durable.enabledComputeHosts).toEqual(['ssh:authoritative'])
+    expect(durable.updatedAt).toBeGreaterThan(authorityUpdatedAt)
+  })
+
+  it('prunes missing Compute Hosts across a complete durable Session catalog', async () => {
+    let sessions = [
+      createSession({ enabledComputeHosts: ['ssh:kept', 'ssh:deleted'] }),
+      createSession({
+        id: 'session-2',
+        enabledComputeHosts: ['ssh:kept'],
+        updatedAt: 5
+      })
+    ]
+    const saveSession = vi.fn(async (session: PersistedChatSession) => {
+      sessions = sessions.map((candidate) =>
+        candidate.id === session.id ? structuredClone(session) : candidate
+      )
+    })
+    const repository = createSessionRepository({
+      loadAllWithDiagnostics: vi.fn(async () => ({
+        result: { sessions, manifest: { version: 1 as const } },
+        isComplete: true
+      })),
+      saveSession
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    const result = await coordinator.pruneSessionEnabledComputeHosts(['ssh:kept'])
+
+    expect(result.sessions.map((session) => session.enabledComputeHosts)).toEqual([
+      ['ssh:kept'],
+      ['ssh:kept']
+    ])
+    expect(result.previousSelections).toEqual([
+      {
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        providerIds: ['ssh:kept', 'ssh:deleted']
+      }
+    ])
+    expect(saveSession).toHaveBeenCalledTimes(1)
+    expect(saveSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'session-1', enabledComputeHosts: ['ssh:kept'] })
+    )
+  })
+
+  it('restores every attempted Session when durable Compute Host pruning fails partway', async () => {
+    const originalSessions = [
+      createSession({ enabledComputeHosts: ['ssh:kept', 'ssh:deleted'] }),
+      createSession({
+        id: 'session-2',
+        enabledComputeHosts: ['ssh:deleted'],
+        updatedAt: 5
+      })
+    ]
+    let sessions = structuredClone(originalSessions)
+    let saveAttempts = 0
+    const repository = createSessionRepository({
+      loadAllWithDiagnostics: vi.fn(async () => ({
+        result: { sessions, manifest: { version: 1 as const } },
+        isComplete: true
+      })),
+      saveSession: vi.fn(async (session) => {
+        saveAttempts += 1
+        sessions = sessions.map((candidate) =>
+          candidate.id === session.id ? structuredClone(session) : candidate
+        )
+        if (saveAttempts === 2) throw new Error('Session write failed')
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await expect(coordinator.pruneSessionEnabledComputeHosts(['ssh:kept'])).rejects.toThrow(
+      'Session write failed'
+    )
+
+    expect(sessions.map((session) => session.enabledComputeHosts)).toEqual(
+      originalSessions.map((session) => session.enabledComputeHosts)
+    )
+  })
+
+  it('refuses Compute Host pruning from an incomplete Session catalog', async () => {
+    const repository = createSessionRepository({
+      loadAllWithDiagnostics: vi.fn(async () => ({
+        result: { sessions: [createSession()], manifest: { version: 1 as const } },
+        isComplete: false
+      }))
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await expect(coordinator.pruneSessionEnabledComputeHosts([])).rejects.toThrow(
+      'complete Session catalog'
+    )
+  })
+
   it('rejects Session archive while the Session is running', async () => {
     const repository = createSessionRepository({
       loadSessionWithDiagnostics: vi.fn(async () => ({

@@ -672,6 +672,44 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
     )
   }
 
+  setSessionEnabledComputeHosts(
+    projectId: string,
+    sessionId: string,
+    providerIds: readonly string[]
+  ): Promise<PersistedChatSession> {
+    return this.enqueue(() =>
+      this.stateOwner.setEnabledComputeHosts(projectId, sessionId, providerIds)
+    )
+  }
+
+  pruneSessionEnabledComputeHosts(validProviderIds: readonly string[]): Promise<{
+    sessions: PersistedChatSession[]
+    previousSelections: Array<{
+      projectId: string
+      sessionId: string
+      providerIds: string[]
+    }>
+  }> {
+    return this.enqueue(async () => {
+      const scan = await this.repository.loadAllWithDiagnostics()
+      if (!scan.isComplete) {
+        throw new Error('Cannot prune Compute Hosts without a complete Session catalog.')
+      }
+      const validProviderIdSet = new Set(validProviderIds)
+      const previousSelections = scan.result.sessions.flatMap((session) => {
+        const providerIds = session.enabledComputeHosts ?? []
+        return providerIds.some((providerId) => !validProviderIdSet.has(providerId))
+          ? [{ projectId: session.projectId, sessionId: session.id, providerIds: [...providerIds] }]
+          : []
+      })
+      const sessions = await this.stateOwner.pruneEnabledComputeHosts(
+        scan.result.sessions,
+        validProviderIdSet
+      )
+      return { sessions, previousSelections }
+    })
+  }
+
   // Joins late Session-owned side effects (for example Upload finalization) to the same ordering
   // boundary as JSON save and deletion. The mutation is rejected after a Session/Project tombstone.
   runSessionMutation<Result>(
