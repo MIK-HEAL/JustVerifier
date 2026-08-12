@@ -1,3 +1,4 @@
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -24,6 +25,7 @@ import {
   type ComponentProps,
   type ReactNode
 } from 'react'
+import { ArrowDownIcon } from 'lucide-react'
 
 import { getAgentLoadingPhase } from './agent-loading-message'
 import {
@@ -120,6 +122,10 @@ const VisibleMessageSnapshotCommit = ({
 
 type MessageUploadAttachment = NonNullable<ChatSession['messages'][number]['uploads']>[number]
 const conversationContentClassName = 'relative mx-auto w-full max-w-4xl pb-[56px]'
+const SCROLL_TO_FIRST_MESSAGE_MIN_USER_TURNS = 2
+const SCROLL_TO_FIRST_MESSAGE_MIN_HEIGHT_VIEWPORTS = 2
+const SCROLL_TO_FIRST_MESSAGE_MIN_PROGRESS = 0.1
+const SCROLL_TO_FIRST_MESSAGE_MIN_DISTANCE_VIEWPORTS = 1
 // How long a "no longer available" mention notice stays visible before auto-dismissing.
 const MENTION_NOTICE_TIMEOUT_MS = 3000
 
@@ -276,6 +282,15 @@ const WorkspaceMessageScrollerImpl = ({
 }: WorkspaceMessageScrollerProps): React.JSX.Element => {
   const currentSessionId = activeSession?.id
   const currentProjectId = activeSession?.projectId
+  const statusAllowsScrollToFirstMessage = Boolean(
+    activeSession &&
+    activeSession.status !== 'running' &&
+    !activeSession.status.startsWith('waiting-') &&
+    !activeSession.compacting
+  )
+  const messageScrollerViewportRef = useRef<HTMLDivElement | null>(null)
+  const messageScrollerContentRef = useRef<HTMLDivElement | null>(null)
+  const [scrollThresholdAllowsFirstMessage, setScrollThresholdAllowsFirstMessage] = useState(false)
   const activeConversationFrame = activeSession?.conversationGraph?.frames.find(
     (frame) => frame.id === activeSession.conversationGraph?.activeFrameId
   )
@@ -384,12 +399,51 @@ const WorkspaceMessageScrollerImpl = ({
   const presentationBarrierIndex = conversationItems.findIndex(
     (item) => item.type === 'message' && presentingMessageIds.has(item.message.id)
   )
-  const visibleMessageIds = (
+  const presentedConversationItems =
     presentationBarrierIndex >= 0
       ? conversationItems.slice(0, presentationBarrierIndex + 1)
       : conversationItems
-  ).flatMap((item) => (item.type === 'message' ? [item.message.id] : []))
+  const visibleMessageIds = presentedConversationItems.flatMap((item) =>
+    item.type === 'message' ? [item.message.id] : []
+  )
   const visibleMessageIdsKey = JSON.stringify(visibleMessageIds)
+  const userTurnCount = presentedConversationItems.filter(
+    (item) => item.type === 'message' && item.message.role === 'user'
+  ).length
+  const updateScrollToFirstMessageVisibility = useCallback((): void => {
+    const viewport = messageScrollerViewportRef.current
+    if (!viewport || viewport.clientHeight <= 0) {
+      setScrollThresholdAllowsFirstMessage(false)
+      return
+    }
+
+    const maximumScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+    const hasEnoughConversation =
+      userTurnCount >= SCROLL_TO_FIRST_MESSAGE_MIN_USER_TURNS ||
+      viewport.scrollHeight >= viewport.clientHeight * SCROLL_TO_FIRST_MESSAGE_MIN_HEIGHT_VIEWPORTS
+    const hasScrolledFarEnough =
+      maximumScrollTop > 0 &&
+      (viewport.scrollTop >= maximumScrollTop * SCROLL_TO_FIRST_MESSAGE_MIN_PROGRESS ||
+        viewport.scrollTop >=
+          viewport.clientHeight * SCROLL_TO_FIRST_MESSAGE_MIN_DISTANCE_VIEWPORTS)
+    setScrollThresholdAllowsFirstMessage(hasEnoughConversation && hasScrolledFarEnough)
+  }, [userTurnCount])
+  useLayoutEffect(updateScrollToFirstMessageVisibility, [
+    currentSessionId,
+    updateScrollToFirstMessageVisibility,
+    visibleMessageIdsKey
+  ])
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(updateScrollToFirstMessageVisibility)
+    const viewport = messageScrollerViewportRef.current
+    const content = messageScrollerContentRef.current
+    if (viewport) observer.observe(viewport)
+    if (content) observer.observe(content)
+    return () => observer.disconnect()
+  }, [currentSessionId, updateScrollToFirstMessageVisibility])
+  const showScrollToFirstMessage =
+    statusAllowsScrollToFirstMessage && scrollThresholdAllowsFirstMessage
   const handleVisibleMessageSnapshotCommit = useCallback(
     (scopeId: string | undefined, messageIds: Set<string>): void => {
       setVisibleMessageSnapshot({ scopeId, messageIds })
@@ -690,8 +744,12 @@ const WorkspaceMessageScrollerImpl = ({
             aria-hidden="true"
             className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-bg-10 to-bg-10/0"
           />
-          <MessageScrollerViewport aria-label="Conversation">
-            <MessageScrollerContent className="gap-0 px-4">
+          <MessageScrollerViewport
+            ref={messageScrollerViewportRef}
+            aria-label="Conversation"
+            onScroll={updateScrollToFirstMessageVisibility}
+          >
+            <MessageScrollerContent ref={messageScrollerContentRef} className="gap-0 px-4">
               <div className={conversationContentClassName}>
                 <VisibleMessageSnapshotCommit
                   scopeId={currentPresentationScopeId}
@@ -982,7 +1040,19 @@ const WorkspaceMessageScrollerImpl = ({
             </MessageScrollerContent>
           </MessageScrollerViewport>
 
-          <MessageScrollerButton className="z-10 border-border-200 bg-bg-000 shadow-card hover:bg-bg-200 data-[direction=end]:bottom-3" />
+          {showScrollToFirstMessage ? (
+            <MessageScrollerButton
+              direction="start"
+              aria-label="Scroll to first message"
+              size="default"
+              className="z-20 min-h-11 rounded-full border-transparent bg-bg-000 px-4 text-sm shadow-card hover:bg-bg-200 data-[direction=start]:top-3"
+            >
+              <ArrowDownIcon aria-hidden="true" />
+              <span>First message</span>
+            </MessageScrollerButton>
+          ) : null}
+
+          <MessageScrollerButton className="z-10 border-transparent bg-bg-000 shadow-card hover:bg-bg-200 data-[direction=end]:bottom-3" />
 
           {/* Transient warning shown when a mention target no longer resolves to a file or skill. */}
           {mentionNotice ? (
