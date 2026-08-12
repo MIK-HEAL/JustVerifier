@@ -1163,6 +1163,160 @@ describe('SettingsPage layout', () => {
     ).toHaveBeenCalledOnce()
   })
 
+  it('exits loading when the initial remote access snapshot fails', async () => {
+    const remoteAccess = (
+      window as unknown as {
+        api: {
+          remoteAccess: {
+            getSnapshot: ReturnType<typeof vi.fn>
+          }
+        }
+      }
+    ).api.remoteAccess
+    const retrySnapshot = {
+      canManage: true,
+      canManagePairing: true,
+      mode: 'off',
+      enabled: false,
+      lifecycle: 'disabled',
+      remoteIt: { installed: false, loggedIn: false, registered: false },
+      pendingRequests: [],
+      trustedBrowsers: []
+    }
+    let finishRetry!: (snapshot: typeof retrySnapshot) => void
+    remoteAccess.getSnapshot
+      .mockRejectedValueOnce(new Error('Remote access is unavailable.'))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRetry = resolve
+          })
+      )
+
+    await act(async () => {
+      root.render(<SettingsPage open onClose={vi.fn()} />)
+    })
+    await act(async () => navButton('Remote control')?.click())
+
+    expect(document.body.textContent).not.toContain('Loading remote access')
+    expect(document.body.textContent).toContain('Remote access is unavailable.')
+    const retryButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Try again')
+    )
+    expect(retryButton).not.toBeUndefined()
+
+    act(() => {
+      retryButton?.click()
+      retryButton?.click()
+    })
+
+    expect(remoteAccess.getSnapshot).toHaveBeenCalledTimes(2)
+    expect(document.body.textContent).toContain('Loading remote access')
+    expect(document.body.textContent).not.toContain('Try again')
+
+    await act(async () => {
+      finishRetry(retrySnapshot)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).not.toContain('Remote access is unavailable.')
+    expect(document.body.querySelector('[data-testid="remote-access-status"]')?.textContent).toBe(
+      'Remote access is off'
+    )
+  })
+
+  it('does not detect after leaving Remote control during the initial snapshot load', async () => {
+    const remoteAccess = (
+      window as unknown as {
+        api: {
+          remoteAccess: {
+            getSnapshot: ReturnType<typeof vi.fn>
+            detect: ReturnType<typeof vi.fn>
+          }
+        }
+      }
+    ).api.remoteAccess
+    const manageableSnapshot = {
+      canManage: true,
+      canManagePairing: true,
+      mode: 'off',
+      enabled: false,
+      lifecycle: 'disabled',
+      remoteIt: { installed: false, loggedIn: false, registered: false },
+      pendingRequests: [],
+      trustedBrowsers: []
+    }
+    let finishInitialLoad!: (snapshot: typeof manageableSnapshot) => void
+    remoteAccess.getSnapshot.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishInitialLoad = resolve
+        })
+    )
+
+    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () => navButton('Remote control')?.click())
+    expect(document.body.textContent).toContain('Loading remote access')
+
+    act(() => navButton('Model')?.click())
+    await act(async () => {
+      finishInitialLoad(manageableSnapshot)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(remoteAccess.detect).not.toHaveBeenCalled()
+  })
+
+  it('does not detect after leaving Remote control during an initial-load retry', async () => {
+    const remoteAccess = (
+      window as unknown as {
+        api: {
+          remoteAccess: {
+            getSnapshot: ReturnType<typeof vi.fn>
+            detect: ReturnType<typeof vi.fn>
+          }
+        }
+      }
+    ).api.remoteAccess
+    const manageableSnapshot = {
+      canManage: true,
+      canManagePairing: true,
+      mode: 'off',
+      enabled: false,
+      lifecycle: 'disabled',
+      remoteIt: { installed: false, loggedIn: false, registered: false },
+      pendingRequests: [],
+      trustedBrowsers: []
+    }
+    let finishRetry!: (snapshot: typeof manageableSnapshot) => void
+    remoteAccess.getSnapshot
+      .mockRejectedValueOnce(new Error('Remote access is unavailable.'))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRetry = resolve
+          })
+      )
+
+    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () => navButton('Remote control')?.click())
+    const retryButton = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Try again')
+    )
+    act(() => retryButton?.click())
+
+    act(() => navButton('Model')?.click())
+    await act(async () => {
+      finishRetry(manageableSnapshot)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(remoteAccess.detect).not.toHaveBeenCalled()
+  })
+
   it('covers the whole app while a remote mode system command is still running', async () => {
     const remoteAccess = (
       window as unknown as {
@@ -1217,10 +1371,16 @@ describe('SettingsPage layout', () => {
 
     expect(remoteAccess.setMode).toHaveBeenCalledTimes(1)
     const overlay = document.body.querySelector('[data-testid="remote-access-operation-overlay"]')
+    const scrim = document.body.querySelector('[data-testid="remote-access-operation-scrim"]')
+    expect(scrim).not.toBeNull()
+
     expect(overlay).not.toBeNull()
     expect(overlay?.textContent).toContain('Applying remote access settings')
-    expect(overlay?.className).toContain('fixed')
-    expect(overlay?.className).toContain('inset-0')
+    expect(scrim?.className).toContain('fixed')
+    expect(scrim?.className).toContain('inset-0')
+    expect(overlay?.getAttribute('role')).toBe('dialog')
+    expect(overlay?.getAttribute('aria-modal')).toBe('true')
+    expect(overlay?.contains(document.activeElement)).toBe(true)
     expect(document.body.querySelector('[data-testid="remote-access-status"]')?.textContent).toBe(
       'Changing access mode…'
     )
@@ -1252,6 +1412,7 @@ describe('SettingsPage layout', () => {
     expect(
       document.body.querySelector('[data-testid="remote-access-operation-overlay"]')
     ).toBeNull()
+    expect(document.activeElement).toBe(remoteItMode)
     expect(document.body.querySelector('[data-testid="remote-access-status"]')?.textContent).toBe(
       'App access is on'
     )
