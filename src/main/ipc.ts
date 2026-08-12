@@ -69,6 +69,7 @@ import { registerFileSaveHandlers } from './file-save'
 import { ImmutableInputAuthority } from './immutable-input-authority'
 import { createSessionArtifactFileResolver } from './session-artifact-file-resolver'
 import { createCliCommandOwner, registerCliInstallIpcHandlers } from './cli-install/ipc'
+
 import { createGithubCommandOwner, registerGithubIpcHandlers } from './github-ipc'
 import {
   BackendShutdownOutcomeError,
@@ -1712,6 +1713,9 @@ const createApplicationModules = async (
     )
 
   const cliCommandOwner = createCliCommandOwner()
+  // Reconcile an existing legacy AppImage shim before startup completes. The owner scopes the
+  // operation to Linux AppImage and records any filesystem failure without aborting the app.
+  await cliCommandOwner.ensureCurrent()
   const githubCommandOwner = createGithubCommandOwner()
   const logsCommandOwner = createLogsCommandOwner()
   declareElectronAdapter('desktop-utilities', () => {
