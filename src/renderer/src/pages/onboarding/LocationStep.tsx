@@ -1,3 +1,4 @@
+import { X } from 'lucide-react'
 import { AlertDialog } from 'radix-ui'
 import { useRef, useState } from 'react'
 
@@ -10,7 +11,11 @@ import {
   CardTitle
 } from '@/components/ui/card'
 import {
+  dialogBodyClassName,
+  dialogCloseButtonClassName,
   dialogDescriptionClassName,
+  dialogFooterClassName,
+  dialogHeaderClassName,
   dialogOverlayClassName,
   dialogPanelClassName,
   dialogTitleClassName
@@ -263,31 +268,45 @@ const LocationStep = ({
       >
         <AlertDialog.Portal>
           <AlertDialog.Overlay className={dialogOverlayClassName} />
-          <AlertDialog.Content className={dialogPanelClassName('w-[min(420px,calc(100vw-2rem))]')}>
-            <AlertDialog.Title className={dialogTitleClassName}>
-              Restart to set up your data?
-            </AlertDialog.Title>
-            <AlertDialog.Description className={dialogDescriptionClassName}>
-              Open Science will restart to set up your data at{' '}
-              <span className="font-mono">{chosenDataRoot}</span>.
-            </AlertDialog.Description>
-            <div className="mt-6 flex justify-end gap-2">
+          <AlertDialog.Content
+            className={dialogPanelClassName('w-[min(420px,calc(100vw-2rem))] p-0')}
+          >
+            <div className={dialogHeaderClassName}>
+              <div className="min-w-0">
+                <AlertDialog.Title className={dialogTitleClassName}>
+                  Restart to set up your data?
+                </AlertDialog.Title>
+              </div>
               <AlertDialog.Cancel asChild>
-                <button
+                <Button
                   type="button"
-                  className="rounded-lg border border-input px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Close"
+                  className={dialogCloseButtonClassName}
                 >
+                  <X className="size-4" aria-hidden="true" />
+                </Button>
+              </AlertDialog.Cancel>
+            </div>
+
+            <div className={dialogBodyClassName}>
+              <AlertDialog.Description className={dialogDescriptionClassName}>
+                Open Science will restart to set up your data at{' '}
+                <span className="font-mono">{chosenDataRoot}</span>.
+              </AlertDialog.Description>
+            </div>
+
+            <div className={dialogFooterClassName}>
+              <AlertDialog.Cancel asChild>
+                <Button type="button" variant="outline">
                   Keep default
-                </button>
+                </Button>
               </AlertDialog.Cancel>
               <AlertDialog.Action asChild>
-                <button
-                  type="button"
-                  onClick={() => void handleRestart()}
-                  className="rounded-lg border border-primary bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                >
+                <Button type="button" onClick={() => void handleRestart()}>
                   Restart
-                </button>
+                </Button>
               </AlertDialog.Action>
             </div>
           </AlertDialog.Content>

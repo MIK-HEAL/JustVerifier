@@ -207,6 +207,18 @@ describe('LocationStep', () => {
     expect(dialog?.className).toContain('bg-card')
     expect(dialog?.className).toContain('shadow-dialog')
     expect(dialog?.className).toContain('data-[state=open]:zoom-in-95')
+    expect(dialog?.className).toContain('p-0')
+    expect(
+      Array.from(dialog?.querySelectorAll<HTMLElement>('div') ?? []).some((element) =>
+        element.className.includes('border-b border-border-300/90')
+      )
+    ).toBe(true)
+    expect(
+      Array.from(dialog?.querySelectorAll<HTMLElement>('div') ?? []).some((element) =>
+        element.className.includes('border-t border-border-300/90')
+      )
+    ).toBe(true)
+    expect(dialog?.querySelector<HTMLButtonElement>('button[aria-label="Close"]')).not.toBeNull()
     expect(document.body.textContent).toContain('/mnt/data/OpenScience')
     // The dialog gates the relaunch; nothing has happened yet.
     expect(window.api.storage.setDataRootAndRelaunch).not.toHaveBeenCalled()

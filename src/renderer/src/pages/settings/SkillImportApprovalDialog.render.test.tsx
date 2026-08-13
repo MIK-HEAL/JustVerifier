@@ -52,6 +52,22 @@ const importCandidate = (subPath: string, name: string): SkillBundlePreview => (
   alreadyImported: false
 })
 
+const expectUnifiedDialogChrome = (): void => {
+  const classNames = Array.from(document.body.querySelectorAll<HTMLElement>('*')).map((element) =>
+    String(element.className)
+  )
+
+  expect(
+    classNames.some((className) => className.includes('border-b border-border-300/90 px-5 py-3.5'))
+  ).toBe(true)
+  expect(
+    classNames.some((className) => className.includes('border-t border-border-300/90 px-5 py-3.5'))
+  ).toBe(true)
+  expect(
+    classNames.some((className) => className.includes('text-lg font-semibold text-text-000'))
+  ).toBe(true)
+}
+
 describe('SkillImportApprovalDialog', () => {
   it('keeps a covered approval queued while suppressing its presentation', () => {
     useSkillImportStore.getState().enqueue({
@@ -109,6 +125,7 @@ describe('SkillImportApprovalDialog', () => {
     expect(document.body.textContent).toContain('Import Skill package?')
     expect(document.body.textContent).toContain('paper-finder.skill')
     expect(document.body.textContent).toContain('Paper Finder')
+    expectUnifiedDialogChrome()
     expect(
       document.body.querySelector<HTMLInputElement>('input[aria-label="Select Paper Finder"]')
         ?.checked

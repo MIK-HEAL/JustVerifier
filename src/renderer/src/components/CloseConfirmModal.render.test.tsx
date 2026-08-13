@@ -115,6 +115,17 @@ describe('CloseConfirmModal', () => {
     expect(dialog?.className).toContain('shadow-dialog')
     expect(dialog?.className).toContain('data-[state=open]:zoom-in-95')
     expect(dialog?.className).toContain('data-[state=closed]:fill-mode-forwards')
+    expect(dialog?.className).toContain('overflow-hidden')
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-b border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-t border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
   })
 
   it('reports whether the modal is obscuring the active conversation', async () => {

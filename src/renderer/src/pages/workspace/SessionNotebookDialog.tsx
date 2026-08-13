@@ -220,7 +220,7 @@ const SessionNotebookContent = ({
 
   return (
     <>
-      <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
+      <div className="flex shrink-0 items-center justify-between border-b border-border-300/90 px-5 py-3.5">
         <h2 className="flex min-w-0 items-center gap-3 text-lg font-semibold text-foreground">
           <span>Session notebook</span>
           <span className="rounded bg-muted px-2 py-0.5 font-mono text-xs font-normal text-muted-foreground">
@@ -336,7 +336,7 @@ const SessionNotebookContent = ({
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t border-border-300/15 px-5 py-3.5">
+      <div className="flex items-center justify-between gap-3 border-t border-border-300/90 px-5 py-3.5">
         <p
           className={cn(
             'min-w-0 truncate text-xs',

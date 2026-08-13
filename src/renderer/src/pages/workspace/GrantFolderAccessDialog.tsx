@@ -2,7 +2,7 @@
 // browses subfolders of home (or of already-granted roots) via a breadcrumb + folder-only listing,
 // picks an access level, and grants the current folder. The main process is authoritative on what
 // may be granted; the dialog mirrors its scope check only to avoid listing out-of-scope folders.
-import { CircleAlert, Folder, Home, Info } from 'lucide-react'
+import { CircleAlert, Folder, Home, Info, X } from 'lucide-react'
 import { Dialog } from 'radix-ui'
 import { useEffect, useState } from 'react'
 
@@ -20,7 +20,15 @@ import {
   sameLocalDirectory
 } from '../../../../shared/local-fs'
 import { Button } from '@/components/ui/button'
-import { dialogOverlayClassName, dialogPanelClassName } from '@/components/ui/dialog-chrome'
+import {
+  dialogCancelButtonClassName,
+  dialogCloseButtonClassName,
+  dialogFooterClassName,
+  dialogHeaderClassName,
+  dialogOverlayClassName,
+  dialogPanelClassName,
+  dialogTitleClassName
+} from '@/components/ui/dialog-chrome'
 import { cn } from '@/lib/utils'
 import { useGrantedFoldersStore } from '@/stores/granted-folders-store'
 
@@ -191,15 +199,27 @@ const GrantFolderAccessDialogContent = ({
           'z-[60] flex w-[560px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden p-0'
         )}
       >
-        <Dialog.Title className="px-5 pb-3 pt-4 text-[15px] font-semibold text-text-000">
-          Grant folder access
-        </Dialog.Title>
+        <div className={dialogHeaderClassName}>
+          <Dialog.Title className={dialogTitleClassName}>Grant folder access</Dialog.Title>
+          <Dialog.Close asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close"
+              data-testid="grant-access-close"
+              className={dialogCloseButtonClassName}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </Button>
+          </Dialog.Close>
+        </div>
         <Dialog.Description className="sr-only">
           Browse to a folder and grant the app read-only or read &amp; write access to it.
         </Dialog.Description>
 
         {/* Breadcrumb bar */}
-        <div className="flex flex-wrap items-center gap-0.5 border-y border-border-200 px-5 py-2.5 text-[13px] text-text-100">
+        <div className="flex flex-wrap items-center gap-0.5 border-b border-border-200 px-5 py-2.5 text-[13px] text-text-100">
           <button
             type="button"
             aria-label="Go to home folder"
@@ -286,7 +306,10 @@ const GrantFolderAccessDialogContent = ({
 
         {/* Footer: full-width alert strips (hint/error variants) sit inside the action bar,
             above the row of radios + buttons. */}
-        <div className="flex flex-col gap-2.5 border-t border-border-200 px-5 pb-4 pt-3">
+        <div
+          data-testid="grant-access-footer"
+          className={cn(dialogFooterClassName, 'flex-col items-stretch gap-2.5')}
+        >
           {isHome ? (
             <div className="flex items-start gap-2 rounded-lg bg-bg-200 px-3 py-2 text-xs leading-[18px] text-text-100">
               <Info className="mt-px size-3.5 shrink-0" strokeWidth={1.8} aria-hidden="true" />
@@ -321,7 +344,8 @@ const GrantFolderAccessDialogContent = ({
             <span className="flex-1" />
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
+              className={dialogCancelButtonClassName}
               data-testid="grant-access-cancel"
               onClick={() => onOpenChange(false)}
             >
@@ -332,7 +356,7 @@ const GrantFolderAccessDialogContent = ({
               data-testid="grant-access-grant"
               disabled={isHome}
               onClick={() => void handleGrant()}
-              className="bg-text-000 text-bg-000 hover:bg-text-000/85"
+              className="bg-primary text-primary-foreground hover:bg-primary/80 disabled:bg-primary disabled:text-primary-foreground disabled:opacity-40"
             >
               Grant this folder
             </Button>

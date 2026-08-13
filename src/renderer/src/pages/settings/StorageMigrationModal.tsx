@@ -3,6 +3,7 @@ import { Check, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { dialogCancelButtonClassName } from '@/components/ui/dialog-chrome'
 import { resolveActiveSessionDisplay, truncateLabel } from '@/lib/active-session-display'
 import { cn } from '@/lib/utils'
 import {
@@ -253,7 +254,12 @@ const StorageMigrationModal = ({
                 ))}
               </ul>
               <div className="mt-4 flex justify-end gap-2">
-                <Button type="button" variant="outline" onClick={onClose}>
+                <Button
+                  type="button"
+                  variant={hasDelegatedWork ? 'outline' : 'ghost'}
+                  className={hasDelegatedWork ? undefined : dialogCancelButtonClassName}
+                  onClick={onClose}
+                >
                   {hasDelegatedWork ? 'Return to tasks' : 'Cancel'}
                 </Button>
                 {!hasDelegatedWork ? (
@@ -299,7 +305,12 @@ const StorageMigrationModal = ({
                 Don&apos;t quit Open Science or turn off your computer until this finishes.
               </p>
               <div className="mt-4 flex justify-end">
-                <Button type="button" variant="outline" onClick={handleCancel}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={dialogCancelButtonClassName}
+                  onClick={handleCancel}
+                >
                   Cancel
                 </Button>
               </div>

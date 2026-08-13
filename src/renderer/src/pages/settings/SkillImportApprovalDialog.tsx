@@ -8,7 +8,17 @@ import type {
   ConversationSkillImportSelection
 } from '../../../../shared/settings'
 import { Button } from '@/components/ui/button'
-import { dialogOverlayClassName, dialogPanelClassName } from '@/components/ui/dialog-chrome'
+import {
+  dialogBodyClassName,
+  dialogCancelButtonClassName,
+  dialogDescriptionClassName,
+  dialogFooterClassName,
+  dialogHeaderClassName,
+  dialogOverlayClassName,
+  dialogPanelClassName,
+  dialogTitleClassName
+} from '@/components/ui/dialog-chrome'
+import { cn } from '@/lib/utils'
 import { useSkillImportStore } from '@/stores/skill-import-store'
 import { SkillImportCandidatePreview } from './SkillImportCandidatePreview'
 import { useSkillImportCandidatePreview } from './useSkillImportCandidatePreview'
@@ -87,15 +97,15 @@ const SkillImportApprovalRequestDialog = ({
               'flex max-h-[min(88vh,760px)] w-[min(620px,calc(100vw-2rem))] flex-col overflow-hidden p-0'
             )}
           >
-            <div className="flex items-start gap-3 border-b border-border px-5 py-4">
+            <div className={cn(dialogHeaderClassName, 'items-start justify-start')}>
               <PackagePlus className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
               <div className="min-w-0">
-                <Dialog.Title className="text-base font-semibold text-foreground">
+                <Dialog.Title className={dialogTitleClassName}>
                   {request.source.kind === 'github'
                     ? 'Import Skills from GitHub?'
                     : 'Import Skill package?'}
                 </Dialog.Title>
-                <Dialog.Description className="mt-1 text-xs leading-5 text-muted-foreground">
+                <Dialog.Description className={cn(dialogDescriptionClassName, 'text-xs')}>
                   The agent requested an import from{' '}
                   <span className="break-all font-medium text-foreground">
                     {request.source.label}
@@ -105,7 +115,7 @@ const SkillImportApprovalRequestDialog = ({
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+            <div className={cn(dialogBodyClassName, 'min-h-0 flex-1 overflow-y-auto py-3')}>
               <div className="flex items-center gap-3">
                 <h3 className="text-sm font-semibold text-foreground">
                   Found {request.previews.length} skill{request.previews.length === 1 ? '' : 's'}
@@ -195,10 +205,11 @@ const SkillImportApprovalRequestDialog = ({
               ) : null}
             </div>
 
-            <div className="flex justify-end gap-2 border-t border-border px-5 py-4">
+            <div className={dialogFooterClassName}>
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
+                className={dialogCancelButtonClassName}
                 onClick={() => void respond({ id: request.id, cancelled: true })}
               >
                 Cancel

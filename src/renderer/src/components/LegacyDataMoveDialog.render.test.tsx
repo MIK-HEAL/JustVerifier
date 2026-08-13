@@ -105,6 +105,17 @@ describe('LegacyDataMoveDialog', () => {
     expect(dialog?.className).toContain('bg-card')
     expect(dialog?.className).toContain('shadow-dialog')
     expect(dialog?.className).toContain('data-[state=open]:zoom-in-95')
+    expect(dialog?.className).toContain('overflow-hidden')
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-b border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-t border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
     expect(document.body.textContent).toContain('Move to OpenScience')
     expect(document.body.textContent).toContain('Choose another folder')
     expect(document.body.textContent).toContain('Keep it in the current folder')

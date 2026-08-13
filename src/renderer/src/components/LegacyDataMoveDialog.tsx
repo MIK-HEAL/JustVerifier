@@ -4,11 +4,15 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
+  dialogBodyClassName,
   dialogDescriptionClassName,
+  dialogFooterClassName,
+  dialogHeaderClassName,
   dialogOverlayClassName,
   dialogPanelClassName,
   dialogTitleClassName
 } from '@/components/ui/dialog-chrome'
+import { cn } from '@/lib/utils'
 import { StorageMigrationModal } from '@/pages/settings/StorageMigrationModal'
 
 type LegacyDataMoveDialogProps = {
@@ -98,16 +102,20 @@ const LegacyDataMoveDialog = ({
     <AlertDialog.Root open={active}>
       <AlertDialog.Portal>
         <AlertDialog.Overlay className={dialogOverlayClassName} />
-        <AlertDialog.Content className={dialogPanelClassName('w-[min(460px,calc(100vw-2rem))]')}>
-          <AlertDialog.Title className={dialogTitleClassName}>
-            Move your data to a visible folder?
-          </AlertDialog.Title>
-          <AlertDialog.Description className={dialogDescriptionClassName}>
-            Your research data is in a hidden folder. Moving it into a visible OpenScience folder
-            makes it easy to find and back up — your settings and history stay where they are.
-          </AlertDialog.Description>
+        <AlertDialog.Content
+          className={dialogPanelClassName('w-[min(460px,calc(100vw-2rem))] p-0')}
+        >
+          <div className={dialogHeaderClassName}>
+            <AlertDialog.Title className={dialogTitleClassName}>
+              Move your data to a visible folder?
+            </AlertDialog.Title>
+          </div>
 
-          <div className="mt-4 space-y-3">
+          <div className={cn(dialogBodyClassName, 'space-y-4')}>
+            <AlertDialog.Description className={dialogDescriptionClassName}>
+              Your research data is in a hidden folder. Moving it into a visible OpenScience folder
+              makes it easy to find and back up — your settings and history stay where they are.
+            </AlertDialog.Description>
             <div>
               <span className="text-xs font-medium text-text-100">Current (hidden)</span>
               <pre
@@ -126,15 +134,15 @@ const LegacyDataMoveDialog = ({
                 {destination ?? 'Resolving…'}
               </pre>
             </div>
+
+            {pickError ? (
+              <p className="text-xs text-destructive" role="alert">
+                {pickError}
+              </p>
+            ) : null}
           </div>
 
-          {pickError ? (
-            <p className="mt-3 text-xs text-destructive" role="alert">
-              {pickError}
-            </p>
-          ) : null}
-
-          <div className="mt-6 flex flex-col gap-2">
+          <div className={cn(dialogFooterClassName, 'flex-col items-stretch')}>
             <Button type="button" disabled={isPicking} onClick={handleMoveToDefault}>
               <FolderInput aria-hidden="true" />
               Move to OpenScience

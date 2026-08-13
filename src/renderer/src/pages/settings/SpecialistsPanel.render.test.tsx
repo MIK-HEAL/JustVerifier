@@ -748,6 +748,19 @@ describe('SpecialistsPanel', () => {
     expect(document.body.textContent).toContain('Incoming version1.3.0 · downgrade')
     expect(document.body.textContent).toContain('Local edits will be replaced by this import.')
     expect(document.body.textContent).toContain('Export current version first')
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    expect(dialog?.className).toContain('p-0')
+    expect(
+      Array.from(dialog?.querySelectorAll<HTMLElement>('div') ?? []).some((element) =>
+        element.className.includes('border-b border-border-300/90')
+      )
+    ).toBe(true)
+    expect(
+      Array.from(dialog?.querySelectorAll<HTMLElement>('div') ?? []).some((element) =>
+        element.className.includes('border-t border-border-300/90')
+      )
+    ).toBe(true)
+    expect(dialog?.querySelector<HTMLButtonElement>('button[aria-label="Close"]')).not.toBeNull()
 
     await act(async () => {
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
@@ -1170,6 +1183,18 @@ describe('SpecialistsPanel', () => {
       'Also owned by another Specialist and will be kept.'
     )
     expect(document.body.textContent).toContain('Used by another Specialist and will be kept.')
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    expect(dialog?.className).toContain('p-0')
+    expect(
+      Array.from(dialog?.querySelectorAll<HTMLElement>('div') ?? []).some((element) =>
+        element.className.includes('border-b border-border-300/90')
+      )
+    ).toBe(true)
+    expect(
+      Array.from(dialog?.querySelectorAll<HTMLElement>('div') ?? []).some((element) =>
+        element.className.includes('border-t border-border-300/90')
+      )
+    ).toBe(true)
     const checkboxes = Array.from(
       document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
     )

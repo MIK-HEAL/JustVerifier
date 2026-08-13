@@ -12,13 +12,19 @@ import {
   Pencil,
   Plus,
   Trash2,
-  Upload
+  Upload,
+  X
 } from 'lucide-react'
 import { AlertDialog } from 'radix-ui'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
+  dialogBodyClassName,
+  dialogCancelButtonClassName,
+  dialogCloseButtonClassName,
   dialogDescriptionClassName,
+  dialogFooterClassName,
+  dialogHeaderClassName,
   dialogOverlayClassName,
   dialogPanelClassName,
   dialogTitleClassName
@@ -859,62 +865,85 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                 <AlertDialog.Portal>
                   <AlertDialog.Overlay className={dialogOverlayClassName} />
                   <AlertDialog.Content
-                    className={dialogPanelClassName('w-[min(520px,calc(100vw-2rem))]')}
+                    className={dialogPanelClassName('w-[min(520px,calc(100vw-2rem))] p-0')}
                   >
-                    <AlertDialog.Title className={dialogTitleClassName}>
-                      Local changes will be permanently replaced
-                    </AlertDialog.Title>
-                    <AlertDialog.Description className={dialogDescriptionClassName}>
-                      Current local edits are not recoverable after a successful overwrite. A failed
-                      atomic install preserves the current version.
-                    </AlertDialog.Description>
-                    <dl className="mt-4 grid grid-cols-2 gap-3 rounded-lg border border-border p-3 text-xs">
-                      <div>
-                        <dt className="text-muted-foreground">Current version</dt>
-                        <dd>{packagePreview.overwrite.currentVersion}</dd>
+                    <div className={dialogHeaderClassName}>
+                      <div className="min-w-0">
+                        <AlertDialog.Title className={dialogTitleClassName}>
+                          Local changes will be permanently replaced
+                        </AlertDialog.Title>
                       </div>
-                      <div>
-                        <dt className="text-muted-foreground">Incoming version</dt>
-                        <dd>
-                          {packagePreview.overwrite.incomingVersion}
-                          {packagePreview.diagnostics.some(
-                            (item) => item.code === 'specialist.overwrite-downgrade'
-                          )
-                            ? ' · downgrade'
-                            : ''}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-muted-foreground">Local status</dt>
-                        <dd>
-                          {packagePreview.overwrite.hasImportBaseline
-                            ? packagePreview.overwrite.modifiedSinceImport
-                              ? 'Modified after import'
-                              : 'Unchanged since import'
-                            : 'No import baseline'}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt className="text-muted-foreground">Target</dt>
-                        <dd>Custom Specialist only</dd>
-                      </div>
-                    </dl>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="mt-4"
-                      onClick={() => {
-                        setExportSaved(false)
-                        setExportError(undefined)
-                        clearExport()
-                        onNavigate({ kind: 'export', id: packagePreview.overwrite!.id })
-                      }}
-                    >
-                      Export current version first
-                    </Button>
-                    <div className="mt-6 flex justify-end gap-2">
                       <AlertDialog.Cancel asChild>
-                        <Button type="button" variant="outline">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="Close"
+                          className={dialogCloseButtonClassName}
+                        >
+                          <X className="size-4" aria-hidden="true" />
+                        </Button>
+                      </AlertDialog.Cancel>
+                    </div>
+
+                    <div className={dialogBodyClassName}>
+                      <AlertDialog.Description className={dialogDescriptionClassName}>
+                        Current local edits are not recoverable after a successful overwrite. A
+                        failed atomic install preserves the current version.
+                      </AlertDialog.Description>
+                      <dl className="mt-4 grid grid-cols-2 gap-3 rounded-lg border border-border p-3 text-xs">
+                        <div>
+                          <dt className="text-muted-foreground">Current version</dt>
+                          <dd>{packagePreview.overwrite.currentVersion}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">Incoming version</dt>
+                          <dd>
+                            {packagePreview.overwrite.incomingVersion}
+                            {packagePreview.diagnostics.some(
+                              (item) => item.code === 'specialist.overwrite-downgrade'
+                            )
+                              ? ' · downgrade'
+                              : ''}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">Local status</dt>
+                          <dd>
+                            {packagePreview.overwrite.hasImportBaseline
+                              ? packagePreview.overwrite.modifiedSinceImport
+                                ? 'Modified after import'
+                                : 'Unchanged since import'
+                              : 'No import baseline'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-muted-foreground">Target</dt>
+                          <dd>Custom Specialist only</dd>
+                        </div>
+                      </dl>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="mt-4"
+                        onClick={() => {
+                          setExportSaved(false)
+                          setExportError(undefined)
+                          clearExport()
+                          onNavigate({ kind: 'export', id: packagePreview.overwrite!.id })
+                        }}
+                      >
+                        Export current version first
+                      </Button>
+                    </div>
+
+                    <div className={dialogFooterClassName}>
+                      <AlertDialog.Cancel asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className={dialogCancelButtonClassName}
+                        >
                           Cancel
                         </Button>
                       </AlertDialog.Cancel>
@@ -1337,87 +1366,109 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
       >
         <AlertDialog.Portal>
           <AlertDialog.Overlay className={dialogOverlayClassName} />
-          <AlertDialog.Content className={dialogPanelClassName('w-[min(440px,calc(100vw-2rem))]')}>
-            <AlertDialog.Title className={dialogTitleClassName}>
-              Delete “{deletingItem?.name}”?
-            </AlertDialog.Title>
-            <AlertDialog.Description className={dialogDescriptionClassName}>
-              This permanently deletes the Specialist. Conversations using it will no longer be able
-              to use it.
-            </AlertDialog.Description>
-            <div className="mt-4">
-              <p className="text-sm font-medium text-foreground">
-                Skills you can also delete{' '}
-                <span className="font-normal text-muted-foreground">(optional)</span>
-              </p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Only Skills used exclusively by this Specialist can be deleted. Other linked Skills
-                will be kept automatically.
-              </p>
-            </div>
-            <div className="mt-3 max-h-72 overflow-y-auto rounded-lg border border-border px-3">
-              {visibleDeleteSkills?.length ? (
-                visibleDeleteSkills.map((skill) => {
-                  const reasonText =
-                    skill.reasons
-                      .map((reason) =>
-                        reason.code === 'standalone'
-                          ? 'Already exists independently and will be kept.'
-                          : reason.code === 'shared-owner'
-                            ? 'Also owned by another Specialist and will be kept.'
-                            : reason.code === 'referenced'
-                              ? 'Used by another Specialist and will be kept.'
-                              : 'Managed by the app and will be kept.'
-                      )
-                      .join(' ') || 'Used only by this Specialist. Select to permanently delete it.'
-                  return (
-                    <label
-                      key={skill.id}
-                      className="flex items-start gap-3 border-b border-border py-3 last:border-b-0"
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 size-4"
-                        disabled={!skill.deletable}
-                        checked={deleteSkillIds.has(skill.id)}
-                        onChange={(event) =>
-                          setDeleteSkillIds((current) => {
-                            const next = new Set(current)
-                            if (event.target.checked) next.add(skill.id)
-                            else next.delete(skill.id)
-                            return next
-                          })
-                        }
-                      />
-                      <span className="min-w-0">
-                        <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-foreground">
-                          <span>{skill.displayName}</span>
-                          <Badge variant="outline" className="text-[11px] font-normal">
-                            {SKILL_SOURCE_LABELS[skill.source]}
-                          </Badge>
-                        </span>
-                        <span className="block text-xs text-muted-foreground">{reasonText}</span>
-                      </span>
-                    </label>
-                  )
-                })
-              ) : (
-                <p className="py-3 text-xs text-muted-foreground">
-                  No additional Skills will be deleted.
-                </p>
-              )}
-            </div>
-            {deleteError ? (
-              <p
-                role="alert"
-                className="mt-3 rounded-lg border border-danger-000/30 bg-danger-000/10 px-3 py-2 text-xs text-danger-000"
-              >
-                {deleteError}
-              </p>
-            ) : null}
-            <div className="mt-6 flex justify-end gap-2">
+          <AlertDialog.Content
+            className={dialogPanelClassName('w-[min(440px,calc(100vw-2rem))] max-h-[85vh] p-0')}
+          >
+            <div className={dialogHeaderClassName}>
+              <div className="min-w-0">
+                <AlertDialog.Title className={dialogTitleClassName}>
+                  Delete “{deletingItem?.name}”?
+                </AlertDialog.Title>
+              </div>
               <AlertDialog.Cancel asChild>
-                <Button type="button" variant="outline">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Close"
+                  className={dialogCloseButtonClassName}
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </Button>
+              </AlertDialog.Cancel>
+            </div>
+
+            <div className={`${dialogBodyClassName} overflow-y-auto`}>
+              <AlertDialog.Description className={dialogDescriptionClassName}>
+                This permanently deletes the Specialist. Conversations using it will no longer be
+                able to use it.
+              </AlertDialog.Description>
+              <div className="mt-4">
+                <p className="text-sm font-medium text-foreground">
+                  Skills you can also delete{' '}
+                  <span className="font-normal text-muted-foreground">(optional)</span>
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Only Skills used exclusively by this Specialist can be deleted. Other linked
+                  Skills will be kept automatically.
+                </p>
+              </div>
+              <div className="mt-3 max-h-72 overflow-y-auto rounded-lg border border-border px-3">
+                {visibleDeleteSkills?.length ? (
+                  visibleDeleteSkills.map((skill) => {
+                    const reasonText =
+                      skill.reasons
+                        .map((reason) =>
+                          reason.code === 'standalone'
+                            ? 'Already exists independently and will be kept.'
+                            : reason.code === 'shared-owner'
+                              ? 'Also owned by another Specialist and will be kept.'
+                              : reason.code === 'referenced'
+                                ? 'Used by another Specialist and will be kept.'
+                                : 'Managed by the app and will be kept.'
+                        )
+                        .join(' ') ||
+                      'Used only by this Specialist. Select to permanently delete it.'
+                    return (
+                      <label
+                        key={skill.id}
+                        className="flex items-start gap-3 border-b border-border py-3 last:border-b-0"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 size-4"
+                          disabled={!skill.deletable}
+                          checked={deleteSkillIds.has(skill.id)}
+                          onChange={(event) =>
+                            setDeleteSkillIds((current) => {
+                              const next = new Set(current)
+                              if (event.target.checked) next.add(skill.id)
+                              else next.delete(skill.id)
+                              return next
+                            })
+                          }
+                        />
+                        <span className="min-w-0">
+                          <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-foreground">
+                            <span>{skill.displayName}</span>
+                            <Badge variant="outline" className="text-[11px] font-normal">
+                              {SKILL_SOURCE_LABELS[skill.source]}
+                            </Badge>
+                          </span>
+                          <span className="block text-xs text-muted-foreground">{reasonText}</span>
+                        </span>
+                      </label>
+                    )
+                  })
+                ) : (
+                  <p className="py-3 text-xs text-muted-foreground">
+                    No additional Skills will be deleted.
+                  </p>
+                )}
+              </div>
+              {deleteError ? (
+                <p
+                  role="alert"
+                  className="mt-3 rounded-lg border border-danger-000/30 bg-danger-000/10 px-3 py-2 text-xs text-danger-000"
+                >
+                  {deleteError}
+                </p>
+              ) : null}
+            </div>
+
+            <div className={dialogFooterClassName}>
+              <AlertDialog.Cancel asChild>
+                <Button type="button" variant="ghost" className={dialogCancelButtonClassName}>
                   Cancel
                 </Button>
               </AlertDialog.Cancel>

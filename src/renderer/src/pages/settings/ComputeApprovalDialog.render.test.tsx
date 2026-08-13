@@ -80,6 +80,18 @@ describe('ComputeApprovalDialog', () => {
     expect(overlay?.className).toContain('data-[state=open]:fade-in-0')
     expect(dialog?.className).toContain('data-[state=open]:zoom-in-95')
     expect(dialog?.className).toContain('z-[60]')
+    expect(dialog?.className).toContain('overflow-hidden')
+    expect(dialog?.textContent).toContain('Allow remote command?')
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-b border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-t border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
     expect(document.body.textContent).toContain('Research cluster')
     expect(document.body.textContent).toContain('python ...')
   })

@@ -115,6 +115,17 @@ describe('ConnectorApprovalDialog', () => {
     expect(document.body.textContent).toContain('BioMart')
     expect(document.body.textContent).toContain('get_data')
     expect(document.body.textContent).toContain('{"x":1}')
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-b border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLElement>('div')).some((element) =>
+        element.className.includes('border-t border-border-300/90 px-5 py-3.5')
+      )
+    ).toBe(true)
+    expect(document.body.querySelector('[role="dialog"]')?.className).toContain('overflow-hidden')
     expect(button('Deny')?.getAttribute('data-slot')).toBe('button')
     expect(button('Deny')?.getAttribute('data-variant')).toBe('destructive')
     expect(button('This session')?.getAttribute('data-variant')).toBe('outline')

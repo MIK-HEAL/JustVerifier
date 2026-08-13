@@ -52,6 +52,8 @@ describe('SessionNotebookContent', () => {
 
     expect(html).toContain('No execution records for this session.')
     expect(html).toContain('0 agents · 0 cells')
+    expect(html).toContain('border-b border-border-300/90')
+    expect(html).toContain('border-t border-border-300/90')
   })
 
   it('renders one cell per run with a derived error badge and split output', () => {

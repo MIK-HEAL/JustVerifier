@@ -2,7 +2,16 @@ import { AlertDialog } from 'radix-ui'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { dialogOverlayClassName, dialogPanelClassName } from '@/components/ui/dialog-chrome'
+import {
+  dialogBodyClassName,
+  dialogCancelButtonClassName,
+  dialogDescriptionClassName,
+  dialogFooterClassName,
+  dialogHeaderClassName,
+  dialogOverlayClassName,
+  dialogPanelClassName,
+  dialogTitleClassName
+} from '@/components/ui/dialog-chrome'
 import { useRetainedDialogValue } from '@/components/ui/use-retained-dialog-value'
 import { resolveActiveSessionDisplay, truncateLabel } from '@/lib/active-session-display'
 import { cn } from '@/lib/utils'
@@ -85,64 +94,70 @@ export const CloseConfirmModal = ({
       <AlertDialog.Portal>
         <AlertDialog.Overlay className={cn(dialogOverlayClassName, 'z-[60]')} />
         <AlertDialog.Content
-          className={dialogPanelClassName('z-[60] w-[min(420px,calc(100vw-2rem))]')}
+          className={dialogPanelClassName('z-[60] w-[min(420px,calc(100vw-2rem))] p-0')}
         >
-          <AlertDialog.Title className="text-sm font-semibold">{title}</AlertDialog.Title>
-          <AlertDialog.Description className="mt-1 text-xs text-muted-foreground">
-            {description}
-          </AlertDialog.Description>
-          {hasSessions ? (
-            <ul className="mt-3 space-y-1 text-xs">
-              {dialogRequest.sessions.map((session) => {
-                const row = resolveActiveSessionDisplay(session)
-                // Clicking a row cancels the close and jumps to that session so the user can check on
-                // it. Only navigable when we resolved its project (openSession needs the project id).
-                const openThisSession = (): void => {
-                  if (!row.projectId) return
-                  useNavigationStore
-                    .getState()
-                    .openSession(row.projectId, session.sessionId, 'user')
-                  reply('cancel')
-                }
-                return (
-                  // title lives on the li, not the button: a disabled button dispatches no hover
-                  // events, so a button-level tooltip would be dead exactly on truncated unresolved rows.
-                  <li
-                    key={`${session.kind}:${session.sessionId}`}
-                    title={`${row.project} — ${row.title}`}
-                  >
-                    <button
-                      type="button"
-                      onClick={openThisSession}
-                      disabled={!row.projectId}
-                      className="block w-full truncate rounded-lg border border-border bg-muted/40 p-2 text-left text-foreground enabled:cursor-pointer enabled:hover:bg-muted disabled:cursor-default"
+          <div className={dialogHeaderClassName}>
+            <AlertDialog.Title className={dialogTitleClassName}>{title}</AlertDialog.Title>
+          </div>
+
+          <div className={dialogBodyClassName}>
+            <AlertDialog.Description className={dialogDescriptionClassName}>
+              {description}
+            </AlertDialog.Description>
+            {hasSessions ? (
+              <ul className="mt-3 space-y-1 text-xs">
+                {dialogRequest.sessions.map((session) => {
+                  const row = resolveActiveSessionDisplay(session)
+                  // Clicking a row cancels the close and jumps to that session so the user can check on
+                  // it. Only navigable when we resolved its project (openSession needs the project id).
+                  const openThisSession = (): void => {
+                    if (!row.projectId) return
+                    useNavigationStore
+                      .getState()
+                      .openSession(row.projectId, session.sessionId, 'user')
+                    reply('cancel')
+                  }
+                  return (
+                    // title lives on the li, not the button: a disabled button dispatches no hover
+                    // events, so a button-level tooltip would be dead exactly on truncated unresolved rows.
+                    <li
+                      key={`${session.kind}:${session.sessionId}`}
+                      title={`${row.project} — ${row.title}`}
                     >
-                      {truncateLabel(row.project)} — {truncateLabel(row.title)}
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          ) : null}
-          {!isQuitVariant ? (
-            <label className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={remember}
-                onChange={(event) => setRemember(event.target.checked)}
-                className="size-4 shrink-0 accent-primary"
-              />
-              <span>Don&apos;t ask again</span>
-            </label>
-          ) : null}
-          <div className="mt-4 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={openThisSession}
+                        disabled={!row.projectId}
+                        className="block w-full truncate rounded-lg border border-border bg-muted/40 p-2 text-left text-foreground enabled:cursor-pointer enabled:hover:bg-muted disabled:cursor-default"
+                      >
+                        {truncateLabel(row.project)} — {truncateLabel(row.title)}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : null}
+            {!isQuitVariant ? (
+              <label className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  onChange={(event) => setRemember(event.target.checked)}
+                  className="size-4 shrink-0 accent-primary"
+                />
+                <span>Don&apos;t ask again</span>
+              </label>
+            ) : null}
+          </div>
+
+          <div className={dialogFooterClassName}>
             {hasDelegatedWork && isQuitVariant ? (
               <AlertDialog.Cancel asChild>
                 <Button type="button">Return to tasks</Button>
               </AlertDialog.Cancel>
             ) : isQuitVariant ? (
               <AlertDialog.Cancel asChild>
-                <Button type="button" variant="ghost">
+                <Button type="button" variant="ghost" className={dialogCancelButtonClassName}>
                   Cancel
                 </Button>
               </AlertDialog.Cancel>
