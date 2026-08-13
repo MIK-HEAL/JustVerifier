@@ -45,7 +45,7 @@ import { netFetch } from '../skills/net-fetch'
 import { SkillRegistry, type BundledSkill } from '../skills/registry'
 import { readSkillFile } from '../skills/skill-files'
 import { buildSkillExportArchive, type SkillExportArchive } from '../skills/export'
-import { SAFE_SLUG, UserSkillRepository } from '../skills/user-skill-repository'
+import { SAFE_SKILL_DIRECTORY_NAME, UserSkillRepository } from '../skills/user-skill-repository'
 import {
   provisionAppClaudeConfigDir,
   type ClaudeRuntimeModelConfig
@@ -75,7 +75,7 @@ type DiscoveredAgentHomeSkill = {
   realPath: string
   aliases: AgentHomeSkillRef[]
   fallbackAliases: AgentHomeSkillRef[]
-  matchedFallbackSlugs: Set<string>
+  matchedFallbackDirectoryNames: Set<string>
 }
 
 type SkillCatalogModuleOptions = {
@@ -149,7 +149,23 @@ class SkillCatalogModule {
 
   private async catalog(): Promise<BundledSkill[]> {
     const [featured, user] = await Promise.all([this.skillRegistry.list(), this.userSkills.list()])
-    return [...featured, ...user]
+    const newestByName = new Map<string, BundledSkill>()
+    for (const skill of [...featured, ...user]) {
+      const existing = newestByName.get(skill.name)
+      if (!existing || this.isNewerSkill(skill, existing)) newestByName.set(skill.name, skill)
+    }
+    return [...newestByName.values()]
+  }
+
+  private isNewerSkill(candidate: BundledSkill, existing: BundledSkill): boolean {
+    const candidateTime = Date.parse(candidate.updatedAt)
+    const existingTime = Date.parse(existing.updatedAt)
+    if (candidateTime !== existingTime) return candidateTime > existingTime
+    return candidate.id.localeCompare(existing.id) > 0
+  }
+
+  private async bundledSkillNames(): Promise<string[]> {
+    return (await this.skillRegistry.list()).map((skill) => skill.name)
   }
 
   private async managedCatalog(): Promise<BundledSkill[]> {
@@ -171,7 +187,12 @@ class SkillCatalogModule {
   }
 
   async publishHostSkill(name: string, sourcePath: string, overwrite: boolean): Promise<string> {
-    return this.userSkills.publishPersonalDirectory(name, sourcePath, overwrite)
+    return this.userSkills.publishPersonalDirectory(
+      name,
+      sourcePath,
+      overwrite,
+      await this.bundledSkillNames()
+    )
   }
 
   async listSkills(): Promise<SkillView[]> {
@@ -341,7 +362,7 @@ class SkillCatalogModule {
   }
 
   async createSkill(request: CreateSkillRequest): Promise<SkillView[]> {
-    await this.userSkills.createPersonal(request)
+    await this.userSkills.createPersonal(request, await this.bundledSkillNames())
     return this.listSkills()
   }
 
@@ -373,7 +394,8 @@ class SkillCatalogModule {
   async importSkill(request: ImportSkillRequest): Promise<ImportSkillResult> {
     const outcome = await this.userSkills.importFromGitHub(
       request.url,
-      await this.authenticatedGitHubFetch()
+      await this.authenticatedGitHubFetch(),
+      await this.bundledSkillNames()
     )
     return { ...outcome, skills: await this.listSkills() }
   }
@@ -382,7 +404,8 @@ class SkillCatalogModule {
     const zip = decodeBoundedBase64(request.dataBase64, SKILL_IMPORT_LIMITS.maxBundleBytes)
     const outcome = await this.userSkills.importFromZip(zip, {
       subPath: request.subPath,
-      replaceId: request.replaceId
+      replaceId: request.replaceId,
+      reservedNames: await this.bundledSkillNames()
     })
     return { ...outcome, skills: await this.listSkills() }
   }
@@ -416,7 +439,7 @@ class SkillCatalogModule {
     zip: Buffer,
     items: ImportSkillZipBatchRequest['items']
   ): ReturnType<UserSkillRepository['importFromZipBatch']> {
-    return this.userSkills.importFromZipBatch(zip, items)
+    return this.userSkills.importFromZipBatch(zip, items, await this.bundledSkillNames())
   }
 
   async previewGitHubSkill(request: PreviewGitHubSkillRequest): Promise<SkillImportPreviewContent> {
@@ -510,7 +533,7 @@ class SkillCatalogModule {
           realPath: item.realPath,
           aliases: [item.alias],
           fallbackAliases: [],
-          matchedFallbackSlugs: new Set()
+          matchedFallbackDirectoryNames: new Set()
         })
       }
     }
@@ -537,7 +560,8 @@ class SkillCatalogModule {
               {
                 aliases: item.aliases,
                 expectedSignature: match.matchedIdentitySignature,
-                expectedImportedIdentity: match.matchedImportedIdentity
+                expectedImportedIdentity: match.matchedImportedIdentity,
+                reservedNames: await this.bundledSkillNames()
               }
             )
           } catch {
@@ -564,7 +588,7 @@ class SkillCatalogModule {
     for (const [fallbackSlug, candidates] of fallbackBySlug) {
       for (const candidate of candidates) {
         candidate.item.skill.alreadyImported = true
-        candidate.item.matchedFallbackSlugs.add(fallbackSlug)
+        candidate.item.matchedFallbackDirectoryNames.add(fallbackSlug)
       }
     }
     return discovered
@@ -675,7 +699,10 @@ class SkillCatalogModule {
         const discoveredSkill = discoveredByPath.get(pathKey)
         const outcome = await this.userSkills.importAgentHomeSkill(sourcePath, canonical, {
           aliases: discoveredSkill?.aliases,
-          fallbackSlugs: discoveredSkill ? [...discoveredSkill.matchedFallbackSlugs] : undefined
+          fallbackDirectoryNames: discoveredSkill
+            ? [...discoveredSkill.matchedFallbackDirectoryNames]
+            : undefined,
+          reservedNames: await this.bundledSkillNames()
         })
         results.push({ ...validated, ...outcome })
       } catch (error) {
@@ -718,7 +745,7 @@ class SkillCatalogModule {
     if (!homeSkillsDir) {
       throw new Error(`Installed skill source "${String(source)}" is not available.`)
     }
-    if (!SAFE_SLUG.test(slug)) {
+    if (!SAFE_SKILL_DIRECTORY_NAME.test(slug)) {
       throw new Error(`Refusing to import installed skill with unsafe slug: ${slug}`)
     }
     const lexicalCandidate = resolve(homeSkillsDir, slug)
@@ -754,7 +781,7 @@ class SkillCatalogModule {
         child !== '..' &&
         !child.startsWith(`..${sep}`) &&
         !child.includes(sep) &&
-        SAFE_SLUG.test(child)
+        SAFE_SKILL_DIRECTORY_NAME.test(child)
       ) {
         return { source: source.source, slug: child }
       }
