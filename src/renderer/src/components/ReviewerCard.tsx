@@ -12,6 +12,7 @@
 
 import { useState } from 'react'
 import { ChevronDown, ChevronRight, ShieldCheck, AlertTriangle, Loader } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
 import { OpenScienceThinkingIndicator } from '@/components/OpenScienceThinkingIndicator'
 import {
@@ -83,72 +84,80 @@ const ItemCard = ({
   kindLabel,
   legacyNote,
   dispositionLabel
-}: ItemCardProps): React.JSX.Element => (
-  <div className="rounded-lg bg-bg-000 p-3" data-testid={testId}>
-    {kindLabel && (
-      <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-text-300">
-        {kindLabel}
-      </div>
-    )}
-    {/* Badge + title row */}
-    <div className="flex items-start gap-2">
-      <span
-        className={cn(
-          'mt-0.5 shrink-0 rounded bg-bg-200 px-1 py-0.5 text-[11px] font-semibold uppercase',
-          badgeClassName
-        )}
-        data-testid="reviewer-item-badge"
-      >
-        {badgeText}
-      </span>
-      <span className="min-w-0 flex-1 break-words text-xs font-semibold leading-snug text-text-000 [overflow-wrap:anywhere]">
-        {title}
-      </span>
-      {/* Re-flag marker: shown when this claim was re-flagged in the fix loop. */}
-      {reflagCount != null && reflagCount > 0 && (
-        <span
-          className="shrink-0 rounded bg-bg-200 px-1 py-0.5 text-[11px] text-yellow-600 dark:text-yellow-400"
-          data-testid="reviewer-reflag-marker"
-        >
-          re-flagged ×{reflagCount}
-        </span>
+}: ItemCardProps): React.JSX.Element => {
+  const { t } = useTranslation()
+
+  return (
+    <div className="rounded-lg bg-bg-000 p-3" data-testid={testId}>
+      {kindLabel && (
+        <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-text-300">
+          {t(kindLabel)}
+        </div>
       )}
+      {/* Badge + title row */}
+      <div className="flex items-start gap-2">
+        <span
+          className={cn(
+            'mt-0.5 shrink-0 rounded bg-bg-200 px-1 py-0.5 text-[11px] font-semibold uppercase',
+            badgeClassName
+          )}
+          data-testid="reviewer-item-badge"
+        >
+          {t(badgeText)}
+        </span>
+        <span className="min-w-0 flex-1 break-words text-xs font-semibold leading-snug text-text-000 [overflow-wrap:anywhere]">
+          {title}
+        </span>
+        {/* Re-flag marker: shown when this claim was re-flagged in the fix loop. */}
+        {reflagCount != null && reflagCount > 0 && (
+          <span
+            className="shrink-0 rounded bg-bg-200 px-1 py-0.5 text-[11px] text-yellow-600 dark:text-yellow-400"
+            data-testid="reviewer-reflag-marker"
+          >
+            {t('re-flagged ×{{count}}', { count: reflagCount })}
+          </span>
+        )}
+      </div>
+
+      {/* Body — evidence for all check types */}
+      {body ? (
+        <p className="mt-2 break-words text-xs leading-relaxed text-text-300 [overflow-wrap:anywhere]">
+          {body}
+        </p>
+      ) : null}
+
+      {legacyNote && (
+        <p className="mt-2 text-[11px] text-text-300" data-testid="reviewer-legacy-assessment-note">
+          {t(legacyNote)}
+        </p>
+      )}
+      {dispositionLabel && (
+        <p className="mt-1 text-[11px] text-text-300">
+          {t('Disposition: {{disposition}}', {
+            disposition: dispositionLabel === 'still open' ? t('still open') : t(dispositionLabel)
+          })}
+        </p>
+      )}
+
+      {/* Footer row: model pill (left) + Go to transcript button (right) */}
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span
+          className="rounded bg-bg-200 px-1.5 py-0.5 text-[11px] text-text-400"
+          data-testid="reviewer-model-pill"
+        >
+          {model}
+        </span>
+        <button
+          type="button"
+          className="rounded bg-bg-200 px-2 py-0.5 text-[11px] text-text-300 transition-colors hover:bg-bg-300 hover:text-text-000"
+          onClick={onGoToTranscript}
+        >
+          {t('Go to transcript')}
+        </button>
+      </div>
     </div>
-
-    {/* Body — evidence for all check types */}
-    {body ? (
-      <p className="mt-2 break-words text-xs leading-relaxed text-text-300 [overflow-wrap:anywhere]">
-        {body}
-      </p>
-    ) : null}
-
-    {legacyNote && (
-      <p className="mt-2 text-[11px] text-text-300" data-testid="reviewer-legacy-assessment-note">
-        {legacyNote}
-      </p>
-    )}
-    {dispositionLabel && (
-      <p className="mt-1 text-[11px] text-text-300">Disposition: {dispositionLabel}</p>
-    )}
-
-    {/* Footer row: model pill (left) + Go to transcript button (right) */}
-    <div className="mt-3 flex items-center justify-between gap-2">
-      <span
-        className="rounded bg-bg-200 px-1.5 py-0.5 text-[11px] text-text-400"
-        data-testid="reviewer-model-pill"
-      >
-        {model}
-      </span>
-      <button
-        type="button"
-        className="rounded bg-bg-200 px-2 py-0.5 text-[11px] text-text-300 transition-colors hover:bg-bg-300 hover:text-text-000"
-        onClick={onGoToTranscript}
-      >
-        Go to transcript
-      </button>
-    </div>
-  </div>
-)
+  )
+}
 
 const PresentedCheckCard = ({
   item,
@@ -204,6 +213,7 @@ export const ReviewerCard = ({
   onGoToTranscript,
   onRerun
 }: ReviewerCardProps): React.JSX.Element => {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(defaultExpanded)
   // Latches on the first Re-run click so the button can't fire twice. Reset whenever the review updates
   // (a fresh review row arrived, or its lifecycle/timestamp changed) so a later re-stale review can be
@@ -228,7 +238,7 @@ export const ReviewerCard = ({
         aria-live="polite"
       >
         <OpenScienceThinkingIndicator />
-        <span>Reviewing...</span>
+        <span>{t('Reviewing...')}</span>
       </div>
     )
   }
@@ -273,15 +283,20 @@ export const ReviewerCard = ({
 
   // Compact summary line.
   const summaryText = (): string => {
-    if (isError) return 'Review error'
+    if (isError) return t('Review error')
     if (isFlagged) {
-      const base = hasWarnOrFail
-        ? `${warnFailCount} finding${warnFailCount === 1 ? '' : 's'}`
-        : 'Issues found'
-      return isStale ? `${base} (outdated)` : base
+      if (!hasWarnOrFail) {
+        return isStale ? t('Issues found (outdated)') : t('Issues found')
+      }
+      return isStale
+        ? t('{{count}} findings (outdated)', {
+            defaultValue_one: '{{count}} finding (outdated)',
+            count: warnFailCount
+          })
+        : t('{{count}} findings', { defaultValue_one: '{{count}} finding', count: warnFailCount })
     }
-    if (isComplete) return isStale ? 'No issues found (outdated)' : 'No issues found'
-    return 'Review pending'
+    if (isComplete) return isStale ? t('No issues found (outdated)') : t('No issues found')
+    return t('Review pending')
   }
 
   // Status icon. A stale complete review always shows the warning icon (amber), even a stale pass —
@@ -312,7 +327,7 @@ export const ReviewerCard = ({
         aria-expanded={canExpand ? expanded : undefined}
       >
         {statusIcon}
-        <span className="font-medium text-text-200">Reviewer</span>
+        <span className="font-medium text-text-200">{t('Reviewer')}</span>
         <span className="mx-1 text-text-400">&middot;</span>
         <span className={cn('text-text-300', isFlagged && 'text-red-600 dark:text-red-400')}>
           {summaryText()}
@@ -322,7 +337,10 @@ export const ReviewerCard = ({
           <>
             <span className="mx-1 text-text-400">&middot;</span>
             <span className="text-text-400">
-              {totalCheckCount} {totalCheckCount === 1 ? 'check' : 'checks'}
+              {t('{{count}} checks', {
+                defaultValue_one: '{{count}} check',
+                count: totalCheckCount
+              })}
             </span>
           </>
         )}
@@ -330,13 +348,13 @@ export const ReviewerCard = ({
         {isCapReached && (
           <>
             <span className="mx-1 text-text-400">&middot;</span>
-            <span className="text-yellow-600 dark:text-yellow-400">fix limit reached</span>
+            <span className="text-yellow-600 dark:text-yellow-400">{t('fix limit reached')}</span>
           </>
         )}
         {isCorrectionFailed && (
           <>
             <span className="mx-1 text-text-400">&middot;</span>
-            <span className="text-yellow-600 dark:text-yellow-400">correction failed</span>
+            <span className="text-yellow-600 dark:text-yellow-400">{t('correction failed')}</span>
           </>
         )}
         {canExpand && (
@@ -359,7 +377,7 @@ export const ReviewerCard = ({
           data-testid="reviewer-stale-notice"
         >
           <span className="text-[11px] text-amber-800 dark:text-amber-300">
-            Turn changed after this review ran.
+            {t('Turn changed after this review ran.')}
           </span>
           {onRerun && (
             <button
@@ -377,7 +395,7 @@ export const ReviewerCard = ({
                 })
               }}
             >
-              {rerunRequested ? 'Re-running…' : 'Re-run review'}
+              {rerunRequested ? t('Re-running…') : t('Re-run review')}
             </button>
           )}
         </div>
@@ -413,7 +431,7 @@ export const ReviewerCard = ({
           {/* Self-correct footer note — shown only for warn/fail (flagged) expansions. */}
           {hasWarnOrFail && (
             <p className="mt-1 text-[11px] italic text-text-400">
-              The agent reads these findings and self-corrects in its next message.
+              {t('The agent reads these findings and self-corrects in its next message.')}
             </p>
           )}
         </div>

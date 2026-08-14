@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
+import { useTranslation } from 'react-i18next'
 
 import type { NotebookSessionReference } from '../../../../shared/notebook'
 import type { PermissionProfileId } from '../../../../shared/permission-profiles'
@@ -82,6 +83,7 @@ const WorkspacePage = ({
   canDeleteConversations,
   isPreviewPresentationActive = true
 }: WorkspacePageProps): React.JSX.Element => {
+  const { t } = useTranslation()
   // The active project scopes which sessions are visible and stamps newly created ones. The workspace
   // is only reachable via openProject/openSession (which set it); '' is a defensive sentinel that
   // matches no session and triggers the redirect below.
@@ -936,7 +938,7 @@ const WorkspacePage = ({
           <WorkspaceSidebarContainer
             projectId={scopedProjectId}
             isProjectArchived={activeProject?.archivedAt !== undefined}
-            projectName={activeProject?.name ?? 'Project'}
+            projectName={activeProject?.name ?? t('Project')}
             activeSessionId={selectedSessionId}
             canCreateConversation={isSessionPersistenceReady}
             canMutateConversations={isSessionPersistenceReady}
@@ -980,7 +982,7 @@ const WorkspacePage = ({
           <WorkspaceSidebarContainer
             projectId={scopedProjectId}
             isProjectArchived={activeProject?.archivedAt !== undefined}
-            projectName={activeProject?.name ?? 'Project'}
+            projectName={activeProject?.name ?? t('Project')}
             activeSessionId={selectedSessionId}
             canCreateConversation={isSessionPersistenceReady}
             canMutateConversations={isSessionPersistenceReady}
