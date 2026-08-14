@@ -3257,7 +3257,8 @@ describe('ConversationPanel Your files menu', () => {
           entries: [{ name: 'study.csv', isDirectory: false, size: 1, mtimeMs: 0 }],
           truncated: false,
           resolvedPath: grantedRoot.path
-        })
+        }),
+        listDrives: vi.fn(async () => [])
       }
     }
   })

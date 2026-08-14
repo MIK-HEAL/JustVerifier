@@ -23,6 +23,11 @@ const subState = vi.hoisted(() => ({
 // Radix DropdownMenu calls pointer-capture APIs that jsdom does not implement.
 // Replace with a flat render so the submenu content is always visible in the DOM.
 vi.mock('@/components/ui/dropdown-menu', () => ({
+  DropdownMenu: ({ children }: PropsWithChildren): React.JSX.Element => <div>{children}</div>,
+  DropdownMenuTrigger: ({ children }: PropsWithChildren): React.JSX.Element => <>{children}</>,
+  DropdownMenuContent: ({ children }: PropsWithChildren): React.JSX.Element => (
+    <div>{children}</div>
+  ),
   DropdownMenuSub: ({
     children,
     onOpenChange
@@ -119,6 +124,7 @@ beforeEach(() => {
     localFs: {
       listDir,
       getRoots: vi.fn().mockResolvedValue({ home: '/Users/roxi', machineName: 'Test Mac' }),
+      listDrives: vi.fn(async () => []),
       listGrantedRoots: vi.fn().mockResolvedValue([ROOT]),
       grantRoot: vi.fn().mockResolvedValue([ROOT]),
       setGrantedRootAccess: vi.fn().mockResolvedValue([ROOT]),

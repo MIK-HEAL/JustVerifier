@@ -31,6 +31,14 @@ export type LocalRoots = {
   machineName: string
 }
 
+// One mounted drive/volume, for the drive switchers in both local browsers. `path` is the
+// browsable root (`C:\` on Windows, `/` or `/Volumes/<name>` on POSIX); `label` is what the
+// dropdown shows (the drive letter on Windows, the volume name elsewhere).
+export type LocalDrive = {
+  path: string
+  label: string
+}
+
 // The single settings key under computeBookmarks reserved for local (non-SSH) bookmarks. Reusing
 // the compute bookmark store avoids a settings-schema migration; SSH providers are keyed by
 // provider_id, which never collides with this literal.
@@ -82,6 +90,19 @@ export const validateLocalPath = (
   const isAbsolute = platform === 'win32' ? isWindowsLocalPath(path, platform) : isPosixAbsolute
   if (!isAbsolute) return 'not_absolute'
   return undefined
+}
+
+// The quiet inline sentence both local browsers show when an address-bar/path-field submit fails
+// validateLocalPath. The not_absolute hint is platform-aware: a POSIX-style example would
+// mislead on Windows, where absolute paths lead with a drive letter.
+export const describeInvalidLocalPath = (
+  kind: 'not_absolute' | 'control_chars',
+  platform: string
+): string => {
+  if (kind === 'control_chars') return 'That path contains invalid characters.'
+  return platform === 'win32'
+    ? 'Enter an absolute path, like C:\\folder.'
+    : 'Enter an absolute path, starting at /.'
 }
 
 // Basenames that are always considered "sensitive" — reading them (or, for directories, entering
@@ -175,27 +196,18 @@ export const isPathWithin = (path: string, root: string): boolean => {
   return candidate === base || candidate.startsWith(`${base}/`)
 }
 
-// True when `path` is browsable under the granted-roots scope model: inside home or inside any
-// granted root.
-export const canBrowseGrantedPath = (
-  path: string,
-  home: string,
-  roots: readonly GrantedLocalRoot[]
-): boolean => isPathWithin(path, home) || roots.some((root) => isPathWithin(path, root.path))
-
-// Validates a folder the user wants to grant. A grant candidate must already be browsable (within
-// home or an already-granted root) so granting can only ever extend scope one visible step at a
-// time; home itself is rejected because it is the implicit root and granting it would be a no-op.
+// Validates a folder the user wants to grant. Any valid absolute path qualifies — granting is no
+// longer confined to home or already-granted roots (existence is guaranteed by the realpath in
+// grantRoot). Home itself is rejected because it is the implicit root and granting it would be a
+// no-op.
 export const validateGrantCandidate = (
   path: string,
   home: string,
-  roots: readonly GrantedLocalRoot[],
   platform: string
-): { ok: true } | { ok: false; reason: 'not-absolute' | 'is-home' | 'out-of-scope' } => {
+): { ok: true } | { ok: false; reason: 'not-absolute' | 'is-home' } => {
   if (validateLocalPath(path, platform) !== undefined) return { ok: false, reason: 'not-absolute' }
   if (normalizePathForScope(path) === normalizePathForScope(home))
     return { ok: false, reason: 'is-home' }
-  if (!canBrowseGrantedPath(path, home, roots)) return { ok: false, reason: 'out-of-scope' }
   return { ok: true }
 }
 
@@ -229,3 +241,31 @@ export const parentLocalPath = (path: string, platform: string): string => {
 
 export const isLocalPathRoot = (path: string, platform: string): boolean =>
   sameLocalDirectory(path, localPathRoot(path, platform), platform)
+
+// The mounted drive/volume a path lives on: the longest listDrives() entry containing it, so
+// /media/user/usb/sub resolves to the usb mount rather than /. Windows compares
+// case-insensitively (a cwd realpath'd to "c:\…" must still match the "C:\" entry) and tolerates
+// either separator. Falls back to the lexical path root (C:\, UNC share, or /) when no enumerated
+// drive matches — e.g. before the listDrives call has resolved.
+export const localDriveRootFor = (
+  path: string,
+  drives: readonly LocalDrive[],
+  platform: string
+): string => {
+  const windows = platform === 'win32'
+  const separator = windows ? '\\' : '/'
+  const normalize = (value: string): string =>
+    windows ? value.replace(/\//g, '\\').toLowerCase() : value
+  const candidate = normalize(path)
+  let best: LocalDrive | undefined
+  for (const drive of drives) {
+    const root = normalize(drive.path)
+    // The separator boundary matters: "/media/user/usb2" must NOT match the "/media/user/usb" drive.
+    const prefix = root.endsWith('/') || root.endsWith('\\') ? root : `${root}${separator}`
+    if (candidate === root || candidate.startsWith(prefix)) {
+      if (!best || root.length > normalize(best.path).length) best = drive
+    }
+  }
+  if (best) return best.path
+  return localPathRoot(path, platform)
+}

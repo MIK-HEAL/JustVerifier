@@ -3873,6 +3873,7 @@ describe('ProjectFilesView — Remote section in source dropdown', () => {
       },
       localFs: {
         getRoots: vi.fn().mockResolvedValue({ home: '/Users/roxi', machineName: 'TychoStation' }),
+        listDrives: vi.fn(async () => []),
         listDir: vi.fn().mockResolvedValue({
           entries: [
             { name: 'Projects', isDirectory: true, size: 0, mtimeMs: 1710000000000 },
@@ -4228,6 +4229,7 @@ describe('ProjectFilesView — granted local folders', () => {
       },
       localFs: {
         getRoots: vi.fn().mockResolvedValue({ home: '/Users/roxi', machineName: 'TychoStation' }),
+        listDrives: vi.fn(async () => []),
         listDir,
         listGrantedRoots: vi.fn().mockResolvedValue([grantedRoot]),
         grantRoot,
