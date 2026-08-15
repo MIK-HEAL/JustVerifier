@@ -57,6 +57,7 @@ import { WorkspacePlanActivityRecord } from './WorkspacePlanActivityRecord'
 import { parseGeneratePlanDocument } from './generate-plan-activity-projection'
 import { WorkspaceAgentLoadingRow } from './WorkspaceAgentLoadingRow'
 import { WorkspaceMessageItem } from './WorkspaceMessageItem'
+import { WorkspaceRunMarks } from './WorkspaceRunMarks'
 import type { ArtifactMentionPart } from './WorkspaceMessageItem'
 import { useWorkspaceArtifactVisibility, type MessageArtifact } from './WorkspaceArtifactVisibility'
 import { useWorkspaceMessageEditState } from './workspace-message-edit-state-context'
@@ -345,11 +346,18 @@ const WorkspaceMessageScrollerImpl = ({
     !activeSession.compacting
   )
   const messageScrollerViewportRef = useRef<HTMLDivElement | null>(null)
+  const [messageScrollerViewport, setMessageScrollerViewport] = useState<HTMLDivElement | null>(
+    null
+  )
   const messageScrollerContentRef = useRef<HTMLDivElement | null>(null)
   const scrollToFirstMessageButtonRef = useRef<HTMLButtonElement | null>(null)
   const previousMessageScrollerScrollTopRef = useRef(0)
   const scrollToFirstMessageHideTimeoutRef = useRef<number | undefined>(undefined)
   const [scrollThresholdAllowsFirstMessage, setScrollThresholdAllowsFirstMessage] = useState(false)
+  const handleMessageScrollerViewportRef = useCallback((node: HTMLDivElement | null): void => {
+    messageScrollerViewportRef.current = node
+    setMessageScrollerViewport(node)
+  }, [])
   const activeConversationFrame = activeSession?.conversationGraph?.frames.find(
     (frame) => frame.id === activeSession.conversationGraph?.activeFrameId
   )
@@ -940,12 +948,16 @@ const WorkspaceMessageScrollerImpl = ({
         scrollPreviousItemPeek={64}
       >
         <MessageScroller className="relative min-h-0 flex-1 bg-bg-10">
+          <WorkspaceRunMarks
+            items={presentedConversationItems}
+            viewport={messageScrollerViewport}
+          />
           <div
             aria-hidden="true"
             className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-bg-10 to-bg-10/0"
           />
           <MessageScrollerViewport
-            ref={messageScrollerViewportRef}
+            ref={handleMessageScrollerViewportRef}
             aria-label={t('Conversation')}
             onScroll={handleMessageScrollerScroll}
           >
