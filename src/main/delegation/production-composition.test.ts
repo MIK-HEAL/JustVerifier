@@ -2426,7 +2426,7 @@ describe('production delegated-work composition', () => {
       .toBe('accepted')
   })
 
-  it('deletes stable child workspaces after restart without relying on the in-memory work cache', async () => {
+  it('deletes dormant Project workspaces after restart without relying on the in-memory work cache', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-restart-delete-'))
     const harness = await createCompositionHarness(root, 'codex')
     const receipt = await harness.composition.host.delegate(
@@ -2453,9 +2453,7 @@ describe('production delegated-work composition', () => {
       dataRoot: root,
       sessions: {
         commands: harness.commands,
-        readSession: async () => harness.durable(),
-        findSessions: async (sessionId) =>
-          sessionId === harness.session.id ? [harness.durable()] : []
+        readSession: async () => harness.durable()
       },
       resolveInput: async () => {
         throw new Error('no inputs')
@@ -2473,9 +2471,114 @@ describe('production delegated-work composition', () => {
     } as ProductionDelegatedWorkOptions)
 
     expect(receipt.children[0]).toBeDefined()
-    await restarted.root.deleteSession(harness.session.id)
+    await restarted.root.deleteProject(harness.session.projectId)
 
     await expect(access(stableSessionWorkspace)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('retains failed Project work ownership and permission routing for cleanup retry', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-project-delete-retry-'))
+    const handles = new Map<string, { executionId: string }>()
+    let failDispose = true
+    const harness = await createCompositionHarness(root, 'codex', undefined, undefined, {
+      artifactEvidence: {
+        turns: {
+          async openExecution({ executionId }: { executionId: string }) {
+            const handle = { executionId }
+            handles.set(executionId, handle)
+            return handle
+          },
+          async finalize() {
+            return undefined
+          },
+          async dispose() {
+            if (failDispose) {
+              failDispose = false
+              throw new Error('injected Project cleanup failure')
+            }
+          },
+          handleForExecution(executionId: string) {
+            const handle = handles.get(executionId)
+            if (!handle) throw new Error(`No active Artifact turn for ${executionId}`)
+            return handle
+          },
+          handoffFile: () => '/tmp/current-run.json',
+          async publishHandoff() {
+            return undefined
+          }
+        } as never,
+        artifactStorageSessionId: ({ sessionId }) => sessionId,
+        async finalizePublication() {
+          return undefined
+        },
+        async project() {
+          return []
+        }
+      }
+    })
+    await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Retain cleanup owner', name: 'Retain cleanup owner' },
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    const control = harness.execution.controls()[0]
+    control.accept()
+    control.emit({
+      kind: 'permission',
+      awaiting: true,
+      requestId: 'provider-project-delete-retry',
+      title: 'Write evidence',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    })
+    await expect.poll(() => harness.composition.root.pendingPermissions()).toHaveLength(1)
+
+    await expect(harness.composition.root.deleteProject(harness.session.projectId)).rejects.toThrow(
+      'Delegated Project cleanup failed'
+    )
+
+    expect(harness.durable().runtimeContext?.delegatedWork?.records[0].attempts[0].status).toBe(
+      'running'
+    )
+    expect(harness.composition.root.pendingPermissions()).toHaveLength(1)
+
+    await expect(
+      harness.composition.root.deleteProject(harness.session.projectId)
+    ).resolves.toBeUndefined()
+    expect(harness.durable().runtimeContext?.delegatedWork?.records[0].attempts[0]).toMatchObject({
+      status: 'cancelled',
+      cancellationReason: 'session_stop'
+    })
+    expect(harness.composition.root.pendingPermissions()).toEqual([])
+  })
+
+  it('does not await pending work initialization owned by another Project', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-project-isolation-'))
+    const forSession = vi.fn(async () => new Promise<never>(() => undefined))
+    const harness = await createCompositionHarness(
+      root,
+      'codex',
+      undefined,
+      undefined,
+      {},
+      [],
+      undefined,
+      { forSession } as never
+    )
+    const unrelatedSession = {
+      ...structuredClone(harness.durable()),
+      id: 'session-other-project',
+      projectId: 'project-2'
+    }
+    harness.replaceDurable(unrelatedSession)
+
+    void harness.composition.host.readAgentFrame(
+      { projectId: unrelatedSession.projectId, sessionId: unrelatedSession.id },
+      unrelatedSession.conversationGraph!.rootFrameId
+    )
+    await vi.waitFor(() => expect(forSession).toHaveBeenCalledOnce())
+
+    await expect(harness.composition.root.deleteProject('project-1')).resolves.toBeUndefined()
   })
 
   it('keeps a Turn fence when cancellation precedes scoped-work creation', async () => {

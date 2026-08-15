@@ -95,6 +95,7 @@ type RootDelegatedWorkControl = Readonly<{
   wakeMessages?(sessionId: string): Promise<void>
   stopAll(): Promise<void>
   deleteSession(sessionId: string): Promise<void>
+  deleteProject(projectId: string): Promise<void>
 }>
 
 type ProductionDelegatedWorkComposition = Readonly<{
@@ -251,6 +252,12 @@ const createProductionDelegatedWorkComposition = (
     Promise.all(
       [...works.entries()]
         .filter(([identity]) => identity.endsWith(`\u0000${sessionId}`))
+        .map(([, work]) => work)
+    )
+  const worksForProject = async (projectId: string): Promise<ScopedWork[]> =>
+    Promise.all(
+      [...works.entries()]
+        .filter(([identity]) => identity.startsWith(`${projectId}\u0000`))
         .map(([, work]) => work)
     )
 
@@ -437,6 +444,33 @@ const createProductionDelegatedWorkComposition = (
       )
       if (failures.length > 0) {
         throw new AggregateError(failures, `Delegated Session cleanup failed: ${sessionId}`)
+      }
+    },
+    async deleteProject(projectId) {
+      const scoped = await worksForProject(projectId)
+      const workDeletion = await Promise.allSettled(
+        scoped.map(({ key, work }) => work.deleteSession(key))
+      )
+      // The stable Project directory is authoritative for dormant workspaces. Removing it directly
+      // covers Sessions that have no in-memory work after restart as well as every cached Session
+      // settled above.
+      const workspaceDeletion = await Promise.allSettled([workspace.deleteProject(projectId)])
+      for (const [index, result] of workDeletion.entries()) {
+        if (result.status === 'rejected') continue
+        const { key } = scoped[index]
+        works.delete(keyOf(key))
+        for (const [requestId, pending] of permissions) {
+          if (pending.key.projectId === key.projectId && pending.key.sessionId === key.sessionId) {
+            permissions.delete(requestId)
+          }
+        }
+        unavailableReasons.delete(key.sessionId)
+      }
+      const failures = [...workDeletion, ...workspaceDeletion].flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      )
+      if (failures.length > 0) {
+        throw new AggregateError(failures, `Delegated Project cleanup failed: ${projectId}`)
       }
     }
   })

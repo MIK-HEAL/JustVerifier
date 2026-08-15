@@ -140,6 +140,12 @@ const { createAcpRuntime } = await import('./runtime-composition')
 const { createAcpCreateSessionWorkflow } = await import('./create-session-workflow')
 const { createAcpHandlerWorkflows } = await import('./handler-workflows')
 type AcpTestOptions = Parameters<typeof createAcpRuntime>[0]
+const passThroughSessionAdmission = {
+  withSessionAvailableById: <Result>(
+    _sessionId: string,
+    operation: () => Promise<Result>
+  ): Promise<Result> => operation()
+}
 
 // Minimal options — createRuntime just forwards them into the mocked AcpRuntime constructor.
 const registerWithFakes = (overrides?: {
@@ -205,7 +211,9 @@ const registerWithFakes = (overrides?: {
       options.taskNotifications,
       overrides?.archiveAvailability,
       overrides?.interruptedTurnSessions
-    )
+    ),
+    undefined,
+    overrides?.archiveAvailability ?? passThroughSessionAdmission
   )
   return options as AcpTestOptions
 }
@@ -239,7 +247,8 @@ it('routes delegated question responses to their owner without touching Main eli
   installAcpIpcHandlers(
     { respondToElicitation, getSnapshot: () => snapshot } as never,
     {} as never,
-    respondDelegatedQuestion
+    respondDelegatedQuestion,
+    passThroughSessionAdmission
   )
 
   await expect(
@@ -263,6 +272,202 @@ it('routes delegated question responses to their owner without touching Main eli
     answers: [{ questionIndex: 0, value: 'Strict' }]
   })
   expect(respondToElicitation).not.toHaveBeenCalled()
+})
+
+it('rejects ACP response mutations before runtime work when Session admission is closed', async () => {
+  const failure = new Error('Project is being deleted.')
+  const admitted: string[] = []
+  const sessionAdmission = {
+    withSessionAvailableById: async <Result>(
+      sessionId: string,
+      operation: () => Promise<Result>
+    ): Promise<Result> => {
+      void operation
+      admitted.push(sessionId)
+      throw failure
+    }
+  }
+  const responseSnapshot = {
+    status: 'idle',
+    cwd: '/workspace',
+    sessionIds: ['permission-session', 'elicitation-session'],
+    events: [],
+    pendingPermissions: [
+      {
+        requestId: 'permission-1',
+        sessionId: 'permission-session',
+        toolCallId: 'tool-1',
+        title: 'Use a tool',
+        options: []
+      }
+    ],
+    pendingElicitations: [
+      {
+        requestId: 'question-1',
+        sessionId: 'elicitation-session',
+        toolCallId: 'tool-2',
+        message: 'Choose',
+        fields: []
+      }
+    ],
+    permissionProfiles: {},
+    permissionGrants: {},
+    promptInFlight: false,
+    promptInFlightSessionIds: [],
+    contextUsageBySession: {}
+  }
+  const responseRuntime = {
+    getSnapshot: vi.fn(() => responseSnapshot),
+    respondToPermission: vi.fn(),
+    respondToElicitation: vi.fn(),
+    respondSessionPlan: vi.fn(),
+    setPermissionProfile: vi.fn(),
+    revokePermissionGrant: vi.fn()
+  }
+  installAcpIpcHandlers(responseRuntime as never, {} as never, undefined, sessionAdmission)
+
+  await expect(
+    handlers.get('acp:respond-permission')?.(undefined, {
+      requestId: 'permission-1',
+      optionId: 'allow-once'
+    })
+  ).rejects.toBe(failure)
+  await expect(
+    handlers.get('acp:respond-elicitation')?.(undefined, {
+      requestId: 'question-1',
+      action: 'decline'
+    })
+  ).rejects.toBe(failure)
+  await expect(
+    handlers.get('acp:respond-plan')?.(undefined, {
+      projectId: 'project-1',
+      sessionId: 'plan-session',
+      feedback: 'Revise the plan.'
+    })
+  ).rejects.toBe(failure)
+  await expect(
+    handlers.get('acp:set-permission-profile')?.(undefined, {
+      sessionId: 'profile-session',
+      profile: 'auto'
+    })
+  ).rejects.toBe(failure)
+  await expect(
+    handlers.get('acp:revoke-permission-grant')?.(undefined, {
+      sessionId: 'profile-session',
+      categoryKey: 'mcp:tool'
+    })
+  ).rejects.toBe(failure)
+
+  expect(admitted).toEqual([
+    'permission-session',
+    'elicitation-session',
+    'plan-session',
+    'profile-session',
+    'profile-session'
+  ])
+  expect(responseRuntime.respondToPermission).not.toHaveBeenCalled()
+  expect(responseRuntime.respondToElicitation).not.toHaveBeenCalled()
+  expect(responseRuntime.respondSessionPlan).not.toHaveBeenCalled()
+  expect(responseRuntime.setPermissionProfile).not.toHaveBeenCalled()
+  expect(responseRuntime.revokePermissionGrant).not.toHaveBeenCalled()
+})
+
+it('rejects forged and unknown ACP response authority before Session admission', () => {
+  const admitted: string[] = []
+  const withSessionAvailableById = <Result>(
+    sessionId: string,
+    operation: () => Promise<Result>
+  ): Promise<Result> => {
+    admitted.push(sessionId)
+    return operation()
+  }
+  const responseRuntime = {
+    getSnapshot: vi.fn(() => ({
+      status: 'idle',
+      cwd: '/workspace',
+      sessionIds: ['permission-session', 'elicitation-session', 'forged-session'],
+      events: [],
+      pendingPermissions: [
+        {
+          requestId: 'permission-1',
+          sessionId: 'permission-session',
+          toolCallId: 'tool-1',
+          title: 'Use a tool',
+          options: []
+        }
+      ],
+      pendingElicitations: [
+        {
+          requestId: 'question-1',
+          sessionId: 'elicitation-session',
+          toolCallId: 'tool-2',
+          message: 'Choose',
+          fields: []
+        }
+      ],
+      permissionProfiles: {},
+      permissionGrants: {},
+      promptInFlight: false,
+      promptInFlightSessionIds: [],
+      contextUsageBySession: {}
+    })),
+    respondToPermission: vi.fn(),
+    respondToElicitation: vi.fn()
+  }
+  const respondDelegatedQuestion = vi.fn()
+  installAcpIpcHandlers(responseRuntime as never, {} as never, respondDelegatedQuestion, {
+    withSessionAvailableById
+  })
+
+  expect(() =>
+    handlers.get('acp:respond-permission')?.(undefined, {
+      requestId: 'permission-1',
+      optionId: 'allow-once',
+      restored: { projectId: 'forged-project', sessionId: 'forged-session' }
+    })
+  ).toThrow('Permission response Session does not match the pending request.')
+  expect(() =>
+    handlers.get('acp:respond-elicitation')?.(undefined, {
+      requestId: 'question-1',
+      action: 'decline',
+      request: {
+        requestId: 'question-1',
+        sessionId: 'forged-session',
+        toolCallId: 'tool-2',
+        message: 'Choose',
+        fields: []
+      }
+    })
+  ).toThrow('Structured input response Session does not match the pending request.')
+  expect(() =>
+    handlers.get('acp:respond-elicitation')?.(undefined, {
+      requestId: 'question-1',
+      action: 'accept',
+      delegatedQuestion: {
+        projectId: 'forged-project',
+        sessionId: 'forged-session',
+        action: 'confirm',
+        answers: []
+      }
+    })
+  ).toThrow('Structured input response Session does not match the pending request.')
+  expect(() =>
+    handlers.get('acp:respond-permission')?.(undefined, {
+      requestId: 'unknown-permission',
+      optionId: 'allow-once'
+    })
+  ).toThrow('Unknown permission request.')
+  expect(() =>
+    handlers.get('acp:respond-elicitation')?.(undefined, {
+      requestId: 'unknown-question',
+      action: 'decline'
+    })
+  ).toThrow('Unknown structured input request.')
+
+  expect(admitted).toEqual([])
+  expect(responseRuntime.respondToPermission).not.toHaveBeenCalled()
+  expect(responseRuntime.respondToElicitation).not.toHaveBeenCalled()
+  expect(respondDelegatedQuestion).not.toHaveBeenCalled()
 })
 
 describe('ACP module transport seam', () => {
@@ -411,7 +616,9 @@ describe('ACP module transport seam', () => {
     const createSessionWorkflow = createAcpCreateSessionWorkflow(runtime)
     installAcpIpcHandlers(
       runtime,
-      createAcpHandlerWorkflows(runtime, createSessionWorkflow, options.taskNotifications)
+      createAcpHandlerWorkflows(runtime, createSessionWorkflow, options.taskNotifications),
+      undefined,
+      passThroughSessionAdmission
     )
 
     expect(handlers.has('acp:get-state')).toBe(true)
@@ -898,6 +1105,27 @@ describe('installAcpIpcHandlers — reset-session-context bridge', () => {
     expect(resumeSession).not.toHaveBeenCalled()
     expect(result).toEqual({ sessionId: 's-1', cwd: '/workspace', contextReset: true })
   })
+
+  it('rejects reset before runtime mutation when Session admission is closed', async () => {
+    const failure = new Error('Project is being deleted.')
+    const withSessionAvailableById = vi.fn().mockRejectedValue(failure)
+    registerWithFakes({
+      archiveAvailability: {
+        withSessionAvailable: async <Result>(
+          _projectId: string,
+          _sessionId: string,
+          operation: () => Promise<Result>
+        ): Promise<Result> => operation(),
+        withSessionAvailableById
+      }
+    })
+    const request: AcpResumeSessionRequest = { sessionId: 's-1', cwd: '/workspace' }
+
+    await expect(handlers.get('acp:reset-session-context')?.({}, request)).rejects.toBe(failure)
+
+    expect(withSessionAvailableById).toHaveBeenCalledWith('s-1', expect.any(Function))
+    expect(resetSessionContext).not.toHaveBeenCalled()
+  })
 })
 
 describe('installAcpIpcHandlers — resume-session diagnostics', () => {
@@ -1084,6 +1312,27 @@ describe('installAcpIpcHandlers — native context compaction bridge', () => {
     expect(compactSession).toHaveBeenCalledOnce()
     expect(compactSession).toHaveBeenCalledWith(request)
     expect(result).toMatchObject({ status: 'idle', cwd: '/workspace' })
+  })
+
+  it('rejects compaction before runtime mutation when Session admission is closed', async () => {
+    const failure = new Error('Project is being deleted.')
+    const withSessionAvailableById = vi.fn().mockRejectedValue(failure)
+    registerWithFakes({
+      archiveAvailability: {
+        withSessionAvailable: async <Result>(
+          _projectId: string,
+          _sessionId: string,
+          operation: () => Promise<Result>
+        ): Promise<Result> => operation(),
+        withSessionAvailableById
+      }
+    })
+    const request: AcpCompactSessionRequest = { sessionId: 's-1' }
+
+    await expect(handlers.get('acp:compact-session')?.({}, request)).rejects.toBe(failure)
+
+    expect(withSessionAvailableById).toHaveBeenCalledWith('s-1', expect.any(Function))
+    expect(compactSession).not.toHaveBeenCalled()
   })
 })
 

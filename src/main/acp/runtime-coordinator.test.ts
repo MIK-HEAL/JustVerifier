@@ -358,7 +358,8 @@ describe('AcpRuntimeCoordinator', () => {
       wakeMessages: vi.fn(async () => undefined),
       stopSession: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
-      deleteSession: vi.fn(async () => undefined)
+      deleteSession: vi.fn(async () => undefined),
+      deleteProject: vi.fn(async () => undefined)
     }
     const permissionEvents: unknown[] = []
     const stateChanges: AcpStateSnapshot[] = []
@@ -443,7 +444,8 @@ describe('AcpRuntimeCoordinator', () => {
       stopActiveBranch,
       stopSession: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
-      deleteSession: vi.fn(async () => undefined)
+      deleteSession: vi.fn(async () => undefined),
+      deleteProject: vi.fn(async () => undefined)
     }
     const coordinator = new AcpRuntimeCoordinator(
       (callbacks) => {
@@ -1331,6 +1333,67 @@ describe('AcpRuntimeCoordinator', () => {
     expect(createdRuntime.sendAppContinuation).toHaveBeenCalledOnce()
   })
 
+  it('applies the final dispatch admission wrapper to app-owned continuations', async () => {
+    const admission = createDeferred<void>()
+    let createdRuntime!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      createdRuntime = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks
+      })
+      return createdRuntime.runtime
+    })
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const admittedSessionIds: string[] = []
+    coordinator.setPromptDispatchAdmissionGuard(async (sessionId, dispatch) => {
+      admittedSessionIds.push(sessionId)
+      await admission.promise
+      return dispatch()
+    })
+
+    const continuation = coordinator.sendAppContinuation({
+      sessionId: session.sessionId,
+      text: 'approved recovery continuation'
+    })
+    await Promise.resolve()
+    expect(createdRuntime.sendAppContinuation).not.toHaveBeenCalled()
+
+    admission.resolve()
+    await continuation
+
+    expect(admittedSessionIds).toEqual([session.sessionId])
+    expect(createdRuntime.sendAppContinuation).toHaveBeenCalledOnce()
+  })
+
+  it('does not reacquire dispatch admission for an already admitted continuation', async () => {
+    let createdRuntime!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      createdRuntime = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks
+      })
+      return createdRuntime.runtime
+    })
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const admittedSessionIds: string[] = []
+    coordinator.setPromptDispatchAdmissionGuard(async (sessionId, dispatch) => {
+      admittedSessionIds.push(sessionId)
+      return dispatch()
+    })
+
+    await expect(
+      coordinator.startContinuationWhenDispatchAdmitted(
+        { sessionId: session.sessionId, text: 'already deletion-admitted' },
+        async () => undefined
+      )
+    ).resolves.toBe('provider_prompt_accepted')
+
+    expect(admittedSessionIds).toEqual([])
+    expect(createdRuntime.sendAppContinuation).toHaveBeenCalledOnce()
+  })
+
   it('stops a prompt for handoff without reporting a user generation cancellation', async () => {
     const onSessionCancellationRequested = vi.fn()
     const fake = createFakeRuntime({
@@ -1629,8 +1692,8 @@ describe('AcpRuntimeCoordinator', () => {
       return fake.runtime
     })
 
-    const activeSession = await coordinator.createSession()
-    const idleSession = await coordinator.createSession()
+    const activeSession = await coordinator.createSession({ projectName: 'other-project' })
+    const idleSession = await coordinator.createSession({ projectName: 'deleting-project' })
     created[0].emitState({
       promptInFlight: true,
       promptInFlightSessionIds: [activeSession.sessionId]
@@ -1639,6 +1702,11 @@ describe('AcpRuntimeCoordinator', () => {
     const reloadRequest = coordinator.requestSkillsReload()
 
     expect(coordinator.getSnapshot().sessionIds).toEqual([activeSession.sessionId])
+    expect(coordinator.getOwnedSessionIds()).toEqual([
+      activeSession.sessionId,
+      idleSession.sessionId
+    ])
+    expect(coordinator.liveSessionProjectId(idleSession.sessionId)).toBe('deleting-project')
     await expect(
       coordinator.sendPrompt({ sessionId: idleSession.sessionId, text: 'stale turn' })
     ).rejects.toThrow('resume')
