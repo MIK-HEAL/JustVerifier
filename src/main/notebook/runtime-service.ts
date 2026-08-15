@@ -18,9 +18,14 @@ import type {
   NotebookLanguage,
   NotebookRunSummary,
   NotebookSessionRequest,
+  NotebookSessionStateRequest,
   NotebookSessionReference,
   NotebookSessionState,
   RunNotebookCellRequest
+} from '../../shared/notebook'
+import {
+  NOTEBOOK_STATE_HISTORY_FRAME_ID_LIMIT_BYTES,
+  NOTEBOOK_STATE_TARGET_RUN_LIMIT
 } from '../../shared/notebook'
 import type {
   ManageEnvironmentsRequest,
@@ -101,6 +106,10 @@ import {
   type NotebookExecutorLifecycleCallbacks,
   type NotebookSessionLifecycleCallbacks
 } from './session-lifecycle'
+import {
+  assertNotebookCodeAppendWithinLimit,
+  assertNotebookCodeWithinLimit
+} from './content-limits'
 
 // Locale fallback when no explicit locale is injected (see shared/mirror.ts: non-CN locales resolve
 // to public hosts, so this default never silently forces a CN mirror).
@@ -370,6 +379,11 @@ class NotebookRuntimeService {
       recovery: this.recoveryCoordinator,
       bindings: this.runtimeBindingOwner,
       sessions: () => this.sessions.values(),
+      clearKernelTermination: (session, processKey) =>
+        this.sessionLifecycle.clearPersistedKernelTermination(
+          session as RuntimeSession,
+          processKey
+        ),
       notifyChanged: (session) => this.sessionLifecycle.notifyChanged(session as RuntimeSession),
       logger: this.runtimeLogger
     })
@@ -456,13 +470,13 @@ class NotebookRuntimeService {
     })
     this.executionOwner = new NotebookExecutionOwner({
       configRoot: options.configRoot,
-      repository: this.repository,
       runTerminalization: this.runTerminalization,
       dataExecutionAdmission: this.dataExecutionAdmission,
       environmentStateTracker: this.environmentStateTracker,
       createEnvironmentCaptureTarget: (...args) => this.environmentCaptureTarget(...args),
-      persistKernelStatus: (session, status, processKey) =>
-        this.sessionLifecycle.persistKernelStatus(session as RuntimeSession, status, processKey),
+      setKernelStatus: (session, status, processKey) => session.setKernelStatus(processKey, status),
+      persistRecoveredKernelIdle: (session, processKey) =>
+        this.sessionLifecycle.persistKernelStatus(session as RuntimeSession, 'idle', processKey),
       getMcpRpcConnectionResolver: () => this.mcpRpcConnectionResolver,
       notifyAvailable: (session, source) =>
         this.sessionLifecycle.notifyAvailable(session as RuntimeSession, source),
@@ -603,7 +617,7 @@ class NotebookRuntimeService {
             const oldEnv = this.resolveRunEnv(session, request.language)
             const kind = request.language === 'r' ? 'r' : 'python'
             await session.terminateExecutor(kind, oldEnv)
-            this.tearDownLanguageBinding(session, request.language, oldEnv)
+            await this.tearDownLanguageBinding(session, request.language, oldEnv)
           }
         )
         this.sessionLifecycle.notifyChanged(session)
@@ -636,12 +650,13 @@ class NotebookRuntimeService {
   // Clears the state of ONE (language, env) runtime after its kernel was torn down on switch: drops its
   // live status, terminated flag, and execution-queue tail so the rebound runtime starts clean. Only
   // the given env's process key is affected; the other language and other envs are untouched.
-  private tearDownLanguageBinding(
+  private async tearDownLanguageBinding(
     session: RuntimeSession,
     language: NotebookLanguage,
     env: string
-  ): void {
+  ): Promise<void> {
     const processKey = dataProcessKey(language, env)
+    await this.sessionLifecycle.clearPersistedKernelTermination(session, processKey)
     session.clearProcessState(processKey)
   }
 
@@ -695,6 +710,14 @@ class NotebookRuntimeService {
     receivedBytes: number
   }> {
     const session = await this.sessionLifecycle.ensure(request)
+    const current = session.cellView(request.cellId)
+    try {
+      assertNotebookCodeAppendWithinLimit(current.code, request.delta)
+    } catch (error) {
+      session.abortCellWrite(request.cellId, request.writeId)
+      this.sessionLifecycle.notifyChanged(session)
+      throw error
+    }
     const cell = session.appendCellCode(request.cellId, request.writeId, request.delta)
     this.sessionLifecycle.notifyChanged(session)
 
@@ -735,6 +758,7 @@ class NotebookRuntimeService {
     request: ExecuteNotebookCodeRequest,
     signal?: AbortSignal
   ): Promise<NotebookRunSummary> {
+    assertNotebookCodeWithinLimit(request.code)
     const begin = await this.beginCodeCell(request)
 
     await this.appendCodeCell({
@@ -761,6 +785,7 @@ class NotebookRuntimeService {
   // Compatibility facade for the control-plane REPL. Admission, capability lifetime, dispatch,
   // terminalization, and completion interception belong to NotebookExecutionOwner.
   async executeControl(request: ExecuteNotebookControlRequest): Promise<NotebookControlResult> {
+    assertNotebookCodeWithinLimit(request.code)
     const session = await this.sessionLifecycle.ensure(request)
     return this.executionOwner.executeControl(session, request)
   }
@@ -768,6 +793,7 @@ class NotebookRuntimeService {
   // Compatibility facade for stateless shell execution. The owner deliberately admits calls without
   // a per-Session queue while the repository continues to serialize durable run writes.
   async executeShell(request: ExecuteShellRequest): Promise<NotebookShellResult> {
+    assertNotebookCodeWithinLimit(request.command)
     const session = await this.sessionLifecycle.ensure(request)
     return this.executionOwner.executeShell(session, request)
   }
@@ -779,13 +805,29 @@ class NotebookRuntimeService {
     return this.sessionReadModel.peekHandoffContext(sessionId)
   }
 
-  // Returns the current in-memory cells plus the complete persisted run history.
+  // Returns current live state plus the bounded recent run window used by renderer consumers.
   async state(
-    request: NotebookSessionRequest
+    request: NotebookSessionStateRequest
   ): Promise<NotebookSessionState & { runtimeBindings: NotebookRuntimeBindings }> {
+    const requestedRunIds = request.runIds ?? []
+    if (requestedRunIds.length > NOTEBOOK_STATE_TARGET_RUN_LIMIT) {
+      throw new Error(
+        `Notebook state accepts at most ${NOTEBOOK_STATE_TARGET_RUN_LIMIT} targeted run IDs per request.`
+      )
+    }
+    if (
+      request.historySummaryFrameId !== undefined &&
+      Buffer.byteLength(request.historySummaryFrameId, 'utf8') >
+        NOTEBOOK_STATE_HISTORY_FRAME_ID_LIMIT_BYTES
+    ) {
+      throw new Error(
+        `Notebook state history summary Frame ID must not exceed ${NOTEBOOK_STATE_HISTORY_FRAME_ID_LIMIT_BYTES} UTF-8 bytes.`
+      )
+    }
+    const runIds = [...new Set(requestedRunIds)]
     const session = await this.sessionLifecycle.ensure(request)
     await this.runTerminalization.reconcilePending(session)
-    return this.sessionReadModel.state(session)
+    return this.sessionReadModel.state(session, runIds, request.historySummaryFrameId)
   }
 
   // Resolves the durable reference for a session, preferring the live runtime session but falling
@@ -825,18 +867,21 @@ class NotebookRuntimeService {
     // is cleared. Snapshot the keys before teardown drops them from kernelStatuses.
     const envKeys = session.kernelProcessKeys()
 
-    await this.repository.updateKernelStatus({
+    envKeys.forEach((processKey) => session.setKernelStatus(processKey, 'restarting'))
+    await this.repository.clearKernelTerminations({
       projectName: session.projectId,
       sessionId: session.sessionId,
       lane: session.lane,
       status: 'restarting'
     })
+    session.clearAllDurableKernelTerminations()
     this.sessionLifecycle.notifyChanged(session)
 
     try {
       await session.restartExecutor(() => this.sessionLifecycle.createExecutor(session.lane))
       this.environmentOperations.clearRestartRecommendations(envKeys)
     } finally {
+      envKeys.forEach((processKey) => session.setKernelStatus(processKey, 'idle'))
       await this.repository.updateKernelStatus({
         projectName: session.projectId,
         sessionId: session.sessionId,

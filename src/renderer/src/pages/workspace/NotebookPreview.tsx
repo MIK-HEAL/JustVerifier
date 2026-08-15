@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { PreviewToolItem } from '@/stores/preview-workbench-store'
@@ -248,6 +248,15 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   // Selected environment within the active python/r pane; undefined lets the effective-env
   // computation below default to the first (canonical-default-first) environment.
   const [activeEnv, setActiveEnv] = useState<string | undefined>(undefined)
+  const stateLoadInFlight = useRef(false)
+  const stateReloadQueued = useRef(false)
+  const notebookRequest = createNotebookRequest(item.notebook)
+  const notebookRequestKey = JSON.stringify(notebookRequest)
+  const latestNotebookRequest = useRef({ request: notebookRequest, key: notebookRequestKey })
+
+  useEffect(() => {
+    latestNotebookRequest.current = { request: notebookRequest, key: notebookRequestKey }
+  }, [notebookRequest, notebookRequestKey])
 
   // Greys the pane while python is unavailable or an upgrade is running (spec §6.5).
   const envStatus = useNotebookEnvStore((s) => s.status)
@@ -271,21 +280,38 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     setNotebookState(nextState)
   }, [])
 
-  // Reads the latest notebook state from main, including full run history from run.json.
+  // Reads the latest notebook state from main, including its bounded recent run window.
   const loadNotebookState = useCallback(async (): Promise<void> => {
+    if (stateLoadInFlight.current) {
+      stateReloadQueued.current = true
+      return
+    }
+    stateLoadInFlight.current = true
     setIsLoading(true)
 
-    try {
-      const nextState = await window.api.notebook.state(createNotebookRequest(item.notebook))
+    do {
+      stateReloadQueued.current = false
+      const requested = latestNotebookRequest.current
+      try {
+        const nextState = await window.api.notebook.state(requested.request)
 
-      applyNotebookState(nextState)
-      setActionError(null)
-    } catch (error) {
-      setActionError(getErrorMessage(error))
-    } finally {
-      setIsLoading(false)
-    }
-  }, [applyNotebookState, item.notebook])
+        if (latestNotebookRequest.current.key === requested.key) {
+          applyNotebookState(nextState)
+          setActionError(null)
+        } else {
+          stateReloadQueued.current = true
+        }
+      } catch (error) {
+        if (latestNotebookRequest.current.key === requested.key) {
+          setActionError(getErrorMessage(error))
+        } else {
+          stateReloadQueued.current = true
+        }
+      }
+    } while (stateReloadQueued.current)
+    stateLoadInFlight.current = false
+    setIsLoading(false)
+  }, [applyNotebookState])
 
   // Defer the initial state load until after the component has mounted.
   useEffect(() => {
@@ -296,7 +322,7 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     return () => {
       window.clearTimeout(timeoutId)
     }
-  }, [loadNotebookState])
+  }, [loadNotebookState, notebookRequestKey])
 
   // Reload whenever the shared runtime publishes a change for this notebook session.
   useEffect(() => {

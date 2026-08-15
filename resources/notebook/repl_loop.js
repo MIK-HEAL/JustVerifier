@@ -17,6 +17,52 @@ const { fileURLToPath } = require('node:url')
 // Protocol output line. console is captured into strings during a run (see run()), so writing the
 // JSON here via process.stdout.write cannot be corrupted by user console output.
 const emit = (obj) => process.stdout.write(JSON.stringify(obj) + '\n')
+const OUTPUT_LIMIT_BYTES =
+  Number(process.env.OPEN_SCIENCE_NOTEBOOK_TEXT_LIMIT_BYTES) || 2 * 1024 * 1024
+const DIAGNOSTIC_LIMIT_BYTES = Math.min(16 * 1024, Math.max(0, OUTPUT_LIMIT_BYTES))
+
+const takeOutput = (budget, value) => {
+  value = String(value)
+  if (budget.remaining <= 0) {
+    if (value) budget.truncated = true
+    return ''
+  }
+  const candidate = value.length > budget.remaining ? value.slice(0, budget.remaining) : value
+  const encoded = Buffer.from(candidate, 'utf8')
+  if (encoded.byteLength <= budget.remaining) {
+    budget.remaining -= encoded.byteLength
+    if (candidate.length < value.length) budget.truncated = true
+    return encoded.toString('utf8')
+  }
+  let end = Math.min(budget.remaining, encoded.byteLength)
+  while (end > 0 && end < encoded.byteLength && (encoded[end] & 0xc0) === 0x80) end -= 1
+  const prefix = encoded.subarray(0, end).toString('utf8')
+  budget.remaining -= Buffer.byteLength(prefix, 'utf8')
+  budget.truncated = true
+  return prefix
+}
+
+const takeOutputTail = (budget, value) => {
+  value = String(value)
+  if (budget.remaining <= 0) {
+    if (value) budget.truncated = true
+    return ''
+  }
+  const candidate =
+    value.length > budget.remaining ? value.slice(value.length - budget.remaining) : value
+  const encoded = Buffer.from(candidate, 'utf8')
+  if (encoded.byteLength <= budget.remaining) {
+    budget.remaining -= encoded.byteLength
+    if (candidate.length < value.length) budget.truncated = true
+    return encoded.toString('utf8')
+  }
+  let start = encoded.byteLength - budget.remaining
+  while (start < encoded.byteLength && (encoded[start] & 0xc0) === 0x80) start += 1
+  const suffix = encoded.subarray(start).toString('utf8')
+  budget.remaining -= Buffer.byteLength(suffix, 'utf8')
+  budget.truncated = true
+  return suffix
+}
 
 // Capture the connector RPC credentials privately, then delete them from process.env BEFORE the
 // sandbox is built. The sandbox exposes `process` (for cwd() etc.), so leaving the token in
@@ -3187,13 +3233,18 @@ function wrapForRun(code) {
 async function run(code) {
   let out = '',
     err = ''
+  const outputBudget = {
+    remaining: OUTPUT_LIMIT_BYTES - DIAGNOSTIC_LIMIT_BYTES,
+    truncated: false
+  }
+  const diagnosticBudget = { remaining: DIAGNOSTIC_LIMIT_BYTES, truncated: false }
   const origLog = console.log,
     origErr = console.error
   console.log = (...a) => {
-    out += a.map(String).join(' ') + '\n'
+    out += takeOutput(outputBudget, a.map(String).join(' ') + '\n')
   }
   console.error = (...a) => {
-    err += a.map(String).join(' ') + '\n'
+    err += takeOutput(outputBudget, a.map(String).join(' ') + '\n')
   }
   let error = null,
     result = null
@@ -3202,18 +3253,29 @@ async function run(code) {
     if (value !== undefined) {
       // Non-serializable (e.g. circular) echoes fall back to a string so a run never fails on output.
       try {
-        result = typeof value === 'string' ? value : JSON.stringify(value)
+        const serialized = typeof value === 'string' ? value : JSON.stringify(value)
+        // JSON.stringify returns undefined (without throwing) for functions and Symbols. Keep the
+        // protocol's null result instead of fabricating the literal string "undefined".
+        if (serialized !== undefined) result = takeOutput(outputBudget, serialized)
       } catch {
-        result = String(value)
+        result = takeOutput(outputBudget, String(value))
       }
     }
   } catch (e) {
-    error = e && e.stack ? String(e.stack) : String(e)
+    error = takeOutputTail(diagnosticBudget, e && e.stack ? String(e.stack) : String(e))
   } finally {
     console.log = origLog
     console.error = origErr
   }
-  return { stdout: out, stderr: err, error, result, cwd: process.cwd(), figures: [] }
+  return {
+    stdout: out,
+    stderr: err,
+    error,
+    result,
+    cwd: process.cwd(),
+    figures: [],
+    output_truncated: outputBudget.truncated || diagnosticBudget.truncated
+  }
 }
 
 const rl = readline.createInterface({ input: process.stdin })

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { loadSessionNotebookRuns } from './session-notebook-data'
+import { loadSessionNotebookData, loadSessionNotebookRuns } from './session-notebook-data'
 import type { NotebookRunRecord } from '../../../../shared/notebook'
 
 const request = { sessionId: 's1', projectName: 'default', workspaceCwd: '/w' }
@@ -43,5 +43,21 @@ describe('loadSessionNotebookRuns', () => {
     )
 
     expect(runs).toEqual([run])
+  })
+
+  it('returns the durable run total alongside the bounded renderer window', async () => {
+    const run = makeRun()
+    const state = vi.fn().mockResolvedValue({ runs: [run], runCount: 125 })
+
+    await expect(
+      loadSessionNotebookData(
+        {
+          getReference: vi.fn().mockResolvedValue({ sessionId: 's1' }),
+          state
+        },
+        request
+      )
+    ).resolves.toEqual({ runs: [run], runCount: 125 })
+    expect(state).toHaveBeenCalledWith(request)
   })
 })

@@ -1,9 +1,11 @@
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
   NotebookKernelMetadata,
+  NotebookKernelInstanceIdentity,
   NotebookRunDocument,
+  NotebookRunHistorySummary,
   NotebookRunRecord,
   NotebookWorkingFile
 } from '../../shared/notebook'
@@ -17,6 +19,16 @@ import {
 } from './lane-identity'
 
 const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const MAX_DOCUMENT_CACHE_ENTRIES = 8
+const MAX_DOCUMENT_CACHE_BYTES = 32 * 1024 * 1024
+const MAX_DOCUMENT_READ_ATTEMPTS = 2
+
+type DocumentFileIdentity = { mtimeMs: number; size: number; ino: number }
+
+const sameDocumentFileIdentity = (
+  left: DocumentFileIdentity,
+  right: DocumentFileIdentity
+): boolean => left.mtimeMs === right.mtimeMs && left.size === right.size && left.ino === right.ino
 
 type LoadNotebookRunDocumentRequest = {
   projectName: string
@@ -42,6 +54,10 @@ type UpdateKernelStatusRequest = {
   sessionId: string
   status: NotebookKernelMetadata['lastKnownStatus']
   lane: NotebookLaneIdentity
+}
+
+type UpdateKernelTerminationRequest = Omit<UpdateKernelStatusRequest, 'status'> & {
+  kernelInstance: NotebookKernelInstanceIdentity
 }
 
 type NormalizeNotebookRunDocumentRequest = Omit<
@@ -158,6 +174,46 @@ const normalizeRun = (sessionRoot: string, run: NotebookRunRecord): NotebookRunR
   inputFiles: (run.inputFiles ?? []).map((input) => ({ ...input }))
 })
 
+const kernelInstanceIdentityKey = (instance: NotebookKernelInstanceIdentity): string =>
+  instance.kind === 'repl' ? 'repl' : `${instance.kind}:${instance.environment}`
+
+const sameKernelInstance = (
+  left: NotebookKernelInstanceIdentity,
+  right: NotebookKernelInstanceIdentity
+): boolean => kernelInstanceIdentityKey(left) === kernelInstanceIdentityKey(right)
+
+const normalizeTerminatedKernelInstances = (
+  value: unknown
+): NotebookKernelInstanceIdentity[] | undefined => {
+  if (!Array.isArray(value)) return undefined
+  const instances = new Map<string, NotebookKernelInstanceIdentity>()
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object' || !('kind' in candidate)) continue
+    if (candidate.kind === 'repl') {
+      instances.set('repl', { kind: 'repl' })
+      continue
+    }
+    if (
+      (candidate.kind === 'python' || candidate.kind === 'r') &&
+      'environment' in candidate &&
+      typeof candidate.environment === 'string' &&
+      candidate.environment.length > 0
+    ) {
+      const instance = { kind: candidate.kind, environment: candidate.environment }
+      instances.set(kernelInstanceIdentityKey(instance), instance)
+    }
+  }
+  return instances.size > 0 ? [...instances.values()] : undefined
+}
+
+const withoutTerminatedKernelInstances = (
+  kernel: NotebookKernelMetadata
+): NotebookKernelMetadata => {
+  const next = { ...kernel }
+  delete next.terminatedKernelInstances
+  return next
+}
+
 const ownRun = (lane: NotebookLaneIdentity, run: NotebookRunRecord): NotebookRunRecord => {
   const { agentFrameId } = notebookLaneScope(lane)
   if (run.agentFrameId && run.agentFrameId !== agentFrameId) {
@@ -181,6 +237,9 @@ const normalizeDocument = (
     sessionId,
     request.lane
   )
+  const terminatedKernelInstances = normalizeTerminatedKernelInstances(
+    document.kernel?.terminatedKernelInstances
+  )
 
   return {
     ...document,
@@ -193,12 +252,15 @@ const normalizeDocument = (
     notebookSessionRoot,
     dataRoot: getNotebookDataRoot(storageRoot, storageProjectId, sessionId, request.lane),
     kernel: {
-      ...document.kernel,
+      ...withoutTerminatedKernelInstances(document.kernel),
       language: 'python',
       pythonPath: request.pythonPath ?? document.kernel?.pythonPath,
       kernelName: request.kernelName ?? document.kernel?.kernelName ?? 'python3',
       runtimeRoot: getRuntimeRoot(storageRoot),
-      lastKnownStatus: document.kernel?.lastKnownStatus ?? 'idle'
+      lastKnownStatus: terminatedKernelInstances
+        ? 'terminated'
+        : (document.kernel?.lastKnownStatus ?? 'idle'),
+      ...(terminatedKernelInstances ? { terminatedKernelInstances } : {})
     },
     runs: (document.runs ?? []).map((run) => normalizeRun(notebookSessionRoot, run)),
     updatedAt: document.updatedAt ?? Date.now()
@@ -209,6 +271,11 @@ const normalizeDocument = (
 class NotebookRunRepository {
   private saveQueue: Promise<void> = Promise.resolve()
   private saveSequence = 0
+  private readonly documentCache = new Map<
+    string,
+    { mtimeMs: number; size: number; ino: number; document: NotebookRunDocument }
+  >()
+  private documentCacheBytes = 0
 
   constructor(private readonly storageRoot: string) {}
 
@@ -290,6 +357,68 @@ class NotebookRunRepository {
     return this.mutate(request.projectName, request.sessionId, request.lane, (document) => ({
       ...document,
       kernel: { ...document.kernel, lastKnownStatus: request.status },
+      updatedAt: Date.now()
+    }))
+  }
+
+  async markKernelTerminated(
+    request: UpdateKernelTerminationRequest
+  ): Promise<NotebookRunDocument> {
+    return this.mutate(request.projectName, request.sessionId, request.lane, (document) => {
+      const terminatedKernelInstances = document.kernel.terminatedKernelInstances ?? []
+      const alreadyTerminated = terminatedKernelInstances.some((instance) =>
+        sameKernelInstance(instance, request.kernelInstance)
+      )
+      return {
+        ...document,
+        kernel: {
+          ...document.kernel,
+          lastKnownStatus: 'terminated',
+          terminatedKernelInstances: alreadyTerminated
+            ? terminatedKernelInstances
+            : [...terminatedKernelInstances, request.kernelInstance]
+        },
+        updatedAt: Date.now()
+      }
+    })
+  }
+
+  async clearKernelTermination(
+    request: UpdateKernelTerminationRequest
+  ): Promise<NotebookRunDocument> {
+    return this.mutate(request.projectName, request.sessionId, request.lane, (document) => {
+      const current = document.kernel.terminatedKernelInstances
+      if (!current?.some((instance) => sameKernelInstance(instance, request.kernelInstance))) {
+        return document
+      }
+      const remaining = current.filter(
+        (instance) => !sameKernelInstance(instance, request.kernelInstance)
+      )
+      return {
+        ...document,
+        kernel:
+          remaining.length > 0
+            ? {
+                ...document.kernel,
+                lastKnownStatus: 'terminated',
+                terminatedKernelInstances: remaining
+              }
+            : {
+                ...withoutTerminatedKernelInstances(document.kernel),
+                lastKnownStatus: 'idle'
+              },
+        updatedAt: Date.now()
+      }
+    })
+  }
+
+  async clearKernelTerminations(request: UpdateKernelStatusRequest): Promise<NotebookRunDocument> {
+    return this.mutate(request.projectName, request.sessionId, request.lane, (document) => ({
+      ...document,
+      kernel: {
+        ...withoutTerminatedKernelInstances(document.kernel),
+        lastKnownStatus: request.status
+      },
       updatedAt: Date.now()
     }))
   }
@@ -423,6 +552,83 @@ class NotebookRunRepository {
       )
   }
 
+  async readSessionRunWindow(
+    projectName: string,
+    sessionId: string,
+    limit: number,
+    includeRunIds: readonly string[] = [],
+    historySummaryFrameId?: string
+  ): Promise<{
+    runs: NotebookRunRecord[]
+    total: number
+    latestRunEnvironments: Partial<Record<'python' | 'r', string>>
+    historySummary?: NotebookRunHistorySummary
+  }> {
+    const documents = await this.readSessionDocuments(projectName, sessionId)
+    const runs: NotebookRunRecord[] = []
+    const requestedRunIds = new Set(includeRunIds)
+    const requestedRuns = new Map<string, NotebookRunRecord>()
+    const latestEnvironmentRuns = new Map<'python' | 'r', NotebookRunRecord>()
+    const historySummary: NotebookRunHistorySummary | undefined = historySummaryFrameId
+      ? {
+          agentFrameId: historySummaryFrameId,
+          runCount: 0,
+          kernelCounts: { python: 0, r: 0, repl: 0, bash: 0 }
+        }
+      : undefined
+    let latestSummaryDataRun: NotebookRunRecord | undefined
+    let total = 0
+    const compareRuns = (left: NotebookRunRecord, right: NotebookRunRecord): number =>
+      left.startedAt - right.startedAt || left.runId.localeCompare(right.runId)
+
+    for (const document of documents) {
+      for (const run of document.runs) {
+        total += 1
+        if (requestedRunIds.has(run.runId)) requestedRuns.set(run.runId, run)
+        if (historySummary && run.agentFrameId === historySummary.agentFrameId) {
+          historySummary.runCount += 1
+          historySummary.kernelCounts[run.kernelKind] += 1
+          if (
+            (run.kernelKind === 'python' || run.kernelKind === 'r') &&
+            (!latestSummaryDataRun || compareRuns(latestSummaryDataRun, run) < 0)
+          ) {
+            latestSummaryDataRun = run
+            historySummary.latestDataKernel = run.kernelKind
+          }
+        }
+        if (
+          (run.kernelKind === 'python' || run.kernelKind === 'r') &&
+          run.environment &&
+          (!latestEnvironmentRuns.has(run.kernelKind) ||
+            compareRuns(latestEnvironmentRuns.get(run.kernelKind)!, run) < 0)
+        ) {
+          latestEnvironmentRuns.set(run.kernelKind, run)
+        }
+        if (limit <= 0) continue
+        let low = 0
+        let high = runs.length
+        while (low < high) {
+          const middle = (low + high) >>> 1
+          if (compareRuns(runs[middle], run) <= 0) low = middle + 1
+          else high = middle
+        }
+        runs.splice(low, 0, run)
+        if (runs.length > limit) runs.shift()
+      }
+    }
+
+    const mergedRuns = new Map(runs.map((run) => [run.runId, run]))
+    for (const run of requestedRuns.values()) mergedRuns.set(run.runId, run)
+    return {
+      runs: [...mergedRuns.values()].sort(compareRuns),
+      total,
+      latestRunEnvironments: Object.fromEntries(
+        [...latestEnvironmentRuns.entries()].map(([kind, run]) => [kind, run.environment!])
+      ),
+      ...(historySummary ? { historySummary } : {})
+    }
+  }
+
   // Loads a history document that must already exist for mutating operations.
   private async loadExisting(
     projectName: string,
@@ -432,20 +638,47 @@ class NotebookRunRepository {
     const safeProjectName = assertSafeNotebookPathSegment(projectName)
     const safeSessionId = assertSafeNotebookPathSegment(sessionId)
     const filePath = getNotebookRunJsonPath(this.storageRoot, safeProjectName, safeSessionId, lane)
-    const rawDocument = await readFile(filePath, 'utf8')
-    const document = JSON.parse(rawDocument) as NotebookRunDocument
-    // Decode before normalization for the same reason as loadOrCreate above.
-    const decoded = decodeRunDocumentDataPaths(document, this.storageRoot)
+    for (let attempt = 0; attempt < MAX_DOCUMENT_READ_ATTEMPTS; attempt += 1) {
+      const fileInfo = await stat(filePath)
+      const cached = this.documentCache.get(filePath)
+      if (cached && sameDocumentFileIdentity(cached, fileInfo)) {
+        // Refresh insertion order so the Map also acts as a small LRU.
+        this.documentCache.delete(filePath)
+        this.documentCache.set(filePath, cached)
+        return cached.document
+      }
+      const rawDocument = await readFile(filePath, 'utf8')
+      const document = JSON.parse(rawDocument) as NotebookRunDocument
+      // Decode before normalization for the same reason as loadOrCreate above.
+      const decoded = decodeRunDocumentDataPaths(document, this.storageRoot)
 
-    return normalizeDocument(
-      this.storageRoot,
-      {
-        projectName: safeProjectName,
-        sessionId: safeSessionId,
-        lane
-      },
-      decoded
-    )
+      const normalized = normalizeDocument(
+        this.storageRoot,
+        {
+          projectName: safeProjectName,
+          sessionId: safeSessionId,
+          lane
+        },
+        decoded
+      )
+      const currentInfo = await stat(filePath)
+      if (!sameDocumentFileIdentity(fileInfo, currentInfo)) {
+        // An atomic replacement landed between read and stat. Retry once so old bytes can never be
+        // cached under the replacement file's identity; under continuous writes, return this valid
+        // snapshot without caching it and let the next caller observe the latest document.
+        if (attempt + 1 < MAX_DOCUMENT_READ_ATTEMPTS) continue
+        return normalized
+      }
+      this.rememberDocument(filePath, {
+        mtimeMs: currentInfo.mtimeMs,
+        size: currentInfo.size,
+        ino: currentInfo.ino,
+        document: normalized
+      })
+      return normalized
+    }
+
+    throw new Error(`Failed to read notebook document: ${filePath}`)
   }
 
   // Reads the current document, applies `transform`, and writes back the result -- the read and write
@@ -490,6 +723,34 @@ class NotebookRunRepository {
     await operation
   }
 
+  // Retains only a small working set. Large or numerous histories remain readable but are parsed
+  // again instead of pinning complete text and image payloads for the process lifetime.
+  private rememberDocument(
+    filePath: string,
+    entry: { mtimeMs: number; size: number; ino: number; document: NotebookRunDocument }
+  ): void {
+    const previous = this.documentCache.get(filePath)
+    if (previous) {
+      this.documentCache.delete(filePath)
+      this.documentCacheBytes -= previous.size
+    }
+
+    if (entry.size > MAX_DOCUMENT_CACHE_BYTES) return
+
+    this.documentCache.set(filePath, entry)
+    this.documentCacheBytes += entry.size
+    while (
+      this.documentCache.size > MAX_DOCUMENT_CACHE_ENTRIES ||
+      this.documentCacheBytes > MAX_DOCUMENT_CACHE_BYTES
+    ) {
+      const oldestPath = this.documentCache.keys().next().value
+      if (typeof oldestPath !== 'string') break
+      const oldest = this.documentCache.get(oldestPath)
+      this.documentCache.delete(oldestPath)
+      this.documentCacheBytes -= oldest?.size ?? 0
+    }
+  }
+
   // Writes one document to disk via a temp file + atomic rename. Always invoked from inside the
   // saveQueue chain (mutate() or writeDocument() above), never called directly.
   private async persist(document: NotebookRunDocument): Promise<void> {
@@ -516,6 +777,13 @@ class NotebookRunRepository {
     const encoded = encodeRunDocumentDataPaths(document, this.storageRoot)
     await writeFile(temporaryPath, `${JSON.stringify(encoded, null, 2)}\n`, 'utf8')
     await rename(temporaryPath, filePath)
+    const fileInfo = await stat(filePath)
+    this.rememberDocument(filePath, {
+      mtimeMs: fileInfo.mtimeMs,
+      size: fileInfo.size,
+      ino: fileInfo.ino,
+      document
+    })
   }
 }
 

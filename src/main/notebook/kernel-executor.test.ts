@@ -15,6 +15,7 @@ import {
   rScriptBin
 } from './runtime-paths'
 import { TimeoutController } from './timeout-controller'
+import { NOTEBOOK_TEXT_LIMIT_BYTES } from './content-limits'
 import {
   startWorkingFileObservation,
   toPortableNotebookRelativePath
@@ -768,6 +769,57 @@ gate('NotebookKernelExecutor (fake loop)', () => {
 })
 
 posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
+  it('bounds producer output before it crosses the loop protocol', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-output-limit-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        code: `print("x" * ${NOTEBOOK_TEXT_LIMIT_BYTES + 1024})`,
+        language: 'python'
+      })
+      expect(result.status).toBe('completed')
+      expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(
+        NOTEBOOK_TEXT_LIMIT_BYTES
+      )
+      expect(result.truncated).toBe(true)
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('retains an exception diagnostic after stdout fills the normal output budget', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-diagnostic-reserve-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        code: `print("x" * ${NOTEBOOK_TEXT_LIMIT_BYTES + 1024})\nraise RuntimeError("diagnostic survives")`,
+        language: 'python'
+      })
+      expect(result.status).toBe('failed')
+      expect(result.traceback).toContain('RuntimeError: diagnostic survives')
+      expect(
+        Buffer.byteLength(result.stdout, 'utf8') + Buffer.byteLength(result.traceback, 'utf8')
+      ).toBeLessThanOrEqual(NOTEBOOK_TEXT_LIMIT_BYTES)
+      expect(result.truncated).toBe(true)
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('cancels a run without clearing the persistent Python namespace', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-cancel-'))
     const request = baseRequest(cwdDir)
@@ -953,6 +1005,83 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
 })
 
 describe.skipIf(!rExecutable || !rScriptExecutable)('NotebookKernelExecutor (real R loop)', () => {
+  it('bounds R output before it crosses the loop protocol', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-r-loop-output-limit-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvR(request.runtimeRoot, DEFAULT_R_ENV)
+    const executor = new NotebookKernelExecutor({
+      rLoopPath: join(__dirname, '../../../resources/notebook/r_loop.R'),
+      platform: 'linux'
+    })
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        code: `cat(strrep("x", ${NOTEBOOK_TEXT_LIMIT_BYTES + 1024}))`,
+        language: 'r'
+      })
+      expect(result.status).toBe('completed')
+      expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(
+        NOTEBOOK_TEXT_LIMIT_BYTES
+      )
+      expect(result.truncated).toBe(true)
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('keeps the R protocol aligned when user code removes the primary output sink', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-r-loop-sink-guard-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvR(request.runtimeRoot, DEFAULT_R_ENV)
+    const executor = new NotebookKernelExecutor({
+      rLoopPath: join(__dirname, '../../../resources/notebook/r_loop.R'),
+      platform: 'linux'
+    })
+
+    try {
+      const guarded = await executor.execute({
+        ...request,
+        code: '{ base::sink(NULL); sink(NULL); cat("still captured") }',
+        language: 'r'
+      })
+      expect(guarded.status).toBe('completed')
+      expect(guarded.stdout).toContain('still captured')
+
+      const next = await executor.execute({ ...request, code: '40 + 2', language: 'r' })
+      expect(next.status).toBe('completed')
+      expect(next.stdout).toContain('42')
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('retains an R error after stdout fills the normal output budget', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-r-loop-diagnostic-reserve-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvR(request.runtimeRoot, DEFAULT_R_ENV)
+    const executor = new NotebookKernelExecutor({
+      rLoopPath: join(__dirname, '../../../resources/notebook/r_loop.R'),
+      platform: 'linux'
+    })
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        code: `cat(strrep("x", ${NOTEBOOK_TEXT_LIMIT_BYTES + 1024})); stop("diagnostic survives")`,
+        language: 'r'
+      })
+      expect(result.status).toBe('failed')
+      expect(result.traceback).toContain('diagnostic survives')
+      expect(
+        Buffer.byteLength(result.stdout, 'utf8') + Buffer.byteLength(result.traceback, 'utf8')
+      ).toBeLessThanOrEqual(NOTEBOOK_TEXT_LIMIT_BYTES)
+      expect(result.truncated).toBe(true)
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('cancels a run without clearing the persistent R namespace', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-r-loop-cancel-'))
     const request = baseRequest(cwdDir)
@@ -1773,6 +1902,44 @@ describe('NotebookKernelExecutor shutdown reaping', () => {
 const REPL_LOOP = join(__dirname, '../../../resources/notebook/repl_loop.js')
 
 describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
+  it('bounds control output before it crosses the loop protocol', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-output-limit-'))
+    const executor = new NotebookKernelExecutor({ replLoopPath: REPL_LOOP, platform: 'linux' })
+    try {
+      const result = await executor.execute({
+        ...baseRequest(cwdDir),
+        code: `console.log("x".repeat(${NOTEBOOK_TEXT_LIMIT_BYTES + 1024}))`,
+        kind: 'repl'
+      })
+      expect(Buffer.byteLength(result.stdout, 'utf8')).toBeLessThanOrEqual(
+        NOTEBOOK_TEXT_LIMIT_BYTES
+      )
+      expect(result.truncated).toBe(true)
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('retains a control error after stdout fills the normal output budget', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-diagnostic-reserve-'))
+    const executor = new NotebookKernelExecutor({ replLoopPath: REPL_LOOP, platform: 'linux' })
+    try {
+      const result = await executor.execute({
+        ...baseRequest(cwdDir),
+        code: `console.log("x".repeat(${NOTEBOOK_TEXT_LIMIT_BYTES + 1024})); throw new Error("diagnostic survives")`,
+        kind: 'repl'
+      })
+      expect(result.status).toBe('failed')
+      expect(result.traceback).toContain('Error: diagnostic survives')
+      expect(
+        Buffer.byteLength(result.stdout, 'utf8') + Buffer.byteLength(result.traceback, 'utf8')
+      ).toBeLessThanOrEqual(NOTEBOOK_TEXT_LIMIT_BYTES)
+      expect(result.truncated).toBe(true)
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('spawns the repl loop via process.execPath and returns the mapped return value', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-'))
     const executor = new NotebookKernelExecutor({ replLoopPath: REPL_LOOP, platform: 'linux' })

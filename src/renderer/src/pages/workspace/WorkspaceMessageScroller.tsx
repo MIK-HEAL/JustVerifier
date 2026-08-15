@@ -82,6 +82,7 @@ import type { NotebookSessionReference } from '../../../../shared/notebook'
 import { useNotebookRunsById } from './use-notebook-runs-by-id'
 import { WorkspaceElicitationCard } from './WorkspaceElicitationCard'
 import { WorkspaceSubagentMessageRow } from './WorkspaceSubagentMessageRow'
+import { getNotebookRunIdFromActivity } from './workspace-tool-activity-details'
 
 type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
@@ -114,6 +115,8 @@ type SessionScopedActivityExpansionState = {
   sessionId: string | undefined
   overrides: ActivityExpansionOverrides
 }
+
+const EMPTY_ACTIVITY_EXPANSION_OVERRIDES: ActivityExpansionOverrides = {}
 
 type SessionScopedMessagePresentationState = {
   scopeId: string | undefined
@@ -365,7 +368,6 @@ const WorkspaceMessageScrollerImpl = ({
     ? JSON.stringify([currentSessionId, activeConversationFrame?.activeBranchId ?? 'legacy'])
     : undefined
   const artifactVisibility = useWorkspaceArtifactVisibility(activeSession)
-  const notebookRunsById = useNotebookRunsById(notebookReference)
   const handoffEvents = useHandoffLifecycleEvents(handoffLifecycleSource, currentSessionId)
   // The whole-window find bar is an Electron overlay owned by main; the Workspace only needs to tell
   // main it is mounted and searchable so Cmd/Ctrl+F is intercepted (and re-arm UNREADY on unmount).
@@ -445,7 +447,7 @@ const WorkspaceMessageScrollerImpl = ({
   const activityExpansionOverrides =
     activityExpansionOverrideState.sessionId === currentSessionId
       ? activityExpansionOverrideState.overrides
-      : {}
+      : EMPTY_ACTIVITY_EXPANSION_OVERRIDES
   const rawConversationItems = useMemo(
     () => createConversationItems(activeSession, handoffEvents),
     [activeSession, handoffEvents]
@@ -454,6 +456,33 @@ const WorkspaceMessageScrollerImpl = ({
     () => groupConversationItems(rawConversationItems, activeSession?.activityGroups),
     [activeSession?.activityGroups, rawConversationItems]
   )
+  const notebookRunIdByActivityId = useMemo(
+    () =>
+      new Map(
+        conversationItems.flatMap((item) => {
+          const activities =
+            item.type === 'activity-group'
+              ? item.activities
+              : item.type === 'activity'
+                ? [item.activity]
+                : []
+          return activities.flatMap((activity) => {
+            const runId = getNotebookRunIdFromActivity(activity)
+            return runId ? [[activity.id, runId] as const] : []
+          })
+        })
+      ),
+    [conversationItems]
+  )
+  const requestedNotebookRunIds = useMemo(
+    () =>
+      Object.entries(activityExpansionOverrides).flatMap(([activityId, expanded]) => {
+        const runId = expanded ? notebookRunIdByActivityId.get(activityId) : undefined
+        return runId ? [runId] : []
+      }),
+    [activityExpansionOverrides, notebookRunIdByActivityId]
+  )
+  const notebookRunsById = useNotebookRunsById(notebookReference, requestedNotebookRunIds)
   const [visibleMessageSnapshot, setVisibleMessageSnapshot] = useState<VisibleMessageSnapshot>(
     () => ({ scopeId: undefined, messageIds: new Set() })
   )

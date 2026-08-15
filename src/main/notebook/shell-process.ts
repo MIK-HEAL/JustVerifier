@@ -5,9 +5,15 @@ import { protectManagedRuntimeWrites } from './managed-runtime-guard'
 import { terminateProcessTree } from '../process-tree'
 import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
 import { NOTEBOOK_SHELL_DEFAULT_TIMEOUT_MS } from '../../shared/notebook'
+import {
+  NOTEBOOK_DIAGNOSTIC_RESERVE_BYTES,
+  NOTEBOOK_TEXT_LIMIT_BYTES,
+  limitUtf8
+} from './content-limits'
 
 // Grace between the POSIX process group's polite termination and an uncatchable group kill.
 const SHELL_KILL_GRACE_MS = 2_000
+const SHELL_TIMEOUT_MESSAGE_RESERVE_BYTES = 256
 
 // Result of one stateless bash_execute run. No status/traceback classification: the shell is
 // expected to fail non-zero sometimes, so the caller inspects exitCode directly instead of a
@@ -16,6 +22,7 @@ type NotebookShellResult = {
   stdout: string
   stderr: string
   exitCode: number | null
+  truncated?: boolean
 }
 
 type NotebookShellProcessRequest = {
@@ -271,6 +278,9 @@ const runShellCommand = (
 
     let stdout = ''
     let stderr = ''
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let truncated = false
     let settled = false
     // Timeout owns settlement even if Windows taskkill emits exit before its promise resolves.
     let timedOut = false
@@ -289,7 +299,8 @@ const runShellCommand = (
         stderr:
           stderr +
           `${stderr && !stderr.endsWith('\n') ? '\n' : ''}Shell command timed out after ${timeoutMs}ms and was killed.`,
-        exitCode: null
+        exitCode: null,
+        ...(truncated ? { truncated: true } : {})
       }
 
       void terminateShellOnTimeout(child, platform).then((usedWindowsTerminator) => {
@@ -308,17 +319,49 @@ const runShellCommand = (
 
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
+    const appendOutput = (
+      current: string,
+      chunk: string,
+      remainingBytes: number,
+      updateBytes: (captured: number) => void
+    ): string => {
+      const limited = limitUtf8(chunk, remainingBytes)
+      updateBytes(Buffer.byteLength(limited.text, 'utf8'))
+      truncated ||= limited.truncated
+      return current + limited.text
+    }
     child.stdout.on('data', (chunk: string) => {
-      stdout += chunk
+      stdout = appendOutput(
+        stdout,
+        chunk,
+        NOTEBOOK_TEXT_LIMIT_BYTES - NOTEBOOK_DIAGNOSTIC_RESERVE_BYTES - stdoutBytes,
+        (captured) => {
+          stdoutBytes += captured
+        }
+      )
     })
     child.stderr.on('data', (chunk: string) => {
-      stderr += chunk
+      stderr = appendOutput(
+        stderr,
+        chunk,
+        NOTEBOOK_DIAGNOSTIC_RESERVE_BYTES - SHELL_TIMEOUT_MESSAGE_RESERVE_BYTES - stderrBytes,
+        (captured) => {
+          stderrBytes += captured
+        }
+      )
     })
     child.once('error', (error) => {
-      if (!timedOut) finish({ stdout, stderr: stderr || error.message, exitCode: null })
+      if (!timedOut)
+        finish({
+          stdout,
+          stderr: stderr || error.message,
+          exitCode: null,
+          ...(truncated ? { truncated: true } : {})
+        })
     })
     child.once('exit', (code) => {
-      if (!timedOut) finish({ stdout, stderr, exitCode: code })
+      if (!timedOut)
+        finish({ stdout, stderr, exitCode: code, ...(truncated ? { truncated: true } : {}) })
     })
   })
 

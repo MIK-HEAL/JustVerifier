@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Download, LoaderCircle, X } from 'lucide-react'
 import { Dialog } from 'radix-ui'
@@ -17,7 +17,11 @@ import { cn } from '@/lib/utils'
 import type { ChatSession } from '@/stores/session-store'
 
 import { resolveDataKernelForTab } from '../../../../shared/notebook'
-import type { NotebookKernelKind, NotebookRunRecord } from '../../../../shared/notebook'
+import type {
+  NotebookKernelKind,
+  NotebookRunHistorySummary,
+  NotebookRunRecord
+} from '../../../../shared/notebook'
 import { NotebookCodeBlock } from './notebook-code'
 import { NotebookRunOutputs } from './NotebookRunOutputs'
 import { NotebookInputDataStrip } from './NotebookInputDataStrip'
@@ -29,10 +33,9 @@ import {
   resolveRunErrorLine,
   resolveRunKernelKind
 } from './notebook-cell-utils'
-import { loadSessionNotebookRuns } from './session-notebook-data'
+import { loadSessionNotebookData } from './session-notebook-data'
 import {
   createNotebookFrameFilterOptions,
-  filterNotebookRunsForSessionBranch,
   notebookFrameFilterForExport,
   notebookFrameLabels,
   projectNotebookRunsForFrame,
@@ -43,6 +46,7 @@ type SessionNotebookStatus = 'loading' | 'error' | 'ready'
 
 // Fixed section order for the per-kernel grouping, mirroring NotebookPreview's tab order.
 const KERNEL_KIND_ORDER: NotebookKernelKind[] = ['python', 'r', 'repl', 'bash']
+const HISTORY_SUMMARY_CACHE_LIMIT = 20
 
 // Turns an IPC rejection into displayable text without losing non-Error values.
 const getErrorMessage = (error: unknown): string =>
@@ -114,9 +118,12 @@ type SessionNotebookContentProps = {
   sessionId: string
   projectId?: string
   runs: NotebookRunRecord[]
+  runCount?: number
+  loadedRunCount?: number
   status: SessionNotebookStatus
   error?: string
   frameLabels?: Readonly<Record<string, string>>
+  onLoadHistorySummary?: (agentFrameId: string) => Promise<NotebookRunHistorySummary | undefined>
   onClose: () => void
   onExport: (kernel: NotebookKernelKind, agentFrameFilter?: string | null) => Promise<void>
   onExportAll: (agentFrameFilter?: string | null) => Promise<string | undefined>
@@ -129,9 +136,12 @@ const SessionNotebookContent = ({
   sessionId,
   projectId,
   runs,
+  runCount = runs.length,
+  loadedRunCount = runs.length,
   status,
   error,
   frameLabels = {},
+  onLoadHistorySummary,
   onClose,
   onExport,
   onExportAll
@@ -144,15 +154,65 @@ const SessionNotebookContent = ({
   const [exportError, setExportError] = useState<string>()
   const [exportSuccess, setExportSuccess] = useState<string>()
   const [frameFilter, setFrameFilter] = useState<NotebookFrameFilterValue>()
+  const [historySummaries, setHistorySummaries] = useState<
+    ReadonlyMap<string, NotebookRunHistorySummary>
+  >(() => new Map())
+  const historySummaryRequests = useRef(new Set<string>())
+  const mounted = useRef(true)
   const shortId = sessionId.slice(0, 8)
-  const frameOptions = createNotebookFrameFilterOptions(runs, frameLabels)
+  const frameOptions = createNotebookFrameFilterOptions(runs, frameLabels, historySummaries, true)
   const effectiveFrameFilter = frameOptions.some((option) => option.value === frameFilter)
     ? frameFilter
-    : frameOptions[0]?.value
+    : (frameOptions.find((option) => (option.count ?? 0) > 0)?.value ?? frameOptions[0]?.value)
+  const effectiveAgentFrameId = effectiveFrameFilter?.slice('frame:'.length)
+  const historySummary = effectiveAgentFrameId
+    ? historySummaries.get(effectiveAgentFrameId)
+    : undefined
   const projectedRuns = effectiveFrameFilter
     ? projectNotebookRunsForFrame(runs, effectiveFrameFilter)
     : []
-  const agents = frameOptions.length
+  const agents = frameOptions.filter((option) => (option.count ?? 0) > 0).length
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (
+      status !== 'ready' ||
+      !effectiveAgentFrameId ||
+      !onLoadHistorySummary ||
+      historySummaries.has(effectiveAgentFrameId) ||
+      historySummaryRequests.current.has(effectiveAgentFrameId)
+    ) {
+      return
+    }
+
+    historySummaryRequests.current.add(effectiveAgentFrameId)
+    void onLoadHistorySummary(effectiveAgentFrameId)
+      .then((summary) => {
+        if (!mounted.current || !summary || summary.agentFrameId !== effectiveAgentFrameId) return
+        setHistorySummaries((current) => {
+          const next = new Map(current)
+          next.delete(effectiveAgentFrameId)
+          next.set(effectiveAgentFrameId, summary)
+          if (next.size > HISTORY_SUMMARY_CACHE_LIMIT) {
+            const oldest = next.keys().next().value
+            if (oldest !== undefined) next.delete(oldest)
+          }
+          return next
+        })
+      })
+      .catch((summaryError: unknown) => {
+        console.error('Failed to load notebook history summary:', summaryError)
+      })
+      .finally(() => {
+        historySummaryRequests.current.delete(effectiveAgentFrameId)
+      })
+  }, [effectiveAgentFrameId, historySummaries, onLoadHistorySummary, status])
   // Only python/r runs are "cells" in the notebook sense; repl/bash are control-plane/shell runs
   // that share the run history but never became a notebook cell.
   const cells = runs.filter((run) => {
@@ -169,6 +229,11 @@ const SessionNotebookContent = ({
   // Per-kernel tabs, in fixed order, keeping only kinds that actually have a run — same has-runs
   // filtering as NotebookPreview, switchable rather than stacked so the dialog matches the preview.
   const kindsWithRuns = new Set(projectedRuns.map((run) => resolveRunKernelKind(run)))
+  if (historySummary) {
+    for (const kind of KERNEL_KIND_ORDER) {
+      if (historySummary.kernelCounts[kind] > 0) kindsWithRuns.add(kind)
+    }
+  }
   const visibleKinds = KERNEL_KIND_ORDER.filter((kind) => kindsWithRuns.has(kind))
   const effectiveActiveKind = visibleKinds.includes(activeKind)
     ? activeKind
@@ -177,7 +242,6 @@ const SessionNotebookContent = ({
     (run) => resolveRunKernelKind(run) === effectiveActiveKind
   )
   const busy = exporting || exportingAll
-  const exportDisabled = status !== 'ready' || projectedRuns.length === 0 || busy
 
   // The main button's "current tab" = the kernel whose .ipynb will be saved. repl/bash tabs fold
   // into the most recent data kernel so the file still has a real kernelspec; sessions that never
@@ -186,7 +250,13 @@ const SessionNotebookContent = ({
     kindsWithRuns.has(kernel as NotebookKernelKind)
   )
   const mixedDataKernels = dataKernelsWithRuns.length >= 2
-  const resolvedDataKernel = resolveDataKernelForTab(projectedRuns, effectiveActiveKind)
+  const resolvedDataKernel =
+    effectiveActiveKind === 'repl' || effectiveActiveKind === 'bash'
+      ? (historySummary?.latestDataKernel ??
+        resolveDataKernelForTab(projectedRuns, effectiveActiveKind))
+      : resolveDataKernelForTab(projectedRuns, effectiveActiveKind)
+  const exportDisabled =
+    status !== 'ready' || !effectiveFrameFilter || dataKernelsWithRuns.length === 0 || busy
 
   const handleExport = async (): Promise<void> => {
     if (!effectiveFrameFilter) return
@@ -259,7 +329,7 @@ const SessionNotebookContent = ({
           <p className="px-5 py-16 text-center text-sm text-danger-000">
             {error ?? t('Failed to load notebook.')}
           </p>
-        ) : runs.length === 0 ? (
+        ) : runCount === 0 ? (
           <p className="px-5 py-16 text-center text-sm text-muted-foreground">
             {t('No execution records for this session.')}
           </p>
@@ -269,6 +339,17 @@ const SessionNotebookContent = ({
           </p>
         ) : (
           <>
+            {runCount > loadedRunCount ? (
+              <p
+                className="border-b border-border bg-muted px-4 py-2 text-xs text-muted-foreground"
+                role="status"
+              >
+                {t(
+                  'This session has {{total}} runs. This view loads the latest {{loaded}}; downloads include the complete history.',
+                  { loaded: loadedRunCount, total: runCount }
+                )}
+              </p>
+            ) : null}
             <div className="flex max-w-full items-center gap-2 overflow-hidden border-b border-border bg-muted px-3 py-2">
               <label
                 htmlFor={`notebook-frame-filter-${sessionId}`}
@@ -294,11 +375,13 @@ const SessionNotebookContent = ({
                 <SelectContent>
                   {frameOptions.map((option) => (
                     <SelectItem key={option.value} value={option.value}>
-                      {option.label} ·{' '}
-                      {t('{{count}} runs', {
-                        defaultValue_one: '{{count}} run',
-                        count: option.count
-                      })}
+                      {option.label}
+                      {option.count !== undefined
+                        ? ` · ${t('{{count}} runs', {
+                            defaultValue_one: '{{count}} run',
+                            count: option.count
+                          })}`
+                        : ''}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -329,7 +412,8 @@ const SessionNotebookContent = ({
                 >
                   <span>{kernelKindLabel(kind)}</span>
                   <span className="font-mono text-muted-foreground">
-                    {projectedRuns.filter((run) => resolveRunKernelKind(run) === kind).length}
+                    {historySummary?.kernelCounts[kind] ??
+                      projectedRuns.filter((run) => resolveRunKernelKind(run) === kind).length}
                   </span>
                 </button>
               ))}
@@ -338,14 +422,22 @@ const SessionNotebookContent = ({
               className="divide-y divide-border-100"
               data-testid={`session-notebook-kernel-${effectiveActiveKind}`}
             >
-              {visibleRuns.map((run, index) => (
-                <NotebookDialogCell
-                  key={run.runId}
-                  run={run}
-                  index={index}
-                  showInputData={Boolean(projectId)}
-                />
-              ))}
+              {visibleRuns.length === 0 && kindsWithRuns.has(effectiveActiveKind) ? (
+                <p className="px-5 py-16 text-center text-sm text-muted-foreground">
+                  {t(
+                    'No runs from this kernel are in the recent window. Downloads include the complete history.'
+                  )}
+                </p>
+              ) : (
+                visibleRuns.map((run, index) => (
+                  <NotebookDialogCell
+                    key={run.runId}
+                    run={run}
+                    index={index}
+                    showInputData={Boolean(projectId)}
+                  />
+                ))
+              )}
             </div>
           </>
         )}
@@ -456,6 +548,7 @@ const SessionNotebookDialog = ({
 }: SessionNotebookDialogProps): React.JSX.Element => {
   const { t } = useTranslation()
   const [runs, setRuns] = useState<NotebookRunRecord[]>([])
+  const [runCount, setRunCount] = useState(0)
   const [status, setStatus] = useState<SessionNotebookStatus>('loading')
   const [error, setError] = useState<string | undefined>(undefined)
   const dialogSession = useRetainedDialogValue(session)
@@ -463,6 +556,20 @@ const SessionNotebookDialog = ({
   const sessionId = session?.id
   const projectId = session?.projectId
   const cwd = session?.cwd
+
+  const loadHistorySummary = useCallback(
+    async (agentFrameId: string): Promise<NotebookRunHistorySummary | undefined> => {
+      if (!dialogSession) return undefined
+      const state = await window.api.notebook.state({
+        sessionId: dialogSession.id,
+        projectId: dialogSession.projectId,
+        workspaceCwd: dialogSession.cwd ?? '',
+        historySummaryFrameId: agentFrameId
+      })
+      return state.historySummary
+    },
+    [dialogSession]
+  )
 
   useEffect(() => {
     if (!sessionId) return
@@ -474,16 +581,18 @@ const SessionNotebookDialog = ({
       setStatus('loading')
       setError(undefined)
       setRuns([])
+      setRunCount(0)
 
-      void loadSessionNotebookRuns(window.api.notebook, {
+      void loadSessionNotebookData(window.api.notebook, {
         sessionId,
         projectId,
         workspaceCwd: cwd ?? ''
       })
-        .then((loadedRuns) => {
+        .then((loaded) => {
           if (cancelled) return
 
-          setRuns(loadedRuns)
+          setRuns(loaded.runs)
+          setRunCount(loaded.runCount)
           setStatus('ready')
         })
         .catch((loadError: unknown) => {
@@ -498,7 +607,7 @@ const SessionNotebookDialog = ({
       cancelled = true
       window.clearTimeout(timeoutId)
     }
-  }, [sessionId, projectId, cwd])
+  }, [cwd, projectId, sessionId])
 
   return (
     <Dialog.Root
@@ -525,8 +634,11 @@ const SessionNotebookDialog = ({
               key={dialogSession.id}
               sessionId={dialogSession.id}
               projectId={dialogSession.projectId}
-              runs={filterNotebookRunsForSessionBranch(runs, dialogSession)}
+              runs={runs}
+              runCount={runCount}
+              loadedRunCount={runs.length}
               frameLabels={notebookFrameLabels(dialogSession, t)}
+              onLoadHistorySummary={loadHistorySummary}
               status={status}
               error={error}
               onClose={onClose}

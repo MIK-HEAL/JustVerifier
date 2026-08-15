@@ -22,6 +22,28 @@ afterEach(async () => {
 })
 
 describe('notebook run repository', () => {
+  it('bounds the process-lifetime full-document cache', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+
+    for (let index = 0; index < 9; index += 1) {
+      const sessionId = `session-${index}`
+      await repository.loadOrCreate({
+        projectName: 'default-project',
+        sessionId,
+        workspaceCwd: '/workspace',
+        lane: createRootNotebookLane('default-project', sessionId, `root-frame-${index}`)
+      })
+    }
+
+    const cache = repository as unknown as {
+      documentCache: Map<string, unknown>
+      documentCacheBytes: number
+    }
+    expect(cache.documentCache.size).toBe(8)
+    expect(cache.documentCacheBytes).toBeLessThanOrEqual(32 * 1024 * 1024)
+  })
+
   it('fails closed when a new run write omits its Frame lane', async () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)
@@ -123,7 +145,7 @@ describe('notebook run repository', () => {
     })
     const legacyPath = join(root, 'notebooks', 'default-project', 'session-1', 'run.json')
     const legacyDocument = JSON.parse(await readFile(legacyPath, 'utf8'))
-    legacyDocument.runs = [run('legacy')]
+    legacyDocument.runs = [{ ...run('legacy'), environment: 'historical-python' }]
     await writeFile(legacyPath, JSON.stringify(legacyDocument, null, 2), 'utf8')
     await repository.loadOrCreate({
       projectName: 'default-project',
@@ -135,14 +157,55 @@ describe('notebook run repository', () => {
       projectName: 'default-project',
       sessionId: 'session-1',
       lane: childLane,
+      run: {
+        ...run('child-r', 'child-frame-1'),
+        kernelKind: 'r',
+        startedAt: 0
+      }
+    })
+    await repository.appendRun({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane: childLane,
       run: run('child', 'child-frame-1')
     })
 
     const runs = await repository.readSessionRuns('default-project', 'session-1')
     expect(runs.map(({ runId, agentFrameId }) => ({ runId, agentFrameId }))).toEqual([
+      { runId: 'child-r', agentFrameId: 'child-frame-1' },
       { runId: 'legacy', agentFrameId: undefined },
       { runId: 'child', agentFrameId: 'child-frame-1' }
     ])
+    await expect(
+      repository.readSessionRunWindow('default-project', 'session-1', 1)
+    ).resolves.toEqual({
+      runs: [expect.objectContaining({ runId: 'child' })],
+      total: 3,
+      latestRunEnvironments: { python: 'historical-python' }
+    })
+    await expect(
+      repository.readSessionRunWindow('default-project', 'session-1', 1, ['legacy'])
+    ).resolves.toEqual({
+      runs: [
+        expect.objectContaining({ runId: 'legacy' }),
+        expect.objectContaining({ runId: 'child' })
+      ],
+      total: 3,
+      latestRunEnvironments: { python: 'historical-python' }
+    })
+    await expect(
+      repository.readSessionRunWindow('default-project', 'session-1', 1, [], 'child-frame-1')
+    ).resolves.toEqual({
+      runs: [expect.objectContaining({ runId: 'child' })],
+      total: 3,
+      latestRunEnvironments: { python: 'historical-python' },
+      historySummary: {
+        agentFrameId: 'child-frame-1',
+        runCount: 2,
+        kernelCounts: { python: 1, r: 1, repl: 0, bash: 0 },
+        latestDataKernel: 'python'
+      }
+    })
   })
 
   it('creates run.json under the notebook session workspace with runtime and data roots', async () => {
@@ -344,17 +407,18 @@ describe('notebook run repository', () => {
   it('persists an updated kernel lifecycle status without touching run history', async () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)
+    const lane = createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
 
     await repository.loadOrCreate({
       projectName: 'default-project',
       sessionId: 'session-1',
-      lane: createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
+      lane,
       workspaceCwd: '/workspace'
     })
     await repository.appendRun({
       projectName: 'default-project',
       sessionId: 'session-1',
-      lane: createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
+      lane,
       run: {
         runId: 'run-1',
         cellId: 'cell-1',
@@ -374,19 +438,92 @@ describe('notebook run repository', () => {
     const restarting = await repository.updateKernelStatus({
       projectName: 'default-project',
       sessionId: 'session-1',
-      lane: createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
+      lane,
       status: 'restarting'
     })
     expect(restarting.kernel.lastKnownStatus).toBe('restarting')
     expect(restarting.runs).toHaveLength(1) // run history untouched
 
-    const terminated = await repository.updateKernelStatus({
+    const pythonTerminated = await repository.markKernelTerminated({
       projectName: 'default-project',
       sessionId: 'session-1',
-      lane: createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
-      status: 'terminated'
+      lane,
+      kernelInstance: { kind: 'python', environment: 'analysis' }
     })
-    expect(terminated.kernel.lastKnownStatus).toBe('terminated')
+    expect(pythonTerminated.kernel).toMatchObject({
+      lastKnownStatus: 'terminated',
+      terminatedKernelInstances: [{ kind: 'python', environment: 'analysis' }]
+    })
+
+    await repository.markKernelTerminated({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      kernelInstance: { kind: 'python', environment: 'analysis' }
+    })
+    await repository.markKernelTerminated({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      kernelInstance: { kind: 'python', environment: 'default-python' }
+    })
+    const bothTerminated = await repository.markKernelTerminated({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      kernelInstance: { kind: 'r', environment: 'default-r' }
+    })
+    expect(bothTerminated.kernel.terminatedKernelInstances).toEqual([
+      { kind: 'python', environment: 'analysis' },
+      { kind: 'python', environment: 'default-python' },
+      { kind: 'r', environment: 'default-r' }
+    ])
+
+    const rStillTerminated = await repository.clearKernelTermination({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      kernelInstance: { kind: 'python', environment: 'analysis' }
+    })
+    expect(rStillTerminated.kernel).toMatchObject({
+      lastKnownStatus: 'terminated',
+      terminatedKernelInstances: [
+        { kind: 'python', environment: 'default-python' },
+        { kind: 'r', environment: 'default-r' }
+      ]
+    })
+
+    await repository.clearKernelTermination({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      kernelInstance: { kind: 'python', environment: 'default-python' }
+    })
+
+    const recovered = await repository.clearKernelTermination({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      kernelInstance: { kind: 'r', environment: 'default-r' }
+    })
+    expect(recovered.kernel.lastKnownStatus).toBe('idle')
+    expect(recovered.kernel.terminatedKernelInstances).toBeUndefined()
+    expect(recovered.runs).toHaveLength(1)
+
+    await repository.markKernelTerminated({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      kernelInstance: { kind: 'repl' }
+    })
+    const restartingClean = await repository.clearKernelTerminations({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane,
+      status: 'restarting'
+    })
+    expect(restartingClean.kernel.lastKnownStatus).toBe('restarting')
+    expect(restartingClean.kernel.terminatedKernelInstances).toBeUndefined()
   })
 
   it('defaults a legacy run record missing kernelKind to python when loaded from disk', async () => {
