@@ -2547,5 +2547,11 @@
   "Agent is addressing the feedback": "Agent 正在處理意見",
   "Corrections requested": "已要求修正",
   "Handed off to the Agent · response started": "已交給 Agent · 已開始回應",
+  "Connecting to Open Science": "正在連線至 Open Science",
+  "Reconnecting to Open Science": "正在重新連線至 Open Science",
+  "Restoring missed updates": "正在還原遺漏的更新",
+  "Reload required": "需要重新載入",
+  "Controls are paused while Open Science restores updates that may have arrived during the interruption.": "Open Science 正在還原中斷期間可能抵達的更新，控制項已暫停使用。",
+  "This page can no longer safely recover all updates. Reload to fetch a complete, current view.": "此頁面已無法安全還原所有更新。請重新載入以取得完整的最新檢視。",
   "Reviewer requested corrections": "審查員已要求修正"
 }
