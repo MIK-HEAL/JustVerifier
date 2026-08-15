@@ -1372,7 +1372,7 @@ describe('compute handlers — jobsMarkConsumed', () => {
 
     await handlers.jobsMarkConsumed('sess-1', ['job-a', 'job-b', 'job-c'])
 
-    expect(markNotificationsConsumed).toHaveBeenCalledWith(['job-a', 'job-b', 'job-c'])
+    expect(markNotificationsConsumed).toHaveBeenCalledWith('sess-1', ['job-a', 'job-b', 'job-c'])
   })
 
   it('is a no-op when no jobRepository is injected (defensive)', async () => {

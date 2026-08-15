@@ -1448,6 +1448,101 @@ describe('session persistence repository (per-session files)', () => {
     expect(sessions[0]).toMatchObject({ id: 'session-1', projectId: 'project-a' })
   })
 
+  it('accepts unused or same-Project durable Session identity ownership', async () => {
+    const repository = new SessionRepository(await createStorageRoot())
+
+    await expect(
+      repository.assertSessionIdentityOwnership('unused-session', 'project-a')
+    ).resolves.toBeUndefined()
+    await repository.saveSession(createSession({ id: 'session-1', projectId: 'project-a' }))
+    await expect(
+      repository.assertSessionIdentityOwnership('session-1', 'project-a')
+    ).resolves.toBeUndefined()
+  })
+
+  it('omits every cross-project duplicate Session id without modifying durable files', async () => {
+    const repository = new SessionRepository(await createStorageRoot())
+    await repository.saveSession(createSession({ id: 'duplicate-session', projectId: 'project-a' }))
+    await repository.saveSession(createSession({ id: 'duplicate-session', projectId: 'project-b' }))
+    await repository.saveSession(createSession({ id: 'healthy-session', projectId: 'project-c' }))
+
+    const scan = await repository.loadAllWithDiagnostics()
+
+    expect(scan.result.sessions.map((session) => session.id)).toEqual(['healthy-session'])
+    expect(scan.isComplete).toBe(false)
+    expect(scan.warnings).toEqual(
+      expect.arrayContaining([
+        {
+          kind: 'unreadable',
+          projectId: 'project-a',
+          fileName: 'duplicate-session.json',
+          recovered: false
+        },
+        {
+          kind: 'unreadable',
+          projectId: 'project-b',
+          fileName: 'duplicate-session.json',
+          recovered: false
+        }
+      ])
+    )
+    expect(scan.warnings).toHaveLength(2)
+    await expect(
+      readFile(join(storageRoot!, 'sessions', 'project-a', 'duplicate-session.json'), 'utf8')
+    ).resolves.toContain('duplicate-session')
+    await expect(
+      readFile(join(storageRoot!, 'sessions', 'project-b', 'duplicate-session.json'), 'utf8')
+    ).resolves.toContain('duplicate-session')
+    await expect(
+      repository.assertSessionIdentityOwnership('duplicate-session', 'project-a')
+    ).rejects.toThrow(/Session id.*another Project/)
+  })
+
+  it('does not hydrate a valid Session whose id also has an unreadable cross-Project file', async () => {
+    const repository = new SessionRepository(await createStorageRoot())
+    await repository.saveSession(createSession({ id: 'duplicate-session', projectId: 'project-a' }))
+    await repository.saveSession(createSession({ id: 'healthy-session', projectId: 'project-c' }))
+    const projectBDir = join(storageRoot!, 'sessions', 'project-b')
+    await mkdir(projectBDir, { recursive: true })
+    await writeFile(join(projectBDir, 'duplicate-session.json'), '{invalid', 'utf8')
+
+    const scan = await repository.loadAllWithDiagnostics({ mode: 'read-only' })
+
+    expect(scan.result.sessions.map((session) => session.id)).toEqual(['healthy-session'])
+    expect(scan.isComplete).toBe(false)
+    expect(scan.warnings).toEqual(
+      expect.arrayContaining([
+        {
+          kind: 'unreadable',
+          projectId: 'project-a',
+          fileName: 'duplicate-session.json',
+          recovered: false
+        },
+        {
+          kind: 'corrupt',
+          projectId: 'project-b',
+          fileName: 'duplicate-session.json',
+          recovered: false
+        }
+      ])
+    )
+    await expect(
+      repository.assertSessionIdentityOwnership('duplicate-session', 'project-a')
+    ).rejects.toThrow(/Session id.*another Project/)
+  })
+
+  it('rejects ownership checks when the durable Session catalog is unreadable', async () => {
+    const repository = new SessionRepository(await createStorageRoot(), {
+      readDirectoryEntries: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('permission denied'), { code: 'EACCES' }))
+    })
+
+    await expect(
+      repository.assertSessionIdentityOwnership('session-1', 'project-a')
+    ).rejects.toThrow(/global identity ownership is unreadable/)
+  })
+
   it('keeps session data in ~/.open-science under the user home directory by default', () => {
     // Build the expectation with join() so the separator matches the host the test runs on.
     expect(getSessionPersistenceDir('/Users/example')).toBe(join('/Users/example', '.open-science'))

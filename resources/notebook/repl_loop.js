@@ -1010,9 +1010,9 @@ function isValidHostCapabilityProjection(value) {
   if (Object.getPrototypeOf(value) !== Object.prototype) return false
 
   const entries = Object.entries(value)
-  const knownEntries = HOST_CAPABILITY_KNOWN_KEYS.filter((name) =>
-    Object.hasOwn(value, name)
-  ).map((name) => [name, value[name]])
+  const knownEntries = HOST_CAPABILITY_KNOWN_KEYS.filter((name) => Object.hasOwn(value, name)).map(
+    (name) => [name, value[name]]
+  )
   const unknownEntries = entries.filter(([name]) => !HOST_CAPABILITY_KNOWN_KEYS.includes(name))
   return (
     entries.length <= HOST_CAPABILITY_MAX_FIELDS &&
@@ -3007,6 +3007,24 @@ const hostCompute = {
                 maxFileMb: 'max_file_mb',
                 maxTotalMb: 'max_total_mb'
               })
+        const assertHarvestLimit = (field, value, maximum) => {
+          if (
+            value !== undefined &&
+            (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > maximum)
+          ) {
+            throw new TypeError(
+              'host.compute.submitJob harvest.' +
+                field +
+                ' must be a finite number between 0 and ' +
+                maximum +
+                ' MiB.'
+            )
+          }
+        }
+        if (harvest !== undefined) {
+          assertHarvestLimit('maxFileMb', harvest.max_file_mb, 100)
+          assertHarvestLimit('maxTotalMb', harvest.max_total_mb, 500)
+        }
         return computeRpc({
           op: 'submit_job',
           provider_id: providerId,

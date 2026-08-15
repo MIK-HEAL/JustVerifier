@@ -405,9 +405,9 @@ const createComputeHandlers = (
         )
       )
     },
-    jobsMarkConsumed: async (_sessionId, jobIds) => {
+    jobsMarkConsumed: async (sessionId, jobIds) => {
       if (!jobRepository) return
-      await jobRepository.markNotificationsConsumed(jobIds)
+      await jobRepository.markNotificationsConsumed(sessionId, jobIds)
     }
   }
 }
