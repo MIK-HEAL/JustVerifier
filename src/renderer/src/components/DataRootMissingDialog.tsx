@@ -37,43 +37,56 @@ const DataRootMissingDialog = ({
   const [isRetrying, setIsRetrying] = useState(false)
   const [stillMissing, setStillMissing] = useState(false)
   const [isChoosing, setIsChoosing] = useState(false)
-  const [chooseError, setChooseError] = useState<string | undefined>(undefined)
+  const [operationError, setOperationError] = useState<string | undefined>(undefined)
   const dialogDataRoot = useRetainedDialogValue(open ? dataRoot : undefined) ?? dataRoot
 
   const handleRetry = async (): Promise<void> => {
     setIsRetrying(true)
     setStillMissing(false)
-    const info = await window.api.storage.getInfo()
-    setIsRetrying(false)
-    if (info.dataRootMissing) {
-      setStillMissing(true)
-      return
+    setOperationError(undefined)
+    try {
+      const info = await window.api.storage.getInfo()
+      if (info.dataRootMissing) {
+        setStillMissing(true)
+        return
+      }
+      onResolved()
+    } catch {
+      setOperationError(t('Could not check the data folder. Try again.'))
+    } finally {
+      setIsRetrying(false)
     }
-    onResolved()
   }
 
   const handleChooseAnotherLocation = async (): Promise<void> => {
-    const picked = await window.api.storage.pickDirectory()
-    if (!picked) return
+    setOperationError(undefined)
+    let relaunchRequested = false
+    try {
+      const picked = await window.api.storage.pickDirectory()
+      if (!picked) return
 
-    setIsChoosing(true)
-    setChooseError(undefined)
+      setIsChoosing(true)
+      const inspection = await window.api.storage.inspectDataRoot(picked)
+      if (inspection.kind === 'invalid') {
+        setOperationError(inspection.error ?? t('The selected folder is not usable.'))
+        return
+      }
 
-    const inspection = await window.api.storage.inspectDataRoot(picked)
-    if (inspection.kind === 'invalid') {
-      setIsChoosing(false)
-      setChooseError(inspection.error ?? t('The selected folder is not usable.'))
-      return
+      // Both 'move' (empty - nothing to move, the old data is gone) and 'adopt' (already has our
+      // data) apply as a plain pointer switch + relaunch; this is recovery, not onboarding.
+      const result = await window.api.storage.setDataRootAndRelaunch(picked, false)
+      if (!result.ok) {
+        setOperationError(result.error ?? t('Could not switch to this folder.'))
+        return
+      }
+      // app.quit() can return while teardown is still in progress. Keep every action disabled so
+      // the user cannot submit a competing data-root change before the renderer exits.
+      relaunchRequested = true
+    } catch {
+      setOperationError(t('Could not switch to this folder.'))
+    } finally {
+      if (!relaunchRequested) setIsChoosing(false)
     }
-
-    // Both 'move' (empty - nothing to move, the old data is gone) and 'adopt' (already has our
-    // data) apply as a plain pointer switch + relaunch; this is recovery, not onboarding.
-    const result = await window.api.storage.setDataRootAndRelaunch(picked, false)
-    if (!result.ok) {
-      setIsChoosing(false)
-      setChooseError(result.error ?? t('Could not switch to this folder.'))
-    }
-    // On success the app relaunches; nothing left to update here.
   }
 
   return (
@@ -106,9 +119,9 @@ const DataRootMissingDialog = ({
               </p>
             ) : null}
 
-            {chooseError ? (
+            {operationError ? (
               <p className="mt-3 text-xs text-destructive" role="alert">
-                {chooseError}
+                {operationError}
               </p>
             ) : null}
           </div>
