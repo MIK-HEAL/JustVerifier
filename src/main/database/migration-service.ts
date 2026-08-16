@@ -17,6 +17,7 @@ import { runtimeSchemaBaselineMigration } from './migrations/0001-runtime-schema
 import { projectAgentContextMigration } from './migrations/0002-project-agent-context'
 import { grantedLocalRootsMigration } from './migrations/0003-granted-local-roots'
 import { reviewAssessmentSnapshotsMigration } from './migrations/0004-review-assessment-snapshots'
+import { projectPreviewStateOwnerFkMigration } from './migrations/0005-project-preview-state-owner-fk'
 
 type MigrationVerifierDescriptor =
   | {
@@ -34,6 +35,16 @@ type MigrationVerifierDescriptor =
       version: 1
       table: string
       column: string
+    }
+  | {
+      kind: 'foreign-key-exists'
+      version: 2
+      table: string
+      column: string
+      referencedTable: string
+      referencedColumn: string
+      onDelete: string
+      onUpdate: string
     }
 
 type MigrationVerifiers = readonly [MigrationVerifierDescriptor, ...MigrationVerifierDescriptor[]]
@@ -56,6 +67,17 @@ const serializeMigrationVerifier = (verifier: MigrationVerifierDescriptor): stri
       return `table-exists:v${verifier.version}:${lengthPrefixedChecksumText(verifier.table)}`
     case 'column-exists':
       return `column-exists:v${verifier.version}:${lengthPrefixedChecksumText(verifier.table)}${lengthPrefixedChecksumText(verifier.column)}`
+    case 'foreign-key-exists':
+      return `foreign-key-exists:v${verifier.version}:${[
+        verifier.table,
+        verifier.column,
+        verifier.referencedTable,
+        verifier.referencedColumn,
+        verifier.onDelete,
+        verifier.onUpdate
+      ]
+        .map(lengthPrefixedChecksumText)
+        .join('')}`
   }
 }
 
@@ -101,6 +123,11 @@ const REVIEW_ASSESSMENT_SNAPSHOTS_CHECKSUM = checksumMigrationPayload(
   reviewAssessmentSnapshotsMigration.statements,
   reviewAssessmentSnapshotsMigration.verifiers
 )
+const PROJECT_PREVIEW_STATE_OWNER_FK_CHECKSUM = checksumMigrationPayload(
+  projectPreviewStateOwnerFkMigration.id,
+  projectPreviewStateOwnerFkMigration.statements,
+  projectPreviewStateOwnerFkMigration.verifiers
+)
 const MIGRATION_MANIFEST = [
   {
     ...runtimeSchemaBaselineMigration,
@@ -125,6 +152,12 @@ const MIGRATION_MANIFEST = [
     checksum: REVIEW_ASSESSMENT_SNAPSHOTS_CHECKSUM,
     backupOnApply: 'required',
     backupRetention: 'retain'
+  },
+  {
+    ...projectPreviewStateOwnerFkMigration,
+    checksum: PROJECT_PREVIEW_STATE_OWNER_FK_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
   }
 ] as const satisfies readonly MigrationManifestEntry[]
 // schema-locality: begin frozen-0001-repairs
@@ -141,6 +174,17 @@ type LedgerRow = { id: string; checksum: string }
 type SqliteForeignKeyStateRow = { foreign_keys: bigint | number }
 type SqliteDatabaseListRow = { name: string; file: string }
 type SqliteIntegrityCheckRow = { integrity_check: string }
+type SqliteForeignKeyListRow = {
+  table: string
+  from: string
+  to: string
+  on_delete: string
+  on_update: string
+}
+type SqliteForeignKeyViolationRow = {
+  table: string
+  parent: string
+}
 type SqliteSchemaObjectRow = { type: string; name: string; tableName: string; sql: string | null }
 type SqliteDifferenceRow = { different: bigint | number }
 type DatabaseMigrationErrorCode = DatabaseStartupErrorCode
@@ -235,6 +279,36 @@ const runMigrationVerifiers = async (
         if (!columns.some((column) => column.name === verifier.column)) {
           throw new Error(
             `Migration verification found missing column ${verifier.table}.${verifier.column}.`
+          )
+        }
+        break
+      }
+      case 'foreign-key-exists': {
+        const quotedTable = `"${verifier.table.replaceAll('"', '""')}"`
+        const foreignKeys = await migrationSqlExecutor.query<SqliteForeignKeyListRow[]>(
+          client,
+          `PRAGMA foreign_key_list(${quotedTable})`
+        )
+        const exists = foreignKeys.some(
+          (foreignKey) =>
+            foreignKey.from === verifier.column &&
+            foreignKey.table === verifier.referencedTable &&
+            foreignKey.to === verifier.referencedColumn &&
+            foreignKey.on_delete.toUpperCase() === verifier.onDelete.toUpperCase() &&
+            foreignKey.on_update.toUpperCase() === verifier.onUpdate.toUpperCase()
+        )
+        if (!exists) {
+          throw new Error(
+            `Migration verification found missing foreign key ${verifier.table}.${verifier.column} -> ${verifier.referencedTable}.${verifier.referencedColumn}.`
+          )
+        }
+        const violations = await migrationSqlExecutor.query<Array<{ table: string }>>(
+          client,
+          `PRAGMA foreign_key_check(${quotedTable})`
+        )
+        if (violations.length > 0) {
+          throw new Error(
+            `Migration verification found foreign-key violations in ${verifier.table}.`
           )
         }
         break
@@ -607,9 +681,35 @@ const insertLedgerRow = async (
   `
 }
 
+const hasOnlyDeferredPreviewStateForeignKeyViolations = async (
+  client: PrismaClient,
+  error: unknown
+): Promise<boolean> => {
+  // This is a one-off bridge to the checksum-pinned 0005 repair below. Future suffix FKs must not
+  // copy this deferral: they need their own explicit migration and fail-closed adoption contract.
+  if (
+    !(error instanceof DatabaseValidationError) ||
+    error.data.kind !== 'foreign-key-violation' ||
+    error.data.table !== 'ProjectPreviewState'
+  ) {
+    return false
+  }
+  const violations = await migrationSqlExecutor.query<SqliteForeignKeyViolationRow[]>(
+    client,
+    'PRAGMA foreign_key_check'
+  )
+  return (
+    violations.length > 0 &&
+    violations.every(
+      (violation) => violation.table === 'ProjectPreviewState' && violation.parent === 'Project'
+    )
+  )
+}
+
 const applyBaselineMigration = async (
   client: PrismaClient,
-  migration: MigrationManifestEntry
+  migration: MigrationManifestEntry,
+  deferPreviewStateForeignKeyViolations: boolean
 ): Promise<void> => {
   let prepared: Awaited<ReturnType<typeof prepareRuntimeSchemaBaseline>>
   try {
@@ -625,7 +725,17 @@ const applyBaselineMigration = async (
     if (foreignKeysWereEnabled) await setForeignKeys(client, false)
     await client.$transaction(async (transaction) => {
       const transactionClient = transaction as unknown as PrismaClient
-      await applyRuntimeSchemaBaseline(transactionClient, prepared)
+      try {
+        await applyRuntimeSchemaBaseline(transactionClient, prepared)
+      } catch (error) {
+        if (
+          !deferPreviewStateForeignKeyViolations ||
+          !(await hasOnlyDeferredPreviewStateForeignKeyViolations(transactionClient, error))
+        ) {
+          throw error
+        }
+        // The pinned 0005 suffix owns pruning these rows before the migration run completes.
+      }
       await runMigrationVerifiers(transactionClient, migration.verifiers)
       await insertLedgerRow(transactionClient, migration)
     })
@@ -784,6 +894,11 @@ const migrateApplicationDatabaseWithManifest = async (
       // A diagnostic sink failure must not invalidate a durable database backup.
     }
   }
+  const repairsPreviewStateForeignKeyViolations = manifest.some(
+    (candidate) =>
+      candidate.id === projectPreviewStateOwnerFkMigration.id &&
+      candidate.checksum === PROJECT_PREVIEW_STATE_OWNER_FK_CHECKSUM
+  )
 
   const applied: string[] = []
   const adoptedLegacy = appliedCount === 0 && hadApplicationTablesAtStart
@@ -792,7 +907,7 @@ const migrateApplicationDatabaseWithManifest = async (
     const baseline = manifest[0]!
     options.onProgress?.({ phase: 'migrating', migrationId: baseline.id })
     await backupBeforeMigration(baseline)
-    await applyBaselineMigration(client, baseline)
+    await applyBaselineMigration(client, baseline, repairsPreviewStateForeignKeyViolations)
     applied.push(baseline.id)
     nextIndex = 1
   }

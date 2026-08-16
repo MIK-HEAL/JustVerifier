@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { createProjectDbClient } from '../projects/prisma-client'
 import { verifyCurrentRuntimeSchema } from './legacy-baseline-adapter'
+import { RUNTIME_SCHEMA_TABLE_DDL_BY_NAME } from './migrations/0001-runtime-schema-baseline'
 import {
   BASELINE_CHECKSUM,
   MIGRATION_MANIFEST,
@@ -19,7 +20,7 @@ import {
 } from './migration-service'
 
 const futureTestMigration = (): MigrationManifestEntry => {
-  const id = '0005_test_suffix'
+  const id = '0006_test_suffix'
   const statements = [`UPDATE "Project" SET "name" = "name" WHERE 0`] as const
   const verifiers = [{ kind: 'table-exists', version: 1, table: 'Project' }] as const
   return {
@@ -174,10 +175,11 @@ describe('application database migrations', () => {
         '0001_runtime_schema_baseline',
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ],
       from: null,
-      to: '0004_review_assessment_snapshots'
+      to: '0005_project_preview_state_owner_fk'
     })
     expect(compatibility).toEqual([{ sqliteVersion: expect.stringMatching(/^\d+\.\d+\.\d+$/) }])
     await expect(
@@ -190,8 +192,8 @@ describe('application database migrations', () => {
     await expect(migrateApplicationDatabase(client)).resolves.toEqual({
       adoptedLegacy: false,
       applied: [],
-      from: '0004_review_assessment_snapshots',
-      to: '0004_review_assessment_snapshots'
+      from: '0005_project_preview_state_owner_fk',
+      to: '0005_project_preview_state_owner_fk'
     })
   })
 
@@ -235,7 +237,7 @@ describe('application database migrations', () => {
       })
     ).rejects.toMatchObject({
       code: 'database_validation_failed',
-      migrationId: '0004_review_assessment_snapshots'
+      migrationId: '0005_project_preview_state_owner_fk'
     })
     expect(retired).toEqual([])
     await expect(access(backupPath)).resolves.toBeUndefined()
@@ -251,9 +253,9 @@ describe('application database migrations', () => {
       migrateApplicationDatabaseWithManifest(client, [...MIGRATION_MANIFEST, future])
     ).resolves.toEqual({
       adoptedLegacy: false,
-      applied: ['0005_test_suffix'],
-      from: '0004_review_assessment_snapshots',
-      to: '0005_test_suffix'
+      applied: ['0006_test_suffix'],
+      from: '0005_project_preview_state_owner_fk',
+      to: '0006_test_suffix'
     })
     await expect(
       client.$queryRaw<Array<{ id: string }>>`
@@ -264,7 +266,8 @@ describe('application database migrations', () => {
       { id: '0002_project_agent_context' },
       { id: '0003_granted_local_roots' },
       { id: '0004_review_assessment_snapshots' },
-      { id: '0005_test_suffix' }
+      { id: '0005_project_preview_state_owner_fk' },
+      { id: '0006_test_suffix' }
     ])
   })
 
@@ -320,10 +323,11 @@ describe('application database migrations', () => {
       applied: [
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ],
       from: '0001_runtime_schema_baseline',
-      to: '0004_review_assessment_snapshots'
+      to: '0005_project_preview_state_owner_fk'
     })
     expect(backupEvents).toEqual([
       {
@@ -339,6 +343,11 @@ describe('application database migrations', () => {
       {
         migrationId: '0004_review_assessment_snapshots',
         path: `${databasePath}.before-0004_review_assessment_snapshots.backup`,
+        reused: false
+      },
+      {
+        migrationId: '0005_project_preview_state_owner_fk',
+        path: `${databasePath}.before-0005_project_preview_state_owner_fk.backup`,
         reused: false
       }
     ])
@@ -372,7 +381,7 @@ describe('application database migrations', () => {
       migrateApplicationDatabaseWithManifest(client, [...MIGRATION_MANIFEST, future])
     ).rejects.toMatchObject({
       code: 'database_validation_failed',
-      migrationId: '0005_test_suffix'
+      migrationId: '0006_test_suffix'
     })
     await expect(
       client.$queryRaw<Array<{ name: string }>>`
@@ -388,7 +397,8 @@ describe('application database migrations', () => {
       { id: '0001_runtime_schema_baseline' },
       { id: '0002_project_agent_context' },
       { id: '0003_granted_local_roots' },
-      { id: '0004_review_assessment_snapshots' }
+      { id: '0004_review_assessment_snapshots' },
+      { id: '0005_project_preview_state_owner_fk' }
     ])
   })
 
@@ -410,7 +420,7 @@ describe('application database migrations', () => {
       migrateApplicationDatabaseWithManifest(client, [...MIGRATION_MANIFEST, future])
     ).rejects.toMatchObject({
       code: 'database_validation_failed',
-      migrationId: '0005_test_suffix'
+      migrationId: '0006_test_suffix'
     })
   })
 
@@ -440,15 +450,147 @@ describe('application database migrations', () => {
         '0002_project_agent_context',
         '0003_granted_local_roots',
         '0004_review_assessment_snapshots',
-        '0005_test_suffix'
+        '0005_project_preview_state_owner_fk',
+        '0006_test_suffix'
       ],
-      to: '0005_test_suffix'
+      to: '0006_test_suffix'
     })
     await expect(
       client.project.findUniqueOrThrow({ where: { id: 'legacy-project' } })
     ).resolves.toMatchObject({ name: 'Preserved' })
   })
 
+  it('rejects an extra current-shaped foreign key on another pre-ledger table', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-database-unknown-suffix-fk-'))
+    client = createProjectDbClient(storageRoot)
+    const findingDdl = RUNTIME_SCHEMA_TABLE_DDL_BY_NAME.Finding
+    const currentForeignKey = findingDdl.match(/(CONSTRAINT[\s\S]+)\n\);$/)?.[1]
+    if (!currentForeignKey) throw new Error('Finding baseline FK fixture is unavailable.')
+    await client.$executeRawUnsafe(findingDdl.replace(/\n\);$/, `,\n    ${currentForeignKey}\n);`))
+
+    await expect(migrateApplicationDatabase(client)).rejects.toMatchObject({
+      code: 'database_validation_failed',
+      migrationId: '0001_runtime_schema_baseline',
+      cause: {
+        name: 'DatabaseValidationError',
+        data: {
+          kind: 'foreign-key-definition-mismatch',
+          table: 'Finding'
+        }
+      }
+    })
+    await expect(
+      client.$queryRaw<Array<{ name: string }>>`
+        SELECT name FROM sqlite_schema
+        WHERE name = '_open_science_migrations'
+      `
+    ).resolves.toEqual([])
+  })
+
+  it('migrates legacy Preview ownership while pruning orphan rows', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-database-preview-owner-fk-'))
+    client = createProjectDbClient(storageRoot)
+    await client.$executeRawUnsafe(`CREATE TABLE "Project" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "name" TEXT NOT NULL,
+      "description" TEXT NOT NULL DEFAULT '',
+      "isExample" BOOLEAN NOT NULL DEFAULT false,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    )`)
+    await client.$executeRawUnsafe(`CREATE TABLE "ProjectPreviewState" (
+      "projectId" TEXT NOT NULL PRIMARY KEY,
+      "panelState" TEXT NOT NULL,
+      "activeItemId" TEXT,
+      "items" TEXT NOT NULL DEFAULT '[]',
+      "updatedAt" DATETIME NOT NULL
+    )`)
+    const updatedAt = new Date('2026-01-02T03:04:05Z')
+    await client.$executeRaw`
+      INSERT INTO "Project" ("id", "name", "updatedAt")
+      VALUES (${'legacy-project'}, ${'Preserved'}, ${updatedAt})
+    `
+    await client.$executeRaw`
+      INSERT INTO "ProjectPreviewState" (
+        "projectId", "panelState", "activeItemId", "items", "updatedAt"
+      ) VALUES
+        (${'legacy-project'}, ${'open'}, NULL, ${'[]'}, ${updatedAt}),
+        (${'orphan-project'}, ${'collapsed'}, NULL, ${'[]'}, ${updatedAt})
+    `
+
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
+      applied: expect.arrayContaining(['0005_project_preview_state_owner_fk'])
+    })
+    await expect(
+      client.$queryRaw<Array<{ projectId: string }>>`
+        SELECT "projectId" FROM "ProjectPreviewState" ORDER BY "projectId"
+      `
+    ).resolves.toEqual([{ projectId: 'legacy-project' }])
+    await expect(
+      client.$queryRawUnsafe<
+        Array<{ table: string; from: string; to: string; on_delete: string; on_update: string }>
+      >('PRAGMA foreign_key_list("ProjectPreviewState")')
+    ).resolves.toContainEqual(
+      expect.objectContaining({
+        table: 'Project',
+        from: 'projectId',
+        to: 'id',
+        on_delete: 'CASCADE',
+        on_update: 'CASCADE'
+      })
+    )
+
+    await client.project.delete({ where: { id: 'legacy-project' } })
+    await expect(client.projectPreviewState.count()).resolves.toBe(0)
+    await expect(
+      client.projectPreviewState.create({
+        data: { projectId: 'missing-project', panelState: 'collapsed', items: '[]' }
+      })
+    ).rejects.toThrow()
+  })
+
+  it('replays preview ownership migration when an adopted FK table contains orphan rows', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-database-preview-owner-adoption-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'legacy-project', name: 'Preserved' } })
+    await client.projectPreviewState.create({
+      data: { projectId: 'legacy-project', panelState: 'open', items: '[]' }
+    })
+
+    await client.$executeRawUnsafe('PRAGMA foreign_keys = OFF')
+    await client.$executeRaw`
+      INSERT INTO "ProjectPreviewState" (
+        "projectId", "panelState", "activeItemId", "items", "updatedAt"
+      ) VALUES (
+        ${'orphan-project'}, ${'collapsed'}, NULL, ${'[]'}, ${new Date('2026-01-02T03:04:05Z')}
+      )
+    `
+    await client.$executeRawUnsafe('PRAGMA foreign_keys = ON')
+    await client.$executeRawUnsafe('DROP TABLE "_open_science_migrations"')
+
+    await expect(
+      migrateApplicationDatabaseWithManifest(client, MIGRATION_MANIFEST.slice(0, -1))
+    ).rejects.toMatchObject({
+      code: 'database_validation_failed',
+      migrationId: '0001_runtime_schema_baseline'
+    })
+
+    await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
+      adoptedLegacy: true,
+      applied: expect.arrayContaining(['0005_project_preview_state_owner_fk'])
+    })
+    await expect(
+      client.$queryRaw<Array<{ projectId: string }>>`
+        SELECT "projectId" FROM "ProjectPreviewState" ORDER BY "projectId"
+      `
+    ).resolves.toEqual([{ projectId: 'legacy-project' }])
+    await expect(
+      client.$queryRawUnsafe<Array<{ table: string }>>(
+        'PRAGMA foreign_key_check("ProjectPreviewState")'
+      )
+    ).resolves.toEqual([])
+  })
   it('blocks a database containing a migration from a newer application', async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'open-science-database-newer-'))
     client = createProjectDbClient(storageRoot)
@@ -456,7 +598,7 @@ describe('application database migrations', () => {
     await client.project.create({ data: { id: 'project-1', name: 'Preserved' } })
     await client.$executeRaw`
       INSERT INTO "_open_science_migrations" ("id", "checksum")
-      VALUES (${'0005_future_schema'}, ${'f'.repeat(64)})
+      VALUES (${'0006_future_schema'}, ${'f'.repeat(64)})
     `
 
     await expect(migrateApplicationDatabase(client)).rejects.toMatchObject({
@@ -528,7 +670,8 @@ describe('application database migrations', () => {
         '0001_runtime_schema_baseline',
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ]
     })
     await expect(
@@ -568,7 +711,8 @@ describe('application database migrations', () => {
         '0001_runtime_schema_baseline',
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ]
     })
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
@@ -621,7 +765,8 @@ describe('application database migrations', () => {
         '0001_runtime_schema_baseline',
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ]
     })
     await expect(
@@ -677,7 +822,8 @@ describe('application database migrations', () => {
         '0001_runtime_schema_baseline',
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ]
     })
     await expect(verifyCurrentRuntimeSchema(client)).resolves.toBeUndefined()
@@ -767,7 +913,8 @@ describe('application database migrations', () => {
         '0001_runtime_schema_baseline',
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ]
     })
     await expect(
@@ -810,7 +957,8 @@ describe('application database migrations', () => {
         '0001_runtime_schema_baseline',
         '0002_project_agent_context',
         '0003_granted_local_roots',
-        '0004_review_assessment_snapshots'
+        '0004_review_assessment_snapshots',
+        '0005_project_preview_state_owner_fk'
       ]
     })
     expect(backupEvents).toEqual([
@@ -832,6 +980,11 @@ describe('application database migrations', () => {
       {
         migrationId: '0004_review_assessment_snapshots',
         path: `${databasePath}.before-0004_review_assessment_snapshots.backup`,
+        reused: false
+      },
+      {
+        migrationId: '0005_project_preview_state_owner_fk',
+        path: `${databasePath}.before-0005_project_preview_state_owner_fk.backup`,
         reused: false
       }
     ])
@@ -1220,6 +1373,11 @@ describe('application database migrations', () => {
         migrationId: '0004_review_assessment_snapshots',
         path: `${databasePath}.before-0004_review_assessment_snapshots.backup`,
         reused: false
+      }),
+      expect.objectContaining({
+        migrationId: '0005_project_preview_state_owner_fk',
+        path: `${databasePath}.before-0005_project_preview_state_owner_fk.backup`,
+        reused: false
       })
     ])
     expect(retired).toEqual([
@@ -1232,6 +1390,10 @@ describe('application database migrations', () => {
       {
         migrationId: '0004_review_assessment_snapshots',
         path: `${databasePath}.before-0004_review_assessment_snapshots.backup`
+      },
+      {
+        migrationId: '0005_project_preview_state_owner_fk',
+        path: `${databasePath}.before-0005_project_preview_state_owner_fk.backup`
       }
     ])
     await expect(access(backupPath)).rejects.toMatchObject({ code: 'ENOENT' })
