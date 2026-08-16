@@ -56,7 +56,7 @@ const createAcpTaskAgentPort = (
   listAttachedSessionIds: async () => [...runtime.getSnapshot().sessionIds],
   createSession: (request) =>
     createSessionWorkflow.create({
-      projectName: request.projectId,
+      projectId: request.projectId,
       permissionProfile: request.permissionProfile,
       ...(request.cwd ? { cwd: request.cwd } : {}),
       ...(request.specialistId ? { specialistId: request.specialistId } : {})
@@ -65,7 +65,7 @@ const createAcpTaskAgentPort = (
     runtime.resumeSession({
       sessionId: request.sessionId,
       cwd: request.cwd,
-      projectName: request.projectId,
+      projectId: request.projectId,
       permissionProfile: request.permissionProfile,
       previousFrameworkId: request.previousFrameworkId,
       previousBackendId: request.previousBackendId,

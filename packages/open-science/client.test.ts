@@ -311,7 +311,7 @@ describe('OpenScienceClient', () => {
 
     await client.listProjects()
     await client.createProject({ name: 'Created' })
-    await client.listSessions('Research / Lab')
+    await client.listSessions('project-1')
     await client.getSession('session/1')
     await client.getSessionPlan('session/1')
     await client.respondSessionPlan('session/1', {
@@ -330,7 +330,7 @@ describe('OpenScienceClient', () => {
     ).toEqual([
       '/api/v1/projects',
       '/api/v1/projects',
-      '/api/v1/sessions?project=Research%20%2F%20Lab',
+      '/api/v1/sessions?project=project-1',
       '/api/v1/sessions/session%2F1',
       '/api/v1/sessions/session%2F1/plan',
       '/api/v1/sessions/session%2F1/plan/respond',

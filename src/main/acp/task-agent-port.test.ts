@@ -94,7 +94,7 @@ describe('ACP Task Agent port', () => {
     await port.cancelPrompt('session-stable')
 
     expect(create).toHaveBeenCalledWith({
-      projectName: 'project-1',
+      projectId: 'project-1',
       permissionProfile: 'auto',
       cwd: '/workspace/external',
       specialistId: 'specialist-1'
@@ -103,7 +103,7 @@ describe('ACP Task Agent port', () => {
     expect(runtime.resumeSession).toHaveBeenCalledWith({
       sessionId: 'session-stable',
       cwd: '/workspace/stable',
-      projectName: 'project-1',
+      projectId: 'project-1',
       permissionProfile: 'ask',
       previousFrameworkId: 'codex',
       previousBackendId: 'codex:shared',

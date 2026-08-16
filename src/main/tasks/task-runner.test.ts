@@ -113,7 +113,7 @@ describe('TaskRunner', () => {
     expect(created).toBe(false)
   })
 
-  it('lists session snapshots for a project name', async () => {
+  it('lists session snapshots for a project id', async () => {
     const projects: TaskProjectPort = {
       list: async () => [project],
       create: async (request) => ({ ...project, ...request })
@@ -125,9 +125,24 @@ describe('TaskRunner', () => {
     }
     const runner = createRunner({ projects, sessions })
 
-    await expect(runner.listSessions(project.name)).resolves.toEqual([
+    await expect(runner.listSessions(project.id)).resolves.toEqual([
       expect.objectContaining({ id: session.id, projectId: project.id, title: session.title })
     ])
+  })
+
+  it('does not route headless requests by project display name', async () => {
+    const projects: TaskProjectPort = {
+      list: async () => [project],
+      create: async (request) => ({ ...project, ...request })
+    }
+    const runner = createRunner({ projects })
+
+    await expect(runner.listSessions(project.name)).rejects.toMatchObject({
+      code: 'project_not_found'
+    })
+    await expect(
+      runner.startRun({ project: project.name, prompt: 'Review these papers.' })
+    ).rejects.toMatchObject({ code: 'project_not_found' })
   })
 
   it('returns a durable session snapshot and its artifacts', async () => {
@@ -428,7 +443,7 @@ describe('TaskRunner', () => {
     })
 
     const started = await runner.startRun({
-      project: project.name,
+      project: project.id,
       prompt: 'Review these papers.',
       permissionProfile: 'auto',
       cwd: requestedCwd
@@ -1648,7 +1663,7 @@ describe('TaskRunner', () => {
           artifacts: [
             {
               id: 'artifact-file',
-              projectName: project.id,
+              projectId: project.id,
               sessionId: 'session-artifact',
               messageId: 'artifact-agent',
               name: 'result.txt',
@@ -1812,7 +1827,7 @@ describe('TaskRunner', () => {
             artifacts: [
               {
                 id: 'artifact-partial',
-                projectName: project.id,
+                projectId: project.id,
                 sessionId: 'session-partial',
                 messageId: 'partial-agent',
                 name: 'partial-report.md',
