@@ -26,6 +26,13 @@ import { assertBlockInScope, type ReviewerHostServer } from './host-sdk'
 import { createLogger } from '../logger'
 import { listenForLocalRpc, localRpcServerLogFields } from '../local-rpc-transport'
 import { createReviewerMcpStdioProxyConfig } from './mcp-stdio-proxy'
+import {
+  MAX_REVIEW_CHECKS,
+  MAX_REVIEW_CLAIM_CHARACTERS,
+  MAX_REVIEW_EVIDENCE_CHARACTERS,
+  MAX_REVIEW_SUBMISSION_BYTES,
+  reviewSubmissionByteLength
+} from './submission-limits'
 
 const log = createLogger('reviewer:mcp')
 
@@ -47,10 +54,15 @@ const checkLocatorSchema = z.object({
 })
 
 const checkFields = {
-  claim: z.string().min(1).describe('The specific claim or thing being checked'),
+  claim: z
+    .string()
+    .min(1)
+    .max(MAX_REVIEW_CLAIM_CHARACTERS)
+    .describe('The specific claim or thing being checked'),
   evidence: z
     .string()
     .min(1)
+    .max(MAX_REVIEW_EVIDENCE_CHARACTERS)
     .describe(
       'Supporting evidence from the turn (cite block ids / exec-log entries / artifact content you read). ' +
         'For pass checks: describe what you verified and why it passed. ' +
@@ -93,20 +105,55 @@ const checkSchema = z.discriminatedUnion('status', [
 // v2: a single `checks[]` replaces the old findings[]+summary+checks[] split.
 // v3: reasoning removed — the reviewer log is captured from the action stream, not self-authored.
 // summary is explicitly excluded — the panel no longer shows it.
-export const submitFindingsInputSchema = z
-  .object({
-    checks: z
-      .array(checkSchema)
-      .min(1, 'Submit at least one explicit pass, warn, or fail check.')
-      .describe(
+type SubmitFindingsObjectSchema = z.ZodObject<{
+  checks: z.ZodArray<typeof checkSchema>
+}>
+
+export type SubmitFindingsInput = z.infer<SubmitFindingsObjectSchema>
+
+const createSubmitFindingsObjectSchema = (
+  trackedCheckAllowance: number | null = 0
+): SubmitFindingsObjectSchema => {
+  const checksSchema = z
+    .array(checkSchema)
+    .min(1, 'Submit at least one explicit pass, warn, or fail check.')
+  const boundedChecksSchema =
+    trackedCheckAllowance === null
+      ? checksSchema
+      : checksSchema.max(
+          MAX_REVIEW_CHECKS + trackedCheckAllowance,
+          `At most ${MAX_REVIEW_CHECKS} new findings are allowed beyond tracked dispositions`
+        )
+
+  return z
+    .object({
+      checks: boundedChecksSchema.describe(
         'All checks you ran, each with status pass|warn|fail, claim, and evidence. ' +
           'A locator is required for warn/fail and optional for pass. ' +
           'A completed review requires at least one explicit check; an empty array is never a pass.'
       )
-  })
-  .strict() // Reject unknown fields including the old `summary`, old `findings`, and old `reasoning`
+    })
+    .strict() // Reject unknown fields including the old `summary`, old `findings`, and old `reasoning`
+}
 
-export type SubmitFindingsInput = z.infer<typeof submitFindingsInputSchema>
+const createSubmitFindingsInputSchema = (
+  trackedCheckAllowance = 0
+): z.ZodType<SubmitFindingsInput> =>
+  createSubmitFindingsObjectSchema(trackedCheckAllowance).superRefine((input, context) => {
+    const bytes = reviewSubmissionByteLength(input.checks)
+    if (bytes > MAX_REVIEW_SUBMISSION_BYTES) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['checks'],
+        message:
+          `Reviewer result exceeds the ${MAX_REVIEW_SUBMISSION_BYTES}-byte limit ` +
+          `(got ${bytes} bytes)`
+      })
+    }
+  })
+
+export const submitFindingsInputSchema = createSubmitFindingsInputSchema()
+export const submitFindingsBridgeInputSchema = createSubmitFindingsObjectSchema(null)
 
 export type ReviewerEvidenceAccessLedger = {
   turnRead: boolean
@@ -315,6 +362,10 @@ export class ReviewerMcpServer {
       version: '1.0.0'
     })
 
+    const trackedCheckAllowance = this.trackedFindingIds.size
+    const submitFindingsObjectSchema = createSubmitFindingsObjectSchema(trackedCheckAllowance)
+    const submitFindingsInputSchema = createSubmitFindingsInputSchema(trackedCheckAllowance)
+
     const evidence = this.evidence
     if (evidence) {
       server.registerTool(
@@ -396,7 +447,7 @@ export class ReviewerMcpServer {
           'Each check has status (pass/warn/fail), claim, and evidence; locator is required for ' +
           'warn/fail and optional for pass. ' +
           'Do NOT include a reasoning or summary field — they are no longer accepted.',
-        inputSchema: submitFindingsInputSchema.shape
+        inputSchema: submitFindingsObjectSchema.shape
       },
       async (input) => {
         // Keep the idle check and the transition to `submitting` free of awaits. JavaScript's

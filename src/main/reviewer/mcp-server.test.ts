@@ -15,6 +15,7 @@ import {
   validateReviewerEvidenceAccess,
   ReviewerMcpServer
 } from './mcp-server'
+import { REVIEWER_BRIDGE_NAMESPACED_TOOLS } from './bridge-tools'
 import { createReviewerMcpStdioProxy } from './mcp-stdio-proxy'
 import type { TurnScope } from '../../shared/reviewer'
 import type { ArtifactContent, ExecRecord, OrderedBlock, ReviewerHostServer } from './host-sdk'
@@ -225,6 +226,20 @@ describe('mapChecksToScope', () => {
 })
 
 describe('submitFindingsInputSchema — v3 unified checks[] (no reasoning)', () => {
+  it('leaves the bridge item count to the per-run MCP schema', () => {
+    const submitFindingsTool = REVIEWER_BRIDGE_NAMESPACED_TOOLS.find(
+      (tool) => tool.name === 'submit_findings'
+    )
+    const checksSchema = (
+      submitFindingsTool?.parameters as {
+        properties?: { checks?: { minItems?: number; maxItems?: number } }
+      }
+    ).properties?.checks
+
+    expect(checksSchema?.minItems).toBe(1)
+    expect(checksSchema?.maxItems).toBeUndefined()
+  })
+
   it('accepts checks[] with status pass|warn|fail (no reasoning field)', () => {
     const parsed = submitFindingsInputSchema.safeParse({
       checks: [
@@ -783,6 +798,54 @@ describe('ReviewerMcpServer HTTP transport', () => {
     } finally {
       await server.stop()
     }
+  })
+
+  it('allows historical tracked dispositions beyond the five-new-check limit', async () => {
+    const trackedFindingIds = Array.from({ length: 6 }, (_, index) => `finding-${index + 1}`)
+    const trackedChecks = trackedFindingIds.map((sourceFindingId, index) => ({
+      sourceFindingId,
+      status: 'pass' as const,
+      claim: `Tracked finding ${index + 1} is resolved`,
+      evidence: `Verified tracked finding ${index + 1}`
+    }))
+    const runSubmission = async (
+      checks: Array<Record<string, unknown>>
+    ): Promise<{
+      result: Awaited<ReturnType<typeof callTool>>
+      onSubmit: ReturnType<typeof vi.fn>
+    }> => {
+      const onSubmit = vi.fn().mockResolvedValue(undefined)
+      const server = new ReviewerMcpServer(
+        scope,
+        onSubmit,
+        createReviewerEvidence(),
+        trackedFindingIds
+      )
+      const { endpoint, token } = await server.start()
+
+      try {
+        const { sessionId, headers } = await initialize(endpoint, token)
+        await callTool(endpoint, sessionId, headers, 'read_turn', {})
+        const result = await callTool(endpoint, sessionId, headers, 'submit_findings', { checks })
+        return { result, onSubmit }
+      } finally {
+        await server.stop()
+      }
+    }
+
+    const accepted = await runSubmission(trackedChecks)
+    expect(accepted.result.result?.isError).not.toBe(true)
+    expect(accepted.onSubmit).toHaveBeenCalledOnce()
+    expect(accepted.onSubmit.mock.calls[0]?.[0]).toHaveLength(6)
+
+    const tooManyNewChecks = Array.from({ length: 6 }, (_, index) => ({
+      ...passingCheck,
+      claim: `New finding ${index + 1}`,
+      evidence: `New evidence ${index + 1}`
+    }))
+    const rejected = await runSubmission([...trackedChecks, ...tooManyNewChecks])
+    expect(rejected.result.result?.isError).toBe(true)
+    expect(rejected.onSubmit).not.toHaveBeenCalled()
   })
 
   it('drops a model-invented sourceFindingId during an initial review', async () => {
