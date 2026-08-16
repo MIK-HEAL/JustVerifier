@@ -545,6 +545,13 @@ export type PersistedChatSession = {
   updatedAt: number
 }
 
+// New session-file writes always carry the canonical graph. PersistedChatSession intentionally
+// keeps the field optional so historical flat-only files remain readable and can be upgraded on
+// their next write.
+export type MaterializedPersistedChatSession = PersistedChatSession & {
+  conversationGraph: PersistedConversationGraph
+}
+
 // Renderer-owned preferences that can be replayed onto a newer durable graph after a stale-graph
 // conflict. The field list records intent explicitly, including changes that clear optional values.
 export type SessionConflictRebaseField =
@@ -2699,9 +2706,11 @@ export const sanitizeMessageImages = (value: unknown): PersistedMessageImage[] |
 
 // Applies the image boundary immediately before repository serialization without changing runtime
 // status fields (running sessions must remain restorable as interrupted sessions after a restart).
-export const sanitizeSessionMessageImages = (
-  session: PersistedChatSession
-): PersistedChatSession => {
+export function sanitizeSessionMessageImages(
+  session: MaterializedPersistedChatSession
+): MaterializedPersistedChatSession
+export function sanitizeSessionMessageImages(session: PersistedChatSession): PersistedChatSession
+export function sanitizeSessionMessageImages(session: PersistedChatSession): PersistedChatSession {
   const sanitizeMessages = <Message extends PersistedChatMessage>(
     messages: readonly Message[]
   ): Message[] => {
@@ -3219,7 +3228,7 @@ const projectActiveNestedDelegateActivities = (
 
 export const materializeSessionConversationGraph = (
   session: PersistedChatSession
-): PersistedChatSession => {
+): MaterializedPersistedChatSession => {
   const messageGraph = session.conversationGraph
     ? materializeGraphPhase('messages', () =>
         synchronizeActiveConversationMessages(
@@ -3553,7 +3562,7 @@ const sanitizeSession = (
 // Durable envelope for a single session file; the version allows future per-file migrations.
 export type PersistedSessionFile = {
   version: typeof SESSION_FILE_VERSION
-  session: PersistedChatSession
+  session: MaterializedPersistedChatSession
 }
 
 // Wraps a session in the on-disk envelope written per file.
