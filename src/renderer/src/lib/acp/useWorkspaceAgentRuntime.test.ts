@@ -1751,6 +1751,47 @@ describe('workspace agent message sending', () => {
     })
   })
 
+  it('does not append a prompt when attachment finalization fails', async () => {
+    const attachment = createAttachment()
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'Existing prompt',
+      cwd: '/workspace/project',
+      projectId: 'project-1'
+    })
+    useSessionStore.getState().finishRun('transport-session-1')
+    vi.stubGlobal('window', {
+      api: {
+        uploads: {
+          finalizeSession: vi.fn().mockRejectedValue(new Error('attachment finalization failed'))
+        }
+      }
+    })
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn()
+    }
+
+    const result = await sendWorkspaceMessage(runtime, {
+      sessionId: 'transport-session-1',
+      text: 'inspect the attachment',
+      attachments: [attachment],
+      cwd: '/workspace/project',
+      projectId: 'project-1'
+    })
+
+    expect(result).toBeUndefined()
+    expect(runtime.sendPrompt).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'error',
+      error: 'attachment finalization failed',
+      messages: [expect.objectContaining({ content: 'Existing prompt' })]
+    })
+  })
+
   it('binds an explicit continuation prompt to the durable active Plan version', async () => {
     const sendPrompt = vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
     const runtime = {
@@ -6227,6 +6268,18 @@ describe('manual native context compaction', () => {
       compacting: true
     })
     expect(cancelledSessionIds).toEqual(new Set(['session-1']))
+  })
+
+  it('rejects when runtime cancellation returns no terminal snapshot', async () => {
+    const runtime = { cancel: vi.fn().mockResolvedValue(undefined) }
+
+    await expect(cancelWorkspaceRun(runtime, 'session-1')).rejects.toThrow(
+      'Agent cancellation failed'
+    )
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'error',
+      error: 'Agent cancellation failed'
+    })
   })
 })
 

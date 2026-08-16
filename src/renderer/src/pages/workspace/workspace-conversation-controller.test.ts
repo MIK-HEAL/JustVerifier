@@ -26,6 +26,7 @@ const session = (overrides: Partial<ChatSession> = {}): ChatSession => ({
   title: 'Session A',
   cwd: '/workspace/project-a',
   status: 'idle',
+  permissionProfile: 'full',
   messages: [
     {
       id: 'message-user-a',
@@ -41,6 +42,39 @@ const session = (overrides: Partial<ChatSession> = {}): ChatSession => ({
   updatedAt: 1,
   ...overrides
 })
+
+const runningSession = (): ChatSession =>
+  session({
+    status: 'running',
+    conversationGraph: {
+      schemaVersion: 1,
+      rootFrameId: 'root',
+      activeFrameId: 'root',
+      frames: [
+        {
+          id: 'root',
+          originBindingState: 'root',
+          kind: 'root',
+          status: 'running',
+          activeBranchId: 'branch-a',
+          createdAt: 1
+        }
+      ],
+      branches: [
+        {
+          id: 'branch-a',
+          agentFrameId: 'root',
+          headMessageId: 'message-user-a',
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      messages: [],
+      activities: [],
+      activityGroups: [],
+      runtimeSegments: []
+    }
+  })
 
 const options = (
   overrides: Partial<WorkspaceConversationControllerOptions> = {}
@@ -59,6 +93,7 @@ const options = (
     sendPreparationInFlightSessionIds: [],
     saveAsSkillInFlightSessionIds: [],
     actionability: projectSessionActionability(activeSession),
+    hasPendingPermissionRequest: vi.fn(() => false),
     newConversationAutoReviewEnabled: false,
     newConversationEnabledComputeHosts: [],
     composer: {
@@ -72,7 +107,8 @@ const options = (
           attachments: []
         })),
         clearDraft: vi.fn(),
-        restoreFailedSend: vi.fn()
+        restoreFailedSend: vi.fn(() => true),
+        discardSnapshot: vi.fn()
       }
     },
     session: {
@@ -108,6 +144,7 @@ const options = (
     resetNewConversationSettings: vi.fn(),
     abortFixLoop: vi.fn(() => Promise.resolve()),
     getSession: (sessionId) => (sessionId === 'session-a' ? session() : undefined),
+    subscribeSessionChanges: () => () => undefined,
     ...overrides
   }
 }
@@ -344,6 +381,123 @@ describe('workspace conversation controller', () => {
     mounted.push(hook)
 
     expect(hook.result.current.availability).toMatchObject({ submit: true, revise: true })
+  })
+
+  it('queues an ordinary submit during a running turn without overlapping the runtime prompt', () => {
+    const running = runningSession()
+    const input = options({
+      activeSession: running,
+      promptInFlightSessionIds: [running.id],
+      getSession: () => running
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    expect(hook.result.current.availability).toMatchObject({
+      submit: true,
+      submitMode: 'queue'
+    })
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: ['skill-a'] }))
+
+    expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledWith('session-a', 1)
+    expect(hook.result.current.queue.items).toEqual([
+      expect.objectContaining({ text: 'hello', phase: 'queued' })
+    ])
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('queues without dispatching while the selected Specialist is not ready', () => {
+    const running = runningSession()
+    const input = options({ activeSession: running, getSession: () => running })
+    input.session.lifecycle.canStartSend = vi.fn(() => false)
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+
+    expect(hook.result.current.queue.items).toEqual([
+      expect.objectContaining({ text: 'hello', phase: 'queued' })
+    ])
+    expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledWith('session-a', 1)
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('captures the active Session Specialist when queueing', async () => {
+    let currentSession = { ...runningSession(), specialistId: 'specialist-a' }
+    const input = options({ activeSession: currentSession, getSession: () => currentSession })
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    currentSession = { ...currentSession, status: 'idle' }
+    hook.rerender({ ...input, activeSession: currentSession, getSession: () => currentSession })
+
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalledOnce())
+    expect(input.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ specialistId: 'specialist-a' })
+    )
+  })
+
+  it('drains queued work after another Session becomes active', async () => {
+    const queuedSession = runningSession()
+    const activeSession = session({ id: 'session-b' })
+    const input = options({
+      activeSession: queuedSession,
+      promptInFlightSessionIds: [queuedSession.id],
+      getSession: (sessionId) => (sessionId === queuedSession.id ? queuedSession : activeSession)
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    const settledQueuedSession = { ...queuedSession, status: 'idle' as const }
+    hook.rerender({
+      ...input,
+      activeSession,
+      promptInFlightSessionIds: [],
+      getSession: (sessionId) =>
+        sessionId === queuedSession.id ? settledQueuedSession : activeSession
+    })
+
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalledOnce())
+    expect(input.session.lifecycle.canStartSend).toHaveBeenCalledWith(queuedSession.id)
+    expect(input.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: queuedSession.id })
+    )
+  })
+
+  it('blocks immediate submit and revision while the queued head is being admitted', async () => {
+    let currentSession = runningSession()
+    let resolveAdmission!: (value: { sessionId: string; messageId: string }) => void
+    const admission = new Promise<{ sessionId: string; messageId: string }>((resolve) => {
+      resolveAdmission = resolve
+    })
+    const input = options({
+      activeSession: currentSession,
+      promptInFlightSessionIds: [currentSession.id],
+      getSession: () => currentSession
+    })
+    input.runtime.sendMessage = vi.fn(() => admission)
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    currentSession = { ...currentSession, status: 'idle' }
+    hook.rerender({
+      ...input,
+      activeSession: currentSession,
+      promptInFlightSessionIds: [],
+      getSession: () => currentSession
+    })
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalledOnce())
+
+    expect(hook.result.current.availability).toMatchObject({ submit: false, revise: false })
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    act(() => hook.result.current.actions.revise('message-user-a', textDoc('changed')))
+    expect(input.runtime.sendMessage).toHaveBeenCalledOnce()
+    expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
+
+    await act(async () => resolveAdmission({ sessionId: 'session-a', messageId: 'queued-message' }))
   })
 
   it('blocks submit and revision while Save as skill owns prompt admission', () => {

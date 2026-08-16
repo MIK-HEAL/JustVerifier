@@ -138,17 +138,11 @@ const failPrompt = async (
 
 const finalizeAttachments = async (
   sessionId: string,
-  messageId: string,
   attachments: UploadedAttachment[],
   projectId?: string
 ): Promise<UploadedAttachment[]> => {
   if (attachments.length === 0) return attachments
   const finalized = await window.api.uploads.finalizeSession({ projectId, sessionId, attachments })
-  useSessionStore.getState().replaceMessageUploads({
-    sessionId,
-    messageId,
-    uploads: finalized.map(toPersistedUploadedAttachment)
-  })
   usePreviewWorkbenchStore.getState().reconcileFinalizedUploads(finalized)
   return finalized
 }
@@ -281,12 +275,12 @@ const startPendingPrompt = (
 
     let attachments = request.attachments
     try {
-      attachments = await finalizeAttachments(
-        created.sessionId,
-        boundMessageId,
-        attachments,
-        request.projectId
-      )
+      attachments = await finalizeAttachments(created.sessionId, attachments, request.projectId)
+      useSessionStore.getState().replaceMessageUploads({
+        sessionId: created.sessionId,
+        messageId: boundMessageId,
+        uploads: attachments.map(toPersistedUploadedAttachment)
+      })
     } catch (error) {
       useSessionStore.getState().failRun(created.sessionId, errorMessage(error))
       return
@@ -504,13 +498,20 @@ const sendWorkspaceMessage = async (
       drainRuntimeEvents: lifecycle.drainRuntimeEvents
     })
     if (!prepared) return undefined
+    let promptAttachments = effectiveAttachments
+    try {
+      promptAttachments = await finalizeAttachments(sessionId, effectiveAttachments, projectId)
+    } catch (error) {
+      useSessionStore.getState().failRun(sessionId, errorMessage(error))
+      return undefined
+    }
     if (input.truncateFromMessageId) {
       useSessionStore.getState().truncateSessionFromMessage(sessionId, input.truncateFromMessageId)
     }
     const appended = useSessionStore.getState().appendUserMessage({
       sessionId,
       content,
-      attachments: effectiveAttachments,
+      attachments: promptAttachments,
       parts: input.parts,
       turnIntent: input.turnIntent,
       cwd: input.cwd,
@@ -521,18 +522,6 @@ const sendWorkspaceMessage = async (
     })
     if (!appended) return undefined
     const replay = prepared.replay()
-    let promptAttachments = effectiveAttachments
-    try {
-      promptAttachments = await finalizeAttachments(
-        sessionId,
-        appended.messageId,
-        effectiveAttachments,
-        projectId
-      )
-    } catch (error) {
-      useSessionStore.getState().failRun(sessionId, errorMessage(error))
-      return appended
-    }
     const continuation = input.planContinuation
       ? {
           projectId: projectId!,
