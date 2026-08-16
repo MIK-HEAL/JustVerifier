@@ -56,6 +56,7 @@ describe('capabilitiesCall RPC', () => {
       hostArtifacts: {} as never,
       hostLineage: {} as never,
       hostFrames: {} as never,
+      hostSessions: {} as never,
       hostModel: {
         isLlmAvailable: async () => true,
         isCurrentModelAvailable: async () => true,
@@ -87,6 +88,7 @@ describe('capabilitiesCall RPC', () => {
         artifacts: true,
         lineage: true,
         frames: true,
+        sessions: true,
         llm: true,
         currentModel: true,
         listModels: true,
@@ -175,6 +177,31 @@ describe('capabilitiesCall RPC', () => {
     })
   })
 
+  it('does not advertise Host Session diagnostics to ordinary or delegate control tokens', async () => {
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      hostSessions: {} as never
+    })
+    const ordinary = await server.issueSessionConnection(
+      'trusted-session',
+      'trusted-project',
+      'root-frame-trusted-session'
+    )
+    const delegate = await server.issueControlConnection(
+      'trusted-session',
+      'trusted-project',
+      'delegate-frame',
+      { role: 'delegate', attemptId: 'attempt-1' }
+    )
+
+    await expect(callCapabilities(ordinary)).resolves.toMatchObject({
+      payload: { result: { sessions: false } }
+    })
+    await expect(callCapabilities(delegate)).resolves.toMatchObject({
+      payload: { result: { sessions: false } }
+    })
+  })
+
   it('returns false when host.llm is configured but the active route is unavailable', async () => {
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
       transport: 'tcp',
@@ -245,6 +272,29 @@ describe('capabilitiesCall RPC', () => {
         result: {
           kind: 'operation',
           id: 'host.llm',
+          availability: { status: 'available' }
+        }
+      }
+    })
+  })
+
+  it('reports host.sessions as available through authenticated host.help', async () => {
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      hostSessions: {} as never
+    })
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'trusted-project',
+      'root-frame-trusted-session'
+    )
+
+    await expect(callHostSdkHelp(connection, 'sessions')).resolves.toMatchObject({
+      response: { status: 200 },
+      payload: {
+        result: {
+          kind: 'operation',
+          id: 'host.sessions',
           availability: { status: 'available' }
         }
       }
