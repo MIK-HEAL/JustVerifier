@@ -27,12 +27,25 @@ type NetworkStore = {
 // re-check reads as a deliberate check instead of a flash.
 const MIN_CHECKING_MS = 500
 
-export const useNetworkStore = create<NetworkStore>((set) => {
+export const useNetworkStore = create<NetworkStore>((set, get) => {
   let probeGeneration = 0
+  let lastKnownConnectivity: Exclude<NetworkConnectivity, 'unknown'> | undefined
 
   const probeConnectivity = async ({ announce = false } = {}): Promise<void> => {
     const generation = ++probeGeneration
     const startedAt = Date.now()
+    const currentConnectivity = get().connectivity
+    if (currentConnectivity !== 'unknown') {
+      lastKnownConnectivity = currentConnectivity
+    }
+
+    const holdAnnouncedState = async (): Promise<void> => {
+      if (!announce) return
+      const remaining = MIN_CHECKING_MS - (Date.now() - startedAt)
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining))
+      }
+    }
 
     if (announce) set({ connectivity: 'unknown' })
 
@@ -48,20 +61,29 @@ export const useNetworkStore = create<NetworkStore>((set) => {
         try {
           reachable = await checkConnectivity()
         } catch {
-          // Bridge failure keeps the last known state rather than crying wolf.
+          // Bridge failure keeps the last known state rather than crying wolf. Announced probes
+          // still honor the minimum Checking… presentation before restoring that state.
+          await holdAnnouncedState()
+          const currentState = get()
+          if (
+            announce &&
+            probeGeneration === generation &&
+            currentState.isOnline &&
+            currentState.connectivity === 'unknown' &&
+            lastKnownConnectivity !== undefined
+          ) {
+            set({ connectivity: lastKnownConnectivity })
+          }
           return
         }
       }
     }
 
-    if (announce) {
-      const remaining = MIN_CHECKING_MS - (Date.now() - startedAt)
-      if (remaining > 0) {
-        await new Promise((resolve) => setTimeout(resolve, remaining))
-      }
-    }
-    if (probeGeneration === generation) {
-      set({ connectivity: reachable ? 'reachable' : 'unreachable' })
+    await holdAnnouncedState()
+    if (probeGeneration === generation && (get().isOnline || !reachable)) {
+      const connectivity = reachable ? 'reachable' : 'unreachable'
+      lastKnownConnectivity = connectivity
+      set({ connectivity })
     }
   }
 
