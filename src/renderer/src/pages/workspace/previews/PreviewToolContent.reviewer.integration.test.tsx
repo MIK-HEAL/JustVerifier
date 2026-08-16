@@ -15,9 +15,22 @@ vi.mock('@/stores/navigation-store', () => ({
     selector({ activeProjectId: mocks.activeProjectId })
 }))
 vi.mock('@/stores/review-store', () => ({
-  selectProjectSessionReviews: () => mocks.reviews,
-  useReviewStore: <T,>(selector: (state: { reviewsBySession: Record<string, never[]> }) => T): T =>
-    selector({ reviewsBySession: {} })
+  selectProjectSessionReviewSnapshot: () => mocks.reviews,
+  selectProjectSessionReviewLoadError: () => undefined,
+  useReviewStore: <T,>(
+    selector: (state: {
+      reviewsBySession: Record<string, never[]>
+      loadedReviewSessions: Record<string, boolean>
+      loadErrorsBySession: Record<string, string>
+      loadReviewsForSession: ReturnType<typeof vi.fn>
+    }) => T
+  ): T =>
+    selector({
+      reviewsBySession: {},
+      loadedReviewSessions: {},
+      loadErrorsBySession: {},
+      loadReviewsForSession: vi.fn(() => Promise.resolve())
+    })
 }))
 vi.mock('../NotebookPreview', () => ({
   NotebookPreview: (): React.JSX.Element => <div />
