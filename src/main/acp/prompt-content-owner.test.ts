@@ -1,7 +1,8 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { UploadedAttachment } from '../../shared/uploads'
@@ -29,6 +30,53 @@ afterEach(async () => {
 })
 
 describe('AcpPromptContentOwner', () => {
+  it('sends a read-only linked file from its disposable snapshot URI', async () => {
+    const root = await createRoot()
+    const sourcePath = join(root, 'study.csv')
+    await writeFile(sourcePath, 'id,value\n1,2\n')
+    const resolver = createManagedFileReferenceResolver({
+      grantedRoots: { resolveRoot: async () => ({ path: root, access: 'ro' }) }
+    })
+    const resolveReference = vi.spyOn(resolver, 'resolve')
+    const owner = new AcpPromptContentOwner({ fileReferenceResolver: resolver })
+
+    const prepared = await owner.prepare({
+      appSessionId: 'session-1',
+      projectId: 'default-project',
+      connectionGeneration: 2,
+      text: 'analyze this file',
+      historyImages: [],
+      historyUploads: [],
+      currentUploads: [],
+      references: [
+        {
+          id: 'linked-1',
+          name: 'study.csv',
+          source: 'linked-folder',
+          rootId: 'root-1',
+          relativePath: 'study.csv',
+          mimeType: 'text/csv'
+        }
+      ],
+      codexSkillInputs: [],
+      skillImportEnabled: false
+    })
+
+    const resource = contentBlocks(prepared.content).find((block) => block.type === 'resource')
+    expect(resource).toMatchObject({
+      type: 'resource',
+      resource: { text: 'id,value\n1,2\n' }
+    })
+    if (resource?.type === 'resource') {
+      expect(resource.resource.uri).not.toBe(pathToFileURL(sourcePath).href)
+    }
+    expect(resolveReference).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionGeneration: 2 }),
+      expect.anything()
+    )
+    owner.clear()
+  })
+
   it('keeps the text fast path isolated from ambient resolvers and defensively owns Codex metadata', async () => {
     const resolver = createManagedFileReferenceResolver({})
     const resolveReference = vi.spyOn(resolver, 'resolve')
