@@ -64,7 +64,7 @@ describe('production application command wiring', () => {
       [
         'sessionPersistenceHandlers',
         'reviewRepository, sessionPersistenceHandlers, async (session)',
-        'sessions: sessionPersistenceHandlers'
+        '...sessionPersistenceHandlers'
       ],
       ['artifactHandlers', 'artifactHandlers )', 'artifacts: artifactHandlers'],
       [
@@ -112,9 +112,14 @@ describe('production application command wiring', () => {
     }
 
     expect(dependencyBlock).toContain('projects: projectHandlers')
+    expect(dependencyBlock).toContain(
+      'deleteSession: (request) => sessionDeletionOwner.delete(request)'
+    )
     expect(compact(ipcSource)).toContain(
       "declareElectronAdapter('application-projects', () => registerApplicationCommandElectronAdapter(applicationCommandComposition.electron) )"
     )
+    expect(ipcSource).not.toContain('registerSessionDeletionIpcHandler')
+    expect(ipcSource).not.toContain("declareElectronAdapter('session-deletion'")
     expect(ipcSource).not.toContain('registerProjectIpcHandlers')
     expect(legacyAdapterBlock).toContain('registerPreviewStateIpcHandlers(previewStateRepository)')
 
