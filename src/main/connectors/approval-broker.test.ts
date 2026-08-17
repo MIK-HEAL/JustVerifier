@@ -134,6 +134,39 @@ describe('ApprovalBroker', () => {
     expect(broker.getPending('id-1')).toBeNull()
   })
 
+  it('replays every pending request and omits requests after settlement', async () => {
+    const timer = makeTimer()
+    const broadcast = vi.fn()
+    const replay = vi.fn()
+    let sequence = 0
+    const broker = new ApprovalBroker({
+      generateId: () => `id-${++sequence}`,
+      broadcast,
+      replay,
+      setTimer: timer.set,
+      clearTimer: timer.clear
+    })
+    const first = broker.request({ connector: 'biomart', method: 'search', argsPreview: '{}' })
+    const second = broker.request({ connector: 'pubmed', method: 'fetch', argsPreview: '{}' })
+    broadcast.mockClear()
+
+    broker.replayPending()
+
+    expect(replay.mock.calls.map(([request]) => request.id)).toEqual(['id-1', 'id-2'])
+    expect(broadcast).not.toHaveBeenCalled()
+
+    broker.respond('id-1', 'deny')
+    await first
+    replay.mockClear()
+    broker.replayPending()
+
+    expect(replay).toHaveBeenCalledOnce()
+    expect(replay).toHaveBeenCalledWith(expect.objectContaining({ id: 'id-2' }))
+
+    broker.respond('id-2', 'deny')
+    await second
+  })
+
   it('runs concurrent requests independently', async () => {
     const timers: Array<() => void> = []
     let n = 0

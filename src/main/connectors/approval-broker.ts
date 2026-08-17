@@ -17,6 +17,8 @@ export type ApprovalInfo = {
 type ApprovalBrokerDeps = {
   // Pushes a pending request to the renderer(s) that show the approval card.
   broadcast: (request: ConnectorApprovalRequest) => void
+  // Reprojects an existing request without repeating first-delivery side effects such as notifications.
+  replay?: (request: ConnectorApprovalRequest) => void
   // Injectable so tests are deterministic; defaults to crypto.randomUUID in the factory below.
   generateId: () => string
   // How long a request waits before it is auto-denied (a connector call must never block forever).
@@ -71,6 +73,11 @@ export class ApprovalBroker {
     return this.pending.get(id)?.request ?? null
   }
 
+  replayPending(): void {
+    const replay = this.deps.replay ?? this.deps.broadcast
+    for (const entry of this.pending.values()) replay(entry.request)
+  }
+
   // Called from the IPC handler when the renderer responds. Unknown ids are ignored (already settled).
   respond(id: string, decision: ApprovalDecision): void {
     this.settle(id, decision, decision === 'deny' ? 'rejected' : 'resolved')
@@ -119,6 +126,10 @@ export class ApprovalBroker {
     if (entry.timer !== undefined) this.clearTimer(entry.timer)
     this.pending.delete(id)
     entry.resolve(decision)
-    this.deps.onSettled?.(id, state)
+    try {
+      this.deps.onSettled?.(id, state)
+    } catch {
+      // Renderer/event projection cannot roll back the broker decision or keep the call parked.
+    }
   }
 }
