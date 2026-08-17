@@ -17,6 +17,7 @@ import { createOptimisticBooleanCoordinator } from './settings-optimistic-boolea
 type SettingsConnectorsProjection = {
   connectors: ConnectorView[]
   customServers: CustomServerView[]
+  reservedCustomServerIds?: string[]
   ncbi: NcbiCredentialsView
 }
 
@@ -72,6 +73,7 @@ type SettingsConnectorsSliceOptions = {
 export const createInitialSettingsConnectorsState = (): SettingsConnectorsState => ({
   connectors: [],
   customServers: [],
+  reservedCustomServerIds: [],
   pendingApprovals: [],
   ncbi: { hasApiKey: false }
 })
@@ -91,6 +93,7 @@ export const createSettingsConnectorsSlice = ({
     generation: number
   ): SettingsConnectorsProjection => ({
     ...projection,
+    reservedCustomServerIds: projection.reservedCustomServerIds ?? [],
     connectors: projection.connectors.map((connector) => ({
       ...connector,
       enabled: toggleWrites.project(

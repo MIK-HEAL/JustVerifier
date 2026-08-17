@@ -1254,6 +1254,8 @@ export type CustomServerView = {
 export type ConnectorsSnapshot = {
   connectors: ConnectorView[]
   customServers: CustomServerView[]
+  // Local IDs reserved until interrupted custom Connector deletion cleanup completes.
+  reservedCustomServerIds?: string[]
   ncbi: NcbiCredentialsView
 }
 
@@ -1264,6 +1266,8 @@ export type SetNcbiCredentialsRequest = { contactEmail?: string; apiKey?: string
 
 // Add a custom MCP server. stdio requires `command`; the remote transports require `url`.
 export type AddCustomServerRequest = {
+  // Optional immutable local ID. Omission lets main infer one from `name` and fall back to a UUID.
+  id?: string
   name: string
   displayName: string
   description?: string
