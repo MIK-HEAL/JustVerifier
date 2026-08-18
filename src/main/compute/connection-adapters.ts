@@ -58,8 +58,65 @@ const PASSWORD_POLICY_OPTIONS = new Set([
   'proxycommand',
   'proxyjump',
   'pubkeyauthentication',
-  'stricthostkeychecking'
+  'stricthostkeychecking',
+  'user'
 ])
+
+const PASSWORD_SAFE_CONFIG_OPTIONS = new Map([
+  ['addressfamily', 'AddressFamily'],
+  ['bindaddress', 'BindAddress'],
+  ['bindinterface', 'BindInterface'],
+  ['casignaturealgorithms', 'CASignatureAlgorithms'],
+  ['checkhostip', 'CheckHostIP'],
+  ['ciphers', 'Ciphers'],
+  ['compression', 'Compression'],
+  ['connectionattempts', 'ConnectionAttempts'],
+  ['globalknownhostsfile', 'GlobalKnownHostsFile'],
+  ['hashknownhosts', 'HashKnownHosts'],
+  ['hostkeyalgorithms', 'HostKeyAlgorithms'],
+  ['hostkeyalias', 'HostKeyAlias'],
+  ['ipqos', 'IPQoS'],
+  ['kexalgorithms', 'KexAlgorithms'],
+  ['loglevel', 'LogLevel'],
+  ['macs', 'MACs'],
+  ['obscurekeystroketiming', 'ObscureKeystrokeTiming'],
+  ['rekeylimit', 'RekeyLimit'],
+  ['requiredrsasize', 'RequiredRSASize'],
+  ['revokedhostkeys', 'RevokedHostKeys'],
+  ['serveralivecountmax', 'ServerAliveCountMax'],
+  ['serveraliveinterval', 'ServerAliveInterval'],
+  ['tcpkeepalive', 'TCPKeepAlive'],
+  ['updatehostkeys', 'UpdateHostKeys'],
+  ['userknownhostsfile', 'UserKnownHostsFile'],
+  ['verifyhostkeydns', 'VerifyHostKeyDNS']
+])
+
+const REMOTE_COMMAND_STATUS_INTENTS = new Set<AcquireComputeConnectionRequest['intent']>([
+  'direct_browse',
+  'direct_command',
+  'direct_upload',
+  'direct_download',
+  'job_dispatch',
+  'job_poll',
+  'job_harvest',
+  'job_cleanup'
+])
+
+const JOB_PROTOCOL_INTENTS = new Set<AcquireComputeConnectionRequest['intent']>([
+  'job_dispatch',
+  'job_poll',
+  'job_harvest',
+  'job_cleanup'
+])
+
+const passwordSafeConfigArgs = (config: Readonly<Record<string, string>>): string[] => {
+  const result = ['-F', 'none']
+  for (const [key, option] of PASSWORD_SAFE_CONFIG_OPTIONS) {
+    const value = config[key]?.trim()
+    if (value) result.push('-o', `${option}=${value}`)
+  }
+  return result
+}
 
 const withoutInheritedAuthenticationOptions = (args: readonly string[]): string[] => {
   const result: string[] = []
@@ -101,9 +158,10 @@ const hasHostUnreachableDiagnostic = (stderr: string): boolean => {
 
 const classifyPasswordConnectionFailure = (
   result: { exitCode: number | null; stderr: string; timedOut: boolean },
-  askpass: AskpassEnvironment
+  askpass: AskpassEnvironment,
+  unsupportedFallback = true
 ): ComputeConnectionError | undefined => {
-  const failure = classifyConnectionFailure(result)
+  const failure = classifyConnectionFailure(result, unsupportedFallback)
   if (!failure || !askpass.wasUnsupportedPromptRejected?.()) return failure
   if (
     failure.code === 'authentication_failed' ||
@@ -113,6 +171,14 @@ const classifyPasswordConnectionFailure = (
   }
   return failure
 }
+
+const redactPassword = (value: string, password: string): string =>
+  password ? value.replaceAll(password, '[redacted]') : value
+
+const scpUploadTarget = (target: ResolvedSshTarget): ResolvedSshTarget =>
+  target.host.includes(':') && !(target.host.startsWith('[') && target.host.endsWith(']'))
+    ? { ...target, host: `[${target.host}]` }
+    : target
 
 // Password-mode children receive only the operating-system context needed to locate OpenSSH,
 // resolve the user's SSH configuration/known_hosts, and create temporary files. Copying the whole
@@ -242,7 +308,11 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
       run: (command, options) => withLease((lease) => lease.run(command, options)),
       upload: (localPath, remotePath) => withLease((lease) => lease.upload(localPath, remotePath)),
       download: (remotePath, localPath, maxBytes) =>
-        withLease((lease) => lease.download(remotePath, localPath, maxBytes))
+        withLease((lease) => lease.download(remotePath, localPath, maxBytes)),
+      redactSensitiveOutputs: (values) =>
+        credentialLease.withPassword(async (password) =>
+          values.map((value) => redactPassword(value, password))
+        )
     }
   }
 
@@ -304,16 +374,26 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
             env: askpass.env,
             signal: request.signal ?? options.signal
           })
-          const failure = classifyPasswordConnectionFailure(result, askpass)
+          const failure = classifyPasswordConnectionFailure(
+            result,
+            askpass,
+            !REMOTE_COMMAND_STATUS_INTENTS.has(request.intent)
+          )
           if (failure) throw failure
-          return result
+          return {
+            ...result,
+            stdout: JOB_PROTOCOL_INTENTS.has(request.intent)
+              ? result.stdout
+              : redactPassword(result.stdout, password),
+            stderr: redactPassword(result.stderr, password)
+          }
         }),
       upload: async (localPath, remotePath) =>
         withAskpass(async (askpass) => {
           if (!this.scpRunner) throw new ComputeConnectionError('unsupported_auth_configuration')
           const result = await this.scpRunner.copy(
             resolveScpBinary(),
-            buildScpUploadArgs(target, localPath, remotePath),
+            buildScpUploadArgs(scpUploadTarget(target), localPath, remotePath),
             30 * 60 * 1000,
             { env: askpass.env, signal: request.signal }
           )
@@ -338,7 +418,9 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
           const failure = classifyPasswordConnectionFailure(result, askpass)
           if (failure) throw failure
           return result
-        })
+        }),
+      redactSensitiveOutputs: async (values) =>
+        values.map((value) => redactPassword(value, password))
     }
   }
 
@@ -363,8 +445,18 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
       { user, port },
       async () => effectiveConfig
     )
+    const effectiveHostname = effectiveConfig['hostname']?.trim()
+    const resolvedHost =
+      effectiveHostname && effectiveHostname.toLowerCase() !== 'none'
+        ? effectiveHostname
+        : base.host
+    if (resolvedHost.startsWith('-')) {
+      throw new ComputeConnectionError('unsupported_auth_configuration')
+    }
     const inheritedArgs = withoutInheritedAuthenticationOptions(base.extraArgs)
     const policy = [
+      '-o',
+      `User=${user}`,
       '-o',
       'ProxyJump=none',
       '-o',
@@ -413,9 +505,12 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
       failure?.code === 'timeout'
     )
       throw failure
-    const target = { ...base, extraArgs: [...inheritedArgs, ...policy] }
+    const target = {
+      ...base,
+      host: resolvedHost,
+      extraArgs: [...passwordSafeConfigArgs(effectiveConfig), ...inheritedArgs, ...policy]
+    }
     const accountHosts = new Set([target.host, host.sshAlias])
-    const effectiveHostname = effectiveConfig['hostname']?.trim()
     if (effectiveHostname && effectiveHostname.toLowerCase() !== 'none') {
       accountHosts.add(effectiveHostname)
     }
