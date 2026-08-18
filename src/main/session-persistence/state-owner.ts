@@ -130,6 +130,9 @@ const rebaseSafeSessionFields = (
       case 'specialistId':
         rebased.specialistId = submitted.specialistId
         break
+      case 'specialistBindingPending':
+        rebased.specialistBindingPending = submitted.specialistBindingPending
+        break
     }
   }
   rebased.updatedAt = Math.max(authoritative.updatedAt, submitted.updatedAt) + 1
@@ -554,6 +557,21 @@ class SessionPersistenceStateOwner {
     delete rendererOwnedSession.runtimeContext
     delete rendererOwnedSession.archivedAt
     const authority = authoritative.status === 'found' ? authoritative.session : undefined
+    const specialistBindingOwnedByCaller =
+      options.conflictRebaseFields?.includes('specialistId') === true &&
+      options.conflictRebaseFields.includes('specialistBindingPending')
+    const specialistBindingChanged =
+      authority !== undefined &&
+      specialistBindingOwnedByCaller &&
+      (rendererOwnedSession.specialistId !== authority.specialistId ||
+        rendererOwnedSession.specialistBindingPending !== authority.specialistBindingPending)
+    // The renderer mirrors these fields for interaction state, but only Main's dedicated binding
+    // transaction may change an existing durable Session. Preserve both desired and pending across
+    // unrelated whole-session renderer saves so they cannot be split by a stale projection.
+    if (authority && !specialistBindingOwnedByCaller) {
+      delete rendererOwnedSession.specialistId
+      delete rendererOwnedSession.specialistBindingPending
+    }
     const delegationPolicyChanged =
       authority !== undefined &&
       (rendererOwnedSession.delegationPolicy === 'deny' ? 'deny' : 'allow') !==
@@ -576,6 +594,12 @@ class SessionPersistenceStateOwner {
       messages: mergeMainOwnedRelayMessages(rendererOwnedSession.messages, authority?.messages),
       ...(authority?.runtimeContext ? { runtimeContext: authority.runtimeContext } : {}),
       ...(authority?.archivedAt ? { archivedAt: authority.archivedAt } : {}),
+      ...(authority && !specialistBindingOwnedByCaller
+        ? {
+            specialistId: authority.specialistId,
+            specialistBindingPending: authority.specialistBindingPending
+          }
+        : {}),
       ...(authority ? { branchSource: authority.branchSource } : {}),
       ...(authority
         ? { delegationPolicy: authority.delegationPolicy === 'deny' ? 'deny' : 'allow' }
@@ -592,6 +616,8 @@ class SessionPersistenceStateOwner {
         authority?.runtimeContext ||
         mainOwnedStatus ||
         authority?.enabledComputeHosts !== undefined ||
+        authority?.specialistBindingPending !== undefined ||
+        specialistBindingChanged ||
         delegationPolicyChanged
           ? Math.max(rendererOwnedSession.updatedAt, (authority?.updatedAt ?? -1) + 1, Date.now())
           : rendererOwnedSession.updatedAt

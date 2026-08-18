@@ -38,6 +38,12 @@ const codexResponsesBackend: AcpBackendGenerationView = {
   modelRoute: 'codex-responses'
 }
 
+const codexBridgeBackend: AcpBackendGenerationView = {
+  ...codexResponsesBackend,
+  backendId: 'codex:bridge-provider',
+  modelRoute: 'codex-bridge'
+}
+
 const opencodeBackend: AcpBackendGenerationView = {
   ...backend,
   framework: opencodeFramework,
@@ -553,6 +559,42 @@ describe('AcpProviderSessionResumer', () => {
     expect(harness.adopt).toHaveBeenCalledOnce()
     expect(harness.identityClaimedAtAdoption()).toBe(true)
     expect(harness.registry.isIdentityClaimed('stable-app-session')).toBe(false)
+  })
+
+  it.each([
+    ['claude-code', backend],
+    ['opencode', opencodeBackend],
+    ['codex-response', codexResponsesBackend],
+    ['codex-bridge', codexBridgeBackend]
+  ] as const)(
+    'fresh-adopts %s when a durable Specialist binding is still pending',
+    async (_route, initialBackend) => {
+      const harness = createHarness({ initialBackend })
+
+      await expect(
+        harness.resume({
+          specialistId: 'specialist-new',
+          specialistBindingPending: true
+        })
+      ).resolves.toMatchObject({ contextReset: true })
+
+      expect(harness.request).not.toHaveBeenCalled()
+      expect(harness.adopt).toHaveBeenCalledOnce()
+    }
+  )
+
+  it('passes an explicit pending Main binding to fresh adoption', async () => {
+    const harness = createHarness()
+
+    await harness.resume({ specialistBindingPending: true })
+
+    expect(harness.adopt).toHaveBeenCalledWith(
+      'stable-app-session',
+      expect.objectContaining({
+        specialistId: undefined,
+        specialistBindingPending: true
+      })
+    )
   })
 
   it('releases only the failed Resume provision before adopting an unresumable session', async () => {

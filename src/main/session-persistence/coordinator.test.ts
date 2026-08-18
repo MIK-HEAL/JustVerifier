@@ -887,6 +887,8 @@ describe('SessionPersistenceCoordinator', () => {
       title: 'Before rename',
       status: 'waiting-plan-approval',
       updatedAt: previousUpdatedAt,
+      specialistId: 'specialist-new',
+      specialistBindingPending: true,
       runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
     })
     const repository = createSessionRepository({
@@ -902,6 +904,7 @@ describe('SessionPersistenceCoordinator', () => {
     const staleRendererSnapshot = createSession({
       title: 'Renamed by renderer',
       status: 'idle',
+      specialistId: 'specialist-old',
       runtimeContext: {
         version: 1,
         revision: 0,
@@ -912,6 +915,8 @@ describe('SessionPersistenceCoordinator', () => {
     await expect(coordinator.saveSession(staleRendererSnapshot)).resolves.toMatchObject({
       title: 'Renamed by renderer',
       status: 'waiting-plan-approval',
+      specialistId: 'specialist-new',
+      specialistBindingPending: true,
       runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
     })
     expect(durable.runtimeContext).toEqual({
@@ -2064,6 +2069,32 @@ describe('SessionPersistenceCoordinator', () => {
     expect(provenance.captureFinalizedMessages).toHaveBeenCalledWith(result)
   })
 
+  it('advances the session revision when a specialist binding first becomes pending', async () => {
+    const authoritativeSession = createSession({
+      specialistId: 'specialist-old',
+      updatedAt: 7
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi
+        .fn()
+        .mockResolvedValue({ status: 'found', session: authoritativeSession })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    const result = await coordinator.saveSessionSpecialistBinding(
+      authoritativeSession,
+      'specialist-new',
+      true
+    )
+
+    expect(result).toMatchObject({
+      specialistId: 'specialist-new',
+      specialistBindingPending: true
+    })
+    expect(result.updatedAt).toBeGreaterThan(authoritativeSession.updatedAt)
+    expect(repository.saveSession).toHaveBeenCalledWith(result)
+  })
+
   it('rebases a specialist binding onto the latest durable graph after a conflict', async () => {
     const authoritativeSession = createSession({
       specialistId: 'specialist-old',
@@ -2114,10 +2145,12 @@ describe('SessionPersistenceCoordinator', () => {
 
     const result = await coordinator.saveSessionSpecialistBinding(
       submittedSession,
-      'specialist-new'
+      'specialist-new',
+      true
     )
 
     expect(result.specialistId).toBe('specialist-new')
+    expect(result.specialistBindingPending).toBe(true)
     expect(result.messages).toEqual(authoritativeSession.messages)
     expect(repository.saveSession).toHaveBeenCalledWith(result)
   })
