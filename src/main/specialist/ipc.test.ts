@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { SpecialistProfileView } from '../../shared/specialist'
 import { SPECIALIST_IPC } from '../../shared/specialist'
+import { SPECIALIST_MARKETPLACE_IPC } from '../../shared/specialist-marketplace'
 import { SessionBindingService } from './session-binding'
 import { registerSpecialistIpcHandlers } from './ipc'
 import type { ProfileService } from './service'
@@ -45,6 +46,197 @@ const createReconfigurationStub = (): Pick<SessionSpecialistReconfiguration, 're
 })
 
 describe('specialist session IPC', () => {
+  it('keeps Marketplace downloads in main and binds install candidates to the renderer owner', async () => {
+    handlers.clear()
+    const marketplace = {
+      list: vi.fn().mockResolvedValue({ sources: [], specialists: [], failures: [] }),
+      inspectGitHubSource: vi.fn(),
+      addSource: vi.fn(),
+      removeSource: vi.fn(),
+      getRelease: vi.fn(),
+      cancel: vi.fn(),
+      dispose: vi.fn(),
+      prepareInstall: vi.fn().mockImplementation(async (_request, _ownerId, onProgress) => {
+        onProgress({
+          sourceId: 'source',
+          specialistId: 'example',
+          version: '1.0.0',
+          transferred: 50,
+          total: 100,
+          percent: 50
+        })
+        return {
+          release: { specialistId: 'example' },
+          package: { candidateToken: 'candidate', diagnostics: [], installable: true }
+        }
+      }),
+      install: vi.fn().mockResolvedValue({ status: 'failed', code: 'candidate-invalid' })
+    }
+    registerSpecialistIpcHandlers(
+      createProfileService(),
+      new SessionBindingService(createProfileService()),
+      createReconfigurationStub(),
+      undefined,
+      undefined,
+      undefined,
+      marketplace as never
+    )
+
+    const send = vi.fn()
+    const event = { sender: { id: 41, send } }
+    await handlers.get(SPECIALIST_MARKETPLACE_IPC.PREPARE_INSTALL)?.(event, {
+      sourceId: 'source',
+      specialistId: 'example',
+      version: '1.0.0',
+      selectedSkillIds: [],
+      selectedConnectorIds: []
+    })
+    await handlers.get(SPECIALIST_MARKETPLACE_IPC.INSTALL)?.(event, {
+      candidateToken: 'candidate'
+    })
+    await handlers.get(SPECIALIST_MARKETPLACE_IPC.CANCEL_CANDIDATE)?.(event, {
+      candidateToken: 'candidate'
+    })
+
+    expect(marketplace.prepareInstall).toHaveBeenCalledWith(
+      expect.any(Object),
+      41,
+      expect.any(Function)
+    )
+    expect(send).toHaveBeenCalledWith(SPECIALIST_MARKETPLACE_IPC.DOWNLOAD_PROGRESS, {
+      sourceId: 'source',
+      specialistId: 'example',
+      version: '1.0.0',
+      transferred: 50,
+      total: 100,
+      percent: 50
+    })
+    expect(marketplace.install).toHaveBeenCalledWith({ candidateToken: 'candidate' }, 41)
+    expect(marketplace.cancel).toHaveBeenCalledWith('candidate', 41)
+    expect(JSON.stringify(marketplace.prepareInstall.mock.calls)).not.toContain('archiveBytes')
+  })
+
+  it('disposes an in-flight Marketplace candidate when its renderer is destroyed', async () => {
+    handlers.clear()
+    let resolvePrepare!: (value: unknown) => void
+    const marketplace = {
+      list: vi.fn(),
+      inspectGitHubSource: vi.fn(),
+      addSource: vi.fn(),
+      removeSource: vi.fn(),
+      getRelease: vi.fn(),
+      prepareInstall: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolvePrepare = resolve
+          })
+      ),
+      install: vi.fn(),
+      cancel: vi.fn(),
+      dispose: vi.fn()
+    }
+    registerSpecialistIpcHandlers(
+      createProfileService(),
+      new SessionBindingService(createProfileService()),
+      createReconfigurationStub(),
+      undefined,
+      undefined,
+      undefined,
+      marketplace as never
+    )
+
+    let destroyed = false
+    let onDestroyed: (() => void) | undefined
+    const event = {
+      sender: {
+        id: 41,
+        send: vi.fn(),
+        isDestroyed: () => destroyed,
+        once: (_name: string, listener: () => void) => {
+          onDestroyed = listener
+        }
+      }
+    }
+    const pending = Promise.resolve(
+      handlers.get(SPECIALIST_MARKETPLACE_IPC.PREPARE_INSTALL)?.(event, {
+        sourceId: 'source',
+        specialistId: 'example',
+        version: '1.0.0',
+        selectedSkillIds: [],
+        selectedConnectorIds: []
+      })
+    )
+
+    destroyed = true
+    onDestroyed?.()
+    resolvePrepare({
+      release: { specialistId: 'example' },
+      package: { candidateToken: 'candidate', diagnostics: [], installable: true }
+    })
+
+    await expect(pending).rejects.toThrow('owner is no longer available')
+    expect(marketplace.dispose).toHaveBeenCalledWith(41)
+  })
+
+  it('binds one renderer lifetime listener across Marketplace candidate requests', async () => {
+    handlers.clear()
+    const marketplace = {
+      list: vi.fn(),
+      inspectGitHubSource: vi.fn().mockResolvedValue({ candidateToken: 'source-candidate' }),
+      addSource: vi.fn(),
+      removeSource: vi.fn(),
+      getRelease: vi.fn(),
+      prepareInstall: vi.fn().mockResolvedValue({
+        release: { specialistId: 'example' },
+        package: { candidateToken: 'install-candidate', diagnostics: [], installable: true }
+      }),
+      install: vi.fn(),
+      cancel: vi.fn(),
+      dispose: vi.fn()
+    }
+    registerSpecialistIpcHandlers(
+      createProfileService(),
+      new SessionBindingService(createProfileService()),
+      createReconfigurationStub(),
+      undefined,
+      undefined,
+      undefined,
+      marketplace as never
+    )
+
+    let destroyed = false
+    const destroyedListeners: Array<() => void> = []
+    const once = vi.fn((_name: string, listener: () => void) => {
+      destroyedListeners.push(listener)
+    })
+    const event = {
+      sender: {
+        id: 41,
+        send: vi.fn(),
+        isDestroyed: () => destroyed,
+        once
+      }
+    }
+
+    await handlers.get(SPECIALIST_MARKETPLACE_IPC.INSPECT_GITHUB_SOURCE)?.(event, {
+      repositoryUrl: 'https://github.com/example/marketplace'
+    })
+    const listenerCount = once.mock.calls.length
+    await handlers.get(SPECIALIST_MARKETPLACE_IPC.PREPARE_INSTALL)?.(event, {
+      sourceId: 'source',
+      specialistId: 'example',
+      version: '1.0.0',
+      selectedSkillIds: [],
+      selectedConnectorIds: []
+    })
+
+    expect(once).toHaveBeenCalledTimes(listenerCount)
+    destroyed = true
+    destroyedListeners.forEach((listener) => listener())
+    expect(marketplace.dispose).toHaveBeenCalledOnce()
+    expect(marketplace.dispose).toHaveBeenCalledWith(41)
+  })
+
   it('broadcasts only an invalidation signal without profile prompts or resource paths', () => {
     let notify: (() => void) | undefined
     const service = {
@@ -161,7 +353,7 @@ describe('specialist session IPC', () => {
     expect(result).toEqual({ saved: true })
   })
 
-  it('keeps archive bytes in main and rejects mutated install requests before the package service', async () => {
+  it('keeps archive bytes in main and validates install requests before the package service', async () => {
     handlers.clear()
     const binding = new SessionBindingService(createProfileService())
     const preview = vi.fn().mockResolvedValue({
@@ -212,10 +404,26 @@ describe('specialist session IPC', () => {
     expect(preview).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]), 17)
     expect(once).toHaveBeenCalledWith('destroyed', expect.any(Function))
 
+    const validRequest = {
+      candidateToken: 'candidate-1',
+      skillConflictResolutions: []
+    }
+    await handlers.get(SPECIALIST_IPC.INSTALL_PACKAGE)?.(event, validRequest)
+    expect(install).toHaveBeenCalledWith(validRequest, 17)
+
+    install.mockClear()
     await expect(
       handlers.get(SPECIALIST_IPC.INSTALL_PACKAGE)?.(undefined, {
         candidateToken: 'candidate-1',
         enabled: false
+      })
+    ).resolves.toEqual({ status: 'failed', code: 'candidate-invalid' })
+    expect(install).not.toHaveBeenCalled()
+
+    await expect(
+      handlers.get(SPECIALIST_IPC.INSTALL_PACKAGE)?.(undefined, {
+        candidateToken: 'candidate-1',
+        skillConflictResolutions: [{ skillId: 'conflict', resolution: 'replace' }]
       })
     ).resolves.toEqual({ status: 'failed', code: 'candidate-invalid' })
     expect(install).not.toHaveBeenCalled()

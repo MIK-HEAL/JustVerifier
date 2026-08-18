@@ -216,8 +216,8 @@ const parsePayload = (
     'connector_ids'
   ])
   const identityFields = ['id', 'version'].filter((key) => key in value)
-  const presentationFields = ['iconKey', 'colorKey'].filter((key) => key in value)
-  const capabilityFields = ['capabilityMode', 'fullAccess', 'selectedCapabilities'].filter(
+  const presentationFields = ['icon_key', 'color_key'].filter((key) => key in value)
+  const capabilityFields = ['capability_mode', 'full_access', 'selected_capabilities'].filter(
     (key) => key in value
   )
   if (identityFields.length) {
@@ -232,7 +232,7 @@ const parsePayload = (
     diagnostic(
       diagnostics,
       'specialist.presentation-field-forbidden',
-      'iconKey and colorKey are chosen in the Specialist configuration page and cannot be imported.',
+      'icon_key and color_key are chosen in the Specialist configuration page and cannot be imported.',
       'specialist.json'
     )
   }
@@ -549,7 +549,7 @@ const planBundledSkills = (
       } else if (existingVersion !== version || existing.contentHash !== contentHash) {
         disposition = 'conflict'
         reason = 'The installed Skill version or normalized content differs.'
-        diagnostic(diagnostics, 'skill.existing-conflict', reason, root, id)
+        warning(diagnostics, 'skill.existing-conflict', reason, root, id)
       } else if (existing.standalone !== false && !existing.ownerIds?.length) {
         disposition = 'reuse-standalone'
         reason = 'An identical standalone Skill is already installed.'
@@ -565,6 +565,22 @@ const planBundledSkills = (
       disposition,
       files: files.map((file) => file.path),
       ...(reason ? { reason } : {}),
+      ...(disposition === 'conflict'
+        ? {
+            conflict: {
+              localId: existing!.id,
+              installedVersion: existing!.version ?? DEFAULT_BUNDLED_SKILL_VERSION,
+              installedContentHash: existing!.contentHash ?? '',
+              mainEnabled: existing!.mainEnabled ?? false,
+              specialists: (existing!.specialistIds ?? []).map((specialistId) => ({
+                id: specialistId,
+                name:
+                  catalog.specialists?.find((specialist) => specialist.id === specialistId)?.name ??
+                  specialistId
+              }))
+            }
+          }
+        : {}),
       contentHash,
       filesToInstall: files
     })
@@ -778,7 +794,8 @@ export const validateSpecialistPackage = (
             version: skill.version,
             disposition: skill.disposition,
             files: skill.files,
-            ...(skill.reason ? { reason: skill.reason } : {})
+            ...(skill.reason ? { reason: skill.reason } : {}),
+            ...(skill.conflict ? { conflict: skill.conflict } : {})
           }))
         }
       : undefined
@@ -804,5 +821,12 @@ export const validateSpecialistPackage = (
     skills: skillPlans
   }
   deepFreeze(plan)
-  return { preview: { summary, diagnostics, installable: true }, plan }
+  return {
+    preview: {
+      summary,
+      diagnostics,
+      installable: !skillPlans.some((skill) => skill.disposition === 'conflict')
+    },
+    plan
+  }
 }

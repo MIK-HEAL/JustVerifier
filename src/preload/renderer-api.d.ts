@@ -349,6 +349,22 @@ import type {
   SpecialistDeleteResult
 } from '../shared/specialist-package'
 import type {
+  AddMarketplaceSourceRequest,
+  CancelMarketplaceCandidateRequest,
+  GetMarketplaceReleaseRequest,
+  InspectGitHubMarketplaceSourceRequest,
+  MarketplaceDownloadProgress,
+  MarketplaceInstallPreview,
+  MarketplaceInstallRequest,
+  MarketplaceInstallResult,
+  MarketplaceSnapshot,
+  MarketplaceSourceCandidate,
+  MarketplaceSourceView,
+  MarketplaceSpecialistRelease,
+  PrepareMarketplaceInstallRequest,
+  RemoveMarketplaceSourceRequest
+} from '../shared/specialist-marketplace'
+import type {
   CloseConfirmRequest,
   CloseConfirmResponse,
   WindowFindAppearance,
@@ -566,6 +582,23 @@ export interface OpenScienceAPI {
   }
   specialist: {
     list(): Promise<SpecialistCatalogSnapshot>
+    listMarketplace(): Promise<MarketplaceSnapshot>
+    inspectGitHubMarketplaceSource(
+      request: InspectGitHubMarketplaceSourceRequest
+    ): Promise<MarketplaceSourceCandidate>
+    addMarketplaceSource(request: AddMarketplaceSourceRequest): Promise<MarketplaceSourceView>
+    removeMarketplaceSource(request: RemoveMarketplaceSourceRequest): Promise<void>
+    getMarketplaceRelease(
+      request: GetMarketplaceReleaseRequest
+    ): Promise<MarketplaceSpecialistRelease>
+    prepareMarketplaceInstall(
+      request: PrepareMarketplaceInstallRequest
+    ): Promise<MarketplaceInstallPreview>
+    cancelMarketplaceCandidate(request: CancelMarketplaceCandidateRequest): Promise<void>
+    onMarketplaceDownloadProgress(
+      listener: (progress: MarketplaceDownloadProgress) => void
+    ): RemoveListener
+    installMarketplace(request: MarketplaceInstallRequest): Promise<MarketplaceInstallResult>
     create(request: CreateSpecialistRequest): Promise<SpecialistProfileView>
     update(request: UpdateSpecialistRequest): Promise<SpecialistProfileView>
     setEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistProfileView>

@@ -34,6 +34,17 @@ import type {
 } from '../../shared/specialist-package'
 import type { SpecialistPackageService } from './package/service'
 import type { SessionSpecialistReconfiguration } from './session-reconfiguration'
+import {
+  SPECIALIST_MARKETPLACE_IPC,
+  type AddMarketplaceSourceRequest,
+  type GetMarketplaceReleaseRequest,
+  type InspectGitHubMarketplaceSourceRequest,
+  type MarketplaceDownloadProgress,
+  type MarketplaceInstallRequest,
+  type PrepareMarketplaceInstallRequest,
+  type RemoveMarketplaceSourceRequest
+} from '../../shared/specialist-marketplace'
+import type { MarketplaceService } from './marketplace/service'
 
 const log = createLogger('specialist:ipc')
 
@@ -61,14 +72,59 @@ type PackageImportIpc = {
   }) => Promise<SpecialistExportSaveResult>
 }
 
+type MarketplaceIpc = Pick<
+  MarketplaceService,
+  | 'list'
+  | 'inspectGitHubSource'
+  | 'addSource'
+  | 'removeSource'
+  | 'getRelease'
+  | 'prepareInstall'
+  | 'install'
+  | 'cancel'
+  | 'dispose'
+>
+
 const isCandidateRequest = (request: unknown): request is SpecialistPackageInstallRequest =>
   typeof request === 'object' &&
   request !== null &&
-  Object.keys(request).every((key) => ['candidateToken', 'confirmOverwrite'].includes(key)) &&
+  Object.keys(request).length === 1 &&
   typeof (request as { candidateToken?: unknown }).candidateToken === 'string' &&
-  Boolean((request as { candidateToken: string }).candidateToken) &&
-  ((request as { confirmOverwrite?: unknown }).confirmOverwrite === undefined ||
-    (request as { confirmOverwrite?: unknown }).confirmOverwrite === true)
+  Boolean((request as { candidateToken: string }).candidateToken)
+
+const isInstallCandidateRequest = (
+  request: unknown
+): request is SpecialistPackageInstallRequest => {
+  if (
+    typeof request !== 'object' ||
+    request === null ||
+    Object.keys(request).some(
+      (key) => !['candidateToken', 'confirmOverwrite', 'skillConflictResolutions'].includes(key)
+    ) ||
+    typeof (request as { candidateToken?: unknown }).candidateToken !== 'string' ||
+    !(request as { candidateToken: string }).candidateToken ||
+    ((request as { confirmOverwrite?: unknown }).confirmOverwrite !== undefined &&
+      (request as { confirmOverwrite?: unknown }).confirmOverwrite !== true)
+  ) {
+    return false
+  }
+  const resolutions = (request as { skillConflictResolutions?: unknown }).skillConflictResolutions
+  return (
+    resolutions === undefined ||
+    (Array.isArray(resolutions) &&
+      resolutions.every(
+        (resolution) =>
+          typeof resolution === 'object' &&
+          resolution !== null &&
+          Object.keys(resolution).length === 2 &&
+          typeof (resolution as { skillId?: unknown }).skillId === 'string' &&
+          Boolean((resolution as { skillId: string }).skillId) &&
+          ['use-installed', 'use-incoming'].includes(
+            (resolution as { resolution?: string }).resolution ?? ''
+          )
+      ))
+  )
+}
 
 const isExportPreviewRequest = (request: unknown): request is { specialistId: string } =>
   typeof request === 'object' &&
@@ -96,6 +152,52 @@ const rendererOwnerId = (event: unknown): number | undefined => {
   return typeof id === 'number' ? id : undefined
 }
 
+const sendMarketplaceDownloadProgress = (
+  event: unknown,
+  progress: MarketplaceDownloadProgress
+): void => {
+  const sender = (
+    event as {
+      sender?: {
+        isDestroyed?: () => boolean
+        send: (channel: string, payload: MarketplaceDownloadProgress) => void
+      }
+    }
+  ).sender
+  if (!sender || sender.isDestroyed?.()) return
+  sender.send(SPECIALIST_MARKETPLACE_IPC.DOWNLOAD_PROGRESS, progress)
+}
+
+const bindMarketplaceOwnerLifetime = (
+  event: unknown,
+  marketplace: MarketplaceIpc,
+  boundSenders: WeakSet<object>
+): { ownerId: number | undefined; assertActive: () => void } => {
+  const ownerId = rendererOwnerId(event)
+  const sender = (
+    event as {
+      sender?: {
+        isDestroyed?: () => boolean
+        once?: (name: string, listener: () => void) => void
+      }
+    }
+  )?.sender
+  const dispose = (): void => marketplace.dispose(ownerId)
+  if (sender?.isDestroyed?.()) dispose()
+  else if (sender?.once && !boundSenders.has(sender)) {
+    boundSenders.add(sender)
+    sender.once('destroyed', dispose)
+  }
+  return {
+    ownerId,
+    assertActive: () => {
+      if (!sender?.isDestroyed?.()) return
+      dispose()
+      throw new Error('Marketplace candidate owner is no longer available.')
+    }
+  }
+}
+
 // Broadcasts a catalog-changed event to all renderer windows.
 const broadcastCatalogChanged = (): void => {
   broadcastToRenderers(SPECIALIST_IPC.CATALOG_CHANGED, undefined)
@@ -114,7 +216,8 @@ export const registerSpecialistIpcHandlers = (
   // the next turn. Optional so headless/tests can omit it.
   onProfilesChanged?: () => void,
   exportContributionTemplate?: () => Promise<ContributionTemplateExportResult>,
-  packageImport?: PackageImportIpc
+  packageImport?: PackageImportIpc,
+  marketplace?: MarketplaceIpc
 ): void => {
   // Subscribe once so every mutation (create, setEnabled) triggers a broadcast.
   service.subscribe(broadcastCatalogChanged)
@@ -184,7 +287,8 @@ export const registerSpecialistIpcHandlers = (
     ipcMainHandle(
       SPECIALIST_IPC.INSTALL_PACKAGE,
       async (event, request: unknown): Promise<SpecialistPackageInstallResult> => {
-        if (!isCandidateRequest(request)) return { status: 'failed', code: 'candidate-invalid' }
+        if (!isInstallCandidateRequest(request))
+          return { status: 'failed', code: 'candidate-invalid' }
         return packageImport.service.install(request, rendererOwnerId(event))
       }
     )
@@ -203,6 +307,64 @@ export const registerSpecialistIpcHandlers = (
         const result = await packageImport.saveReport(report)
         return { saved: result.saved }
       }
+    )
+  }
+
+  if (marketplace) {
+    // One renderer owns all of its Marketplace candidates, so one listener can release them all.
+    // Binding per request would retain every completed request until the renderer is destroyed.
+    const boundMarketplaceSenders = new WeakSet<object>()
+    ipcMainHandle(SPECIALIST_MARKETPLACE_IPC.LIST, async (_event, request: unknown) => {
+      if (request !== undefined) throw new Error('Marketplace list does not accept renderer data.')
+      return marketplace.list()
+    })
+    ipcMainHandle(
+      SPECIALIST_MARKETPLACE_IPC.INSPECT_GITHUB_SOURCE,
+      async (event, request: InspectGitHubMarketplaceSourceRequest) => {
+        const lifetime = bindMarketplaceOwnerLifetime(event, marketplace, boundMarketplaceSenders)
+        const candidate = await marketplace.inspectGitHubSource(request, lifetime.ownerId)
+        lifetime.assertActive()
+        return candidate
+      }
+    )
+    ipcMainHandle(
+      SPECIALIST_MARKETPLACE_IPC.ADD_SOURCE,
+      async (event, request: AddMarketplaceSourceRequest) =>
+        marketplace.addSource(request, rendererOwnerId(event))
+    )
+    ipcMainHandle(
+      SPECIALIST_MARKETPLACE_IPC.REMOVE_SOURCE,
+      async (_event, request: RemoveMarketplaceSourceRequest) => marketplace.removeSource(request)
+    )
+    ipcMainHandle(
+      SPECIALIST_MARKETPLACE_IPC.GET_RELEASE,
+      async (_event, request: GetMarketplaceReleaseRequest) => marketplace.getRelease(request)
+    )
+    ipcMainHandle(
+      SPECIALIST_MARKETPLACE_IPC.PREPARE_INSTALL,
+      async (event, request: PrepareMarketplaceInstallRequest) => {
+        const lifetime = bindMarketplaceOwnerLifetime(event, marketplace, boundMarketplaceSenders)
+        const preview = await marketplace.prepareInstall(
+          request,
+          lifetime.ownerId,
+          (progress: MarketplaceDownloadProgress) =>
+            sendMarketplaceDownloadProgress(event, progress)
+        )
+        lifetime.assertActive()
+        return preview
+      }
+    )
+    ipcMainHandle(
+      SPECIALIST_MARKETPLACE_IPC.CANCEL_CANDIDATE,
+      async (event, request: unknown): Promise<void> => {
+        if (!isCandidateRequest(request)) throw new Error('Invalid Marketplace candidate.')
+        marketplace.cancel(request.candidateToken, rendererOwnerId(event))
+      }
+    )
+    ipcMainHandle(
+      SPECIALIST_MARKETPLACE_IPC.INSTALL,
+      async (event, request: MarketplaceInstallRequest) =>
+        marketplace.install(request, rendererOwnerId(event))
     )
   }
 
