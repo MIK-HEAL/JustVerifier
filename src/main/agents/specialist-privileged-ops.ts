@@ -29,17 +29,11 @@ import type {
   SpecialistDeleteResult
 } from '../../shared/specialist-package'
 import type { ProfileService } from '../specialist/service'
+import { AgentsSafeError, agentsPublicError, formatAgentsError } from './agents-error'
 
-const METHOD_PREFIX = 'host.agents'
-
-// Sanitizes an error into a stable, method-scoped message. System instructions, connector args,
-// credentials, and stack detail must never reach the sandbox. We keep only the top-level message.
-const sanitizeError = (value: unknown): string =>
-  value instanceof Error ? value.message : String(value)
-
-class PrivilegedOpError extends Error {
+class PrivilegedOpError extends AgentsSafeError {
   constructor(method: string, cause: unknown) {
-    super(`${METHOD_PREFIX}.${method}: ${sanitizeError(cause)}`)
+    super(formatAgentsError(method, cause))
     this.name = 'PrivilegedOpError'
   }
 }
@@ -85,7 +79,9 @@ const reResolveForMutation = async (
   if (current.revision !== reviewedRevision) {
     throw new PrivilegedOpError(
       method,
-      `reviewed revision ${reviewedRevision} no longer matches current revision ${current.revision}`
+      agentsPublicError(
+        `reviewed revision ${reviewedRevision} no longer matches current revision ${current.revision}`
+      )
     )
   }
   return current
@@ -160,7 +156,7 @@ export const applyDelete = async (deps: ApplyDeleteDeps): Promise<DeleteResult> 
         expectedRevision: current.revision,
         deleteSkillIds: []
       })
-      if (result.status === 'failed') throw new Error(result.code)
+      if (result.status === 'failed') throw agentsPublicError(result.code)
     } else {
       await profileService.delete(current.id, current.revision)
     }
@@ -185,7 +181,10 @@ export const applyDelete = async (deps: ApplyDeleteDeps): Promise<DeleteResult> 
     // Expected: getByName threw "not found" — absence verified.
   }
   if (stillPresent) {
-    throw new PrivilegedOpError('delete', `specialist "${currentName}" still present after delete`)
+    throw new PrivilegedOpError(
+      'delete',
+      agentsPublicError(`specialist "${currentName}" still present after delete`)
+    )
   }
 
   if (!deps.deleteSpecialist && deps.invalidateCatalog) await deps.invalidateCatalog()
