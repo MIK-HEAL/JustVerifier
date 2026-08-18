@@ -463,7 +463,10 @@ const createApplicationModules = async (
       void observer.notifyCatalogChanged()
       return
     }
-    void runtimeRef.current?.requestSkillsReload()
+    if (runtimeRef.current) {
+      broadcastToRenderers('skills:catalog-changed', undefined)
+      void runtimeRef.current.requestSkillsReload()
+    }
   }
   const sideChatOwnerRef: { current: SideChatRuntimeOwner | undefined } = {
     current: undefined
@@ -1063,8 +1066,19 @@ const createApplicationModules = async (
       })),
     setSkillsMainEnabled: async (ids, enabled) => {
       await settingsRepository.setSkillsEnabled([...new Set(ids)], enabled)
+      // Startup recovery runs before the ACP runtime exists, so its initial catalog reads the
+      // restored settings directly. Later recovery must refresh the already-live catalog.
+      requestSkillCatalogRefresh()
     }
   })
+  try {
+    await marketplaceService.recover()
+  } catch (error) {
+    createLogger('specialist:marketplace').error(
+      'Marketplace install recovery incomplete; Marketplace remains fail-closed',
+      diagnosticErrorFields(error)
+    )
+  }
   settingsService.setSkillDeletionGuard((skillId) =>
     specialistPackageService.assertSkillDeletionAllowed(skillId)
   )
