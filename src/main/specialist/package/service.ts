@@ -4,6 +4,7 @@ import { strToU8 } from 'fflate'
 import {
   SPECIALIST_PACKAGE_ARCHIVE_LIMITS,
   specialistPackageReportFromPreview,
+  type PackageDiagnostic,
   type SpecialistPackageReport,
   type SpecialistPackageCandidatePreview,
   type SpecialistPackageCatalogSnapshot,
@@ -17,6 +18,10 @@ import {
   SPECIALIST_PACKAGE_SCHEMA_VERSION,
   type SpecialistPackageValidationPlan
 } from '../../../shared/specialist-package'
+import {
+  validateSpecialistDescription,
+  validateSpecialistSystemPrompt
+} from '../../../shared/specialist'
 import { parseSkillDocument } from '../../../shared/skill-frontmatter'
 import { createLogger } from '../../logger'
 import type { StoredSpecialist } from '../types'
@@ -61,6 +66,33 @@ type SpecialistPackageServiceOptions = {
   now?: () => Date
   onCommitted?: () => void
   skillPort?: SpecialistPackageSkillPort
+}
+
+const specialistExportProfileDiagnostics = (
+  specialist: Pick<StoredSpecialist, 'description' | 'systemPrompt'>
+): PackageDiagnostic[] => {
+  const diagnostics: PackageDiagnostic[] = []
+  const descriptionError = !specialist.description.trim()
+    ? 'Complete the Specialist description before exporting a package.'
+    : validateSpecialistDescription(specialist.description)
+  if (descriptionError) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'specialist.description-invalid',
+      message: descriptionError
+    })
+  }
+  const systemPromptError = !specialist.systemPrompt.trim()
+    ? 'Complete the Specialist system prompt before exporting a package.'
+    : validateSpecialistSystemPrompt(specialist.systemPrompt)
+  if (systemPromptError) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'specialist.system-prompt-invalid',
+      message: systemPromptError
+    })
+  }
+  return diagnostics
 }
 
 export const specialistExportFileName = (
@@ -461,11 +493,7 @@ export class SpecialistPackageService {
       .sort((left, right) => left.id.localeCompare(right.id))
     const selectedSkills = skills
     const connectorIds = effectiveSpecialistConnectorIds(specialist, catalog)
-    const diagnostics: Array<{
-      severity: 'error' | 'warning' | 'info'
-      code: string
-      message: string
-    }> = []
+    const diagnostics: PackageDiagnostic[] = []
     if (selectedSkills.some((skill) => skill.kind === 'referenced')) {
       diagnostics.push({
         severity: 'info',
@@ -489,21 +517,24 @@ export class SpecialistPackageService {
         message: `Content changed but the package version remains ${specialist.packageVersion}.`
       })
     }
+    diagnostics.push(...specialistExportProfileDiagnostics(specialist))
     const includedSkillIds = selectedSkills
       .filter((skill) => skill.selected)
       .map((skill) => skill.id)
-    try {
-      await this.export({
-        specialistId: specialist.id,
-        expectedRevision: specialist.revision,
-        includedSkillIds
-      })
-    } catch {
-      diagnostics.push({
-        severity: 'error',
-        code: 'specialist.export-validation-failed',
-        message: 'The current Specialist or selected Skills contain blocking validation errors.'
-      })
+    if (!diagnostics.some((item) => item.severity === 'error')) {
+      try {
+        await this.export({
+          specialistId: specialist.id,
+          expectedRevision: specialist.revision,
+          includedSkillIds
+        })
+      } catch {
+        diagnostics.push({
+          severity: 'error',
+          code: 'specialist.export-validation-failed',
+          message: 'The current Specialist or selected Skills contain blocking validation errors.'
+        })
+      }
     }
 
     return {
@@ -548,6 +579,10 @@ export class SpecialistPackageService {
     if (!specialist) throw new Error('Custom Specialist not found.')
     if (specialist.revision !== request.expectedRevision) {
       throw new Error('Specialist changed during export. Preview again and retry.')
+    }
+    const profileDiagnostics = specialistExportProfileDiagnostics(specialist)
+    if (profileDiagnostics.length) {
+      throw new Error(profileDiagnostics.map((item) => item.message).join(' '))
     }
 
     const requestedSkillIds = effectiveSpecialistSkillIds(specialist, catalog)
@@ -610,11 +645,11 @@ export class SpecialistPackageService {
     }
     const payload = {
       name: specialist.name,
-      ...(specialist.displayName ? { displayName: specialist.displayName } : {}),
+      ...(specialist.displayName ? { display_name: specialist.displayName } : {}),
       description: specialist.description,
-      systemPrompt: specialist.systemPrompt,
-      skillIds: [...new Set(requestedSkillIds.map((id) => skillNameByLocalId.get(id) ?? id))],
-      connectorIds
+      system_prompt: specialist.systemPrompt,
+      skill_ids: [...new Set(requestedSkillIds.map((id) => skillNameByLocalId.get(id) ?? id))],
+      connector_ids: connectorIds
     }
     const files: Record<string, Uint8Array> = {
       'manifest.json': strToU8(`${JSON.stringify(manifest, null, 2)}\n`),
