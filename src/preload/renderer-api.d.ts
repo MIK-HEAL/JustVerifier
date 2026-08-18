@@ -380,6 +380,11 @@ import type {
   WindowFindResult
 } from '../shared/window-controls'
 import type { DatabaseStartupState } from '../shared/database-startup'
+import type {
+  InitializeLocalePreferenceRequest,
+  LocalePreferenceSnapshot,
+  SetLocalePreferenceRequest
+} from '../shared/locale'
 
 type RemoveListener = () => void
 type AcpListener<Payload> = (payload: Payload) => void
@@ -398,6 +403,11 @@ export interface OpenScienceAPI {
   }
   lifecycle: {
     getClientId(): Promise<string>
+  }
+  locale: {
+    initialize(request: InitializeLocalePreferenceRequest): Promise<LocalePreferenceSnapshot>
+    setPreference(request: SetLocalePreferenceRequest): Promise<LocalePreferenceSnapshot>
+    onChanged(listener: AcpListener<LocalePreferenceSnapshot>): RemoveListener
   }
   databaseStartup: {
     getState(): Promise<DatabaseStartupState>

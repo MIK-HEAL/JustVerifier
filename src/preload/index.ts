@@ -4,6 +4,10 @@ import { createElectronRendererContractAdapter } from './electron-renderer-contr
 import type { OpenScienceAPI } from './renderer-api'
 
 import type { ComputeApprovalDecision, ComputeApprovalRequest, JobSummary } from '../shared/compute'
+import type {
+  InitializeLocalePreferenceRequest,
+  SetLocalePreferenceRequest
+} from '../shared/locale'
 import type { NotebookLanguage } from '../shared/notebook'
 import type { DiscoveredInterpreter } from '../shared/notebook-runtime'
 import type {
@@ -112,6 +116,13 @@ const api: OpenScienceAPI = {
   }),
   lifecycle: {
     getClientId: () => electronRendererContracts.invoke('lifecycle.getClientId')
+  },
+  locale: {
+    initialize: (request: InitializeLocalePreferenceRequest) =>
+      electronRendererContracts.invoke('locale.initialize', request),
+    setPreference: (request: SetLocalePreferenceRequest) =>
+      electronRendererContracts.invoke('locale.setPreference', request),
+    onChanged: (listener) => electronRendererContracts.subscribe('locale.onChanged', listener)
   },
   databaseStartup: {
     getState: () => electronRendererContracts.invoke('databaseStartup.getState'),
