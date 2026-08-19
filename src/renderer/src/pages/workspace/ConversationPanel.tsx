@@ -783,7 +783,7 @@ const ConversationPanel = ({
   return (
     <ResizablePanel id="main-content" defaultSize="60%" minSize="30%">
       <section
-        className="flex h-full min-w-0 flex-col overflow-hidden bg-bg-10 p-2 pl-4 max-md:p-0"
+        className="flex h-full min-w-0 flex-col overflow-hidden bg-bg-10 p-[6px] pl-4 max-md:p-0"
         data-session-id={activeSession?.id ?? ''}
         data-agent-running={activeSession?.status === 'running' ? 'true' : 'false'}
       >
@@ -844,7 +844,7 @@ const ConversationPanel = ({
             )}
           />
 
-          <div className="px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] md:px-4 md:pb-2">
+          <div className="px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] md:px-4 md:pb-[6px]">
             {/* Runtime and session errors stay near the composer so recovery is visible. */}
             <div className={composerContentClassName}>
               <div className="px-1 md:px-3">
