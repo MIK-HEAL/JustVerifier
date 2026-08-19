@@ -54,7 +54,9 @@ vi.mock('./app-startup', () => ({
   })),
   createStartupWindowCloseOptions: vi.fn(),
   createStartupWindowSecondInstanceHandler: vi.fn(),
-  orchestrateAppStartup: vi.fn()
+  orchestrateAppStartup: vi.fn(),
+  prepareVisibleStartupRuntime: vi.fn(),
+  waitForStartupShell: vi.fn()
 }))
 
 vi.mock('./crash-diagnostics', () => ({
