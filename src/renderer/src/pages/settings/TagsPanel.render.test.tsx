@@ -389,7 +389,7 @@ describe('TagsPanel', () => {
     expect(container.textContent).toContain('Auto Research')
   })
 
-  it('reveals custom Tag actions on row hover or keyboard focus', async () => {
+  it('aligns Tag counts and scopes management actions to the responsive detail view', async () => {
     useTagStore.setState({
       tags: [
         { id: 'tag-favorite', systemKey: 'favorite', createdAt: 1, updatedAt: 1 },
@@ -408,12 +408,33 @@ describe('TagsPanel', () => {
       root.render(<TagsPanel onOpenResource={vi.fn()} />)
     })
 
-    const actions = container.querySelector<HTMLButtonElement>('[aria-label="Tag actions"]')
-    const selectedTag = container.querySelector<HTMLButtonElement>('aside [aria-current="page"]')
-    expect(selectedTag?.className).toContain('cursor-pointer')
-    expect(actions?.className).toContain('sm:opacity-0')
-    expect(actions?.className).toContain('sm:group-hover:opacity-100')
-    expect(actions?.className).toContain('focus-visible:opacity-100')
-    expect(actions?.className).toContain('data-[state=open]:opacity-100')
+    const tagRows = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-slot="tag-list-row"]')
+    )
+    const counts = tagRows.map((row) => row.querySelector('[data-slot="tag-list-count"]'))
+    const masterDetail = container.querySelector('[data-slot="tag-master-detail"]')
+    const tagList = masterDetail?.querySelector('aside')
+
+    expect(tagRows).toHaveLength(2)
+    expect(masterDetail?.classList.contains('grid-cols-1')).toBe(true)
+    expect(masterDetail?.classList.contains('md:grid-cols-[15rem_minmax(0,1fr)]')).toBe(true)
+    expect(tagList?.classList.contains('border-b')).toBe(true)
+    expect(tagList?.classList.contains('md:border-b-0')).toBe(true)
+    expect(tagList?.classList.contains('md:border-r')).toBe(true)
+    expect(tagRows.every((row) => row.classList.contains('w-full'))).toBe(true)
+    expect(counts.map((count) => count?.textContent)).toEqual(['1', '0'])
+    expect(counts.every((count) => count?.classList.contains('ml-auto'))).toBe(true)
+    expect(counts.every((count) => count?.classList.contains('min-w-5'))).toBe(true)
+    expect(counts.every((count) => count?.classList.contains('text-right'))).toBe(true)
+    expect(container.querySelector('[data-slot="tag-detail-actions"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Tag actions"]')).toBeNull()
+
+    await act(async () => tagRows[1]?.click())
+
+    const detailHeader = container.querySelector('[data-slot="tag-detail-header"]')
+    const detailActions = container.querySelector('[data-slot="tag-detail-actions"]')
+    expect(detailHeader?.classList.contains('flex-wrap')).toBe(true)
+    expect(detailActions?.querySelector('[aria-label="Edit Tag"]')).not.toBeNull()
+    expect(detailActions?.querySelector('[aria-label="Delete Tag"]')).not.toBeNull()
   })
 })
