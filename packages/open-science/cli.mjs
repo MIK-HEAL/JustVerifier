@@ -2,10 +2,10 @@
 
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 
-import { closeSync, openSync } from 'node:fs'
-import { createWriteStream } from 'node:fs'
-import { mkdir, readFile, rm } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { closeSync, createWriteStream, openSync } from 'node:fs'
+import { chmod, lstat, mkdir, readFile, readlink, rename, rm, stat } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { spawn } from 'node:child_process'
@@ -19,6 +19,7 @@ import { locateApp } from './locate-app.mjs'
 const DEFAULT_PORT = 44100
 const START_TIMEOUT_MS = 30_000
 const STOP_TIMEOUT_MS = 15_000
+const MAX_DOWNLOAD_SYMLINK_HOPS = 40
 
 const usage = `Usage: open-science <command> [options]
 
@@ -586,9 +587,47 @@ export const urlCommand = async (options, deps = DEFAULT_DEPS) => {
   deps.log(await authenticatedUrl(state, deps))
 }
 
+const resolveDownloadOutput = async (output) => {
+  let candidate = output
+  for (let hop = 0; ; hop += 1) {
+    const linkTarget = await lstat(candidate).then(
+      (metadata) => (metadata.isSymbolicLink() ? readlink(candidate) : undefined),
+      (error) => {
+        if (error?.code === 'ENOENT') return undefined
+        throw error
+      }
+    )
+    if (linkTarget === undefined) return candidate
+    if (hop === MAX_DOWNLOAD_SYMLINK_HOPS) break
+    candidate = resolve(dirname(candidate), linkTarget)
+  }
+  throw new Error(`Too many symbolic links in artifact output: ${output}`)
+}
+
 const writeDownload = async (response, output) => {
   if (!response.body) throw new Error('Artifact download returned no data.')
-  await pipeline(Readable.fromWeb(response.body), createWriteStream(output))
+  const destination = await resolveDownloadOutput(output)
+  const existingMode = await stat(destination).then(
+    ({ mode }) => mode & 0o777,
+    (error) => {
+      if (error?.code === 'ENOENT') return undefined
+      throw error
+    }
+  )
+  const temporaryOutput = `${destination}.${process.pid}-${randomUUID()}.tmp`
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body),
+      createWriteStream(temporaryOutput, {
+        flags: 'wx',
+        ...(existingMode === undefined ? {} : { mode: existingMode })
+      })
+    )
+    if (existingMode !== undefined) await chmod(temporaryOutput, existingMode)
+    await rename(temporaryOutput, destination)
+  } finally {
+    await rm(temporaryOutput, { force: true }).catch(() => undefined)
+  }
 }
 
 const TASK_DEPS = {
