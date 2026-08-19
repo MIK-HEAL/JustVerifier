@@ -140,15 +140,20 @@ describe('database JSON constraints migration', () => {
 
     await expect(migrateApplicationDatabase(client, { databasePath })).resolves.toEqual({
       adoptedLegacy: false,
-      applied: [MIGRATION_ID, '0009_vision_evidence', '0010_compute_password_auth'],
+      applied: [
+        MIGRATION_ID,
+        '0009_vision_evidence',
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
+      ],
       from: '0007_notification_attention_metadata',
-      to: '0010_compute_password_auth'
+      to: '0011_cross_resource_tags'
     })
     await expect(access(`${databasePath}.before-${MIGRATION_ID}.backup`)).rejects.toMatchObject({
       code: 'ENOENT'
     })
     await expect(
-      access(`${databasePath}.before-0009_vision_evidence.backup`)
+      access(`${databasePath}.before-0011_cross_resource_tags.backup`)
     ).resolves.toBeUndefined()
     await expect(
       access(`${databasePath}.before-0010_compute_password_auth.backup`)

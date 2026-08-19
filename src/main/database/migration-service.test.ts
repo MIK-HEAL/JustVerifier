@@ -20,7 +20,7 @@ import {
 } from './migration-service'
 
 const futureTestMigration = (): MigrationManifestEntry => {
-  const id = '0011_test_suffix'
+  const id = '0012_test_suffix'
   const statements = [`UPDATE "Project" SET "name" = "name" WHERE 0`] as const
   const verifiers = [{ kind: 'table-exists', version: 1, table: 'Project' }] as const
   return {
@@ -247,10 +247,11 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ],
       from: null,
-      to: '0010_compute_password_auth'
+      to: '0011_cross_resource_tags'
     })
     expect(compatibility).toEqual([{ sqliteVersion: expect.stringMatching(/^\d+\.\d+\.\d+$/) }])
     await expect(
@@ -263,8 +264,8 @@ describe('application database migrations', () => {
     await expect(migrateApplicationDatabase(client)).resolves.toEqual({
       adoptedLegacy: false,
       applied: [],
-      from: '0010_compute_password_auth',
-      to: '0010_compute_password_auth'
+      from: '0011_cross_resource_tags',
+      to: '0011_cross_resource_tags'
     })
   })
 
@@ -326,7 +327,8 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ]
     })
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
@@ -371,7 +373,7 @@ describe('application database migrations', () => {
 
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
       applied: expect.arrayContaining(['0010_compute_password_auth']),
-      to: '0010_compute_password_auth'
+      to: '0011_cross_resource_tags'
     })
     await expect(
       client.$executeRawUnsafe(
@@ -393,7 +395,7 @@ describe('application database migrations', () => {
     await client.$executeRawUnsafe('DROP INDEX "ComputeJob_status_idx"')
     await removeComputePasswordAuthSchema(client)
     await client.$executeRawUnsafe(`DELETE FROM "_open_science_migrations"
-      WHERE "id" IN ('0006_database_domain_constraints', '0007_notification_attention_metadata', '0008_database_json_constraints', '0009_vision_evidence', '0010_compute_password_auth')`)
+      WHERE "id" IN ('0006_database_domain_constraints', '0007_notification_attention_metadata', '0008_database_json_constraints', '0009_vision_evidence', '0010_compute_password_auth', '0011_cross_resource_tags')`)
 
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({
       applied: [
@@ -401,10 +403,11 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ],
       from: '0005_project_preview_state_owner_fk',
-      to: '0010_compute_password_auth'
+      to: '0011_cross_resource_tags'
     })
     await expect(verifyCurrentRuntimeSchema(client)).resolves.toBeUndefined()
   })
@@ -465,10 +468,11 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ],
       from: '0005_project_preview_state_owner_fk',
-      to: '0010_compute_password_auth'
+      to: '0011_cross_resource_tags'
     })
     await expect(
       client.$queryRaw<
@@ -587,7 +591,7 @@ describe('application database migrations', () => {
       })
     ).rejects.toMatchObject({
       code: 'database_validation_failed',
-      migrationId: '0010_compute_password_auth'
+      migrationId: '0011_cross_resource_tags'
     })
     expect(retired).toEqual([])
     await expect(access(backupPath)).resolves.toBeUndefined()
@@ -603,9 +607,9 @@ describe('application database migrations', () => {
       migrateApplicationDatabaseWithManifest(client, [...MIGRATION_MANIFEST, future])
     ).resolves.toEqual({
       adoptedLegacy: false,
-      applied: ['0011_test_suffix'],
-      from: '0010_compute_password_auth',
-      to: '0011_test_suffix'
+      applied: ['0012_test_suffix'],
+      from: '0011_cross_resource_tags',
+      to: '0012_test_suffix'
     })
     await expect(
       client.$queryRaw<Array<{ id: string }>>`
@@ -622,7 +626,8 @@ describe('application database migrations', () => {
       { id: '0008_database_json_constraints' },
       { id: '0009_vision_evidence' },
       { id: '0010_compute_password_auth' },
-      { id: '0011_test_suffix' }
+      { id: '0011_cross_resource_tags' },
+      { id: '0012_test_suffix' }
     ])
   })
 
@@ -684,10 +689,11 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ],
       from: '0001_runtime_schema_baseline',
-      to: '0010_compute_password_auth'
+      to: '0011_cross_resource_tags'
     })
     expect(backupEvents).toEqual([
       {
@@ -734,14 +740,19 @@ describe('application database migrations', () => {
         migrationId: '0010_compute_password_auth',
         path: `${databasePath}.before-0010_compute_password_auth.backup`,
         reused: false
+      },
+      {
+        migrationId: '0011_cross_resource_tags',
+        path: `${databasePath}.before-0011_cross_resource_tags.backup`,
+        reused: false
       }
     ])
     await expect(access(backupPath)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(
-      access(`${databasePath}.before-0009_vision_evidence.backup`)
+      access(`${databasePath}.before-0010_compute_password_auth.backup`)
     ).resolves.toBeUndefined()
     await expect(
-      access(`${databasePath}.before-0010_compute_password_auth.backup`)
+      access(`${databasePath}.before-0011_cross_resource_tags.backup`)
     ).resolves.toBeUndefined()
     await expect(
       client.$queryRaw<Array<{ agentContext: string; name: string }>>`
@@ -772,7 +783,7 @@ describe('application database migrations', () => {
       migrateApplicationDatabaseWithManifest(client, [...MIGRATION_MANIFEST, future])
     ).rejects.toMatchObject({
       code: 'database_validation_failed',
-      migrationId: '0011_test_suffix'
+      migrationId: '0012_test_suffix'
     })
     await expect(
       client.$queryRaw<Array<{ name: string }>>`
@@ -794,7 +805,8 @@ describe('application database migrations', () => {
       { id: '0007_notification_attention_metadata' },
       { id: '0008_database_json_constraints' },
       { id: '0009_vision_evidence' },
-      { id: '0010_compute_password_auth' }
+      { id: '0010_compute_password_auth' },
+      { id: '0011_cross_resource_tags' }
     ])
   })
 
@@ -805,11 +817,11 @@ describe('application database migrations', () => {
     await migrateApplicationDatabase(client, { databasePath })
     await client.$executeRawUnsafe(
       'VACUUM INTO ?',
-      `${databasePath}.before-0009_vision_evidence.backup`
+      `${databasePath}.before-0010_compute_password_auth.backup`
     )
     await client.$executeRawUnsafe(
       'VACUUM INTO ?',
-      `${databasePath}.before-0010_compute_password_auth.backup`
+      `${databasePath}.before-0011_cross_resource_tags.backup`
     )
     const futureBase = futureTestMigration()
     const statements = [
@@ -839,7 +851,7 @@ describe('application database migrations', () => {
         entries.filter((entry) => entry.endsWith('.backup')).sort()
       )
     ).resolves.toEqual([
-      'open-science.db.before-0010_compute_password_auth.backup',
+      'open-science.db.before-0011_cross_resource_tags.backup',
       `open-science.db.before-${future.id}.backup`
     ])
   })
@@ -862,7 +874,7 @@ describe('application database migrations', () => {
       migrateApplicationDatabaseWithManifest(client, [...MIGRATION_MANIFEST, future])
     ).rejects.toMatchObject({
       code: 'database_validation_failed',
-      migrationId: '0011_test_suffix'
+      migrationId: '0012_test_suffix'
     })
   })
 
@@ -898,9 +910,10 @@ describe('application database migrations', () => {
         '0008_database_json_constraints',
         '0009_vision_evidence',
         '0010_compute_password_auth',
-        '0011_test_suffix'
+        '0011_cross_resource_tags',
+        '0012_test_suffix'
       ],
-      to: '0011_test_suffix'
+      to: '0012_test_suffix'
     })
     await expect(
       client.project.findUniqueOrThrow({ where: { id: 'legacy-project' } })
@@ -1125,7 +1138,8 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ]
     })
     await expect(
@@ -1230,7 +1244,8 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ]
     })
     await expect(migrateApplicationDatabase(client)).resolves.toMatchObject({ applied: [] })
@@ -1289,7 +1304,8 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ]
     })
     await expect(
@@ -1351,7 +1367,8 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ]
     })
     await expect(verifyCurrentRuntimeSchema(client)).resolves.toBeUndefined()
@@ -1447,7 +1464,8 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ]
     })
     await expect(
@@ -1463,6 +1481,7 @@ describe('application database migrations', () => {
     const agentContextBackupPath = `${databasePath}.before-0002_project_agent_context.backup`
     const visionEvidenceBackupPath = `${databasePath}.before-0009_vision_evidence.backup`
     const computePasswordAuthBackupPath = `${databasePath}.before-0010_compute_password_auth.backup`
+    const crossResourceTagsBackupPath = `${databasePath}.before-0011_cross_resource_tags.backup`
     const backupEvents: unknown[] = []
     client = createProjectDbClient(storageRoot)
     await client.$executeRawUnsafe(`CREATE TABLE "Project" (
@@ -1498,7 +1517,8 @@ describe('application database migrations', () => {
         '0007_notification_attention_metadata',
         '0008_database_json_constraints',
         '0009_vision_evidence',
-        '0010_compute_password_auth'
+        '0010_compute_password_auth',
+        '0011_cross_resource_tags'
       ]
     })
     expect(backupEvents).toEqual([
@@ -1551,6 +1571,11 @@ describe('application database migrations', () => {
         migrationId: '0010_compute_password_auth',
         path: `${databasePath}.before-0010_compute_password_auth.backup`,
         reused: false
+      },
+      {
+        migrationId: '0011_cross_resource_tags',
+        path: `${databasePath}.before-0011_cross_resource_tags.backup`,
+        reused: false
       }
     ])
     await expect(
@@ -1558,13 +1583,14 @@ describe('application database migrations', () => {
         entries.filter((entry) => entry.endsWith('.backup')).sort()
       )
     ).resolves.toEqual([
-      'open-science.db.before-0009_vision_evidence.backup',
-      'open-science.db.before-0010_compute_password_auth.backup'
+      'open-science.db.before-0010_compute_password_auth.backup',
+      'open-science.db.before-0011_cross_resource_tags.backup'
     ])
     await expect(access(backupPath)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(access(agentContextBackupPath)).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(access(visionEvidenceBackupPath)).resolves.toBeUndefined()
+    await expect(access(visionEvidenceBackupPath)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(access(computePasswordAuthBackupPath)).resolves.toBeUndefined()
+    await expect(access(crossResourceTagsBackupPath)).resolves.toBeUndefined()
     await expect(client.project.count()).resolves.toBe(1)
 
     const backupClient = new PrismaClient({
@@ -1978,6 +2004,11 @@ describe('application database migrations', () => {
         migrationId: '0010_compute_password_auth',
         path: `${databasePath}.before-0010_compute_password_auth.backup`,
         reused: false
+      }),
+      expect.objectContaining({
+        migrationId: '0011_cross_resource_tags',
+        path: `${databasePath}.before-0011_cross_resource_tags.backup`,
+        reused: false
       })
     ])
     expect(retired).toEqual([
@@ -2014,6 +2045,10 @@ describe('application database migrations', () => {
       {
         migrationId: '0010_compute_password_auth',
         path: `${databasePath}.before-0010_compute_password_auth.backup`
+      },
+      {
+        migrationId: '0011_cross_resource_tags',
+        path: `${databasePath}.before-0011_cross_resource_tags.backup`
       }
     ])
     await expect(access(backupPath)).rejects.toMatchObject({ code: 'ENOENT' })
@@ -2047,11 +2082,11 @@ describe('application database migrations', () => {
         entries.filter((entry) => entry.endsWith('.backup')).sort()
       )
     ).resolves.toEqual([
-      'open-science.db.before-0009_vision_evidence.backup',
       'open-science.db.before-0010_compute_password_auth.backup',
+      'open-science.db.before-0011_cross_resource_tags.backup',
       unknownBackupName
     ])
-    expect(retired).toHaveLength(8)
+    expect(retired).toHaveLength(9)
     expect(retired).toEqual(
       expect.arrayContaining(
         MIGRATION_MANIFEST.slice(0, -2).map((migration) =>

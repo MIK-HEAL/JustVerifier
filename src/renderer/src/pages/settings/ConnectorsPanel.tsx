@@ -41,6 +41,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { useSettingsStore } from '@/stores/settings-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
+import { useTagStore } from '@/stores/tag-store'
 import { ConnectorGlyph } from './connector-icons'
 import {
   SettingsIconAction,
@@ -55,6 +56,7 @@ import {
   type ResourceScope,
   type SpecialistUsage
 } from './specialist-resource-scope'
+import { ResourceTagBadges, ResourceTagMenu, TagFilter } from './ResourceTagControls'
 
 // The connectors panel sub-view, driven by the settings navigation history. The detail and add pages
 // are separate components owned by SettingsPage; this panel only renders the list + contact-email section.
@@ -147,6 +149,8 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
   const [filter, setFilter] = useState<GroupFilter>('all')
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all')
   const [specialistFilter, setSpecialistFilter] = useState('all')
+  const [tagFilter, setTagFilter] = useState('all')
+  const tagAssignments = useTagStore((state) => state.assignments)
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<
     Partial<Record<'featured' | 'directory' | 'custom', boolean>>
@@ -223,6 +227,16 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
       const scope = resourceScope(connector.enabled, usages)
       if (!includesScope(scopeFilter, specialistFilter, connector.enabled, usages, scope)) return []
       if (
+        tagFilter !== 'all' &&
+        !tagAssignments.some(
+          (assignment) =>
+            assignment.tagId === tagFilter &&
+            assignment.resourceType === 'catalog.connector' &&
+            assignment.resourceId === connector.id
+        )
+      )
+        return []
+      if (
         term &&
         !connector.displayName.toLowerCase().includes(term) &&
         !connector.description.toLowerCase().includes(term)
@@ -231,7 +245,7 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
       }
       return [{ resource: connector, usages, scope }]
     })
-  }, [connectors, query, scopeFilter, specialistFilter, specialistItems])
+  }, [connectors, query, scopeFilter, specialistFilter, specialistItems, tagAssignments, tagFilter])
 
   const visibleCustomServers = useMemo<ConnectorResourceRow<CustomServerView>[]>(() => {
     const term = query.trim().toLowerCase()
@@ -239,6 +253,16 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
       const usages = specialistsUsingConnector(specialistItems, server)
       const scope = resourceScope(server.enabled, usages)
       if (!includesScope(scopeFilter, specialistFilter, server.enabled, usages, scope)) return []
+      if (
+        tagFilter !== 'all' &&
+        !tagAssignments.some(
+          (assignment) =>
+            assignment.tagId === tagFilter &&
+            assignment.resourceType === 'catalog.connector' &&
+            assignment.resourceId === server.id
+        )
+      )
+        return []
       if (
         term &&
         !server.displayName.toLowerCase().includes(term) &&
@@ -249,7 +273,15 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
       }
       return [{ resource: server, usages, scope }]
     })
-  }, [customServers, query, scopeFilter, specialistFilter, specialistItems])
+  }, [
+    customServers,
+    query,
+    scopeFilter,
+    specialistFilter,
+    specialistItems,
+    tagAssignments,
+    tagFilter
+  ])
 
   const startEditing = (): void => {
     setEmailField(ncbi.contactEmail ?? '')
@@ -431,12 +463,26 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
                       <span className="block truncate text-xs text-muted-foreground">
                         {connector.description}
                       </span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {usageLabel ? `${usageLabel} · ` : ''}
-                        {t(SCOPE_LABEL_KEYS[scope])}
-                      </span>
+                      <div
+                        className="mt-0.5 flex min-w-0 items-center gap-2"
+                        data-connector-metadata={connector.id}
+                      >
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">
+                          {usageLabel ? `${usageLabel} · ` : ''}
+                          {t(SCOPE_LABEL_KEYS[scope])}
+                        </span>
+                        <ResourceTagBadges
+                          reference={{
+                            resourceType: 'catalog.connector',
+                            resourceId: connector.id
+                          }}
+                        />
+                      </div>
                     </button>
                     <div className="flex shrink-0 items-center gap-2">
+                      <ResourceTagMenu
+                        reference={{ resourceType: 'catalog.connector', resourceId: connector.id }}
+                      />
                       <span className="text-xs text-muted-foreground">{t('Main Agent')}</span>
                       <SettingsToggle
                         enabled={connector.enabled}
@@ -592,6 +638,7 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
             </SelectContent>
           </Select>
         ) : null}
+        <TagFilter resourceType="catalog.connector" value={tagFilter} onChange={setTagFilter} />
         <SettingsSearchInput
           aria-label={t('Search connectors')}
           containerClassName="min-w-48 flex-1"
@@ -720,34 +767,50 @@ export function ConnectorsPanel({ onNavigate }: ConnectorsPanelProps): React.JSX
                             {server.name}
                             {server.description ? ` · ${server.description}` : ''}
                           </span>
-                          <span
-                            className={`block truncate text-xs ${
-                              server.availability && !server.checking && !retryingIds.has(server.id)
-                                ? 'text-destructive'
-                                : 'text-muted-foreground'
-                            }`}
+                          <div
+                            className="mt-0.5 flex min-w-0 items-center gap-2"
+                            data-connector-metadata={server.id}
                           >
-                            {retryingIds.has(server.id)
-                              ? t('Checking…')
-                              : server.checking
+                            <span
+                              className={`shrink-0 text-xs ${
+                                server.availability &&
+                                !server.checking &&
+                                !retryingIds.has(server.id)
+                                  ? 'text-destructive'
+                                  : 'text-muted-foreground'
+                              }`}
+                            >
+                              {retryingIds.has(server.id)
                                 ? t('Checking…')
-                                : server.availability === 'unavailable'
-                                  ? t('Unavailable')
-                                  : server.availability === 'unauthenticated'
-                                    ? t('Sign-in required')
-                                    : server.enabled
-                                      ? t('Connected')
-                                      : t('Disabled')}
-                          </span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {usageLabel ? `${usageLabel} · ` : ''}
-                            {t(SCOPE_LABEL_KEYS[scope])}
-                          </span>
+                                : server.checking
+                                  ? t('Checking…')
+                                  : server.availability === 'unavailable'
+                                    ? t('Unavailable')
+                                    : server.availability === 'unauthenticated'
+                                      ? t('Sign-in required')
+                                      : server.enabled
+                                        ? t('Connected')
+                                        : t('Disabled')}
+                            </span>
+                            <span className="min-w-0 truncate text-xs text-muted-foreground">
+                              {usageLabel ? `${usageLabel} · ` : ''}
+                              {t(SCOPE_LABEL_KEYS[scope])}
+                            </span>
+                            <ResourceTagBadges
+                              reference={{
+                                resourceType: 'catalog.connector',
+                                resourceId: server.id
+                              }}
+                            />
+                          </div>
                         </div>
                         <SettingsIconAction
                           label={t('Export {{name}}', { name: server.displayName })}
                           icon={Download}
                           onClick={() => onNavigate({ kind: 'export', id: server.id })}
+                        />
+                        <ResourceTagMenu
+                          reference={{ resourceType: 'catalog.connector', resourceId: server.id }}
                         />
                         <SettingsIconAction
                           label={t('Edit {{name}}', { name: server.displayName })}

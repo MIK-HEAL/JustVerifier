@@ -29,6 +29,9 @@ import {
 import { registerApplicationCommandElectronAdapter } from './application-command-electron-adapter'
 import type { ApplicationInvocation } from './application-command-router'
 import { createApplicationEventModule, type ApplicationEventSource } from './application-events'
+import { TagRepository } from './tags/repository'
+import { TagResourceCatalog } from './tags/resource-catalog'
+import { TagService } from './tags/service'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
@@ -1005,6 +1008,26 @@ const createApplicationModules = async (
   })
   const profileService = new ProfileService(specialistRepository, builtinRegistry)
   await profileService.ensureBuiltinCatalogReady()
+  const tagService = new TagService(
+    new TagRepository(() => getProjectDbClient(configRoot)),
+    new TagResourceCatalog({
+      listSkills: () => settingsService.listSkills(),
+      listConnectors: () => settingsService.listConnectors(),
+      listSpecialists: async () =>
+        (await profileService.listForSettings()).filter(({ kind }) => kind !== 'reviewer')
+    }),
+    applicationEvents
+  )
+  const tagCleanupLog = createLogger('tags:cleanup')
+  const removeResourceTags = async (
+    resources: Parameters<TagService['removeResources']>[0]
+  ): Promise<void> => {
+    try {
+      await tagService.removeResources(resources)
+    } catch (error) {
+      tagCleanupLog.warn('resource deletion Tag cleanup failed', { error, resources })
+    }
+  }
   const specialistPackageService = new SpecialistPackageService({
     storageDir: resolveStorageRoot(),
     repository: specialistRepository,
@@ -1063,6 +1086,14 @@ const createApplicationModules = async (
       }
     },
     skillPort: specialistPackageSkillAdapter,
+    onResourcesDeleted: (specialistId, skillIds) =>
+      removeResourceTags([
+        { resourceType: 'catalog.specialist', resourceId: specialistId },
+        ...skillIds.map((resourceId) => ({
+          resourceType: 'catalog.skill' as const,
+          resourceId
+        }))
+      ]),
     onCommitted: () => {
       broadcastToRenderers(SPECIALIST_IPC.CATALOG_CHANGED, undefined)
       void runtime.requestSkillsReload()
@@ -1729,6 +1760,7 @@ const createApplicationModules = async (
       settingsService.publishHostSkill(name, sourcePath, overwrite),
     deletePublished: async (id) => {
       await settingsService.deleteSkill({ id })
+      await removeResourceTags([{ resourceType: 'catalog.skill', resourceId: id }])
     }
   }
   const hostSkillsService = new HostSkillsService({
@@ -2465,7 +2497,9 @@ const createApplicationModules = async (
     },
     skills: {
       requestSkillsReload: () => void runtime.requestSkillsReload(),
-      notifySkillCatalogChanged: requestSkillCatalogRefresh
+      notifySkillCatalogChanged: requestSkillCatalogRefresh,
+      removeTagsForSkill: (resourceId) =>
+        removeResourceTags([{ resourceType: 'catalog.skill', resourceId }])
     },
     connectors: {
       invalidatePermissionProjection: () => permissionGrantProjection.invalidateProjection(),
@@ -2476,6 +2510,8 @@ const createApplicationModules = async (
       requestSkillsReload: () => void runtime.requestSkillsReload(),
       pruneCustomServerPermissions: (serverId) =>
         permissionGrantRegistry.prune({ kind: 'mcp_server', serverId }).then(() => undefined),
+      removeTagsForConnector: (resourceId) =>
+        removeResourceTags([{ resourceType: 'catalog.connector', resourceId }]),
       beginCustomServerSecurityChange: (serverId) =>
         connectorService.beginCustomServerSecurityChange(serverId),
       clearCustomServerFailure: (serverId) => connectorService.clearCustomServerFailure(serverId),
@@ -2988,6 +3024,7 @@ const createApplicationModules = async (
       events: applicationEvents
     },
     permissionGrants: permissionGrantProjection,
+    tags: tagService,
     dataContent: {
       artifacts: artifactHandlers,
       electron: {
