@@ -64,6 +64,7 @@ import {
 } from './runtime-paths'
 import type { NotebookShellProcess } from './shell-process'
 import { NOTEBOOK_CODE_LIMIT_BYTES } from './content-limits'
+import type { RuntimeDiagnosticLogger } from './runtime-diagnostics'
 
 let storageRoot: string | undefined
 
@@ -125,6 +126,7 @@ const lifecycleCallbackHarness = (
     inPlaceRestart?: boolean
     repository?: NotebookRunRepository
     shutdown?: () => Promise<{ reaped: boolean }>
+    logger?: RuntimeDiagnosticLogger
   } = {}
 ): {
   service: NotebookRuntimeService
@@ -138,6 +140,7 @@ const lifecycleCallbackHarness = (
     dataRoot: root,
     projectId: 'default-project',
     repository: options.repository ?? new NotebookRunRepository(root),
+    logger: options.logger,
     callbacks: {
       onNotebookChanged: (event) => changedSessions.push(event.sessionId)
     },
@@ -3613,6 +3616,77 @@ describe('notebook runtime service', () => {
     expect(changedSessions).toContain('session-1')
   })
 
+  it.each(['idle-shutdown', 'termination'] as const)(
+    'keeps live and durable kernel state unchanged when %s persistence fails',
+    async (callback) => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const { service, lifecycles, changedSessions } = lifecycleCallbackHarness(root, {
+        repository
+      })
+
+      await service.execute({ sessionId: 'session-1', workspaceCwd: root, code: '1' })
+      const before = await service.state({ sessionId: 'session-1', workspaceCwd: root })
+      const runJsonBefore = await readFile(before.runJsonPath, 'utf8')
+      const changedCountBefore = changedSessions.length
+      const persistenceError = new Error('kernel status persistence failed')
+      vi.spyOn(repository, 'markKernelTerminated').mockRejectedValueOnce(persistenceError)
+
+      const lifecycle = lifecycles[0]
+      const statusUpdate =
+        callback === 'idle-shutdown'
+          ? lifecycle.onIdleShutdown('python', DEFAULT_PY_ENV)
+          : lifecycle.onTerminated('python', DEFAULT_PY_ENV)
+      const failure = await statusUpdate.catch((error: unknown) => error)
+
+      expect(failure).toBe(persistenceError)
+      expect(
+        (await service.state({ sessionId: 'session-1', workspaceCwd: root })).kernelStatus
+      ).toBe('idle')
+      expect(await readFile(before.runJsonPath, 'utf8')).toBe(runJsonBefore)
+      expect(changedSessions).toHaveLength(changedCountBefore)
+    }
+  )
+
+  it('orders a new execution after delayed idle-shutdown persistence', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const { service, lifecycles } = lifecycleCallbackHarness(root, { repository })
+
+    await service.execute({ sessionId: 'session-1', workspaceCwd: root, code: '1' })
+    const persistenceGate = createDeferred<void>()
+    const markKernelTerminated = repository.markKernelTerminated.bind(repository)
+    const persistenceSpy = vi
+      .spyOn(repository, 'markKernelTerminated')
+      .mockImplementation(async (request) => {
+        await persistenceGate.promise
+        return markKernelTerminated(request)
+      })
+
+    const idleShutdown = lifecycles[0].onIdleShutdown('python', DEFAULT_PY_ENV)
+    await vi.waitFor(() => expect(persistenceSpy).toHaveBeenCalledTimes(1))
+    let nextExecutionSettled = false
+    const nextExecution = service
+      .execute({ sessionId: 'session-1', workspaceCwd: root, code: '2' })
+      .finally(() => {
+        nextExecutionSettled = true
+      })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(nextExecutionSettled).toBe(false)
+
+    persistenceGate.resolve()
+    await idleShutdown
+    await nextExecution
+
+    expect((await service.state({ sessionId: 'session-1', workspaceCwd: root })).kernelStatus).toBe(
+      'idle'
+    )
+    expect(
+      (await new NotebookRunRepository(root).findExisting('default-project', 'session-1'))?.kernel
+    ).toMatchObject({ lastKnownStatus: 'idle' })
+  })
+
   it('ignores an idle-shutdown callback from a session replaced under the same id', async () => {
     const root = await createStorageRoot()
     const { service, lifecycles, changedSessions } = lifecycleCallbackHarness(root)
@@ -3840,6 +3914,44 @@ describe('notebook runtime service', () => {
 
     const afterRespawn = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(afterRespawn.kernelStatus).toBe('idle')
+  })
+
+  it('keeps a recovered execution successful when clearing durable termination fails', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const { service, lifecycles } = lifecycleCallbackHarness(root, { repository, logger })
+
+    await service.execute({ sessionId: 'session-1', workspaceCwd: root, code: '1' })
+    await lifecycles[0].onIdleShutdown('python', DEFAULT_PY_ENV)
+    const persistenceError = new Error('could not clear durable termination')
+    vi.spyOn(repository, 'clearKernelTermination').mockRejectedValueOnce(persistenceError)
+
+    const recovered = await service.execute({
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: '2'
+    })
+
+    expect(recovered.status).toBe('completed')
+    expect((await service.state({ sessionId: 'session-1', workspaceCwd: root })).kernelStatus).toBe(
+      'idle'
+    )
+    expect(
+      (await new NotebookRunRepository(root).findExisting('default-project', 'session-1'))?.kernel
+    ).toMatchObject({
+      lastKnownStatus: 'terminated',
+      terminatedKernelInstances: [{ kind: 'python', environment: DEFAULT_PY_ENV }]
+    })
+    expect(logger.error).toHaveBeenCalledWith(
+      'notebook kernel lifecycle persistence failed',
+      expect.objectContaining({
+        error: persistenceError.message,
+        operation: 'recovered-idle',
+        kind: 'python',
+        environment: DEFAULT_PY_ENV
+      })
+    )
   })
 
   it('persists idle after recovering a terminated kernel in a recreated runtime service', async () => {

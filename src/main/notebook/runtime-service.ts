@@ -88,7 +88,7 @@ import {
   type NotebookSessionRuntimeBinding
 } from './session-aggregate'
 import { NotebookSessionRegistry } from './session-registry'
-import { createLogger, getLogFilePath } from '../logger'
+import { createLogger, errorLogFields, getLogFilePath } from '../logger'
 import { EnvironmentStateTracker, type EnvironmentCaptureTarget } from './environment-state-tracker'
 import { NotebookRuntimeBindingOwner } from './runtime-binding'
 import type { RuntimeDiagnosticLogger } from './runtime-diagnostics'
@@ -410,7 +410,19 @@ class NotebookRuntimeService {
       defaultExecutorOptions: resolveDefaultExecutorOptions,
       platform: options.platform,
       callbacks: options.callbacks,
-      toSessionReference: (session) => this.sessionReadModel.toSessionReference(session)
+      toSessionReference: (session) => this.sessionReadModel.toSessionReference(session),
+      onKernelStatusPersistenceFailure: ({ operation, lane, kind, env, error }) => {
+        const message = 'notebook kernel lifecycle persistence failed'
+        const fields = {
+          ...errorLogFields(error),
+          operation,
+          lane: notebookLaneKey(lane),
+          kind,
+          environment: env
+        }
+        if (this.runtimeLogger) this.runtimeLogger.error(message, fields)
+        else console.error(`[notebook] ${message}`, fields)
+      }
     })
     this.runtimeRepair = new NotebookRuntimeRepairOwner({
       runtimeRoot,
@@ -480,7 +492,7 @@ class NotebookRuntimeService {
       createEnvironmentCaptureTarget: (...args) => this.environmentCaptureTarget(...args),
       setKernelStatus: (session, status, processKey) => session.setKernelStatus(processKey, status),
       persistRecoveredKernelIdle: (session, processKey) =>
-        this.sessionLifecycle.persistKernelStatus(session as RuntimeSession, 'idle', processKey),
+        this.sessionLifecycle.persistRecoveredKernelIdle(session as RuntimeSession, processKey),
       getMcpRpcConnectionResolver: () => this.mcpRpcConnectionResolver,
       notifyAvailable: (session, source) =>
         this.sessionLifecycle.notifyAvailable(session as RuntimeSession, source),
