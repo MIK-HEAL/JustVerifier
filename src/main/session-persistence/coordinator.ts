@@ -1,5 +1,4 @@
-import type { ProjectFilesChangedEvent } from '../../shared/project-files'
-import type { ProjectFileSource } from '../../shared/project-files'
+import type { ProjectFileSource, ProjectFilesChangedEvent } from '../../shared/project-files'
 import type {
   DelegationPolicy,
   LoadAllSessionsResult,
@@ -40,6 +39,7 @@ import type { ManagedFileSoftDeleteToken } from '../project-files/repository'
 import type { ProjectSessionDeletionState } from './repository'
 import { createLogger, diagnosticErrorFields, type Logger } from '../logger'
 import { startDiagnosticOperation } from '../diagnostics/operation'
+import { saveSessionWithRevision } from './save-session'
 import {
   SessionPersistenceStateOwner,
   SessionRuntimeContextRevisionConflictError,
@@ -72,6 +72,10 @@ import {
 } from './delegated-work-owner'
 import { SessionPersistenceOperationScheduler } from './operation-scheduler'
 import { isSessionCatalogAuthoritative } from './catalog-authority'
+import {
+  createSafeSessionUpdatePublisher as safeSessionUpdates,
+  type SessionUpdatePublisher
+} from './session-update-publication'
 
 type SessionMutationRepository = {
   loadAllWithDiagnostics(options?: { mode?: 'repair' | 'read-only' }): Promise<{
@@ -102,7 +106,10 @@ type SessionMutationRepository = {
     | { status: 'unreadable' }
   >
   assertSessionIdentityOwnership(sessionId: string, expectedProjectId: string): Promise<void>
-  saveSession(session: PersistedChatSession): Promise<void>
+  saveSession(
+    session: PersistedChatSession,
+    expectedRevision?: number
+  ): Promise<PersistedChatSession | void>
   saveCommittedProjectSession(session: PersistedChatSession): Promise<void>
   deleteSession(projectId: string, sessionId: string): Promise<void>
   deleteProjectSessions(projectId: string): Promise<void>
@@ -196,8 +203,9 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
     permissionGrants?: SessionPermissionGrantReconciliation,
     private readonly log: Logger = createLogger('session-persistence'),
     private readonly computeJobs?: ComputeJobDeletionParticipant,
-    private readonly onDelegatedWorkSessionUpdated?: (session: PersistedChatSession) => void
+    onDelegatedWorkSessionUpdated?: SessionUpdatePublisher
   ) {
+    const publishSessionUpdate = safeSessionUpdates(onDelegatedWorkSessionUpdated, log)
     const assertMutable = (
       projectId: string,
       sessionId: string,
@@ -217,7 +225,9 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       uploads,
       log,
       assertMutable,
-      notifyFilesChanged: (event) => this.notifyFilesChanged(event)
+      notifyFilesChanged: (event) => this.notifyFilesChanged(event),
+      notifyRuntimeContextSessionUpdated: (session) =>
+        publishSessionUpdate(session, 'runtime-context')
     })
     this.sideChatOwner = new SessionSideChatPersistenceOwner({
       repository,
@@ -260,15 +270,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       markStartupRecoveryComplete: () => {
         this.delegatedStartupRecoveryComplete = true
       },
-      notifySessionUpdated: (session) => {
-        try {
-          this.onDelegatedWorkSessionUpdated?.(session)
-        } catch (error) {
-          this.log.warn('delegated work Session publication failed', {
-            errorCategory: error instanceof Error ? error.name : typeof error
-          })
-        }
-      }
+      notifySessionUpdated: (session) => publishSessionUpdate(session, 'delegated-work')
     })
   }
 
@@ -411,9 +413,12 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
           try {
             const recovery = recoverInterruptedDelegatedWorkSession(sessions[index])
             if (recovery.interrupted.length === 0) continue
-            await this.repository.saveSession(recovery.session)
+            const persistedRecovery = await saveSessionWithRevision(
+              this.repository,
+              recovery.session
+            )
             sessions = sessions.map((candidate, candidateIndex) =>
-              candidateIndex === index ? recovery.session : candidate
+              candidateIndex === index ? persistedRecovery : candidate
             )
             result = { ...result, sessions }
           } catch (error) {
