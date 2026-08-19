@@ -65,15 +65,11 @@ import { attachEnabledComputeHosts } from './compute/enabled-hosts-registry'
 import { SessionEnabledComputeHostsOwner } from './compute/session-enabled-hosts-owner'
 import { createComputeJobRuntime } from './compute/job-runtime'
 import { waitForInitialConnectorRefresh } from './connector-reload'
-import { ApprovalBroker } from './connectors/approval-broker'
-import { ParserEngine } from './connectors/engine'
-import { McpClientManager } from './connectors/mcp-client-manager'
-import { isCustomMcpServerRouteSafe, toCustomMcpConfig } from './connectors/custom-mcp-bootstrap'
+import { createConnectorApplicationModule } from './connectors/application'
+import { isCustomMcpServerRouteSafe } from './connectors/custom-mcp-bootstrap'
 import { createMoleculePreviewHandler } from './connectors/molecule-preview'
 import { ALL_CONNECTOR_IDS } from './connectors/registry'
-import { ConnectorRuntimeSettingsProjection } from './connectors/runtime-settings-projection'
 import { connectorSkillSourceDir } from './connectors/provision'
-import { ConnectorService } from './connectors/service'
 import { registerFileSaveHandlers } from './file-save'
 import { ImmutableInputAuthority } from './immutable-input-authority'
 import { createSessionArtifactFileResolver } from './session-artifact-file-resolver'
@@ -306,7 +302,6 @@ import {
   type ElectronRuntimeAdapterInterfaces,
   type NamedElectronSurfaceAdapter
 } from './runtime-electron-wiring'
-import { ConversationSkillImporter, SkillImportApprovalBroker } from './skills/conversation-import'
 import { HostSkillsService, type HostSkillsCatalog } from './skills/host-skills-service'
 import { UserSkillCatalogObserver } from './skills/user-skill-catalog-observer'
 import type { ConversationSkillImportApprovalResponse } from '../shared/settings'
@@ -362,17 +357,6 @@ type ApplicationModuleInterfaces = ApplicationRuntimeInterfaces & {
 
 type IpcRegistration = ApplicationRuntimeInterfaces & {
   dispose: () => Promise<void>
-}
-
-// Builds a short, human-readable preview of a connector call's arguments for the approval card.
-const previewArgs = (args: Record<string, unknown>): string => {
-  let json: string
-  try {
-    json = JSON.stringify(args)
-  } catch {
-    json = '{…}'
-  }
-  return json.length > 300 ? `${json.slice(0, 300)}…` : json
 }
 
 // Constructs application-owned modules and their narrow Electron adapter interfaces. The factory does
@@ -1263,126 +1247,69 @@ const createApplicationModules = async (
         : null
     )
   })
-  // One MCP client manager backs both dispatch (ConnectorService.call → custom server) and skill-doc
-  // generation (listTools) for user-added custom MCP servers (stdio + remote). It lazily connects per
-  // server, so constructing it here does not spawn anything until a custom server is actually used.
-  const mcpClientManager = await modules.add(undefined, () => {
-    const manager = new McpClientManager({
-      openExternal: (url) => shell.openExternal(url),
-      saveOAuthState: (serverId, state) =>
-        settingsService.saveCustomServerOAuthState(serverId, state)
-    })
-    return {
-      name: 'mcp-client-manager',
-      capability: manager,
-      dispose: () => manager.closeAll()
-    }
-  })
-  const connectorRuntimeSettings = new ConnectorRuntimeSettingsProjection({
-    readConnectors: () => settingsService.getConnectors(),
-    skillsDir: connectorSkillSourceDir(resolveStorageRoot()),
-    mcpClientManager,
-    notifyStatusChanged: () => broadcastToRenderers('settings:connector-runtime-changed', undefined)
-  })
-  settingsService.setCustomServerRuntimeProjectionProvider({
-    materializedSkillNames: () => connectorRuntimeSettings.materializedCustomSkillNames(),
-    availability: (id) => connectorRuntimeSettings.customServerAvailability(id),
-    isRefreshing: (id) => connectorRuntimeSettings.isRefreshing(id)
-  })
-  settingsService.setCustomServerAuthenticator(
-    async (serverId) => {
-      const server = (await settingsService.getConnectors())?.customMcpServers?.find(
-        (candidate) => candidate.id === serverId
-      )
-      if (!server) throw new Error(`Unknown custom connector: ${serverId}`)
-      await mcpClientManager.authenticate(toCustomMcpConfig(server))
-    },
-    (serverId) => mcpClientManager.cancelAuthentication(serverId)
-  )
-  // Bridges un-trusted connector calls to the renderer approval card. A tool call that isn't
-  // pre-allowed or skip-approved is held here until the user decides (or it auto-denies on timeout).
-  const approvalBroker = new ApprovalBroker({
-    generateId: () => randomUUID(),
-    onSettled: (id, state) => {
-      try {
-        broadcastToRenderers('connectors:approval-settled', id)
-      } finally {
-        void taskNotifications.settleAuthorization('connector', id, state)
-      }
-    },
-    broadcast: buildConnectorApprovalBroadcast({
-      broadcastToRenderers,
-      taskNotifications,
-      onNotificationError: (error) =>
-        notificationsLog.warn('connector approval notification failed', errorLogFields(error))
-    }),
-    replay: (request) => broadcastToRenderers('connectors:approval-request', request)
-  })
-  // The late-bound app runtime also serves connector tools that attach a generated file to the current
-  // turn. It is created below because it depends on the connector service.
-  const skillImportApprovalBroker = new SkillImportApprovalBroker({
-    generateId: () => randomUUID(),
-    broadcast: buildSkillImportApprovalBroadcast({
-      broadcastToRenderers,
-      taskNotifications,
-      onNotificationError: (error) =>
-        notificationsLog.warn('skill import approval notification failed', errorLogFields(error))
-    }),
-    onSettled: (id) => broadcastToRenderers('skills:conversation-import-settled', id),
-    onLifecycleSettled: (id, state) =>
-      void taskNotifications.settleAuthorization('skill-import', id, state)
-  })
-  const conversationSkillImporter = new ConversationSkillImporter({
-    uploads: uploadRepository,
-    createCancellationGuard: (sessionId, turnToken, attachmentUri) =>
-      skillImportApprovalBroker.createCancellationGuard(sessionId, turnToken, attachmentUri),
-    createSessionCancellationGuard: (sessionId) =>
-      skillImportApprovalBroker.createSessionCancellationGuard(sessionId),
-    previewBundle: (bundle) => settingsService.previewSkillArchive(bundle),
-    importBundle: (bundle, items) => settingsService.importSkillArchiveBatch(bundle, items),
-    scanGitHub: async (url) => (await settingsService.scanRepoSkills({ repo: url })).skills,
-    importGitHub: (url) => settingsService.importSkill({ url }),
-    requestApproval: (request, cancellation) =>
-      skillImportApprovalBroker.request(request, cancellation),
-    // If a prompt is active the coordinator defers the reconnect until its terminal event, making the
-    // new Skill available on the next user turn without interrupting the importing tool call.
-    onSkillsChanged: requestSkillCatalogRefresh
-  })
+  // The connector application owns MCP, connector/skill approval, runtime projection, and service
+  // construction. Late-bound local tools remain composition-root dependencies and are passed in.
   const moleculePreviewHandler = createMoleculePreviewHandler({
     writeArtifactForCurrentRun: (sessionId, input) => {
       if (!runtimeRef.current) throw new Error('Artifact runtime is not initialized.')
       return runtimeRef.current.writeArtifactForCurrentRun(sessionId, input)
     }
   })
-  const connectorService = new ConnectorService({
-    engine: new ParserEngine({ fetchImpl: netFetchStandard }),
-    getConnectors: () => connectorRuntimeSettings.current(),
-    getConnectorsFresh: () => settingsService.getConnectors(),
-    resolveApiKey: (ref) => tryDecryptKey(ref),
-    mcpClientManager,
-    permissionGrantRegistry,
-    requestApproval: ({ connector, method, args, sessionId, availableScopes }, signal) =>
-      approvalBroker.request(
-        {
-          connector,
-          method,
-          argsPreview: previewArgs(args),
-          ...(sessionId ? { sessionId } : {}),
-          availableScopes
-        },
-        signal
-      ),
-    resolveSpecialistProfile: async (specialistId) => {
-      try {
-        return await profileService.resolveRunnableById(specialistId)
-      } catch {
-        return undefined
-      }
+  const connectorApplication = await modules.add(
+    {
+      settings: settingsService,
+      skillsDir: connectorSkillSourceDir(resolveStorageRoot()),
+      openExternal: (url) => shell.openExternal(url),
+      notifyStatusChanged: () =>
+        broadcastToRenderers('settings:connector-runtime-changed', undefined),
+      broadcastConnectorApproval: buildConnectorApprovalBroadcast({
+        broadcastToRenderers,
+        taskNotifications,
+        onNotificationError: (error) =>
+          notificationsLog.warn('connector approval notification failed', errorLogFields(error))
+      }),
+      onConnectorApprovalSettled: (id, state) => {
+        try {
+          broadcastToRenderers('connectors:approval-settled', id)
+        } finally {
+          void taskNotifications.settleAuthorization('connector', id, state)
+        }
+      },
+      replayConnectorApproval: (request) =>
+        broadcastToRenderers('connectors:approval-request', request),
+      broadcastSkillImportApproval: buildSkillImportApprovalBroadcast({
+        broadcastToRenderers,
+        taskNotifications,
+        onNotificationError: (error) =>
+          notificationsLog.warn('skill import approval notification failed', errorLogFields(error))
+      }),
+      onSkillImportSettled: (id) => broadcastToRenderers('skills:conversation-import-settled', id),
+      onSkillImportLifecycleSettled: (id, state) =>
+        void taskNotifications.settleAuthorization('skill-import', id, state),
+      uploads: uploadRepository,
+      fetchImpl: netFetchStandard,
+      resolveApiKey: (ref) => tryDecryptKey(ref),
+      permissionGrantRegistry,
+      resolveSpecialistProfile: async (specialistId) => {
+        try {
+          return await profileService.resolveRunnableById(specialistId)
+        } catch {
+          return undefined
+        }
+      },
+      localToolHandlers: { 'molecule/preview_molecule': moleculePreviewHandler },
+      onSkillsChanged: requestSkillCatalogRefresh
     },
-    onCustomServerAvailabilityChanged: (serverId, availability) =>
-      connectorRuntimeSettings.setCustomServerDispatchAvailability(serverId, availability),
-    localToolHandlers: { 'molecule/preview_molecule': moleculePreviewHandler }
-  })
+    createConnectorApplicationModule
+  )
+  const {
+    connectorService,
+    runtimeSettings: connectorRuntimeSettings,
+    mcpClientManager,
+    skillImporter: conversationSkillImporter,
+    connectorApprovals: approvalBroker,
+    skillImportApprovals: skillImportApprovalBroker
+  } = connectorApplication
   // Register compute IPC handlers early so computeService can be wired into the notebook RPC server.
   // The approval broker in compute/ipc.ts broadcasts via BrowserWindow.getAllWindows(), which requires
   // Electron to be ready — this is always the case here since we're inside registerIpcHandlers.
