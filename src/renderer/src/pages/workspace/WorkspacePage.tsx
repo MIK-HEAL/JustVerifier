@@ -33,6 +33,7 @@ import {
   clearSuppressNextAutoReview
 } from '@/lib/acp/workspace-events'
 import { resolveEffectiveSpecialistSkills } from '../../../../shared/specialist'
+import { revealNotebookWhenProjectActive } from './notebook-preview-availability'
 import { isCodexSubscriptionProvider } from '../../../../shared/settings'
 import { hasCurrentRunningDelegatedAttempt } from '../../../../shared/delegated-work-projection'
 import {
@@ -135,10 +136,6 @@ const WorkspacePage = ({
   const activePreviewItemId = usePreviewWorkbenchStore((state) => state.activeItemId)
   const fileDialogItem = usePreviewWorkbenchStore((state) => state.fileDialogItem)
   const closeFileDialog = usePreviewWorkbenchStore((state) => state.closeFileDialog)
-  const upsertPreviewItem = usePreviewWorkbenchStore((state) => state.upsertItem)
-  const upsertAndActivatePreviewItem = usePreviewWorkbenchStore(
-    (state) => state.upsertAndActivateItem
-  )
   const togglePreviewPanel = usePreviewWorkbenchStore((state) => state.togglePanel)
   const projectFormDialog = useProjectFormDialog()
   // Drives the sidebar project menu's Download artifacts… disabled state. An incomplete index
@@ -665,20 +662,24 @@ const WorkspacePage = ({
     if (pendingCustomizePrefill !== undefined) consumeCustomizePrefill()
   }, [pendingCustomizePrefill, consumeCustomizePrefill])
 
-  // The first agent-side notebook call promotes a notebook entry into the composer status bar.
+  // The first agent-side notebook call reveals the new notebook entry and its preview together.
   useEffect(() => {
+    let cancelPendingOpen = (): void => undefined
     const removeNotebookAvailableListener = window.api.notebook.onAvailable((notebook) => {
       setNotebookReferences((references) => ({
         ...references,
         [notebook.sessionId]: notebook
       }))
-      upsertPreviewItem(createNotebookPreviewItem(notebook))
+      if (notebook.projectId !== scopedProjectId || notebook.sessionId !== activeSessionId) return
+      cancelPendingOpen()
+      cancelPendingOpen = revealNotebookWhenProjectActive(notebook)
     })
 
     return () => {
       removeNotebookAvailableListener()
+      cancelPendingOpen()
     }
-  }, [upsertPreviewItem])
+  }, [activeSessionId, scopedProjectId])
 
   // Subscribe to reviewer lifecycle updates so the card and Reviewing indicator stay live.
   useEffect(() => {
@@ -903,16 +904,16 @@ const WorkspacePage = ({
     })()
   }
 
-  // Opens the right preview on demand instead of stealing focus when the agent first uses notebook.
+  // Opens the right preview when the user explicitly selects the notebook entry.
   const openNotebookPreview = (notebook: NotebookSessionReference): void => {
-    upsertAndActivatePreviewItem(createNotebookPreviewItem(notebook))
+    usePreviewWorkbenchStore.getState().upsertAndActivateItem(createNotebookPreviewItem(notebook))
   }
 
   // Opens the project file library as a stable preview workbench tool tab.
   const openFilesPreview = (): void => {
     if (!isSessionPersistenceReady) return
 
-    upsertAndActivatePreviewItem(createProjectFilesPreviewItem())
+    usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectFilesPreviewItem())
   }
 
   return (
