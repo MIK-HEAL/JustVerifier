@@ -1,3 +1,10 @@
+import { z } from 'zod'
+
+import {
+  defineApplicationCommandContract,
+  validationCodec,
+  type RuntimeCodec
+} from './application-command-contract'
 import type { ArtifactFile } from './artifacts'
 import type { NotebookRuntimeBindings } from './notebook-runtime'
 import type { OptionalProjectIdScope, ProjectIdScope } from './project-scope'
@@ -34,8 +41,57 @@ export type NotebookRunProvenanceContext = {
 }
 
 // Languages a notebook kernel can run in this phase; each runs as a persistent exec-loop process
-// (no ipykernel/IRkernel involved).
-export type NotebookLanguage = 'python' | 'r'
+// (no ipykernel/IRkernel involved). Renderer IPC must parse this at runtime — TypeScript unions
+// do not reject a compromised or stale client.
+export const NOTEBOOK_LANGUAGES = ['python', 'r'] as const
+export type NotebookLanguage = (typeof NOTEBOOK_LANGUAGES)[number]
+export const notebookLanguageSchema = z.enum(NOTEBOOK_LANGUAGES)
+
+export const parseNotebookLanguage = (value: unknown): NotebookLanguage => {
+  const parsed = notebookLanguageSchema.safeParse(value)
+  if (!parsed.success) {
+    throw new Error('Notebook language must be python or r.')
+  }
+  return parsed.data
+}
+
+export const parseOptionalNotebookLanguage = (value: unknown): NotebookLanguage | undefined => {
+  if (value == null) return undefined
+  return parseNotebookLanguage(value)
+}
+
+// JSON RPC encodes omitted optional slots as null. Drop trailing nulls so cancel() and
+// provision/repair without an operation id stay valid, while a null required language still fails.
+const omitTrailingNull = (value: unknown): unknown => {
+  if (!Array.isArray(value)) return value
+  const args = [...value]
+  while (args.length > 0 && args[args.length - 1] === null) args.pop()
+  return args
+}
+
+const parsedArgs = <Args extends readonly unknown[]>(schema: z.ZodType<Args>): RuntimeCodec<Args> =>
+  Object.freeze({
+    parse: (value: unknown): Args => schema.parse(omitTrailingNull(value))
+  })
+
+const languageAndOptionalOperationId = parsedArgs(
+  z.union([z.tuple([notebookLanguageSchema]), z.tuple([notebookLanguageSchema, z.string()])])
+)
+
+export const notebookEnvironmentApplicationCommandContracts = Object.freeze({
+  provision: defineApplicationCommandContract(
+    languageAndOptionalOperationId,
+    validationCodec(z.undefined())
+  ),
+  repair: defineApplicationCommandContract(
+    languageAndOptionalOperationId,
+    validationCodec(z.undefined())
+  ),
+  cancel: defineApplicationCommandContract(
+    parsedArgs(z.union([z.tuple([]), z.tuple([notebookLanguageSchema])])),
+    validationCodec(z.undefined())
+  )
+})
 
 // Identifies which kernel produced a run: python/r are analysis cells, repl/bash are
 // control-plane/shell.
