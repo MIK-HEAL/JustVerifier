@@ -360,6 +360,8 @@ describe('NotebookPreview per-kernel tabs', () => {
     expect(
       container.querySelector('[data-testid="notebook-terminal-header"]')?.textContent
     ).toContain('Python kernel')
+    expect(container.querySelector('[data-slot="message-scroller-button"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Scroll to end"]')).toBeNull()
   })
 
   it('describes later variable changes without implying an execution error', async () => {
