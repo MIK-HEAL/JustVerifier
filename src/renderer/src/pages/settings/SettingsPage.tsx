@@ -76,6 +76,7 @@ import {
   getProviderFormErrors,
   hasProviderFormErrors,
   providerFormApiEndpoints,
+  providerFormTokenLimits,
   providerKindPatch,
   type ProviderFormValue
 } from './provider-form-value'
@@ -212,6 +213,8 @@ const toFormValue = (provider: ProviderView): ProviderFormValue =>
     baseUrl: provider.baseUrl ?? '',
     model: provider.model ?? '',
     contextWindow: provider.contextWindow?.toString() ?? '',
+    maxInputTokens: provider.maxInputTokens?.toString() ?? '',
+    maxOutputTokens: provider.maxOutputTokens?.toString() ?? '',
     apiEndpoint: provider.apiEndpoints?.[0] ?? 'anthropic',
     supportsImageInput: provider.supportsImageInput,
     reasoningEffortPreset: provider.reasoningEffortPreset ?? 'standard-5',
@@ -229,12 +232,7 @@ const toUpsertRequest = (
   name: value.name,
   baseUrl: value.baseUrl,
   model: value.model,
-  contextWindow:
-    value.type === 'custom'
-      ? value.contextWindow.trim()
-        ? Number(value.contextWindow)
-        : null
-      : undefined,
+  ...providerFormTokenLimits(value),
   apiEndpoints: providerFormApiEndpoints(value),
   supportsImageInput: value.supportsImageInput,
   reasoningEffortPreset: value.type === 'custom' ? value.reasoningEffortPreset : undefined,

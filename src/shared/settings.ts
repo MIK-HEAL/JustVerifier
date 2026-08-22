@@ -248,8 +248,11 @@ export type ProviderView = {
   apiEndpoints?: ChatApiEndpoint[]
   baseUrl?: string
   model?: string
-  // User-configured context-window size for a custom model. Omitted means the runtime uses 200k.
+  // User-configured model token limits. Context is the shared request/response budget; input/output
+  // are independent provider-reported caps. An omitted context window resolves to 200k at runtime.
   contextWindow?: number
+  maxInputTokens?: number
+  maxOutputTokens?: number
   supportsImageInput: boolean
   // Custom-model effort declaration. Absence intentionally means the standard five-level preset.
   reasoningEffortPreset?: ReasoningEffortPresetSetting
@@ -531,9 +534,11 @@ export type ProviderDraft = {
   name?: string
   baseUrl?: string
   model?: string
-  // Custom model context-window size in tokens. `null` explicitly clears a saved override; omitted
-  // leaves it unchanged on partial edits. A provider with no override resolves to 200k at runtime.
+  // Custom model token limits. `null` explicitly clears a saved override; omitted leaves it unchanged
+  // on partial edits. A provider with no context override resolves to 200k at runtime.
   contextWindow?: number | null
+  maxInputTokens?: number | null
+  maxOutputTokens?: number | null
   supportsImageInput?: boolean
   // Optional custom-model effort declaration. Absence defaults to the standard five-level preset.
   reasoningEffortPreset?: ReasoningEffortPresetSetting

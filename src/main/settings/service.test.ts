@@ -61,7 +61,8 @@ const { managedClaudeDir } = await import('./managed-claude')
 const { managedOpencodeDir } = await import('./managed-opencode')
 const { netFetch } = await import('../skills/net-fetch')
 const { UserSkillSpecialistPackageAdapter } = await import('../skills/specialist-package-adapter')
-const { opencodeTransportProviderId } = await import('../agent-framework/opencode')
+const { opencodeConfigDir, opencodeTransportProviderId } =
+  await import('../agent-framework/opencode')
 const { net: mockedNet } = (await import('electron')) as unknown as {
   net: { fetch: ReturnType<typeof vi.fn> }
 }
@@ -1179,7 +1180,7 @@ describe('SettingsService: providers', () => {
     expect((await repository.getSettings()).providers[0].reasoningEffortTransport).toBe('deepseek')
   })
 
-  it('persists a custom context window and carries it into the OpenCode model metadata', async () => {
+  it('persists custom model limits and carries them into OpenCode model metadata', async () => {
     vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'opencode')
     await repository.setAgentFramework('opencode')
     const service = createService(undefined, {
@@ -1191,12 +1192,20 @@ describe('SettingsService: providers', () => {
       name: 'Gateway',
       baseUrl: 'https://g',
       model: 'm',
-      contextWindow: 64_000,
+      contextWindow: 400_000,
+      maxInputTokens: 272_000,
+      maxOutputTokens: 128_000,
       key: 'k'
     })
     const view = snapshot.providers[0]
-    expect(view.contextWindow).toBe(64_000)
-    expect((await repository.getSettings()).providers[0].contextWindow).toBe(64_000)
+    expect(view.contextWindow).toBe(400_000)
+    expect(view.maxInputTokens).toBe(272_000)
+    expect(view.maxOutputTokens).toBe(128_000)
+    expect((await repository.getSettings()).providers[0]).toMatchObject({
+      contextWindow: 400_000,
+      maxInputTokens: 272_000,
+      maxOutputTokens: 128_000
+    })
 
     await repository.upsertProvider({
       ...(await repository.getSettings()).providers[0],
@@ -1205,11 +1214,20 @@ describe('SettingsService: providers', () => {
     await service.setActiveProvider(view.id)
     const backend = await resolveActiveBackend(service)
     const content = JSON.parse(backend.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
+    const materialized = JSON.parse(
+      await readFile(join(opencodeConfigDir(storageRoot), 'opencode.json'), 'utf8')
+    )
     const agentProviderId = opencodeTransportProviderId(view.id, 'm')
-    expect(content.provider[agentProviderId].models.m.limit.context).toBe(64_000)
+    const expectedLimit = {
+      context: 400_000,
+      input: 272_000,
+      output: 128_000
+    }
+    expect(content.provider[agentProviderId].models.m.limit).toEqual(expectedLimit)
+    expect(materialized.provider[agentProviderId].models.m.limit).toEqual(expectedLimit)
   })
 
-  it('uses a 200k runtime default when a custom context window is omitted', async () => {
+  it('uses a 200k context default and keeps the OpenCode output reserve adapter-only', async () => {
     vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'opencode')
     await repository.setAgentFramework('opencode')
     const service = createService(undefined, {
@@ -1225,6 +1243,8 @@ describe('SettingsService: providers', () => {
       })
     ).providers[0]
     expect(view.contextWindow).toBeUndefined()
+    expect(view.maxInputTokens).toBeUndefined()
+    expect(view.maxOutputTokens).toBeUndefined()
 
     await repository.upsertProvider({
       ...(await repository.getSettings()).providers[0],
@@ -1233,8 +1253,17 @@ describe('SettingsService: providers', () => {
     await service.setActiveProvider(view.id)
     const backend = await resolveActiveBackend(service)
     const content = JSON.parse(backend.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
+    const materialized = JSON.parse(
+      await readFile(join(opencodeConfigDir(storageRoot), 'opencode.json'), 'utf8')
+    )
     const agentProviderId = opencodeTransportProviderId(view.id, 'm')
     expect(content.provider[agentProviderId].models.m.limit.context).toBe(200_000)
+    expect(content.provider[agentProviderId].models.m.limit).not.toHaveProperty('input')
+    expect(content.provider[agentProviderId].models.m.limit.output).toBe(32_000)
+    expect(materialized.provider[agentProviderId].models.m.limit).toEqual({
+      context: 200_000,
+      output: 32_000
+    })
   })
 
   it('keeps OpenCode connector details in on-demand skills instead of baseline context', async () => {
@@ -1311,7 +1340,7 @@ describe('SettingsService: providers', () => {
     ).resolves.toContain('Use XT records.')
   })
 
-  it('rejects an invalid custom context window when IPC bypasses the form', async () => {
+  it('rejects invalid custom model limits when IPC bypasses the form', async () => {
     const service = createService()
     const base = {
       type: 'custom' as const,
@@ -1321,12 +1350,14 @@ describe('SettingsService: providers', () => {
       key: 'k'
     }
 
-    await expect(service.upsertProvider({ ...base, contextWindow: 0 })).rejects.toThrow(
-      /positive whole number/i
-    )
-    await expect(service.upsertProvider({ ...base, contextWindow: 1.5 })).rejects.toThrow(
-      /positive whole number/i
-    )
+    for (const field of ['contextWindow', 'maxInputTokens', 'maxOutputTokens'] as const) {
+      await expect(service.upsertProvider({ ...base, [field]: 0 })).rejects.toThrow(
+        /positive whole number/i
+      )
+      await expect(service.upsertProvider({ ...base, [field]: 1.5 })).rejects.toThrow(
+        /positive whole number/i
+      )
+    }
   })
 
   it('keeps the stored key when an edit omits a new key', async () => {
@@ -5092,6 +5123,7 @@ describe('SettingsService: reasoning effort', () => {
         name: 'G',
         baseUrl: 'https://g/v1',
         model: 'm',
+        contextWindow: 64_000,
         key: 'k'
       })
     ).providers[0]
@@ -5101,6 +5133,7 @@ describe('SettingsService: reasoning effort', () => {
     const backend = await resolveActiveBackend(service)
 
     expect(backend.framework.id).toBe('claude-code')
+    expect(backend.contextWindow).toBe(64_000)
     expect(backend.sessionEffort).toBe('low')
     expect(backend.systemPromptAppends).toEqual(
       expect.arrayContaining([

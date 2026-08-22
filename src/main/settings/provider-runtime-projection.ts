@@ -95,6 +95,8 @@ class ProviderRuntimeProjectionOwner {
       baseUrl: provider.baseUrl,
       model: provider.model,
       contextWindow: provider.contextWindow,
+      maxInputTokens: provider.maxInputTokens,
+      maxOutputTokens: provider.maxOutputTokens,
       supportsImageInput: this.providerSupportsImageInput(provider, activeModel),
       reasoningEffortPreset:
         provider.type === 'custom' ? provider.reasoningEffortPreset : undefined,
@@ -222,6 +224,12 @@ class ProviderRuntimeProjectionOwner {
       baseUrl: provider.baseUrl,
       model,
       ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(provider.type === 'custom' && provider.maxInputTokens !== undefined
+        ? { maxInputTokens: provider.maxInputTokens }
+        : {}),
+      ...(provider.type === 'custom' && provider.maxOutputTokens !== undefined
+        ? { maxOutputTokens: provider.maxOutputTokens }
+        : {}),
       key,
       apiEndpoints: this.resolveProviderApiEndpoints(provider, model),
       supportsImageInput: this.providerSupportsImageInput(provider, modelOverride),

@@ -14,6 +14,7 @@ import {
   isReasoningEffortPresetSetting
 } from '../../shared/reasoning-effort'
 import { createLogger } from '../logger'
+import { isPositiveWholeTokenLimit } from './provider-token-limits'
 import type {
   StoredComputeGrant,
   StoredConnectors,
@@ -134,11 +135,13 @@ export const sanitizeProvider = (value: unknown): StoredProvider | undefined => 
   const provider: StoredProvider = { id, type, name }
   const baseUrl = asString(value.baseUrl)
   const model = asString(value.model)
-  const rawContextWindow = asNumber(value.contextWindow)
-  const contextWindow =
-    rawContextWindow !== undefined && Number.isSafeInteger(rawContextWindow) && rawContextWindow > 0
-      ? rawContextWindow
-      : undefined
+  const positiveWholeNumber = (candidate: unknown): number | undefined => {
+    const number = asNumber(candidate)
+    return isPositiveWholeTokenLimit(number) ? number : undefined
+  }
+  const contextWindow = positiveWholeNumber(value.contextWindow)
+  const maxInputTokens = positiveWholeNumber(value.maxInputTokens)
+  const maxOutputTokens = positiveWholeNumber(value.maxOutputTokens)
   const supportsImageInput = asBoolean(value.supportsImageInput)
   const reasoningEffortPreset = isReasoningEffortPresetSetting(value.reasoningEffortPreset)
     ? value.reasoningEffortPreset
@@ -181,7 +184,11 @@ export const sanitizeProvider = (value: unknown): StoredProvider | undefined => 
 
   if (baseUrl) provider.baseUrl = baseUrl
   if (model) provider.model = model
-  if (contextWindow !== undefined) provider.contextWindow = contextWindow
+  if (type === 'custom') {
+    if (contextWindow !== undefined) provider.contextWindow = contextWindow
+    if (maxInputTokens !== undefined) provider.maxInputTokens = maxInputTokens
+    if (maxOutputTokens !== undefined) provider.maxOutputTokens = maxOutputTokens
+  }
   if (supportsImageInput !== undefined) provider.supportsImageInput = supportsImageInput
   if (reasoningEffortPreset !== undefined && type === 'custom') {
     provider.reasoningEffortPreset = reasoningEffortPreset

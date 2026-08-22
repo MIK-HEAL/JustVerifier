@@ -4,6 +4,7 @@ import {
   preferredEndpoint,
   type AgentFrameworkId,
   type ChatApiEndpoint,
+  type ProviderDraft,
   type ProviderType
 } from '../../../../shared/settings'
 import {
@@ -24,8 +25,10 @@ export type ProviderFormValue = {
   name: string
   baseUrl: string
   model: string
-  // Kept as text so an empty optional numeric input remains distinct from the 200k runtime default.
+  // Kept as text so empty optional numeric inputs remain distinct from the 200k context default.
   contextWindow: string
+  maxInputTokens: string
+  maxOutputTokens: string
   // Which chat API a custom gateway speaks; drives which agent frameworks can use it. Defaults to
   // 'anthropic'. A custom provider serves exactly one endpoint (official providers take theirs from
   // the registry); it is stored as the single-entry apiEndpoints array.
@@ -55,6 +58,8 @@ export const createEmptyProviderFormValue = (
   baseUrl: '',
   model: '',
   contextWindow: '',
+  maxInputTokens: '',
+  maxOutputTokens: '',
   apiEndpoint: 'anthropic',
   providerFormTouched: false,
   supportsImageInput: false,
@@ -63,6 +68,22 @@ export const createEmptyProviderFormValue = (
   key: '',
   ...overrides
 })
+
+type ProviderFormTokenLimits = Pick<
+  ProviderDraft,
+  'contextWindow' | 'maxInputTokens' | 'maxOutputTokens'
+>
+
+// Both Settings and onboarding persist this shared form. Keep optional-number conversion here so a
+// blank custom value explicitly clears a saved override while non-custom requests omit the fields.
+export const providerFormTokenLimits = (value: ProviderFormValue): ProviderFormTokenLimits =>
+  value.type === 'custom'
+    ? {
+        contextWindow: value.contextWindow.trim() ? Number(value.contextWindow) : null,
+        maxInputTokens: value.maxInputTokens.trim() ? Number(value.maxInputTokens) : null,
+        maxOutputTokens: value.maxOutputTokens.trim() ? Number(value.maxOutputTokens) : null
+      }
+    : {}
 
 // Chooses the framework's preferred wire protocol for a new custom gateway. This mirrors runtime
 // endpoint selection: Responses wins when available, then Chat Completions, then Messages. The
@@ -115,12 +136,22 @@ export type ProviderFormErrorKey =
   | 'Model is required.'
   | 'API key is required.'
   | 'Context window must be a positive whole number of tokens.'
+  | 'Maximum input tokens must be a positive whole number of tokens.'
+  | 'Maximum output tokens must be a positive whole number of tokens.'
 
 export type ProviderFormErrors = {
   baseUrl?: ProviderFormErrorKey
   contextWindow?: ProviderFormErrorKey
   key?: ProviderFormErrorKey
+  maxInputTokens?: ProviderFormErrorKey
+  maxOutputTokens?: ProviderFormErrorKey
   model?: ProviderFormErrorKey
+}
+
+const positiveWholeNumberError = (value: string): boolean => {
+  if (!value.trim()) return false
+  const number = Number(value)
+  return !Number.isSafeInteger(number) || number <= 0
 }
 
 // Computes required-field errors for a draft. On edit, an already-stored key satisfies the key
@@ -134,11 +165,14 @@ export const getProviderFormErrors = (
   if (value.type === 'custom') {
     if (!value.baseUrl.trim()) errors.baseUrl = 'Base URL is required.'
     if (!value.model.trim()) errors.model = 'Model is required.'
-    if (value.contextWindow.trim()) {
-      const contextWindow = Number(value.contextWindow)
-      if (!Number.isSafeInteger(contextWindow) || contextWindow <= 0) {
-        errors.contextWindow = 'Context window must be a positive whole number of tokens.'
-      }
+    if (positiveWholeNumberError(value.contextWindow)) {
+      errors.contextWindow = 'Context window must be a positive whole number of tokens.'
+    }
+    if (positiveWholeNumberError(value.maxInputTokens)) {
+      errors.maxInputTokens = 'Maximum input tokens must be a positive whole number of tokens.'
+    }
+    if (positiveWholeNumberError(value.maxOutputTokens)) {
+      errors.maxOutputTokens = 'Maximum output tokens must be a positive whole number of tokens.'
     }
     if (!value.key.trim() && !options.hasStoredKey) errors.key = 'API key is required.'
   } else if (value.type === 'official') {
@@ -244,6 +278,8 @@ export const providerKindPatch = (
       baseUrl: '',
       model: '',
       contextWindow: '',
+      maxInputTokens: '',
+      maxOutputTokens: '',
       key: '',
       vendorId: undefined,
       region: undefined
@@ -259,6 +295,8 @@ export const providerKindPatch = (
       baseUrl: '',
       model: '',
       contextWindow: '',
+      maxInputTokens: '',
+      maxOutputTokens: '',
       key: '',
       vendorId: undefined,
       region: undefined
@@ -276,7 +314,9 @@ export const providerKindPatch = (
       vendorId,
       region: vendor?.regions?.[0]?.id,
       model: '',
-      contextWindow: ''
+      contextWindow: '',
+      maxInputTokens: '',
+      maxOutputTokens: ''
     }
   }
 
@@ -286,7 +326,9 @@ export const providerKindPatch = (
     vendorId: undefined,
     region: undefined,
     model: '',
-    contextWindow: ''
+    contextWindow: '',
+    maxInputTokens: '',
+    maxOutputTokens: ''
   }
 }
 
