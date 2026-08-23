@@ -19,10 +19,7 @@ import {
 import type { SessionAgentConfiguration } from '../../../../shared/settings'
 import { useSessionStore, type ChatSession } from '@/stores/session-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
-import {
-  useWorkspaceAgentRuntime,
-  type WorkspaceAgentRuntime
-} from '@/lib/acp/useWorkspaceAgentRuntime'
+import { useWorkspaceAgentRuntime } from '@/lib/acp/useWorkspaceAgentRuntime'
 
 import { docToArtifactRefs } from './composer/composer-doc'
 import {
@@ -32,34 +29,18 @@ import {
 import { subscribeWorkspacePresentationRevealing } from './workspace-presentation-revealing'
 import { useOpenSideChatParentSessionIds } from './use-side-chat-controller'
 import type { ComposerSendSnapshot } from './workspace-composer-controller'
-
-type MessageQueuePhase = 'queued' | 'interrupting' | 'sending' | 'error'
-type MessageQueueError = {
-  kind: 'branch' | 'send' | 'edit' | 'cancel'
-  detail?: string
-}
-
-type MessageQueueItem = {
-  id: string
-  sessionId: string
-  agentFrameId: string
-  messageBranchId: string
-  snapshot: ComposerSendSnapshot
-  text: string
-  attachmentCount: number
-  forcedSkillIds: string[]
-  permissionProfile: PermissionProfileId
-  agentConfiguration: SessionAgentConfiguration
-  specialistId: string | null | undefined
-  projectId: string
-  cwd: string | undefined
-  phase: MessageQueuePhase
-  error?: MessageQueueError
-}
+import {
+  WorkspaceMessageQueueOwner,
+  type MessageQueueDispatch,
+  type MessageQueueError,
+  type MessageQueueItem,
+  type MessageQueuePhase,
+  type WorkspaceMessageQueueControllerOptions
+} from './workspace-message-queue-owner'
 
 type MessageQueueItemView = Pick<
   MessageQueueItem,
-  'id' | 'text' | 'attachmentCount' | 'phase' | 'error'
+  'id' | 'text' | 'attachmentCount' | 'phase' | 'error' | 'deferredUntilIdle'
 >
 
 type MessageQueueAdmission = {
@@ -70,33 +51,6 @@ type MessageQueueAdmission = {
   permissionProfile: PermissionProfileId
   agentConfiguration: SessionAgentConfiguration
   specialistId: string | null | undefined
-}
-
-type MessageQueueDispatch = {
-  itemId: string
-  settled: boolean
-  completion: Promise<void>
-}
-
-type WorkspaceMessageQueueControllerOptions = {
-  activeSession: ChatSession | undefined
-  promptInFlightSessionIds: string[]
-  sendPreparationInFlightSessionIds: string[]
-  saveAsSkillInFlightSessionIds: string[]
-  isSideChatOpen: (sessionId: string) => boolean
-  composer: {
-    setError: (error: string | null) => void
-    restoreQueuedDraft: (snapshot: ComposerSendSnapshot) => boolean
-    discardSnapshot: (snapshot: ComposerSendSnapshot) => void
-  }
-  runtime: Pick<WorkspaceAgentRuntime, 'sendMessage' | 'cancelRun'>
-  isBarrierInFlight: (sessionId: string) => boolean
-  isPresentationRevealing: (sessionId: string) => boolean
-  isSpecialistReady: (sessionId: string) => boolean
-  hasPendingPermissionRequest: (sessionId: string) => boolean
-  abortFixLoop: (request: { projectId: string; appSessionId: string }) => Promise<unknown>
-  getSession: (sessionId: string) => ChatSession | undefined
-  subscribeSessionChanges: (listener: () => void) => () => void
 }
 
 type WorkspaceMessageQueueController = {
@@ -112,117 +66,6 @@ type WorkspaceMessageQueueController = {
   lifecycle: {
     enqueue: (admission: MessageQueueAdmission) => boolean
     blocksImmediateSend: (sessionId: string) => boolean
-  }
-}
-
-type MessageQueueSnapshot = {
-  queues: Map<string, MessageQueueItem[]>
-  announcement: string
-}
-
-type WorkspaceMessageQueueRuntimeOptions = Pick<
-  WorkspaceMessageQueueControllerOptions,
-  | 'promptInFlightSessionIds'
-  | 'sendPreparationInFlightSessionIds'
-  | 'saveAsSkillInFlightSessionIds'
-  | 'runtime'
-  | 'isBarrierInFlight'
-  | 'isSpecialistReady'
-  | 'isSideChatOpen'
-  | 'hasPendingPermissionRequest'
-  | 'abortFixLoop'
-  | 'getSession'
-  | 'subscribeSessionChanges'
->
-
-class WorkspaceMessageQueueOwner {
-  readonly queues = new Map<string, MessageQueueItem[]>()
-  readonly dispatches = new Map<string, MessageQueueDispatch>()
-  private nextQueueId = 0
-  private listeners = new Set<() => void>()
-  private snapshot: MessageQueueSnapshot = { queues: new Map(), announcement: '' }
-  private sessionSubscription:
-    | {
-        source: WorkspaceMessageQueueControllerOptions['subscribeSessionChanges']
-        drain: () => void
-        unsubscribe: () => void
-      }
-    | undefined
-  private discardSnapshot:
-    WorkspaceMessageQueueControllerOptions['composer']['discardSnapshot'] | undefined
-  private runtimeOptions: WorkspaceMessageQueueRuntimeOptions | undefined
-
-  subscribe = (listener: () => void): (() => void) => {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
-  }
-
-  getSnapshot = (): MessageQueueSnapshot => this.snapshot
-
-  requestDrain = (): void => this.sessionSubscription?.drain()
-
-  createQueueItemId(): string {
-    this.nextQueueId += 1
-    return `queued-message-${Date.now()}-${this.nextQueueId}`
-  }
-
-  emit = (announcement?: string): void => {
-    this.snapshot = {
-      queues: new Map(this.queues),
-      announcement: announcement ?? this.snapshot.announcement
-    }
-    for (const listener of this.listeners) listener()
-  }
-
-  connect(
-    source: WorkspaceMessageQueueControllerOptions['subscribeSessionChanges'],
-    drain: () => void,
-    discardSnapshot: WorkspaceMessageQueueControllerOptions['composer']['discardSnapshot']
-  ): void {
-    this.discardSnapshot = discardSnapshot
-    const liveSource = this.runtimeOptions?.subscribeSessionChanges ?? source
-    if (
-      this.sessionSubscription?.source === liveSource &&
-      this.sessionSubscription.drain === drain
-    ) {
-      return
-    }
-    this.sessionSubscription?.unsubscribe()
-    this.sessionSubscription = { source: liveSource, drain, unsubscribe: liveSource(drain) }
-  }
-
-  updateRuntime(options: WorkspaceMessageQueueRuntimeOptions): void {
-    this.runtimeOptions = options
-    const current = this.sessionSubscription
-    if (current && current.source !== options.subscribeSessionChanges) {
-      current.unsubscribe()
-      this.sessionSubscription = {
-        source: options.subscribeSessionChanges,
-        drain: current.drain,
-        unsubscribe: options.subscribeSessionChanges(current.drain)
-      }
-    }
-    this.sessionSubscription?.drain()
-  }
-
-  resolveOptions(
-    fallback: WorkspaceMessageQueueControllerOptions
-  ): WorkspaceMessageQueueControllerOptions {
-    return this.runtimeOptions ? { ...fallback, ...this.runtimeOptions } : fallback
-  }
-
-  dispose(): void {
-    this.sessionSubscription?.unsubscribe()
-    this.sessionSubscription = undefined
-    this.runtimeOptions = undefined
-    for (const items of this.queues.values()) {
-      for (const item of items) {
-        if (item.phase !== 'sending') this.discardSnapshot?.(item.snapshot)
-      }
-    }
-    this.queues.clear()
-    this.dispatches.clear()
-    this.emit()
   }
 }
 
@@ -325,6 +168,18 @@ const queueBranchMatches = (session: ChatSession, item: MessageQueueItem): boole
   )
 }
 
+const queueItemContextError = (
+  session: ChatSession,
+  item: MessageQueueItem
+): MessageQueueError | undefined => {
+  if (!queueBranchMatches(session, item)) return { kind: 'branch' }
+  if ((session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE) !== item.permissionProfile) {
+    return { kind: 'send' }
+  }
+  if (session.specialistId !== item.specialistId) return { kind: 'send' }
+  return undefined
+}
+
 const queueSessionIsSendable = (
   options: WorkspaceMessageQueueControllerOptions,
   session: ChatSession
@@ -373,7 +228,7 @@ const useWorkspaceMessageQueueController = (
     (
       sessionId: string,
       itemId: string,
-      update: Partial<Pick<MessageQueueItem, 'phase' | 'error'>>
+      update: Partial<Pick<MessageQueueItem, 'phase' | 'error' | 'deferredUntilIdle'>>
     ): void => {
       const items = itemsFor(sessionId)
       const index = items.findIndex((item) => item.id === itemId)
@@ -418,28 +273,23 @@ const useWorkspaceMessageQueueController = (
       }
       const item = itemsFor(sessionId)[0]
       if (!item || item.phase === 'sending' || item.phase === 'error') return
-      if (!queueBranchMatches(session, item)) {
+      const contextError = queueItemContextError(session, item)
+      if (contextError) {
         replaceItem(sessionId, item.id, {
           phase: 'error',
-          error: { kind: 'branch' }
-        })
-        return
-      }
-      if ((session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE) !== item.permissionProfile) {
-        replaceItem(sessionId, item.id, { phase: 'error', error: { kind: 'send' } })
-        return
-      }
-      if (session.specialistId !== item.specialistId) {
-        replaceItem(sessionId, item.id, {
-          phase: 'error',
-          error: { kind: 'send' }
+          error: contextError,
+          deferredUntilIdle: false
         })
         return
       }
       if (!current.isSpecialistReady(sessionId)) return
       if (!queueSessionIsSendable(current, session)) return
 
-      replaceItem(sessionId, item.id, { phase: 'sending', error: undefined })
+      replaceItem(sessionId, item.id, {
+        phase: 'sending',
+        error: undefined,
+        deferredUntilIdle: false
+      })
       let resolveCompletion!: () => void
       const activeDispatch: MessageQueueDispatch = {
         itemId: item.id,
@@ -465,6 +315,20 @@ const useWorkspaceMessageQueueController = (
             specialistId: item.specialistId
           })
           if (!result) {
+            const latest = owner.resolveOptions(optionsRef.current)
+            const latestSession = latest.getSession(sessionId)
+            if (latestSession && !queueSessionIsSendable(latest, latestSession)) {
+              if (owner.dispatches.get(sessionId) === activeDispatch) {
+                owner.dispatches.delete(sessionId)
+              }
+              replaceItem(sessionId, item.id, {
+                phase: 'queued',
+                error: undefined,
+                deferredUntilIdle: true
+              })
+              emit('Queued message will send after the current run finishes.')
+              return
+            }
             throw new Error('The queued message was not admitted.')
           }
           const latest = itemsFor(sessionId)
@@ -484,7 +348,8 @@ const useWorkspaceMessageQueueController = (
           }
           replaceItem(sessionId, item.id, {
             phase: 'error',
-            error: { kind: 'send', detail: errorMessage(error) }
+            error: { kind: 'send', detail: errorMessage(error) },
+            deferredUntilIdle: false
           })
         } finally {
           activeDispatch.settled = true
@@ -603,7 +468,8 @@ const useWorkspaceMessageQueueController = (
       if (!optionsRef.current.composer.restoreQueuedDraft(item.snapshot)) {
         replaceItem(queue.sessionId, itemId, {
           phase: 'error',
-          error: { kind: 'edit' }
+          error: { kind: 'edit' },
+          deferredUntilIdle: false
         })
         return
       }
@@ -619,12 +485,17 @@ const useWorkspaceMessageQueueController = (
       const queue = currentSessionQueue()
       if (!queue) return
       const item = queue.items.find((candidate) => candidate.id === itemId)
-      if (!item) return
+      if (!item || item.phase === 'sending' || item.phase === 'interrupting') return
+      const hasPayload =
+        Boolean(item.text.trim()) ||
+        item.attachmentCount > 0 ||
+        item.forcedSkillIds.length > 0 ||
+        docToArtifactRefs(item.snapshot.doc).length > 0
       owner.queues.set(queue.sessionId, [
-        { ...item, phase: 'interrupting', error: undefined },
+        { ...item, phase: 'sending', error: undefined, deferredUntilIdle: false },
         ...queue.items.filter((candidate) => candidate.id !== itemId)
       ])
-      emit('Stopping the current run before sending the queued message.')
+      emit()
       try {
         const displacedDispatch = owner.dispatches.get(queue.sessionId)
         if (displacedDispatch && displacedDispatch.itemId !== itemId) {
@@ -638,25 +509,109 @@ const useWorkspaceMessageQueueController = (
             appSessionId: queue.sessionId
           })
         }
-        if (
-          session?.status === 'running' ||
-          session?.status === 'waiting-for-user' ||
-          session?.status === 'waiting-permission'
-        ) {
-          await current.runtime.cancelRun(queue.sessionId)
+        const liveSession = current.getSession(queue.sessionId)
+        if (liveSession) {
+          const contextError = queueItemContextError(liveSession, item)
+          if (contextError) {
+            replaceItem(queue.sessionId, itemId, {
+              phase: 'error',
+              error: contextError,
+              deferredUntilIdle: false
+            })
+            return
+          }
+          if (!current.isSpecialistReady(queue.sessionId)) {
+            replaceItem(queue.sessionId, itemId, {
+              phase: 'queued',
+              error: undefined,
+              deferredUntilIdle: true
+            })
+            emit('Queued message will send after the current run finishes.')
+            return
+          }
+        }
+        const liveTurn =
+          liveSession?.status === 'running' ||
+          liveSession?.status === 'waiting-for-user' ||
+          liveSession?.status === 'waiting-permission'
+        const referencedArtifacts = docToArtifactRefs(item.snapshot.doc)
+        if (liveTurn && hasPayload && current.runtime.steerFollowUp) {
+          replaceItem(queue.sessionId, itemId, {
+            phase: 'sending',
+            error: undefined,
+            deferredUntilIdle: false
+          })
+          emit('Sending the queued message into the current run.')
+          try {
+            const steered = await current.runtime.steerFollowUp({
+              sessionId: queue.sessionId,
+              text: item.text,
+              ...(item.snapshot.attachments.length > 0
+                ? { attachments: item.snapshot.attachments }
+                : {}),
+              ...(referencedArtifacts.length > 0 ? { referencedArtifacts } : {}),
+              ...(item.forcedSkillIds.length > 0 ? { forcedSkillIds: item.forcedSkillIds } : {}),
+              ...(item.snapshot.doc.nodes.length > 0 ? { parts: item.snapshot.doc.nodes } : {})
+            })
+            if (steered.injected) {
+              const latest = itemsFor(queue.sessionId)
+              const remaining = latest.filter((candidate) => candidate.id !== item.id)
+              if (remaining.length === 0) owner.queues.delete(queue.sessionId)
+              else owner.queues.set(queue.sessionId, remaining)
+              if (owner.dispatches.get(queue.sessionId) === displacedDispatch) {
+                owner.dispatches.delete(queue.sessionId)
+              }
+              emit('Queued message sent.')
+              return
+            }
+          } catch {
+            // Native follow-up is fail-closed. Keep the current run and send after it finishes.
+          }
+          replaceItem(queue.sessionId, itemId, { phase: 'queued', error: undefined })
+          if (owner.dispatches.get(queue.sessionId) === displacedDispatch) {
+            owner.dispatches.delete(queue.sessionId)
+          }
+          const latest = owner.resolveOptions(optionsRef.current)
+          const latestSession = latest.getSession(queue.sessionId)
+          if (!latestSession || queueSessionIsSendable(latest, latestSession)) {
+            drainQueues()
+            return
+          }
+          replaceItem(queue.sessionId, itemId, {
+            phase: 'queued',
+            error: undefined,
+            deferredUntilIdle: true
+          })
+          emit('Queued message will send after the current run finishes.')
+          return
+        }
+        if (liveTurn) {
+          replaceItem(queue.sessionId, itemId, {
+            phase: 'queued',
+            error: undefined,
+            deferredUntilIdle: true
+          })
+          emit('Queued message will send after the current run finishes.')
+          return
         }
         if (owner.dispatches.get(queue.sessionId) === displacedDispatch) {
           owner.dispatches.delete(queue.sessionId)
         }
+        replaceItem(queue.sessionId, itemId, {
+          phase: 'queued',
+          error: undefined,
+          deferredUntilIdle: false
+        })
         drainQueues()
       } catch (error) {
         replaceItem(queue.sessionId, itemId, {
           phase: 'error',
-          error: { kind: 'cancel', detail: errorMessage(error) }
+          error: { kind: 'cancel', detail: errorMessage(error) },
+          deferredUntilIdle: false
         })
       }
     },
-    [currentSessionQueue, drainQueues, emit, owner, replaceItem]
+    [currentSessionQueue, drainQueues, emit, itemsFor, owner, replaceItem]
   )
 
   useEffect(
@@ -671,12 +626,13 @@ const useWorkspaceMessageQueueController = (
   return {
     lifecycle: { enqueue, blocksImmediateSend },
     actions: { move, moveTo, remove, edit, sendNow },
-    items: activeItems.map(({ id, text, attachmentCount, phase, error }) => ({
+    items: activeItems.map(({ id, text, attachmentCount, phase, error, deferredUntilIdle }) => ({
       id,
       text,
       attachmentCount,
       phase,
-      error
+      error,
+      ...(deferredUntilIdle ? { deferredUntilIdle: true } : {})
     })),
     announcement
   }

@@ -48,6 +48,10 @@ const createDependencies = (): AcpApplicationCommandDependencies => ({
     resetSessionContext: vi.fn(async () => ({ ...sessionResponse, contextReset: true })),
     compactSession: vi.fn(async () => snapshot),
     cancelPrompt: vi.fn(async () => snapshot),
+    steerFollowUp: vi.fn(async () => ({
+      injected: false as const,
+      reason: 'not-advertised' as const
+    })),
     deleteSession: vi.fn(async () => snapshot),
     respondToPermission: vi.fn(async () => snapshot),
     respondToElicitation: vi.fn(async () => snapshot),
@@ -128,7 +132,8 @@ describe('ACP application commands', () => {
       'acp:revoke-permission-grant',
       'acp:save-as-skill',
       'acp:send-prompt',
-      'acp:set-permission-profile'
+      'acp:set-permission-profile',
+      'acp:steer-follow-up'
     ])
     expect(router.dispatcher.commandNames()).toEqual(
       acpApplicationCommands.commands.map(({ name }) => name).sort()
@@ -489,8 +494,14 @@ describe('ACP application commands', () => {
         invocation([{ sessionId: 'session-1', reason: 'manual' }])
       )
     ).rejects.toThrow('Restore this archived Session before continuing.')
+    await expect(
+      router.dispatcher.invoke(
+        acpCommands.steerFollowUp,
+        invocation([{ sessionId: 'session-1', text: 'focus on tests' }])
+      )
+    ).rejects.toThrow('Restore this archived Session before continuing.')
 
-    expect(admittedById).toHaveBeenCalledTimes(2)
+    expect(admittedById).toHaveBeenCalledTimes(3)
     expect(admittedById).toHaveBeenCalledWith(request.sessionId)
     expect(dependencies.runtime.resetSessionContext).not.toHaveBeenCalled()
     expect(dependencies.runtime.compactSession).not.toHaveBeenCalled()

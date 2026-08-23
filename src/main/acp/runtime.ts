@@ -2,6 +2,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import type {
   ActiveSession,
   ClientConnection,
+  ContentBlock,
   CreateElicitationResponse,
   PromptResponse
 } from '@agentclientprotocol/sdk'
@@ -26,6 +27,8 @@ import {
   type AcpPermissionSettlementState,
   type ElicitationResponse,
   type AcpPromptRequest,
+  type AcpSteerFollowUpRequest,
+  type AcpSteerFollowUpResult,
   type AcpResumeSessionRequest,
   type AcpRevokePermissionGrantRequest,
   type AcpSetPermissionProfileRequest,
@@ -75,7 +78,7 @@ import type {
   AppGeneratedArtifactProducer,
   ArtifactRpcCapabilityBinding
 } from '../../shared/artifact-provenance'
-import type { HistoryReplayDescriptor } from '../../shared/history-preamble'
+import { resolveFileTextBudget, type HistoryReplayDescriptor } from '../../shared/history-preamble'
 import type { AcpRuntimeActivity, AcpRuntimeActivityOptions } from './runtime-activity'
 import type { AcpAppContinuationOwner } from './app-continuation-owner'
 import type { ContextUsageTracker } from './context-usage-tracker'
@@ -89,6 +92,10 @@ import type {
 } from './reviewer-session-owner'
 import type { ArtifactTurnOwner } from './artifact-turn-owner'
 import type { AcpSessionInteractionOwner } from './session-interaction-owner'
+import {
+  AcpNativeFollowUpWorkflow,
+  finalizeNativeFollowUpPreparedContent
+} from './native-follow-up-workflow'
 import type { AcpSessionRegistry } from './session-registry'
 import type {
   AcpConnectionResourceOwner,
@@ -115,10 +122,15 @@ import type { AcpProviderSessionCreator } from './provider-session-creator'
 import type { AcpProviderSessionResumer } from './provider-session-resumer'
 import type { AcpSessionReplacementWorkflow } from './session-replacement-workflow'
 import type { AcpSessionDeletionWorkflow } from './session-deletion-workflow'
+import type { AcpPromptContentOwner } from './prompt-content-owner'
 import type { AcpPromptTurnWorkflow } from './prompt-turn-workflow'
 import type { AcpContextCompactionWorkflow } from './context-compaction-workflow'
 import type { AcpProviderPromptExecutor } from './provider-prompt-executor'
-import type { AcpTurnSkillHooks, AcpTurnSkillOwner } from './turn-skill-owner'
+import {
+  followUpPromptText,
+  type AcpTurnSkillHooks,
+  type AcpTurnSkillOwner
+} from './turn-skill-owner'
 import type { PlanResponseResult, PlanServiceDependencies } from '../session-plan/plan-service'
 import { SessionPlanContinuationOwner } from './session-plan-continuation-owner'
 import type { ActivePlanProjection, PlanResponseCommand } from '../../shared/session-plan/contract'
@@ -440,6 +452,8 @@ class AcpRuntime {
   private readonly sessionPlanWorkflow: AcpRuntimePlanWorkflow
   private readonly contextCompactionWorkflow: AcpContextCompactionWorkflow
   private readonly promptTurnWorkflow: AcpPromptTurnWorkflow
+  private readonly promptContent: AcpPromptContentOwner
+  private readonly nativeFollowUp: AcpNativeFollowUpWorkflow
   private readonly connectionClose: AcpConnectionCloseWorkflow
   private readonly connectionLifecycle: AcpConnectionLifecycleWorkflow
   private readonly modelChanges: AcpModelChangeWorkflow
@@ -498,6 +512,37 @@ class AcpRuntime {
     })
     this.contextCompactionWorkflow = prompt.contextCompactionWorkflow
     this.promptTurnWorkflow = prompt.promptTurnWorkflow
+    this.promptContent = base.promptContentOwner
+    this.nativeFollowUp = new AcpNativeFollowUpWorkflow({
+      connection: () => this.connection,
+      capabilities: () => this.connectionResources.capabilities,
+      frameworkId: () => this.framework.id,
+      openCodeUsageApi: () => this.backendGeneration.openCodeUsageApi(),
+      activeProviderSessionId: (sessionId) => this.activeSessionFor(sessionId)?.sessionId,
+      hasLivePrompt: (sessionId) => this.sessionInteractions.current(sessionId)?.kind === 'prompt',
+      livePrompt: (sessionId) => {
+        const current = this.sessionInteractions.current(sessionId)
+        return current?.kind === 'prompt'
+          ? { turnToken: current.turnToken, signal: current.signal }
+          : undefined
+      },
+      sessionCwd: (sessionId) => this.sessionRegistry.lookup(sessionId)?.aggregate.snapshot().cwd,
+      prepareFollowUp: (request) => this.prepareNativeFollowUpContent(request),
+      ...(this.options.notebook?.registerTurnInputs
+        ? { registerTurnInputs: this.options.notebook.registerTurnInputs }
+        : {}),
+      publishUserMessage: ({ sessionId, messageId, text, uploads, parts }) =>
+        this.publication.pushEvent({
+          kind: 'message',
+          level: 'info',
+          sessionId,
+          messageId,
+          role: 'user',
+          text,
+          ...(uploads && uploads.length > 0 ? { uploads: [...uploads] } : {}),
+          ...(parts && parts.length > 0 ? { parts: [...parts] } : {})
+        })
+    })
     const lifecycle = composeAcpRuntimeLifecycleOwners(options, base, session, {
       connect: (request) => this.connect(request),
       disconnect: (emitClosedStatus) => this.disconnect(emitClosedStatus),
@@ -1071,6 +1116,57 @@ class AcpRuntime {
       },
       hooks
     )
+  }
+
+  // Side-band follow-up into the live prompt. Does not open a second prompt interaction.
+  async steerFollowUp(request: AcpSteerFollowUpRequest): Promise<AcpSteerFollowUpResult> {
+    return this.withOperationLease(() =>
+      withDataRootWrite(() => this.nativeFollowUp.steerFollowUp(request))
+    )
+  }
+
+  private async prepareNativeFollowUpContent(
+    request: AcpSteerFollowUpRequest
+  ): Promise<{ prompt: ContentBlock[]; uploads: UploadedAttachment[] }> {
+    const presented = await this.turnSkills.presentFollowUp({
+      frameworkId: this.framework.id,
+      text: request.text,
+      selectedSkillIds: request.forcedSkillIds ?? [],
+      specialistId: this.sessionRegistry.lookup(request.sessionId)?.aggregate.snapshot()
+        .specialistId,
+      codexHome: this.backendGeneration.current.adapter.codexHome
+    })
+    const livePrompt = this.sessionInteractions.current(request.sessionId)
+    const supportsImageInput = this.backendGeneration.current.context.supportsImageInput
+    const imageCompatibility = this.options.imageInputCompatibility
+    const prepared = await this.promptContent.prepare({
+      appSessionId: request.sessionId,
+      projectId: this.liveSessionProjectId(request.sessionId) ?? '',
+      connectionGeneration: this.connectionGeneration,
+      text: followUpPromptText(presented),
+      historyImages: [],
+      historyUploads: [],
+      currentUploads: request.attachments ?? [],
+      references: request.referencedArtifacts ?? [],
+      codexSkillInputs: presented.codexSkillInputs,
+      skillImportEnabled: false,
+      imageCompatibilityRelay: supportsImageInput === false && imageCompatibility !== undefined,
+      fileTextBudget: resolveFileTextBudget(this.backendGeneration.current.context.window)
+    })
+    return finalizeNativeFollowUpPreparedContent({
+      content: prepared.content,
+      ...(prepared.turnInputs ? { turnInputs: prepared.turnInputs } : {}),
+      projectId: this.liveSessionProjectId(request.sessionId) ?? '',
+      sessionId: request.sessionId,
+      ...(livePrompt?.kind === 'prompt' && livePrompt.promptMessageId
+        ? { livePromptMessageId: livePrompt.promptMessageId }
+        : {}),
+      supportsImageInput,
+      ...(prepared.imageSources ? { imageSources: prepared.imageSources } : {}),
+      historyImageCount: prepared.historyImageCount,
+      ...(livePrompt?.kind === 'prompt' ? { signal: livePrompt.signal } : {}),
+      ...(imageCompatibility ? { imageCompatibility } : {})
+    })
   }
 
   // Sends one prompt turn to the targeted session and streams updates until stop.

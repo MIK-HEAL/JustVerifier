@@ -104,6 +104,53 @@ class AcpTurnSkillOwner {
       forcedSkillIds: Object.freeze([...(this.forced?.selectedSkillIds ?? [])])
     })
   }
+  // Mid-turn inject must not force-load disabled Skills: that reconnects the session.
+  // Prefix names / attach Codex skill-inputs on the steered prompt instead.
+  async presentFollowUp(input: {
+    frameworkId: AgentFrameworkId
+    text: string
+    selectedSkillIds: readonly string[]
+    specialistId?: string
+    codexHome?: string
+  }): Promise<ProviderPreparation> {
+    const selected = Object.freeze([...input.selectedSkillIds])
+    let scope: EffectiveSpecialistSkills | undefined
+    if (input.specialistId && this.options.resolveSpecialistSkills) {
+      try {
+        scope = await this.options.resolveSpecialistSkills(input.specialistId)
+      } catch {
+        throw new Error('The bound specialist is unavailable.')
+      }
+      if (scope.kind === 'unavailable') throw new Error(scope.reason)
+      if (scope.kind === 'specialist') {
+        const allowedIds = scope.skillIds
+        const allowedNames = scope.frameworkNames
+        const rejected = selected.find(
+          (id) => !allowedIds.includes(id) && !(id.startsWith('mcp-') && allowedNames.includes(id))
+        )
+        if (rejected) {
+          throw new Error(`Skill "${rejected}" is not available to the active specialist.`)
+        }
+      }
+    }
+    return this.prepareProvider(
+      { selectedSkillIds: selected, ...(scope ? { scope } : {}) },
+      {
+        frameworkId: input.frameworkId,
+        selectionText: input.text,
+        promptText: input.text,
+        ...(input.frameworkId === 'codex'
+          ? {
+              codex: {
+                home: input.codexHome,
+                bridgeSkillsAvailable: false,
+                selectSkills: async () => []
+              }
+            }
+          : {})
+      }
+    )
+  }
   private close(state: Authorization, outcome: TurnSkillOutcome): void {
     if (state.outcome) return
     state.outcome = outcome
@@ -175,5 +222,13 @@ class AcpTurnSkillOwner {
   }
 }
 
-export { AcpTurnSkillOwner }
+const followUpPromptText = (presented: {
+  text: string
+  specialistSkillGuidance?: string
+}): string =>
+  presented.specialistSkillGuidance
+    ? `${presented.specialistSkillGuidance}\n\n${presented.text}`
+    : presented.text
+
+export { AcpTurnSkillOwner, followUpPromptText }
 export type { AcpTurnSkillHooks, TurnSkillHandle, TurnSkillOutcome }

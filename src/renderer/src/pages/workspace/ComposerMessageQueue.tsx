@@ -66,6 +66,12 @@ const queueAnnouncementText = (t: TFunction, announcement: string): string => {
   if (announcement === 'Stopping the current run before sending the queued message.') {
     return t('Stopping the current run before sending the queued message.')
   }
+  if (announcement === 'Sending the queued message into the current run.') {
+    return t('Sending the queued message into the current run.')
+  }
+  if (announcement === 'Queued message will send after the current run finishes.') {
+    return t('Queued message will send after the current run finishes.')
+  }
   return ''
 }
 
@@ -260,6 +266,10 @@ const ComposerMessageQueueContent = ({
                     {item.error ? (
                       <p className="mt-0.5 text-[11px] leading-4 text-red-400" role="alert">
                         {queueErrorText(t, item.error)}
+                      </p>
+                    ) : item.deferredUntilIdle ? (
+                      <p className="mt-0.5 text-[11px] leading-4 text-text-300">
+                        {t('Queued message will send after the current run finishes.')}
                       </p>
                     ) : null}
                   </div>

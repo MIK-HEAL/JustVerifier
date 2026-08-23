@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { codexFramework, opencodeFramework } from '../agent-framework'
-import { AcpTurnSkillOwner } from './turn-skill-owner'
+import { AcpTurnSkillOwner, followUpPromptText } from './turn-skill-owner'
 
 describe('AcpTurnSkillOwner', () => {
   it('keeps ordinary Main turns synchronous when no Skill work can yield', () => {
@@ -206,6 +206,111 @@ describe('AcpTurnSkillOwner', () => {
     expect(prepared.specialistSkillGuidance).toContain('Allowed Specialist Skills for this session')
     expect(prepared.specialistSkillGuidance).toContain('mcp-pubmed')
     expect(prepared.codexSkillInputs).toEqual([])
+  })
+
+  it('presents mid-turn Skills without force-loading or requesting a reload', async () => {
+    const needForceLoad = vi.fn(async (ids: string[]) => [...ids])
+    const requestSkillsReload = vi.fn()
+    const owner = new AcpTurnSkillOwner({
+      skills: {
+        needForceLoad,
+        namesForIds: async () => ['Research']
+      },
+      requestSkillsReload
+    })
+
+    const presented = await owner.presentFollowUp({
+      frameworkId: opencodeFramework.id,
+      text: 'find papers',
+      selectedSkillIds: ['personal-research']
+    })
+
+    expect(needForceLoad).not.toHaveBeenCalled()
+    expect(requestSkillsReload).not.toHaveBeenCalled()
+    expect(owner.backendPreparation()).toEqual({ forcedSkillIds: [] })
+    expect(presented.text).toBe(
+      'Use the following skill(s) for this task: Research.\n\nfind papers'
+    )
+  })
+
+  it('includes Specialist skill allowlist guidance in mid-turn follow-up text', async () => {
+    const owner = new AcpTurnSkillOwner({
+      resolveSpecialistSkills: async () => ({
+        kind: 'specialist' as const,
+        skillIds: ['personal-research'],
+        frameworkNames: ['Research', 'mcp-pubmed'],
+        missingSkillIds: []
+      }),
+      skills: {
+        needForceLoad: async () => [],
+        namesForIds: async () => ['Research']
+      },
+      requestSkillsReload: vi.fn()
+    })
+
+    const presented = await owner.presentFollowUp({
+      frameworkId: opencodeFramework.id,
+      text: 'find papers',
+      selectedSkillIds: ['personal-research'],
+      specialistId: 'specialist-1'
+    })
+
+    expect(presented.specialistSkillGuidance).toContain(
+      'Allowed Specialist Skills for this session'
+    )
+    expect(presented.specialistSkillGuidance).toContain('mcp-pubmed')
+    expect(followUpPromptText(presented)).toContain('Allowed Specialist Skills for this session')
+    expect(followUpPromptText(presented)).toContain(
+      'Use the following skill(s) for this task: Research.\n\nfind papers'
+    )
+  })
+
+  it('propagates follow-up Skill preparation failures instead of dropping selected Skills', async () => {
+    const owner = new AcpTurnSkillOwner({
+      skills: {
+        needForceLoad: async () => [],
+        namesForIds: async () => {
+          throw new Error('catalog unavailable')
+        }
+      },
+      requestSkillsReload: vi.fn()
+    })
+
+    await expect(
+      owner.presentFollowUp({
+        frameworkId: opencodeFramework.id,
+        text: 'find papers',
+        selectedSkillIds: ['personal-research']
+      })
+    ).rejects.toThrow('catalog unavailable')
+  })
+
+  it('rejects out-of-scope follow-up Skills without force-loading', async () => {
+    const needForceLoad = vi.fn(async (ids: string[]) => [...ids])
+    const owner = new AcpTurnSkillOwner({
+      resolveSpecialistSkills: async () => ({
+        kind: 'specialist' as const,
+        skillIds: ['current-skill'],
+        frameworkNames: ['Current Skill'],
+        missingSkillIds: []
+      }),
+      skills: {
+        needForceLoad,
+        namesForIds: async () => ['Stale']
+      },
+      requestSkillsReload: vi.fn()
+    })
+
+    await expect(
+      owner.presentFollowUp({
+        frameworkId: opencodeFramework.id,
+        text: 'find papers',
+        selectedSkillIds: ['stale-skill'],
+        specialistId: 'specialist-1'
+      })
+    ).rejects.toThrow('Skill "stale-skill" is not available to the active specialist.')
+    expect(needForceLoad).not.toHaveBeenCalled()
+    expect(owner.backendPreparation()).toEqual({ forcedSkillIds: [] })
   })
 
   it('prepares an explicit Codex Skill as native input without changing prompt text', async () => {

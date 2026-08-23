@@ -475,6 +475,50 @@ describe('workspace message queue controller', () => {
     await vi.waitFor(() => expect(hook.result.current.items).toEqual([]))
   })
 
+  it('holds a queued prompt when overlapping idle admission loses the live turn', async () => {
+    let currentSession = session('idle')
+    let finishAdmission!: (result: undefined) => void
+    const sendMessage = vi.fn(
+      () =>
+        new Promise<undefined>((resolve) => {
+          finishAdmission = resolve
+        })
+    )
+    const input = options(currentSession, {
+      promptInFlightSessionIds: [],
+      getSession: () => currentSession,
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() =>
+      hook.result.current.lifecycle.enqueue({ ...admission('keep me'), session: currentSession })
+    )
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledOnce())
+
+    currentSession = session()
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        getSession: () => currentSession
+      })
+    )
+    await act(async () => {
+      finishAdmission(undefined)
+    })
+
+    expect(hook.result.current.items[0]).toMatchObject({
+      text: 'keep me',
+      phase: 'queued',
+      deferredUntilIdle: true
+    })
+  })
+
   it('retains a queued prompt when runtime admission fails', async () => {
     const idle = session('idle')
     const input = options(idle, {
@@ -631,7 +675,7 @@ describe('workspace message queue controller', () => {
     expect(input.composer.discardSnapshot).toHaveBeenCalledTimes(2)
   })
 
-  it('waits for cancellation before Send now dispatches', async () => {
+  it('keeps Send now queued until the current run finishes when native follow-up is unavailable', async () => {
     const order: string[] = []
     let currentSession = session()
     const input = options(currentSession, {
@@ -649,10 +693,18 @@ describe('workspace message queue controller', () => {
     })
     const hook = renderController(input)
     mounted.push(hook)
-    act(() => hook.result.current.lifecycle.enqueue(admission('interrupt')))
+    act(() => hook.result.current.lifecycle.enqueue(admission('wait')))
 
     await act(async () => hook.result.current.actions.sendNow(hook.result.current.items[0].id))
-    expect(order).toEqual(['cancel'])
+    expect(order).toEqual([])
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(hook.result.current.items[0]).toMatchObject({
+      text: 'wait',
+      phase: 'queued',
+      deferredUntilIdle: true
+    })
+
+    currentSession = session('idle')
     hook.rerender(
       options(currentSession, {
         ...input,
@@ -661,7 +713,8 @@ describe('workspace message queue controller', () => {
         getSession: () => currentSession
       })
     )
-    await vi.waitFor(() => expect(order).toEqual(['cancel', 'send']))
+    await vi.waitFor(() => expect(order).toEqual(['send']))
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
   })
 
   it('serializes Send now behind an in-flight admission', async () => {
@@ -705,16 +758,26 @@ describe('workspace message queue controller', () => {
       completions[0]()
       await sendNow
     })
-    expect(input.runtime.cancelRun).toHaveBeenCalledWith('session-a')
-    expect(sendMessage).toHaveBeenCalledTimes(2)
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(sendMessage).toHaveBeenCalledOnce()
     expect(hook.result.current.items.map((item) => item.text)).toEqual(['second'])
+    expect(hook.result.current.items[0]?.phase).toBe('queued')
 
-    currentSession = session('running')
+    currentSession = session('idle')
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession
+      })
+    )
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2))
     await act(async () => completions[1]())
-    expect(hook.result.current.items).toEqual([])
+    await vi.waitFor(() => expect(hook.result.current.items).toEqual([]))
   })
 
-  it('retains the item with a recoverable error when cancellation fails', async () => {
+  it('does not cancel the current run when native follow-up is unavailable', async () => {
     const input = options(session(), {
       runtime: {
         cancelRun: vi.fn(async () => {
@@ -732,9 +795,321 @@ describe('workspace message queue controller', () => {
     expect(hook.result.current.items).toHaveLength(1)
     expect(hook.result.current.items[0]).toMatchObject({
       text: 'keep me',
-      phase: 'error',
-      error: { kind: 'cancel', detail: 'runtime refused cancellation' }
+      phase: 'queued',
+      deferredUntilIdle: true
     })
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
     expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects Send now when the queued item no longer matches the live session', async () => {
+    let currentSession = session()
+    const steerFollowUp = vi.fn(async () => ({
+      injected: true as const,
+      transport: 'acp-steering' as const,
+      messageId: 'message-steer'
+    }))
+    const input = options(currentSession, {
+      getSession: () => currentSession,
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage: vi.fn(),
+        steerFollowUp
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.lifecycle.enqueue(admission('steer me')))
+
+    currentSession = { ...currentSession, specialistId: 'specialist-b' }
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        getSession: () => currentSession
+      })
+    )
+
+    await act(async () => hook.result.current.actions.sendNow(hook.result.current.items[0].id))
+    expect(steerFollowUp).not.toHaveBeenCalled()
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(hook.result.current.items[0]).toMatchObject({
+      text: 'steer me',
+      phase: 'error',
+      error: { kind: 'send' }
+    })
+  })
+
+  it('claims Send now before waiting so a second click cannot inject twice', async () => {
+    const completions: Array<() => void> = []
+    const sendMessage = vi.fn(
+      () =>
+        new Promise<{ sessionId: string; messageId: string }>((resolve) => {
+          completions.push(() => resolve({ sessionId: 'session-a', messageId: 'message-sent' }))
+        })
+    )
+    const steerFollowUp = vi.fn(async () => ({
+      injected: true as const,
+      transport: 'acp-steering' as const,
+      messageId: 'message-steer'
+    }))
+    let currentSession = session('idle')
+    const input = options(currentSession, {
+      promptInFlightSessionIds: [],
+      getSession: () => currentSession,
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage,
+        steerFollowUp
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() =>
+      hook.result.current.lifecycle.enqueue({ ...admission('first'), session: currentSession })
+    )
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledOnce())
+    act(() =>
+      hook.result.current.lifecycle.enqueue({ ...admission('second'), session: currentSession })
+    )
+
+    const secondId = hook.result.current.items[1].id
+    let firstSendNow!: Promise<void>
+    let secondSendNow!: Promise<void>
+    act(() => {
+      firstSendNow = hook.result.current.actions.sendNow(secondId)
+    })
+    expect(hook.result.current.items[0]).toMatchObject({ text: 'second', phase: 'sending' })
+    act(() => {
+      secondSendNow = hook.result.current.actions.sendNow(secondId)
+    })
+
+    currentSession = session()
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        getSession: () => currentSession
+      })
+    )
+    await act(async () => {
+      completions[0]()
+      await firstSendNow
+      await secondSendNow
+    })
+    expect(steerFollowUp).toHaveBeenCalledOnce()
+    expect(hook.result.current.items).toEqual([])
+  })
+
+  it('injects Send now through native follow-up without interrupting', async () => {
+    const steerFollowUp = vi.fn(async () => ({
+      injected: true as const,
+      transport: 'acp-steering' as const,
+      messageId: 'message-steer'
+    }))
+    const input = options(session(), {
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage: vi.fn(),
+        steerFollowUp
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.lifecycle.enqueue(admission('steer me')))
+
+    await act(async () => hook.result.current.actions.sendNow(hook.result.current.items[0].id))
+
+    expect(steerFollowUp).toHaveBeenCalledWith({
+      sessionId: 'session-a',
+      text: 'steer me',
+      parts: textDoc('steer me').nodes
+    })
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+    expect(input.composer.discardSnapshot).not.toHaveBeenCalled()
+    expect(hook.result.current.items).toEqual([])
+  })
+
+  it('requeues when native follow-up is refused instead of interrupting', async () => {
+    let currentSession = session()
+    const input = options(currentSession, {
+      getSession: () => currentSession,
+      runtime: {
+        cancelRun: vi.fn(async () => {
+          currentSession = session('idle')
+        }),
+        sendMessage: vi.fn(async () => ({ sessionId: 'session-a', messageId: 'message-sent' })),
+        steerFollowUp: vi.fn(async () => ({
+          injected: false as const,
+          reason: 'not-advertised' as const
+        }))
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.lifecycle.enqueue(admission('fallback')))
+
+    await act(async () => hook.result.current.actions.sendNow(hook.result.current.items[0].id))
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+    expect(hook.result.current.items[0]).toMatchObject({
+      text: 'fallback',
+      phase: 'queued',
+      deferredUntilIdle: true
+    })
+
+    currentSession = session('idle')
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession
+      })
+    )
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalledOnce())
+  })
+
+  it('drains after native follow-up refusal when the run finished during inject', async () => {
+    let currentSession = session()
+    let notifySessionChanged: (() => void) | undefined
+    let finishSteer!: (result: { injected: false; reason: 'not-advertised' }) => void
+    const sendMessage = vi.fn(async () => ({ sessionId: 'session-a', messageId: 'message-sent' }))
+    const steerFollowUp = vi.fn(
+      () =>
+        new Promise<{ injected: false; reason: 'not-advertised' }>((resolve) => {
+          finishSteer = resolve
+        })
+    )
+    const input = options(currentSession, {
+      getSession: () => currentSession,
+      subscribeSessionChanges: (listener) => {
+        notifySessionChanged = listener
+        return () => {
+          notifySessionChanged = undefined
+        }
+      },
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage,
+        steerFollowUp
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() => hook.result.current.lifecycle.enqueue(admission('late drain')))
+
+    let sendNow!: Promise<void>
+    act(() => {
+      sendNow = hook.result.current.actions.sendNow(hook.result.current.items[0].id)
+    })
+    await vi.waitFor(() => expect(steerFollowUp).toHaveBeenCalledOnce())
+    expect(hook.result.current.items[0]).toMatchObject({ text: 'late drain', phase: 'sending' })
+
+    currentSession = session('idle')
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession,
+        subscribeSessionChanges: input.subscribeSessionChanges,
+        runtime: input.runtime
+      })
+    )
+    act(() => notifySessionChanged?.())
+    expect(sendMessage).not.toHaveBeenCalled()
+    expect(hook.result.current.items[0].phase).toBe('sending')
+
+    await act(async () => {
+      finishSteer({ injected: false, reason: 'not-advertised' })
+      await sendNow
+    })
+
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(hook.result.current.items).toEqual([]))
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+  })
+
+  it('injects a queued item with attachments through native follow-up', async () => {
+    const attachment = {
+      id: 'upload-1',
+      sessionId: 'session-a',
+      name: 'notes.md',
+      originalName: 'notes.md',
+      path: '/tmp/notes.md',
+      mimeType: 'text/markdown',
+      size: 12
+    }
+    const steerFollowUp = vi.fn(async () => ({
+      injected: true as const,
+      transport: 'acp-steering' as const,
+      messageId: 'message-steer'
+    }))
+    const input = options(session(), {
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage: vi.fn(),
+        steerFollowUp
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() =>
+      hook.result.current.lifecycle.enqueue({
+        ...admission('with file'),
+        snapshot: {
+          draftKey: 'session-a',
+          version: 1,
+          doc: textDoc('with file'),
+          attachments: [attachment]
+        }
+      })
+    )
+
+    await act(async () => hook.result.current.actions.sendNow(hook.result.current.items[0].id))
+    expect(steerFollowUp).toHaveBeenCalledWith({
+      sessionId: 'session-a',
+      text: 'with file',
+      attachments: [attachment],
+      parts: textDoc('with file').nodes
+    })
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+    expect(hook.result.current.items).toEqual([])
+  })
+
+  it('injects a queued item with forced Skills through native follow-up', async () => {
+    const steerFollowUp = vi.fn(async () => ({
+      injected: true as const,
+      transport: 'acp-steering' as const,
+      messageId: 'message-steer'
+    }))
+    const input = options(session(), {
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage: vi.fn(),
+        steerFollowUp
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    act(() =>
+      hook.result.current.lifecycle.enqueue({
+        ...admission('use research'),
+        forcedSkillIds: ['research']
+      })
+    )
+
+    await act(async () => hook.result.current.actions.sendNow(hook.result.current.items[0].id))
+    expect(steerFollowUp).toHaveBeenCalledWith({
+      sessionId: 'session-a',
+      text: 'use research',
+      forcedSkillIds: ['research'],
+      parts: textDoc('use research').nodes
+    })
+    expect(input.runtime.cancelRun).not.toHaveBeenCalled()
+    expect(hook.result.current.items).toEqual([])
   })
 })
