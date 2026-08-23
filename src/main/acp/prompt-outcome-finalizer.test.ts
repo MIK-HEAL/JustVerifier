@@ -341,6 +341,19 @@ describe('AcpPromptOutcomeFinalizer', () => {
       providerError: true
     },
     {
+      name: 'Claude Code API connection refused with an unknown error kind',
+      error: Object.assign(
+        new Error('Internal error: API Error: Unable to connect to API (ConnectionRefused)'),
+        {
+          code: -32603,
+          data: { errorKind: 'unknown' },
+          name: 'RequestError'
+        }
+      ),
+      recoverable: undefined,
+      providerError: true
+    },
+    {
       name: 'ACP error',
       error: new Error('protocol failed'),
       recoverable: undefined,

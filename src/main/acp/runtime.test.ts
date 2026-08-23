@@ -20909,6 +20909,11 @@ describe('ACP runtime session management', () => {
       'API Error: 400 Authentication Fails, Your api key: ****e52d is invalid'
     ],
     [
+      'Claude Code API connection refused',
+      { errorKind: 'unknown' },
+      'API Error: Unable to connect to API (ConnectionRefused)'
+    ],
+    [
       'provider bridge error kind',
       { errorKind: 'provider-error' },
       '{"error":{"message":"Authentication failed","type":"authentication_error"}}'
