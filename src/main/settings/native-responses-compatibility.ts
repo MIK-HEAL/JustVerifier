@@ -17,6 +17,7 @@ import {
 } from './skill-selector-routing'
 import {
   ProviderLoopbackHttpHost,
+  ProviderLoopbackRequestError,
   writeProviderLoopbackJson as json,
   type ProviderLoopbackHttpRequest
 } from './provider-loopback-http-host'
@@ -158,7 +159,7 @@ export const flattenNativeResponsesRequest = (
   body: JsonObject
 ): { request: JsonObject; aliases: NativeResponsesToolAliases } => {
   if (body.tools !== undefined && !Array.isArray(body.tools)) {
-    throw new Error('native Responses tools must be an array')
+    throw new ProviderLoopbackRequestError('native Responses tools must be an array')
   }
 
   const tools = (body.tools ?? []) as unknown[]
@@ -173,16 +174,20 @@ export const flattenNativeResponsesRequest = (
   const flattenedTools = tools.flatMap((tool) => {
     if (!isObject(tool) || tool.type !== 'namespace') return [tool]
     if (typeof tool.name !== 'string' || !Array.isArray(tool.tools)) {
-      throw new Error('native Responses namespace tools require a name and child tools')
+      throw new ProviderLoopbackRequestError(
+        'native Responses namespace tools require a name and child tools'
+      )
     }
 
     return tool.tools.map((child) => {
       if (!isObject(child) || child.type !== 'function' || typeof child.name !== 'string') {
-        throw new Error('native Responses namespace children must be function tools')
+        throw new ProviderLoopbackRequestError(
+          'native Responses namespace children must be function tools'
+        )
       }
       const alias = namespaceAlias(tool.name, child.name)
       if (occupiedNames.has(alias) || aliases.has(alias)) {
-        throw new Error(`duplicate native Responses tool alias: ${alias}`)
+        throw new ProviderLoopbackRequestError(`duplicate native Responses tool alias: ${alias}`)
       }
       occupiedNames.add(alias)
       aliases.set(alias, { namespace: tool.name, name: child.name })
@@ -379,14 +384,15 @@ export class NativeResponsesCompatibilityProxy {
         json(response, 401, {
           error: { message: 'Invalid native Responses compatibility token' }
         }),
-      onError: (_error, response) => {
+      onError: (error, response) => {
         if (response.headersSent) {
           response.destroy()
           return
         }
-        json(response, 400, {
+        const requestError = error instanceof ProviderLoopbackRequestError
+        json(response, requestError ? 400 : 502, {
           error: {
-            type: 'invalid_request_error',
+            type: requestError ? 'invalid_request_error' : 'api_error',
             message: 'Native Responses compatibility request failed'
           }
         })

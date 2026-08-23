@@ -3847,7 +3847,7 @@ describe('SettingsPage Codex framework', () => {
       opencode: {},
       codex: {
         resolvedPath: '/data/codex-managed/adapter/dist/index.js',
-        version: '1.1.4',
+        version: '1.6.2',
         nativeVersion: '0.144.6'
       },
       providers: [],
@@ -3882,7 +3882,7 @@ describe('SettingsPage Codex framework', () => {
     const codexRadio = document.body.querySelector<HTMLButtonElement>('[aria-label="Use Codex"]')
     expect(codexRadio).not.toBeNull()
     // The adapter version shows as a muted v-tag after the name; the repo link points at the ACP adapter.
-    expect(document.body.textContent).toContain('v1.1.4')
+    expect(document.body.textContent).toContain('v1.6.2')
     expect(document.body.textContent).toContain('agentclientprotocol/codex-acp')
 
     await act(async () => codexRadio?.click())
@@ -4006,6 +4006,45 @@ describe('SettingsPage Codex framework', () => {
     expect(checkEnvironment).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps an outdated Codex ACP install in Installed and offers an update', async () => {
+    const api = (window as unknown as { api: { settings: Record<string, unknown> } }).api
+    api.settings.getSettings = vi.fn().mockResolvedValue({
+      claude: { resolvedPath: '/data/claude', version: '2.1.0' },
+      opencode: {},
+      codex: { resolvedPath: '/data/codex-acp', version: '1.1.4' },
+      providers: [],
+      agentFrameworkId: 'codex',
+      agentFrameworks: frameworks,
+      claudeManaged: true,
+      opencodeManaged: false,
+      codexManaged: true
+    })
+    api.settings.getPreflight = vi.fn().mockResolvedValue({
+      claudeReady: true,
+      opencodeReady: false,
+      codexReady: false,
+      agentFrameworkId: 'codex',
+      agentReady: false,
+      activeProviderReady: false
+    })
+
+    await act(async () => {
+      root.render(<SettingsPage open onClose={vi.fn()} />)
+    })
+    await openAgentPanel()
+
+    expect(document.body.textContent).toContain('Installed · 2')
+    expect(document.body.textContent).toContain('Available · 1')
+    expect(document.body.textContent).toContain('Update required')
+    expect(document.body.querySelector('[aria-label="Update Codex"]')).not.toBeNull()
+    const frameworkRadios = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="radio"][aria-label^="Use "]')
+    )
+    expect(frameworkRadios).toHaveLength(1)
+    expect(frameworkRadios[0]?.getAttribute('aria-label')).toBe('Use Claude Agent')
+    expect(frameworkRadios[0]?.tabIndex).toBe(0)
+  })
+
   it('routes isolated subscription sign-out from the provider list', async () => {
     const api = (window as unknown as { api: { settings: Record<string, unknown> } }).api
     const provider = {
@@ -4022,7 +4061,7 @@ describe('SettingsPage Codex framework', () => {
     const snapshot = {
       claude: {},
       opencode: {},
-      codex: { resolvedPath: '/data/codex-acp', version: '1.1.4' },
+      codex: { resolvedPath: '/data/codex-acp', version: '1.6.2' },
       providers: [provider],
       activeProviderId: provider.id,
       activeModel: 'gpt-5.6-sol',
@@ -4070,7 +4109,7 @@ describe('SettingsPage Codex framework', () => {
     const snapshot = {
       claude: {},
       opencode: {},
-      codex: { resolvedPath: '/data/codex-acp', version: '1.1.4' },
+      codex: { resolvedPath: '/data/codex-acp', version: '1.6.2' },
       providers: [provider],
       activeProviderId: provider.id,
       activeModel: 'gpt-5.6-sol',
@@ -4118,7 +4157,7 @@ describe('SettingsPage Codex framework', () => {
     api.settings.getSettings = vi.fn().mockResolvedValue({
       claude: {},
       opencode: {},
-      codex: { resolvedPath: '/data/codex-acp', version: '1.1.4' },
+      codex: { resolvedPath: '/data/codex-acp', version: '1.6.2' },
       providers: [provider],
       activeProviderId: provider.id,
       agentFrameworkId: 'codex',
@@ -4170,7 +4209,7 @@ describe('SettingsPage Codex framework', () => {
     api.settings.getSettings = vi.fn().mockResolvedValue({
       claude: {},
       opencode: {},
-      codex: { resolvedPath: '/data/codex-acp', version: '1.1.4' },
+      codex: { resolvedPath: '/data/codex-acp', version: '1.6.2' },
       providers: [provider],
       agentFrameworkId: 'codex',
       agentFrameworks: frameworks,
@@ -4211,7 +4250,7 @@ describe('SettingsPage Codex framework', () => {
     api.settings.getSettings = vi.fn().mockResolvedValue({
       claude: {},
       opencode: {},
-      codex: { resolvedPath: '/data/codex-acp', version: '1.1.4' },
+      codex: { resolvedPath: '/data/codex-acp', version: '1.6.2' },
       providers: [provider],
       agentFrameworkId: 'codex',
       agentFrameworks: frameworks,
