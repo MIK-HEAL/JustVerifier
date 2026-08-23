@@ -87,6 +87,12 @@ const options = (
     currentDraftKey: 'session-a',
     isPersistenceReady: true,
     supportsImageInput: true,
+    agentConfiguration: {
+      providerId: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      reasoningEffort: 'medium'
+    },
+    agentConfigurationReady: true,
     permissionProfile: 'full',
     isReviewing: false,
     promptInFlightSessionIds: [],
@@ -197,6 +203,7 @@ describe('workspace conversation controller', () => {
       branchSourceSessionId: 'session-a',
       branchSourceMessageId: 'agent-message-a',
       text: '',
+      agentConfiguration: input.agentConfiguration,
       specialistId: undefined
     })
     expect(input.composer.lifecycle.captureSend).not.toHaveBeenCalled()
@@ -340,6 +347,52 @@ describe('workspace conversation controller', () => {
     expect(input.runtime.sendMessage).not.toHaveBeenCalled()
   })
 
+  it('refuses a restored Plan response when the Session model is unavailable', async () => {
+    const pendingPlan = {
+      artifactId: 'artifact-plan-a',
+      artifactVersionId: 'version-plan-a',
+      artifactChecksum: 'a'.repeat(64),
+      originatingPromptMessageId: 'message-user-a',
+      revision: 3,
+      approval: 'pending',
+      lifecycle: 'awaiting_approval',
+      requiresExplicitContinuation: false,
+      document: {
+        schema_version: 1,
+        task_summary: 'Analyze the dataset',
+        phases: [],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      },
+      stepStatuses: {},
+      stepStates: {},
+      counts: { phases: 0, delegations: 0, steps: 0, completed: 0, inProgress: 0 }
+    } as const
+    const pendingSession = session({
+      status: 'waiting-plan-approval',
+      activePlanProjection: pendingPlan as never
+    })
+    const respondPlan = vi.fn(async () => ({ changed: true }))
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: { acp: { respondPlan } }
+    })
+    useSessionStore.setState({ sessions: [pendingSession] })
+    const input = options({
+      activeSession: pendingSession,
+      agentConfigurationReady: false,
+      getSession: (sessionId) => (sessionId === pendingSession.id ? pendingSession : undefined)
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    await expect(
+      hook.result.current.actions.submit.restoredPlan({ decision: 'approved' })
+    ).rejects.toThrow('The Session model is unavailable.')
+    expect(input.runtime.ensureSessionReady).not.toHaveBeenCalled()
+    expect(respondPlan).not.toHaveBeenCalled()
+  })
+
   it('blocks submit and revision while waiting for a user answer', () => {
     const input = options({ activeSession: session({ status: 'waiting-for-user' }) })
     const hook = renderController(input)
@@ -377,7 +430,8 @@ describe('workspace conversation controller', () => {
     expect(input.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'session-a',
-        text: 'hello'
+        text: 'hello',
+        agentConfiguration: input.agentConfiguration
       })
     )
   })
@@ -709,6 +763,7 @@ describe('workspace conversation controller', () => {
     expect(input.setAutoReviewEnabled).toHaveBeenCalledWith('pending-session', true)
     expect(input.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
+        agentConfiguration: input.agentConfiguration,
         enabledComputeHosts: ['ssh:lab', 'ssh:available'],
         selectedComputeHosts: ['ssh:lab']
       })

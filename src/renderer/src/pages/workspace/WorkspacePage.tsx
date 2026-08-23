@@ -12,7 +12,7 @@ import { usePreviewPersistence } from '@/lib/preview-persistence/preview-persist
 import { deleteSession } from '@/lib/session-persistence/session-persistence'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useProjectStore } from '@/stores/project-store'
-import { selectVisionRelayAvailable, useSettingsStore } from '@/stores/settings-store'
+import { useSettingsStore } from '@/stores/settings-store'
 import {
   createNotebookPreviewItem,
   createProjectFilesPreviewItem,
@@ -68,6 +68,7 @@ import { useWorkspaceBranchSwitchGuard } from './use-workspace-branch-switch-gua
 import { useSideChatController } from './use-side-chat-controller'
 import { isSaveAsSkillRunning, resolveSaveAsSkillAvailability } from './save-as-skill-availability'
 import { createWorkspaceComputeHostAccessController } from './workspace-compute-host-access-controller'
+import { useWorkspaceSessionAgentConfiguration } from './workspace-session-agent-configuration-controller'
 
 type WorkspacePageProps = {
   isSessionPersistenceHydrated: boolean
@@ -109,11 +110,6 @@ const WorkspacePage = ({
   const defaultPermissionProfile = useSettingsStore((state) => state.defaultPermissionProfile)
   const catalogSkills = useSettingsStore((state) => state.skills)
   const loadSkills = useSettingsStore((state) => state.loadSkills)
-  const supportsImageInput = useSettingsStore(
-    (state) =>
-      state.providers.find((provider) => provider.id === activeProviderId)?.supportsImageInput ===
-        true || selectVisionRelayAvailable(state)
-  )
   const scopedProjectId = activeProjectId ?? ''
   const activeProject = useProjectStore((state) =>
     state.projects.find((project) => project.id === scopedProjectId)
@@ -217,7 +213,7 @@ const WorkspacePage = ({
     setPermissionProfile,
     revokePermissionGrant
   } = runtime
-  const { respondToElicitation } = useWorkspaceElicitation()
+  const { respondToElicitation } = useWorkspaceElicitation(runtime.resolveSessionRuntimeSelection)
 
   // Auto-trigger an analysis turn when a remote job finishes (design §11).
   useJobAnalysisEffect({ enabled: isSessionPersistenceReady, sendMessage: runtime.sendMessage })
@@ -250,6 +246,13 @@ const WorkspacePage = ({
     }
     return selected
   })
+  const {
+    activeAgentConfiguration,
+    agentConfigurationUnavailable,
+    supportsImageInput,
+    changeAgentConfiguration,
+    resetNewConversationConfiguration
+  } = useWorkspaceSessionAgentConfiguration(activeSession)
   // Starter history is only consumed when no session is active, so this subscription collapses to
   // a stable empty list while a session is selected — background session updates then never
   // re-render the page through it.
@@ -482,6 +485,8 @@ const WorkspacePage = ({
     currentDraftKey,
     isPersistenceReady: isSessionPersistenceReady,
     supportsImageInput,
+    agentConfiguration: activeAgentConfiguration,
+    agentConfigurationReady: !agentConfigurationUnavailable,
     permissionProfile: activePermissionProfile,
     isReviewing,
     promptInFlightSessionIds,
@@ -503,6 +508,7 @@ const WorkspacePage = ({
       setNewConversationAutoReviewEnabled(false)
       setNewConversationEnabledComputeHosts([])
       setNewConversationSelectedComputeHosts([])
+      resetNewConversationConfiguration()
     },
     abortFixLoop: (request) => window.api.reviewer.abortFixLoop(request),
     getSession: (sessionId) =>
@@ -774,6 +780,7 @@ const WorkspacePage = ({
     setNewConversationAutoReviewEnabled(false)
     setNewConversationEnabledComputeHosts([])
     setNewConversationSelectedComputeHosts([])
+    resetNewConversationConfiguration()
     useNavigationStore.getState().recordUserNavigation()
     sessionController.actions.resetNewConversationSpecialist()
     clearSelection()
@@ -781,6 +788,7 @@ const WorkspacePage = ({
     clearSelection,
     defaultPermissionProfile,
     isSessionPersistenceReady,
+    resetNewConversationConfiguration,
     sessionController.actions,
     setAttachmentError
   ])
@@ -1104,6 +1112,9 @@ const WorkspacePage = ({
             }}
             agentControls={{
               canChange: canChangeAgentControls,
+              modelConfiguration: activeAgentConfiguration,
+              modelUnavailable: agentConfigurationUnavailable,
+              changeModelConfiguration: changeAgentConfiguration,
               autoReviewEnabled: activeAutoReviewEnabled,
               enabledComputeHosts: computeHostAccess.enabledProviderIds,
               selectedComputeHosts: computeHostAccess.selectedProviderIds,

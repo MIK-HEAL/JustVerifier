@@ -2,7 +2,7 @@ import type { AcpMessageImage, AcpRuntimeEvent } from '../../../../shared/acp'
 import type { FileReference } from '../../../../shared/artifacts'
 import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 import type { MessagePart } from '../../../../shared/session-persistence'
-import type { AgentFrameworkId } from '../../../../shared/settings'
+import type { AgentFrameworkId, SessionAgentConfiguration } from '../../../../shared/settings'
 import {
   DEFAULT_PERMISSION_PROFILE,
   type PermissionProfileId
@@ -53,6 +53,7 @@ type SendWorkspaceMessageIntent = {
   specialistId?: string | null
   enabledComputeHosts?: string[]
   selectedComputeHosts?: string[]
+  agentConfiguration?: SessionAgentConfiguration
 }
 type SendWorkspaceMessageCommand = SendWorkspaceMessageIntent & {
   agentFrameworkId?: AgentFrameworkId
@@ -72,6 +73,7 @@ type RuntimeEventDrain = (sessionId?: string) => Promise<void>
 type WorkspaceCommandLifecycle = {
   onSendPreparationStateChange?: SendPreparationStateChange
   drainRuntimeEvents?: RuntimeEventDrain
+  onSessionBound?: (pendingSessionId: string, sessionId: string) => void
 }
 type ResendEditedMessageInput = {
   text: string
@@ -85,6 +87,7 @@ type ResendEditedWorkspaceMessageOptions = WorkspaceCommandLifecycle & {
   agentFrameworkId?: AgentFrameworkId
   agentBackendId?: string
   agentModel?: string
+  agentConfiguration?: SessionAgentConfiguration
   historyReplayDescriptor?: HistoryReplayDescriptor
 }
 type WorkspaceCommandRuntime = Pick<
@@ -228,19 +231,32 @@ type PendingPromptRequest = SendWorkspaceMessageCommand & {
 
 const startPendingPrompt = (
   runtime: WorkspaceCommandRuntime,
-  request: PendingPromptRequest
+  request: PendingPromptRequest,
+  onSessionBound?: (pendingSessionId: string, sessionId: string) => void
 ): void => {
   void (async () => {
     const pending = request.pending
     if (!ownsPrompt(pending.sessionId, pending.messageId)) return
     let created
     try {
-      created = await runtime.createSession(
-        request.cwd,
-        request.projectId,
-        request.permissionProfile,
-        request.specialistId ?? undefined
-      )
+      const target =
+        request.agentFrameworkId && request.agentConfiguration
+          ? { frameworkId: request.agentFrameworkId, ...request.agentConfiguration }
+          : undefined
+      created = target
+        ? await runtime.createSession(
+            request.cwd,
+            request.projectId,
+            request.permissionProfile,
+            request.specialistId ?? undefined,
+            target
+          )
+        : await runtime.createSession(
+            request.cwd,
+            request.projectId,
+            request.permissionProfile,
+            request.specialistId ?? undefined
+          )
     } catch (error) {
       if (ownsPrompt(pending.sessionId, pending.messageId)) {
         useSessionStore.getState().failRun(pending.sessionId, createSessionFailureMessage(error))
@@ -268,6 +284,7 @@ const startPendingPrompt = (
       providerSessionId: created.providerSessionId,
       providerContinuityToken: created.providerContinuityToken
     })
+    onSessionBound?.(pending.sessionId, created.sessionId)
     const boundMessageId = bound?.messageId
     if (!boundMessageId || !ownsPrompt(created.sessionId, boundMessageId)) return
 
@@ -342,6 +359,7 @@ const sendWorkspaceMessage = async (
       agentFrameworkId: input.agentFrameworkId,
       agentBackendId: input.agentBackendId,
       agentModel: input.agentModel,
+      agentConfiguration: input.agentConfiguration,
       specialistId: input.specialistId
     })
   }
@@ -372,6 +390,7 @@ const sendWorkspaceMessage = async (
       agentFrameworkId: input.agentFrameworkId,
       agentBackendId: input.agentBackendId,
       agentModel: input.agentModel,
+      agentConfiguration: input.agentConfiguration,
       specialistId: input.specialistId
     })
     if (!pending?.messageId) return undefined
@@ -405,18 +424,22 @@ const sendWorkspaceMessage = async (
       useSessionStore.getState().failRun(pending.sessionId, errorMessage(error))
       return pendingPrompt
     }
-    startPendingPrompt(runtime, {
-      ...input,
-      pending: pendingPrompt,
-      content,
-      attachments,
-      cwd: session.cwd || input.cwd,
-      projectId: session.projectId,
-      permissionProfile: session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
-      specialistId: session.specialistId,
-      replay,
-      contextReset: true
-    })
+    startPendingPrompt(
+      runtime,
+      {
+        ...input,
+        pending: pendingPrompt,
+        content,
+        attachments,
+        cwd: session.cwd || input.cwd,
+        projectId: session.projectId,
+        permissionProfile: session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+        specialistId: session.specialistId,
+        replay,
+        contextReset: true
+      },
+      lifecycle.onSessionBound
+    )
     return pendingPrompt
   }
 
@@ -461,21 +484,26 @@ const sendWorkspaceMessage = async (
         projectId: input.projectId ?? session.projectId,
         agentFrameworkId: input.agentFrameworkId,
         agentBackendId: input.agentBackendId,
-        agentModel: input.agentModel
+        agentModel: input.agentModel,
+        agentConfiguration: input.agentConfiguration
       })
       if (!appended) return undefined
-      startPendingPrompt(runtime, {
-        ...input,
-        pending: appended,
-        content,
-        attachments: effectiveAttachments,
-        cwd,
-        projectId,
-        permissionProfile: session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
-        specialistId: session.pendingContextReplayMessageId ? session.specialistId : undefined,
-        replay,
-        contextReset: Boolean(session.pendingContextReplayMessageId)
-      })
+      startPendingPrompt(
+        runtime,
+        {
+          ...input,
+          pending: appended,
+          content,
+          attachments: effectiveAttachments,
+          cwd,
+          projectId,
+          permissionProfile: session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+          specialistId: session.pendingContextReplayMessageId ? session.specialistId : undefined,
+          replay,
+          contextReset: Boolean(session.pendingContextReplayMessageId)
+        },
+        lifecycle.onSessionBound
+      )
       return appended
     }
 
@@ -488,6 +516,8 @@ const sendWorkspaceMessage = async (
       selectedRuntime: {
         frameworkId: input.agentFrameworkId,
         backendId: input.agentBackendId,
+        agentModel: input.agentModel,
+        agentConfiguration: input.agentConfiguration,
         supportsImageInput: input.supportsImageInput,
         supportsImageRelay: input.supportsImageRelay
       },
@@ -533,7 +563,8 @@ const sendWorkspaceMessage = async (
       projectId: input.projectId ?? prepared.appendOwnership.projectId,
       agentFrameworkId: prepared.appendOwnership.agentFrameworkId,
       agentBackendId: prepared.appendOwnership.agentBackendId,
-      agentModel: input.agentModel
+      agentModel: input.agentModel,
+      agentConfiguration: input.agentConfiguration
     })
     if (!appended) return undefined
     const replay = prepared.replay()
@@ -584,22 +615,27 @@ const sendWorkspaceMessage = async (
     agentFrameworkId: input.agentFrameworkId,
     agentBackendId: input.agentBackendId,
     agentModel: input.agentModel,
+    agentConfiguration: input.agentConfiguration,
     specialistId: input.specialistId ?? undefined,
     enabledComputeHosts: input.enabledComputeHosts,
     selectedComputeHosts: input.selectedComputeHosts
   })
   if (!pending) return undefined
-  startPendingPrompt(runtime, {
-    ...input,
-    pending,
-    content,
-    attachments,
-    cwd: input.cwd,
-    projectId: input.projectId,
-    permissionProfile: input.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
-    specialistId: input.specialistId ?? undefined,
-    turnIntent: input.turnIntent
-  })
+  startPendingPrompt(
+    runtime,
+    {
+      ...input,
+      pending,
+      content,
+      attachments,
+      cwd: input.cwd,
+      projectId: input.projectId,
+      permissionProfile: input.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
+      specialistId: input.specialistId ?? undefined,
+      turnIntent: input.turnIntent
+    },
+    lifecycle.onSessionBound
+  )
   return pending
 }
 
@@ -645,6 +681,7 @@ const resendEditedWorkspaceMessage = async (
         agentFrameworkId: options.agentFrameworkId,
         agentBackendId: options.agentBackendId,
         agentModel: options.agentModel,
+        agentConfiguration: options.agentConfiguration,
         historyReplayDescriptor: options.historyReplayDescriptor,
         truncateFromMessageId: input.messageId,
         supportsImageInput: options.supportsImageInput,

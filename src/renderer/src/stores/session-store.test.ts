@@ -2216,6 +2216,59 @@ describe('session store', () => {
     expect(toPersistedSession(session).agentModel).toBe('model-b')
   })
 
+  it('keeps an existing Session agentConfiguration when a later send snapshot differs', () => {
+    const snapshot = {
+      providerId: 'provider-a',
+      model: 'model-a',
+      reasoningEffort: 'default' as const
+    }
+    const preferred = {
+      providerId: 'provider-b',
+      model: 'model-b',
+      reasoningEffort: 'high' as const
+    }
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'First run',
+      agentConfiguration: snapshot
+    })
+    useSessionStore.getState().setAgentConfiguration('transport-session-1', preferred)
+    useSessionStore.getState().finishRun('transport-session-1')
+
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'Queued snapshot',
+      agentModel: 'model-a',
+      agentConfiguration: snapshot
+    })
+
+    const session = useSessionStore.getState().sessions[0]
+    expect(session.agentConfiguration).toEqual(preferred)
+    expect(session.agentModel).toBe('model-a')
+    expect(toPersistedSession(session).agentConfiguration).toEqual(preferred)
+  })
+
+  it('materializes a missing Session agentConfiguration on a later send', () => {
+    const configuration = {
+      providerId: 'provider-a',
+      model: 'model-a',
+      reasoningEffort: 'default' as const
+    }
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'First run'
+    })
+    useSessionStore.getState().finishRun('transport-session-1')
+
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'Follow-up',
+      agentConfiguration: configuration
+    })
+
+    expect(useSessionStore.getState().sessions[0].agentConfiguration).toEqual(configuration)
+  })
+
   it('merges streamed agent chunks by stream id and completes them when the run stops', () => {
     const result = useSessionStore.getState().appendUserMessage({
       sessionId: 'transport-session-1',
@@ -4628,6 +4681,7 @@ describe('session store public contract', () => {
         'reviseSessionFromElicitation',
         'selectSession',
         'setActivePlanProjection',
+        'setAgentConfiguration',
         'setAgentPromptInFlight',
         'setAgentStatus',
         'setAutoReviewEnabled',
@@ -4671,6 +4725,7 @@ describe('session store public contract', () => {
       'src/renderer/src/lib/acp/workspace-runtime-event-owner.ts',
       'src/renderer/src/lib/acp/workspace-runtime-prompt-preparation-owner.ts',
       'src/renderer/src/lib/acp/workspace-runtime-save-as-skill-owner.ts',
+      'src/renderer/src/lib/acp/workspace-runtime-selection-owner.ts',
       'src/renderer/src/lib/acp/workspace-runtime-session-branch-owner.ts',
       'src/renderer/src/lib/acp/workspace-runtime-session-lifecycle-owner.ts',
       'src/renderer/src/lib/acp/workspace-subagent-runtime-presentation.ts',
@@ -4733,6 +4788,7 @@ describe('session store public contract', () => {
       'src/renderer/src/pages/workspace/workspace-conversation-timeline.ts',
       'src/renderer/src/pages/workspace/workspace-message-queue-controller.ts',
       'src/renderer/src/pages/workspace/workspace-run-marks.ts',
+      'src/renderer/src/pages/workspace/workspace-session-agent-configuration-controller.ts',
       'src/renderer/src/pages/workspace/workspace-session-controller.ts',
       'src/renderer/src/pages/workspace/workspace-tool-activity-details.ts',
       'src/renderer/src/pages/workspace/workspace-tool-activity-groups.ts',
