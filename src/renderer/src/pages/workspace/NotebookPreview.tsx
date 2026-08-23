@@ -48,6 +48,7 @@ import {
 import {
   createNotebookFrameFilterOptions,
   notebookFrameLabels,
+  normalizeNotebookRootFrameRuns,
   projectNotebookRunsForFrame,
   type NotebookFrameFilterValue
 } from './session-notebook-projection'
@@ -178,7 +179,7 @@ const NotebookRunCell = ({
           <span className="font-mono text-text-300">[{index}]</span>
           <span className="rounded bg-bg-300 px-1.5 py-0.5 text-text-200">{kind}</span>
           {run.source === 'user' ? (
-            <span className="rounded bg-accent px-1.5 py-0.5 font-medium text-accent">
+            <span className="rounded bg-blue-500/10 px-1.5 py-0.5 font-medium text-blue-700 dark:text-blue-300">
               {t('you')}
             </span>
           ) : null}
@@ -342,7 +343,8 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   // Selected environment within the active python/r pane; undefined lets the effective-env
   // computation below default to the first (canonical-default-first) environment.
   const [activeEnv, setActiveEnv] = useState<string | undefined>(undefined)
-  const stateLoadInFlight = useRef(false)
+  const latestNotebookState = useRef<NotebookSessionState | undefined>(undefined)
+  const stateLoadInFlight = useRef<Promise<boolean> | undefined>(undefined)
   const stateReloadQueued = useRef(false)
   const notebookRequest = createNotebookRequest(item.notebook)
   const notebookRequestKey = JSON.stringify(notebookRequest)
@@ -371,40 +373,55 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
 
   // Keeps state assignment isolated so load paths and event paths share the same update hook.
   const applyNotebookState = useCallback((nextState: NotebookSessionState): void => {
+    latestNotebookState.current = nextState
     setNotebookState(nextState)
   }, [])
 
   // Reads the latest notebook state from main, including its bounded recent run window.
-  const loadNotebookState = useCallback(async (): Promise<void> => {
+  const loadNotebookState = useCallback(async (): Promise<boolean> => {
     if (stateLoadInFlight.current) {
       stateReloadQueued.current = true
-      return
+      return stateLoadInFlight.current
     }
-    stateLoadInFlight.current = true
-    setIsLoading(true)
-
-    do {
-      stateReloadQueued.current = false
-      const requested = latestNotebookRequest.current
+    const load = (async (): Promise<boolean> => {
+      let succeeded = false
+      setIsLoading(true)
       try {
-        const nextState = await window.api.notebook.state(requested.request)
+        do {
+          stateReloadQueued.current = false
+          const requested = latestNotebookRequest.current
+          try {
+            const nextState = await window.api.notebook.state(requested.request)
 
-        if (latestNotebookRequest.current.key === requested.key) {
-          applyNotebookState(nextState)
-          setActionError(null)
-        } else {
-          stateReloadQueued.current = true
-        }
-      } catch (error) {
-        if (latestNotebookRequest.current.key === requested.key) {
-          setActionError(getErrorMessage(error))
-        } else {
-          stateReloadQueued.current = true
-        }
+            if (latestNotebookRequest.current.key === requested.key) {
+              applyNotebookState(nextState)
+              setActionError(null)
+              succeeded = true
+            } else {
+              stateReloadQueued.current = true
+            }
+          } catch (error) {
+            if (latestNotebookRequest.current.key === requested.key) {
+              setActionError(getErrorMessage(error))
+              succeeded = false
+            } else {
+              stateReloadQueued.current = true
+            }
+          }
+        } while (stateReloadQueued.current)
+        return succeeded
+      } finally {
+        setIsLoading(false)
       }
-    } while (stateReloadQueued.current)
-    stateLoadInFlight.current = false
-    setIsLoading(false)
+    })()
+    stateLoadInFlight.current = load
+    try {
+      return await load
+    } finally {
+      if (stateLoadInFlight.current === load) {
+        stateLoadInFlight.current = undefined
+      }
+    }
   }, [applyNotebookState])
 
   // Defer the initial state load until after the component has mounted.
@@ -428,15 +445,16 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   }, [item.notebook.sessionId, loadNotebookState])
 
   const runs = notebookState?.runs ?? notebookState?.recentRuns ?? []
+  const frameRuns = session ? normalizeNotebookRootFrameRuns(runs, session) : runs
   const frameOptions = createNotebookFrameFilterOptions(
-    runs,
+    frameRuns,
     session ? notebookFrameLabels(session, t) : {}
   )
   const effectiveFrameFilter = frameOptions.some((option) => option.value === frameFilter)
     ? frameFilter
     : frameOptions[0]?.value
   const projectedRuns = effectiveFrameFilter
-    ? projectNotebookRunsForFrame(runs, effectiveFrameFilter)
+    ? projectNotebookRunsForFrame(frameRuns, effectiveFrameFilter)
     : []
 
   // Python and R are executable user targets even before their first run. Agent SDK and Bash remain
@@ -518,10 +536,31 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
       return (entry.environment ?? 'default-r') === (activeEnvName ?? 'default-r')
     })?.restartRecommended ??
       false)
+  const selectedTarget =
+    activeDataLanguage && activeEnvName ? `${activeDataLanguage}:${activeEnvName}` : undefined
+  const activeRun = runs.find((run) => run.runId === notebookState?.activeRunId)
+  const activeRunTarget =
+    activeRun?.kernelKind === 'python' || activeRun?.kernelKind === 'r'
+      ? `${activeRun.kernelKind}:${resolveRunEnvironment(activeRun)}`
+      : undefined
   const activeKernelStatus = activeEnvName ? envOptionStatus(activeEnvName) : undefined
+  const hasActiveKernelHistory =
+    activeDataLanguage !== undefined &&
+    activeEnvName !== undefined &&
+    kindRuns.some((run) => resolveRunEnvironment(run) === activeEnvName)
+  // A persisted `idle` status only describes the last app process. The per-environment status list is
+  // populated from kernels known to this process. Without an entry the kernel is inactive, even when
+  // this language has no history yet; only an Agent execution may activate user input.
+  const isKernelInactive =
+    activeDataLanguage !== undefined &&
+    activeEnvName !== undefined &&
+    activeKernelStatus === undefined &&
+    activeRunTarget !== selectedTarget &&
+    submittingTarget !== selectedTarget
   const isNamespaceLost =
     activeDataLanguage !== undefined &&
-    (activeKernelStatus === 'terminated' ||
+    (isKernelInactive ||
+      activeKernelStatus === 'terminated' ||
       (activeDataLanguage === 'python' &&
         activeEnvName === 'default-python' &&
         notebookState?.kernelStatus === 'terminated'))
@@ -530,13 +569,6 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     activeEnvName !== undefined &&
     executionEnvironment !== undefined &&
     activeEnvName !== executionEnvironment
-  const selectedTarget =
-    activeDataLanguage && activeEnvName ? `${activeDataLanguage}:${activeEnvName}` : undefined
-  const activeRun = runs.find((run) => run.runId === notebookState?.activeRunId)
-  const activeRunTarget =
-    activeRun?.kernelKind === 'python' || activeRun?.kernelKind === 'r'
-      ? `${activeRun.kernelKind}:${resolveRunEnvironment(activeRun)}`
-      : undefined
   const isSubmitting = submittingTarget !== undefined
   const isSelectedKernelRunning =
     (submittingTarget !== undefined && submittingTarget === selectedTarget) ||
@@ -547,7 +579,7 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   // The Session Aggregate owns one active write and run, so input stays globally locked even when a
   // different persistent data kernel is selected.
   const isTerminalLocked =
-    isLoading ||
+    (isLoading && !notebookState) ||
     isSubmitting ||
     Boolean(notebookState?.activeWrite) ||
     Boolean(notebookState?.activeRunId) ||
@@ -560,23 +592,20 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   const submitTerminalCode = async (): Promise<void> => {
     const code = terminalCode.trim()
 
-    if (
-      !code ||
-      !activeDataLanguage ||
-      !activeEnvName ||
-      isHistoricalEnvironmentView ||
-      notebookState?.activeWrite ||
-      notebookState?.activeRunId
-    ) {
+    if (!code || !activeDataLanguage || !activeEnvName || isHistoricalEnvironmentView) {
       return
     }
 
     const target = `${activeDataLanguage}:${activeEnvName}`
-    setTerminalCode('')
     setSubmittingTarget(target)
     setActionError(null)
 
     try {
+      if (stateLoadInFlight.current && !(await stateLoadInFlight.current)) return
+      const executionState = latestNotebookState.current
+      if (executionState?.activeWrite || executionState?.activeRunId) return
+
+      setTerminalCode('')
       await window.api.notebook.execute({
         ...createNotebookRequest(item.notebook),
         code,
@@ -846,9 +875,13 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
                   environment: activeEnvName,
                   activeEnvironment: executionEnvironment
                 })
-              : activeDataLanguage === 'r'
-                ? t("R · view only; this kernel's namespace no longer exists")
-                : t("Python · view only; this kernel's namespace no longer exists")}
+              : isKernelInactive && !hasActiveKernelHistory
+                ? t('{{kernel}} · view only; the agent must activate this kernel first', {
+                    kernel: activeDataLanguage === 'r' ? 'R' : 'Python'
+                  })
+                : activeDataLanguage === 'r'
+                  ? t("R · view only; this kernel's namespace no longer exists")
+                  : t("Python · view only; this kernel's namespace no longer exists")}
           </span>
           <span className="shrink-0 tabular-nums">
             {t('{{count}} cells', {
