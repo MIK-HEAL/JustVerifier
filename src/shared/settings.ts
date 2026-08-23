@@ -1305,6 +1305,7 @@ export type CustomServerView = {
     authorizationServerUrl?: string
     scopes?: string[]
     clientId?: string
+    redirectUri?: string
     hasTokens: boolean
     // Optional for compatibility with snapshots from an older main process during development.
     hasClientSecret?: boolean
@@ -1343,6 +1344,7 @@ export type AddCustomServerRequest = {
     authorizationServerUrl?: string
     scopes?: string[]
     clientId?: string
+    redirectUri?: string
     clientSecret?: string
   } | null
 }
@@ -1374,6 +1376,7 @@ export type ConnectorTemplateDefinition = {
     authorizationServerUrl?: string
     scopes?: string[]
     clientId?: string
+    redirectUri?: string
   }
 }
 
@@ -1424,6 +1427,7 @@ export type UpdateCustomServerRequest = {
     authorizationServerUrl?: string
     scopes?: string[]
     clientId?: string
+    redirectUri?: string
     // Omitted keeps the stored secret; null explicitly removes it.
     clientSecret?: string | null
   } | null
