@@ -120,6 +120,25 @@ const canAdmitExistingWorkspacePrompt = (
   )
 }
 
+const sessionAgentTargetMatches = (
+  selected: PrepareExistingWorkspacePromptRequest['selectedRuntime'],
+  session: ChatSession | undefined
+): boolean => {
+  const selectedConfiguration = selected.agentConfiguration
+  const sessionConfiguration = session?.agentConfiguration
+  if (!selected.frameworkId || !selectedConfiguration || !session || !sessionConfiguration) {
+    return false
+  }
+  return (
+    selected.frameworkId === session.agentFrameworkId &&
+    (selected.backendId === undefined || selected.backendId === session.agentBackendId) &&
+    selected.agentModel === session.agentModel &&
+    selectedConfiguration.providerId === sessionConfiguration.providerId &&
+    selectedConfiguration.model === sessionConfiguration.model &&
+    selectedConfiguration.reasoningEffort === sessionConfiguration.reasoningEffort
+  )
+}
+
 const isReplayImage = (attachment: Pick<UploadedAttachment, 'name' | 'mimeType'>): boolean =>
   imageAttachmentMimeType(attachment.name, attachment.mimeType) !== undefined
 
@@ -215,12 +234,17 @@ const prepareExistingWorkspacePrompt = async (
     request.selectedRuntime.agentConfiguration &&
     request.selectedRuntime.agentModel !== currentSession?.agentModel
   )
-  const runtimeDetached = !runtime.state.sessionIds.includes(sessionId)
-  // An explicit Session target must pass through resume even when the aggregate coordinator snapshot
-  // still shows this app Session as attached. A provider/model/effort change can keep the same backend
-  // id, while ownership still needs to move to the runtime generation keyed by the new target.
+  const runtimeDetached =
+    !runtime.state.sessionIds.includes(sessionId) ||
+    Boolean(runtime.state.sessionResumeRequiredIds?.includes(sessionId))
+  // Resume when the explicit target differs or the visible Session belongs to a retiring runtime.
+  // Same-target Send now must not resume while the selected runtime still owns the Session.
   const runtimeMustAdoptSession =
-    Boolean(request.selectedRuntime.frameworkId && request.selectedRuntime.agentConfiguration) ||
+    Boolean(
+      request.selectedRuntime.frameworkId &&
+      request.selectedRuntime.agentConfiguration &&
+      !sessionAgentTargetMatches(request.selectedRuntime, currentSession)
+    ) ||
     selectedRuntimeChanged ||
     runtimeDetached
   const branchResetRequired = Boolean(

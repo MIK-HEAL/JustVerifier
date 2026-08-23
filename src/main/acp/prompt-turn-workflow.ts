@@ -133,6 +133,8 @@ type AcpPromptTurnFinalization = Readonly<{
     session: ActiveSession,
     interaction: AcpPromptSessionInteractionScope
   ) => Promise<unknown>
+  compactIfIdle: (sessionId: string) => Promise<unknown>
+  preemptCompaction: (sessionId: string) => Promise<void> | undefined
 }>
 
 type AcpPromptTurnWorkflowOptions = Readonly<{
@@ -180,11 +182,14 @@ class AcpPromptTurnWorkflow {
     if (!activeSession) throw new Error(`ACP session not found: ${request.sessionId}`)
     this.assertSessionIdle(request.sessionId)
 
-    const planPreflight = this.options.plan.preflight(request)
-    let plan = planPreflight instanceof Promise ? await planPreflight : planPreflight
     let reservation = this.reserve(request)
+    let plan: AcpPromptTurnPlanContext
     let skill: TurnSkillHandle
     try {
+      const preemption = this.options.finalization.preemptCompaction(request.sessionId)
+      if (preemption) await preemption
+      const planPreflight = this.options.plan.preflight(request)
+      plan = planPreflight instanceof Promise ? await planPreflight : planPreflight
       const authorization = this.options.skills.authorize({
         specialistId: this.options.registry.lookup(request.sessionId)?.aggregate.snapshot()
           .specialistId,
@@ -480,7 +485,10 @@ class AcpPromptTurnWorkflow {
         generationActivityChanged: finalization.generationActivityChanged,
         autoCompactIfNeeded: () => finalization.autoCompact(sessionId, session, interaction),
         beforeInteractionRelease: () => plan.beforeRelease(sessionId, interaction),
-        afterInteractionRelease: () => plan.afterRelease(sessionId)
+        afterInteractionRelease: async () => {
+          await plan.afterRelease(sessionId)
+          void finalization.compactIfIdle(sessionId)
+        }
       },
       outcome
     )
@@ -491,7 +499,9 @@ class AcpPromptTurnWorkflow {
   }
 
   private assertSessionIdle(sessionId: string): void {
-    if (this.options.interactions.current(sessionId)) {
+    const current = this.options.interactions.current(sessionId)
+    if (!current) return
+    if (current.kind === 'prompt') {
       throw new Error('An ACP prompt is already running for this session')
     }
   }
