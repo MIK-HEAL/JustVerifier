@@ -865,7 +865,7 @@ describe('session store', () => {
     expect(useSessionStore.getState().sessions[0].activePlanProjection).toBe(projection)
   })
 
-  it('keeps the active Plan projection when Permission advances the runtime revision', () => {
+  it('rebases the active Plan projection when Permission advances the runtime revision', () => {
     useSessionStore.getState().hydrateSessions([
       {
         id: 'session-1',
@@ -921,8 +921,83 @@ describe('session store', () => {
     })
 
     const updated = useSessionStore.getState().sessions[0]
-    expect(updated.activePlanProjection).toBe(projection)
+    expect(updated.activePlanProjection).toEqual({ ...projection, revision: 2 })
     expect(updated.runtimeContext).toMatchObject({ revision: 2, permission: { state: 'pending' } })
+
+    useSessionStore.getState().applyDurableSessionProjection({
+      source: updated,
+      session: {
+        ...toPersistedSession(updated),
+        runtimeContext: { ...updated.runtimeContext!, revision: 3 },
+        updatedAt: 4
+      },
+      mode: 'permission-authority'
+    })
+
+    expect(useSessionStore.getState().sessions[0].activePlanProjection).toEqual({
+      ...projection,
+      revision: 3
+    })
+  })
+
+  it('keeps a newer local Plan projection when an older lifecycle echo arrives', () => {
+    const stalePlan = {
+      artifactId: 'artifact-version-1',
+      artifactVersionId: 'version-1',
+      artifactChecksum: 'a'.repeat(64),
+      approval: 'pending' as const,
+      stepStatuses: {}
+    }
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Plan approval',
+        cwd: '/workspace',
+        status: 'waiting-plan-approval',
+        runtimeContext: {
+          version: 1,
+          revision: 1,
+          plan: stalePlan
+        },
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ])
+    const newerProjection = {
+      ...createPlanProjection('version-1'),
+      revision: 2,
+      approval: 'approved' as const,
+      lifecycle: 'approved' as const,
+      requiresExplicitContinuation: true
+    }
+    useSessionStore.getState().setActivePlanProjection('session-1', newerProjection)
+    const source = useSessionStore.getState().sessions[0]
+
+    useSessionStore.getState().applyDurableSessionProjection({
+      source,
+      session: {
+        ...toPersistedSession(source),
+        status: 'waiting-plan-approval',
+        runtimeContext: {
+          version: 1,
+          revision: 1,
+          plan: stalePlan
+        },
+        updatedAt: 3
+      },
+      mode: 'runtime-context-authority'
+    })
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'idle',
+      interactionState: { plan: false },
+      activePlanProjection: newerProjection
+    })
+
+    useSessionStore.getState().finishRun('session-1')
+    expect(useSessionStore.getState().sessions[0].status).toBe('idle')
   })
 
   it('does not replace newer local conversation state when a durable Plan authority arrives', () => {

@@ -362,12 +362,14 @@ export const retainRuntimePlanProjection = (
   incoming: Pick<PersistedChatSession, 'runtimeContext'>
 ): ActivePlanProjection | undefined => {
   const projection = current.activePlanProjection
-  const currentPlan = current.runtimeContext?.plan
   const incomingPlan = incoming.runtimeContext?.plan
-  return planProjectionMatchesRuntimePlan(projection, currentPlan) &&
-    JSON.stringify(currentPlan) === JSON.stringify(incomingPlan)
+  const incomingRevision = incoming.runtimeContext?.revision
+  if (!projection || incomingRevision === undefined) return undefined
+  if (projection.revision > incomingRevision) return projection
+  if (!planProjectionMatchesRuntimePlan(projection, incomingPlan)) return undefined
+  return projection.revision === incomingRevision
     ? projection
-    : undefined
+    : { ...projection, revision: incomingRevision }
 }
 
 export const mergePersistedRuntimeIdentityProjection = (
