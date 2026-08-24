@@ -222,7 +222,11 @@ import type { WindowSettingsCapabilities } from './settings/service-capabilities
 import { createProductionDelegatedWorkComposition } from './delegation/production-composition'
 import { createProductionDelegatedFrameworkRuntime } from './delegation/production-framework-runtime'
 import { finalizeDelegatedArtifactPublication } from './delegation/delegated-artifact-publication'
-import { DelegateMessageParkedError } from './delegation/execution-port'
+import {
+  DelegateMessageParkedError,
+  DelegateMessagePreAcceptanceError
+} from './delegation/execution-port'
+import { createDelegationSettlementContinuationDispatch } from './delegation/settlement-continuation-dispatch'
 import { createSettingsWorkflows } from './settings/workflows'
 import { showSettingsSaveDialog } from './settings/save-dialog'
 import { ProfileService } from './specialist/service'
@@ -1618,6 +1622,9 @@ const createApplicationModules = async (
     revokeRpcCapability: (token) => requireNotebookRpcServer().revokeArtifactRunCapability(token),
     provenance: artifactProvenanceRepository
   })
+  const delegatedWorkRef: {
+    current?: ReturnType<typeof createProductionDelegatedWorkComposition>
+  } = {}
   const delegatedWork = createProductionDelegatedWorkComposition({
     dataRoot: resolveDataRoot(),
     resolveExecutionModel: async (session) => {
@@ -1634,6 +1641,19 @@ const createApplicationModules = async (
       })
     },
     onAgentRuntimeUpdate: (update) => broadcastToRenderers('acp:agent-runtime-update', update),
+    settlementContinuations: {
+      dispatch: createDelegationSettlementContinuationDispatch({
+        sendAppContinuationObserved: (request, onProviderPromptAccepted) => {
+          const activeRuntime = runtimeRef.current
+          if (!activeRuntime) {
+            throw new DelegateMessagePreAcceptanceError('The Main Agent runtime is unavailable.')
+          }
+          return activeRuntime.sendAppContinuationObserved(request, onProviderPromptAccepted)
+        },
+        onPromptEnded: (sessionId, promptId) =>
+          delegatedWorkRef.current?.root.settlementPromptEnded?.(sessionId, promptId)
+      })
+    },
     sessions: {
       commands: sessionPersistenceCoordinator,
       readSession: ({ projectId, sessionId }) =>
@@ -2464,6 +2484,7 @@ const createApplicationModules = async (
       errorLogFields(error)
     )
   })
+  delegatedWorkRef.current = delegatedWork
   permissionGrantRegistry.subscribe(() => runtime.notifyPermissionGrantsChanged())
   // Single shared teardown owner for both the before-quit handler (index.ts) and the pre-update-install
   // gate. Update handling is deliberately constructed below, after this dependency is complete.
