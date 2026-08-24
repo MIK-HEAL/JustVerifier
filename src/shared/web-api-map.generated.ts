@@ -295,8 +295,6 @@ export const WEB_EVENT_CHANNELS = {
   'notebook.onChanged': 'notebook:changed',
   'notebookEnv.onProgress': 'notebook-env:progress',
   'notifications.onChanged': 'notifications:changed',
-  'notifications.onOpenSession': 'notifications:open-session',
-  'notifications.onViewProbe': 'notifications:probe-unread-view',
   'permissions.onChanged': 'permissions:changed',
   'projectFiles.onChanged': 'project-files:changed',
   'projects.onCreated': 'project:created',
@@ -321,7 +319,5 @@ export const WEB_EVENT_CHANNELS = {
   'storage.onProgress': 'storage:migrate-progress',
   'tags.onChanged': 'tags:changed',
   'update.onProgress': 'update:progress',
-  'update.onStatus': 'update:status',
-  'uploads.onTransferProgress': 'uploads:transfer-progress',
-  'window.onCloseActivePane': 'shortcut:close-active-pane'
+  'update.onStatus': 'update:status'
 } as const
