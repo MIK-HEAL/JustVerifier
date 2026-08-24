@@ -777,6 +777,10 @@ const createApplicationModules = async (
   })
   const mainPromptSideChatRelay = createMainPromptSideChatRelay({
     relay: sideChatRelay,
+    steerAdvisory: async (request) =>
+      runtimeRef.current
+        ? runtimeRef.current.steerSideChatAdvisory(request)
+        : Object.freeze({ injected: false }),
     commitSideChatRelays: (command) => sessionPersistenceCoordinator.commitSideChatRelays(command),
     onDelivered: (event) => broadcastToRenderers('side-chat:relay-delivered', event)
   })
@@ -2214,6 +2218,8 @@ const createApplicationModules = async (
       resolveTarget: (target, context) =>
         settingsService.resolveExplicitAgentBackend(target, context),
       relay: sideChatRelay,
+      deliverRelay: (parentSessionId, queued) =>
+        mainPromptSideChatRelay.tryInject(parentSessionId, queued),
       persistence: {
         save: ({ projectId, parentSessionId, sideChat }) =>
           sessionPersistenceCoordinator.saveSideChatProjection({
