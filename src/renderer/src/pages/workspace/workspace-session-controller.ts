@@ -161,8 +161,7 @@ const useWorkspaceSessionController = ({
     {}
   )
   const reconfiguration = useWorkspaceSpecialistReconfiguration(specialistItems)
-  const { error: reconfigureError, setError: setReconfigureError } = reconfiguration
-  const { clearIdleRetry } = reconfiguration
+  const { error: reconfigureError, setError: setReconfigureError, clearIdleRetry } = reconfiguration
   const activeReconfigureError =
     reconfiguration.idleErrorFor(activeSession?.id) ??
     (reconfigureError?.sessionId === activeSession?.id ? reconfigureError : null)
@@ -185,7 +184,6 @@ const useWorkspaceSessionController = ({
   const [deletingIds, setDeletingIds] = useState<ReadonlySet<string>>(new Set())
   const deletingIdsRef = useRef(new Set<string>())
   const [archivingIds, setArchivingIds] = useState<ReadonlySet<string>>(new Set())
-
   const activeHasPending = Boolean(
     activeSession &&
     (activeSession.specialistBindingPending === true ||
@@ -264,7 +262,7 @@ const useWorkspaceSessionController = ({
       expectedArchivedAt: null
     })
       .then((archived) => {
-        clearIdleRetry(session.id)
+        if (clearIdleRetry(session.id)) clearPending(session.id)
         enqueueSessionArchive(archived)
         if (selectedSessionId === session.id) clearSelection()
       })
@@ -302,7 +300,7 @@ const useWorkspaceSessionController = ({
         const deleted = result.status === 'deleted'
         settleSessionDeletion(sessionId, deleted)
         if (deleted) {
-          clearIdleRetry(sessionId)
+          if (clearIdleRetry(sessionId)) clearPending(sessionId)
           setDeleteDialog((current) => (current?.session.id === sessionId ? null : current))
           return
         }
@@ -341,7 +339,7 @@ const useWorkspaceSessionController = ({
     }
     const sessionId = activeSession.id
     if (isWorkspaceSpecialistBarrierInFlight(sessionId)) return
-    clearIdleRetry(sessionId)
+    if (clearIdleRetry(sessionId)) clearPending(sessionId)
     const running = projectSessionActionability(activeSession).activity !== 'inactive'
     if (running) {
       setPendingSpecialists((current) => ({ ...current, [sessionId]: specialistId }))
@@ -349,7 +347,7 @@ const useWorkspaceSessionController = ({
       const setter = window.api?.specialist?.setSessionSpecialist
       if (!setter) return
       const attempt = reconfiguration.beginIdleAttempt(sessionId, specialistId)
-      clearPending(sessionId)
+      setPendingSpecialists((current) => ({ ...current, [sessionId]: specialistId }))
       setBarrier(sessionId, true)
       void setter({ sessionId, specialistId })
         .then((result) => {
@@ -364,10 +362,11 @@ const useWorkspaceSessionController = ({
           }
           setSessionSpecialistId(sessionId, specialistId)
           if (result?.contextReset) markSpecialistSwitchResetRequired(sessionId)
+          clearPending(sessionId)
         })
         .catch((error: unknown) => {
           console.warn('setSessionSpecialist failed', error)
-          attempt.recordFailure(errorMessage(error))
+          if (attempt.recordFailure(errorMessage(error))) clearPending(sessionId)
         })
         .finally(() => setBarrier(sessionId, false))
     }
@@ -547,7 +546,7 @@ const useWorkspaceSessionController = ({
     const specialistApi = window.api?.specialist
     if (!specialistApi?.onPendingSwitch) return
     return specialistApi.onPendingSwitch((pending) => {
-      clearIdleRetry(pending.sessionId)
+      if (clearIdleRetry(pending.sessionId)) clearPending(pending.sessionId)
       if (pending.targetName === null) {
         setPendingSpecialists((current) => ({
           ...current,
@@ -579,7 +578,7 @@ const useWorkspaceSessionController = ({
         })
         .catch(() => undefined)
     })
-  }, [clearIdleRetry])
+  }, [clearIdleRetry, clearPending])
   const applyHandoffLifecycleEvent = useCallback(
     (event: CompletionHandoffLifecycleEvent): void => {
       if (event.phase !== 'continuation-start' && event.phase !== 'continued') return
@@ -594,11 +593,11 @@ const useWorkspaceSessionController = ({
           } else if (resolution.kind === 'main') {
             setSessionSpecialistId(event.sessionId, undefined)
           } else return
-          clearIdleRetry(event.sessionId)
+          if (clearIdleRetry(event.sessionId)) clearPending(event.sessionId)
         })
         .catch(() => undefined)
     },
-    [clearIdleRetry, setSessionSpecialistId]
+    [clearIdleRetry, clearPending, setSessionSpecialistId]
   )
   useEffect(() => {
     const specialistApi = window.api?.specialist
