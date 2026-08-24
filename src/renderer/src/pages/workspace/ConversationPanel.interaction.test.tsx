@@ -4944,6 +4944,49 @@ describe('ConversationPanel error box + report affordance', () => {
     expect(openSettingsToPanel).toHaveBeenCalledWith('agent')
   })
 
+  it('opens Agent settings from an unsupported Codex ACP session resume failure', () => {
+    const openSettingsToPanel = vi.fn()
+    useSettingsStore.setState({ openSettingsToPanel })
+    renderPanel({
+      view: {
+        activeSession: {
+          ...errorSession,
+          interrupted: true,
+          error:
+            'Agent session resume failed: Codex ACP adapter 1.1.4 is no longer supported. Update to 1.6.2 or later in settings.'
+        }
+      }
+    })
+
+    expect(errorBoxText()).toContain('Agent session resume failed: Codex ACP adapter 1.1.4')
+    expect(container.querySelector('[aria-label="Resume session"]')).toBeNull()
+    const button = Array.from(container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent === 'Agent settings'
+    )
+    expect(button).toBeDefined()
+    act(() => button?.click())
+    expect(openSettingsToPanel).toHaveBeenCalledWith('agent')
+  })
+
+  it('keeps an unrelated session resume failure in the Resume banner', () => {
+    renderPanel({
+      view: {
+        activeSession: {
+          ...errorSession,
+          interrupted: true,
+          error: 'Agent session resume failed: connection reset'
+        }
+      }
+    })
+
+    expect(container.querySelector('[aria-label="Resume session"]')).not.toBeNull()
+    expect(
+      Array.from(container.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent === 'Agent settings'
+      )
+    ).toBeUndefined()
+  })
+
   it('shows both a transient actionError and the run failure, keeping the Report button', () => {
     // Both present: each error gets its own row, and the run failure keeps its report entry — a
     // transient error must not suppress the ability to report the actual failure.
