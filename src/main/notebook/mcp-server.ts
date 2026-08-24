@@ -654,6 +654,48 @@ const compactNotebookExecutionResult = (raw: unknown): unknown => {
   }
 }
 
+// Internal VM frames remain in the durable run but do not help the Agent repair its REPL request.
+const compactReplTraceback = (value: string): string => {
+  const lines = value.split(/\r?\n/)
+  const errorLine = lines.findIndex((line) => /^[A-Za-z_$][\w$]*(?:Error|Exception)\b/.test(line))
+  const messageStart = errorLine === -1 ? 0 : errorLine
+  const frameStart = lines.findIndex(
+    (line, index) =>
+      index >= messageStart &&
+      /^\s+at (?:(?:async|new)\s+)?(?:.+? \()?(?:node:|<repl>|file:|\/|[A-Za-z]:[\\/]).*:\d+:\d+\)?$/.test(
+        line
+      )
+  )
+  const message = lines.slice(messageStart, frameStart === -1 ? undefined : frameStart).join('\n')
+  return message.trim() || value
+}
+
+const compactReplExecutionResult = (raw: unknown): unknown => {
+  const record = asRecord(raw)
+  if (!record) return raw
+
+  const text = asRecord(record.text)
+  const outputs = Array.isArray(record.outputs)
+    ? record.outputs.map((value) => {
+        const output = asRecord(value)
+        return output?.type === 'error' && typeof output.traceback === 'string'
+          ? { ...output, traceback: compactReplTraceback(output.traceback) }
+          : value
+      })
+    : record.outputs
+
+  return compactNotebookExecutionResult({
+    ...record,
+    ...(typeof record.traceback === 'string'
+      ? { traceback: compactReplTraceback(record.traceback) }
+      : {}),
+    ...(text && typeof text.traceback === 'string'
+      ? { text: { ...text, traceback: compactReplTraceback(text.traceback) } }
+      : {}),
+    ...(Array.isArray(record.outputs) ? { outputs } : {})
+  })
+}
+
 const compactStateRun = (
   value: unknown,
   includeOutputPreview: boolean,
@@ -1128,7 +1170,7 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
     description: REPL_EXECUTE_DOC,
     method: 'executeControl',
     inputSchema: replExecuteToolSchema,
-    mapResult: compactNotebookExecutionResult,
+    mapResult: compactReplExecutionResult,
     includeViewImages: true,
     resultLimitChars: NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT,
     progressMessage: 'Control-plane REPL execution is still running.'
