@@ -1039,9 +1039,13 @@ export interface OpenScienceAPI {
     clearFind?(): void
     // Announces the Workspace is mounted (READY) and returns a teardown that announces UNREADY.
     announceWindowFindReady?(): RemoveListener
+    // Announces that the full searchable transcript has committed to the renderer DOM.
+    announceWindowFindContentReady?(): void
     onFindInPageResult?(listener: AcpListener<WindowFindResult>): RemoveListener
     // Overlay-only: main signals the bar was shown; the overlay asks main to hide it.
     onShowWindowFind?(listener: AcpListener<WindowFindAppearance>): RemoveListener
+    // Main renderer only: the overlay was hidden, so temporary searchable content can be released.
+    onHideWindowFind?(listener: () => void): RemoveListener
     onWindowFindAppearance?(listener: AcpListener<WindowFindAppearance>): RemoveListener
     announceWindowFindAppearance?(appearance: WindowFindAppearance): void
     closeFind?(): void
