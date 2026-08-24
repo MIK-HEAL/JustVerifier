@@ -152,7 +152,6 @@ export const WEB_INVOKE_CHANNELS = {
   'sessions.deleteSession': 'sessions:delete-session',
   'sessions.exportConversation': 'sessions:export-conversation',
   'sessions.loadAll': 'sessions:load-all',
-  'sessions.loadOne': 'sessions:load-one',
   'sessions.saveManifest': 'sessions:save-manifest',
   'sessions.saveSession': 'sessions:save-session',
   'sessions.updateArchive': 'sessions:update-archive',

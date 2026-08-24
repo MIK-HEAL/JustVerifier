@@ -1132,6 +1132,69 @@ describe('session store', () => {
     expect(useSessionStore.getState().sessions[0].activePlanProjection).toBe(projection)
   })
 
+  it('preserves pending summary metadata edits when lazy hydration finishes', () => {
+    useSessionStore.getState().hydrateSessionSummaries(
+      [
+        {
+          number: 1,
+          id: 'session-1',
+          projectId: 'project-1',
+          title: 'Original title',
+          status: 'idle',
+          presentedStatus: 'idle',
+          pinned: false,
+          revision: 1,
+          activeMessageCount: 1,
+          artifactCount: 0,
+          filesRevision: 0,
+          createdAt: 1,
+          updatedAt: 2,
+          needsStartupRecovery: false
+        }
+      ],
+      undefined
+    )
+    useSessionStore.getState().renameSession('session-1', 'Pending title')
+    useSessionStore.getState().togglePinned('session-1')
+    useSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === 'session-1' ? { ...session, archivedAt: 3 } : session
+      )
+    }))
+
+    useSessionStore.getState().upsertPersistedSession({
+      id: 'session-1',
+      projectId: 'project-1',
+      title: 'Original title',
+      cwd: '/workspace',
+      status: 'idle',
+      pinned: false,
+      revision: 1,
+      messages: [
+        {
+          id: 'message-1',
+          role: 'user',
+          content: 'Loaded content',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 2
+    })
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      title: 'Pending title',
+      unsavedTitle: true,
+      pinned: true,
+      archivedAt: 3,
+      messages: [{ id: 'message-1' }]
+    })
+    expect(useSessionStore.getState().sessions[0]?.contentLoaded).not.toBe(false)
+  })
+
   it('applies archive state from an older durable Session update without losing newer local state', () => {
     useSessionStore.getState().hydrateSessions([
       {
@@ -2621,6 +2684,40 @@ describe('session store', () => {
     expect(session.agentConfiguration).toEqual(preferred)
     expect(session.agentModel).toBe('model-a')
     expect(toPersistedSession(session).agentConfiguration).toEqual(preferred)
+  })
+
+  it('preserves Session activity time when reconciling a legacy agent configuration', () => {
+    const updatedAt = Date.now() - 60_000
+    const configuration = {
+      providerId: 'provider-a',
+      model: 'model-a',
+      reasoningEffort: 'default' as const
+    }
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: 'legacy-session',
+          projectId: 'default-project',
+          title: 'Legacy Session',
+          cwd: '/workspace/project',
+          status: 'idle',
+          messages: [],
+          filesRevision: 0,
+          createdAt: updatedAt - 60_000,
+          updatedAt
+        } as ChatSession
+      ],
+      selectedSessionId: 'legacy-session'
+    })
+
+    useSessionStore
+      .getState()
+      .setAgentConfiguration('legacy-session', configuration, { preserveUpdatedAt: true })
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      agentConfiguration: configuration,
+      updatedAt
+    })
   })
 
   it('materializes a missing Session agentConfiguration on a later send', () => {
@@ -5050,6 +5147,7 @@ describe('session store public contract', () => {
         'failRun',
         'finishCompaction',
         'finishRun',
+        'hydrateSessionSummaries',
         'hydrateSessions',
         'interruptRun',
         'markDisconnected',

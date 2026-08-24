@@ -7,7 +7,10 @@ import type {
   CompletionHandoffLifecycleEvent,
   SpecialistListItem
 } from '../../../../shared/specialist'
-import type { SessionDeletionResult } from '../../../../shared/session-persistence'
+import type {
+  PersistedChatSession,
+  SessionDeletionResult
+} from '../../../../shared/session-persistence'
 import { createLinearConversationGraph } from '../../../../shared/conversation-graph'
 import { useArchiveUndoStore } from '@/stores/archive-undo-store'
 import {
@@ -167,6 +170,98 @@ afterEach(() => {
 })
 
 describe('workspace session controller', () => {
+  it('loads an unopened Session before opening conversation export', async () => {
+    const summary = session({ contentLoaded: false, activeMessageCount: 1 })
+    const persisted: PersistedChatSession = {
+      id: summary.id,
+      projectId: summary.projectId,
+      title: summary.title,
+      cwd: summary.cwd,
+      status: summary.status,
+      messages: [
+        {
+          id: 'message-1',
+          role: 'user',
+          content: 'Export me',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      createdAt: summary.createdAt,
+      updatedAt: summary.updatedAt
+    }
+    const loadOne = vi.fn().mockResolvedValue(persisted)
+    window.api = { sessions: { loadOne } } as unknown as Window['api']
+    useSessionStore.setState({ sessions: [summary], selectedSessionId: summary.id })
+    const hook = renderController({ activeSession: summary })
+    mounted.push(hook)
+
+    await act(async () => {
+      hook.result.current.actions.openExportConversation(summary)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(loadOne).toHaveBeenCalledWith({
+      projectId: summary.projectId,
+      sessionId: summary.id
+    })
+    expect(hook.result.current.view.dialogs.exportConversation?.messages).toHaveLength(1)
+    expect(useSessionStore.getState().sessions[0]?.contentLoaded).not.toBe(false)
+  })
+
+  it('does not resurrect a deleted Session when export hydration finishes', async () => {
+    const summary = session({ contentLoaded: false, activeMessageCount: 1 })
+    const persisted: PersistedChatSession = {
+      id: summary.id,
+      projectId: summary.projectId,
+      title: summary.title,
+      cwd: summary.cwd,
+      status: summary.status,
+      messages: [],
+      createdAt: summary.createdAt,
+      updatedAt: summary.updatedAt
+    }
+    const load = deferred<PersistedChatSession | undefined>()
+    const loadOne = vi.fn(() => load.promise)
+    window.api = { sessions: { loadOne } } as unknown as Window['api']
+    useSessionStore.setState({ sessions: [summary], selectedSessionId: summary.id })
+    const hook = renderController({ activeSession: summary })
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.openExportConversation(summary))
+    expect(loadOne).toHaveBeenCalledOnce()
+
+    await act(async () => {
+      useSessionStore.getState().deleteSession(summary.id)
+      load.resolve(persisted)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(useSessionStore.getState().sessions).toEqual([])
+    expect(hook.result.current.view.dialogs.exportConversation).toBeNull()
+  })
+
+  it('localizes an unopened Session export load failure', async () => {
+    const summary = session({ contentLoaded: false })
+    window.api = {
+      sessions: { loadOne: vi.fn().mockRejectedValue(new Error('private path leaked')) }
+    } as unknown as Window['api']
+    const hook = renderController({ activeSession: summary })
+    mounted.push(hook)
+
+    await act(async () => {
+      hook.result.current.actions.openExportConversation(summary)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(hook.result.current.view.exportError).toBe('Could not load this session for export.')
+  })
+
   it('keeps rename whitespace while using trim only as the empty-title gate', () => {
     const active = session()
     useSessionStore.setState({ sessions: [active], selectedSessionId: active.id })
@@ -223,6 +318,17 @@ describe('workspace session controller', () => {
     mounted.push(hook)
 
     expect(hook.result.current.lifecycle.canStartSend(inactive.id)).toBe(true)
+  })
+
+  it('blocks sends until active and background Session content is loaded', () => {
+    const active = session({ contentLoaded: false })
+    const inactive = session({ id: 'session-b', contentLoaded: false })
+    useSessionStore.setState({ sessions: [active, inactive], selectedSessionId: active.id })
+    const hook = renderController({ activeSession: active })
+    mounted.push(hook)
+
+    expect(hook.result.current.lifecycle.canStartSend()).toBe(false)
+    expect(hook.result.current.lifecycle.canStartSend(inactive.id)).toBe(false)
   })
 
   it('archives durably before enqueueing undo and clearing the active selection', async () => {
