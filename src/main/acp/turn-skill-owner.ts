@@ -7,6 +7,7 @@ import type {
   ResponsesBridgeSkillInput
 } from '../settings/responses-bridge'
 import { AcpSessionPresentationPolicy } from './session-presentation-policy'
+import type { SessionCapabilityPolicy } from './session-capability-owner'
 const log = createLogger('acp-turn-skill-owner')
 const presentation = new AcpSessionPresentationPolicy()
 type AcpTurnSkillHooks = Readonly<{
@@ -32,7 +33,7 @@ type ProviderPreparationInput = Readonly<{
 }>
 type ProviderPreparation = Readonly<{
   text: string
-  specialistSkillGuidance?: string
+  skillScopeGuidance?: string
   codexSkillInputs: readonly ResponsesBridgeSkillInput[]
 }>
 type TurnSkillHandle = Readonly<{
@@ -55,6 +56,7 @@ class AcpTurnSkillOwner {
     }>
   ) {}
   authorize(input: {
+    role?: SessionCapabilityPolicy['role']
     specialistId?: string
     selectedSkillIds?: readonly string[]
     signal?: AbortSignal
@@ -75,6 +77,12 @@ class AcpTurnSkillOwner {
         }
       }
       const create = (disabled: string[]): TurnSkillHandle => {
+        if (scope?.kind === 'main') {
+          const rejected = selected.find((id) => disabled.includes(id))
+          if (rejected) {
+            throw new Error(`Skill "${rejected}" is not available to Main Agent.`)
+          }
+        }
         const needsReload = disabled.length > 0 && !input.signal?.aborted
         const state: Authorization = {
           selectedSkillIds: selected,
@@ -91,7 +99,13 @@ class AcpTurnSkillOwner {
         ? this.options.skills.needForceLoad([...selected]).then(create)
         : create([])
     }
-    if (!input.specialistId || !this.options.resolveSpecialistSkills) return finish()
+    const role = input.role ?? 'primary'
+    if (role !== 'primary') {
+      if (selected.length > 0) throw new Error('Skills are not available to this session.')
+      return finish()
+    }
+    if (!input.specialistId) return finish({ kind: 'main' })
+    if (!this.options.resolveSpecialistSkills) return finish()
     return this.options
       .resolveSpecialistSkills(input.specialistId)
       .catch(
@@ -104,18 +118,25 @@ class AcpTurnSkillOwner {
       forcedSkillIds: Object.freeze([...(this.forced?.selectedSkillIds ?? [])])
     })
   }
-  // Mid-turn inject must not force-load disabled Skills: that reconnects the session.
+  // Mid-turn inject must not force-load disabled Skills: that reconnects the session. Main still
+  // checks enablement here so a stale or forged chip cannot bypass its current Skill scope.
   // Prefix names / attach Codex skill-inputs on the steered prompt instead.
   async presentFollowUp(input: {
     frameworkId: AgentFrameworkId
     text: string
     selectedSkillIds: readonly string[]
+    role?: SessionCapabilityPolicy['role']
     specialistId?: string
     codexHome?: string
   }): Promise<ProviderPreparation> {
     const selected = Object.freeze([...input.selectedSkillIds])
-    let scope: EffectiveSpecialistSkills | undefined
-    if (input.specialistId && this.options.resolveSpecialistSkills) {
+    const role = input.role ?? 'primary'
+    if (role !== 'primary' && selected.length > 0) {
+      throw new Error('Skills are not available to this session.')
+    }
+    let scope: EffectiveSpecialistSkills | undefined =
+      role !== 'primary' ? undefined : input.specialistId ? undefined : { kind: 'main' }
+    if (role === 'primary' && input.specialistId && this.options.resolveSpecialistSkills) {
       try {
         scope = await this.options.resolveSpecialistSkills(input.specialistId)
       } catch {
@@ -132,6 +153,11 @@ class AcpTurnSkillOwner {
           throw new Error(`Skill "${rejected}" is not available to the active specialist.`)
         }
       }
+    }
+    if (scope?.kind === 'main' && selected.length > 0 && this.options.skills) {
+      const disabled = await this.options.skills.needForceLoad([...selected])
+      const rejected = selected.find((id) => disabled.includes(id))
+      if (rejected) throw new Error(`Skill "${rejected}" is not available to Main Agent.`)
     }
     return this.prepareProvider(
       { selectedSkillIds: selected, ...(scope ? { scope } : {}) },
@@ -174,12 +200,25 @@ class AcpTurnSkillOwner {
       codexSkillInputs
     })
     const guidance =
-      input.frameworkId !== 'claude-code' && state.scope?.kind === 'specialist'
-        ? `Allowed Specialist Skills for this session:\n${state.scope.frameworkNames.map((name) => `- ${name}`).join('\n')}`
-        : undefined
+      input.frameworkId === 'claude-code'
+        ? undefined
+        : state.scope?.kind === 'specialist'
+          ? [
+              '<open_science_specialist_skill_scope>',
+              'Current Specialist Skill discovery is limited to the following exact list. It supersedes and revokes every earlier Specialist Skill or Connector scope in this conversation. This list does not grant tool or Connector permissions.',
+              ...state.scope.frameworkNames.map((name) => `- ${name}`),
+              '</open_science_specialist_skill_scope>'
+            ].join('\n')
+          : state.scope?.kind === 'main'
+            ? [
+                '<open_science_main_agent_scope>',
+                'Current agent: Main Agent. Any earlier Specialist identity and Specialist-specific Skill or Connector scope in this conversation is no longer active. Use only capabilities available in the current Main Agent runtime.',
+                '</open_science_main_agent_scope>'
+              ].join('\n')
+            : undefined
     return Object.freeze({
       ...presented,
-      ...(guidance ? { specialistSkillGuidance: guidance } : {}),
+      ...(guidance ? { skillScopeGuidance: guidance } : {}),
       codexSkillInputs: Object.freeze(codexSkillInputs)
     })
   }
@@ -222,12 +261,9 @@ class AcpTurnSkillOwner {
   }
 }
 
-const followUpPromptText = (presented: {
-  text: string
-  specialistSkillGuidance?: string
-}): string =>
-  presented.specialistSkillGuidance
-    ? `${presented.specialistSkillGuidance}\n\n${presented.text}`
+const followUpPromptText = (presented: { text: string; skillScopeGuidance?: string }): string =>
+  presented.skillScopeGuidance
+    ? `${presented.skillScopeGuidance}\n\n${presented.text}`
     : presented.text
 
 export { AcpTurnSkillOwner, followUpPromptText }
