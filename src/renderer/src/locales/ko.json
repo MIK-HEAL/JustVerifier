@@ -947,6 +947,10 @@
   "Installation network": "설치 네트워크",
   "Installation network unavailable": "설치 네트워크 불가",
   "Installed": "설치됨",
+  "Removed": "제거됨",
+  "Removed R packages need a kernel restart to unload.": "제거한 R 패키지를 언로드하려면 커널을 다시 시작해야 합니다.",
+  "Unchanged": "변경 없음",
+  "Updated": "업데이트됨",
   "Installed R packages need a kernel restart to load.": "설치된 R 패키지를 로드하려면 커널을 다시 시작해야 합니다.",
   "Installed and ready": "설치 및 준비 완료",
   "Installed packages in this environment.": "이 환경에 패키지를 설치했습니다.",
@@ -3261,5 +3265,16 @@
   "Figure {{index}}": "그림 {{index}}",
   "{{count}} lines of output_other": "출력 {{count}}줄",
   "done": "완료",
-  "Esc to close": "Esc로 닫기"
+  "Esc to close": "Esc로 닫기",
+  "Installing packages": "패키지 설치 중",
+  "Installing {{count}} packages_other": "패키지 {{count}}개 설치 중",
+  "This can take several minutes": "몇 분 정도 걸릴 수 있습니다",
+  "Removing packages": "패키지 제거 중",
+  "Removing {{count}} packages_other": "패키지 {{count}}개 제거 중",
+  "Installed packages": "패키지 설치 완료",
+  "Installed {{count}} packages_other": "패키지 {{count}}개 설치 완료",
+  "Removed packages": "패키지 제거 완료",
+  "Removed {{count}} packages_other": "패키지 {{count}}개 제거 완료",
+  "Bioconductor": "Bioconductor",
+  "Related changes": "관련 변경 사항"
 }
