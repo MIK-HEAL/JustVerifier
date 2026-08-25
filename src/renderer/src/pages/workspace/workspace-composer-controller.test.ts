@@ -142,6 +142,21 @@ describe('workspace composer controller', () => {
     expect(hook.result.current.view.doc).toEqual(emptyDoc)
   })
 
+  it('redoes the latest undone document edit and clears redo after a new edit', () => {
+    const hook = renderController()
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.changeDoc(textDoc('draft')))
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+    expect(hook.result.current.view.doc).toEqual(textDoc('draft'))
+
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    act(() => hook.result.current.actions.changeDoc(textDoc('replacement')))
+    expect(hook.result.current.actions.redo()).toBe(false)
+    expect(hook.result.current.view.doc).toEqual(textDoc('replacement'))
+  })
+
   it('restores the caret captured before a Composer document edit', () => {
     const hook = renderController()
     mounted.push(hook)
@@ -150,6 +165,17 @@ describe('workspace composer controller', () => {
     act(() => expect(hook.result.current.actions.undo()).toBe(true))
 
     expect(hook.result.current.view.caretRequest?.position).toEqual({ nodeIndex: 0, offset: 2 })
+  })
+
+  it('restores the post-edit caret when redoing a Composer document edit', () => {
+    const hook = renderController()
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.changeDoc(textDoc('draft'), { nodeIndex: 0, offset: 2 }))
+    act(() => expect(hook.result.current.actions.undo({ nodeIndex: 0, offset: 5 })).toBe(true))
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+
+    expect(hook.result.current.view.caretRequest?.position).toEqual({ nodeIndex: 0, offset: 5 })
   })
 
   it('releases Composer undo history when its session is deleted', () => {
@@ -161,6 +187,7 @@ describe('workspace composer controller', () => {
     act(() => hook.result.current.lifecycle.settleSessionDeletion('session-a', true))
 
     expect(hook.result.current.actions.undo()).toBe(false)
+    expect(hook.result.current.actions.redo()).toBe(false)
   })
 
   it('undoes a pasted image after its attachment finishes staging', async () => {
@@ -188,6 +215,42 @@ describe('workspace composer controller', () => {
     act(() => expect(hook.result.current.actions.undo()).toBe(true))
 
     expect(hook.result.current.view.attachments).toEqual([])
+    expect(uploadApi.deleteUpload).not.toHaveBeenCalled()
+
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+    expect(hook.result.current.view.attachments).toEqual([image])
+    expect(uploadApi.deleteUpload).not.toHaveBeenCalled()
+
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    act(() => hook.result.current.actions.changeDoc(textDoc('replacement')))
+    expect(hook.result.current.actions.redo()).toBe(false)
+    expect(uploadApi.deleteUpload).toHaveBeenCalledWith({ path: '/uploads/figure.png' })
+  })
+
+  it('deletes an attachment retained only by redo history when the controller unmounts', async () => {
+    const image = {
+      id: 'upload-image',
+      sessionId: '.pending',
+      name: 'figure.png',
+      originalName: 'figure.png',
+      path: '/uploads/figure.png',
+      mimeType: 'image/png',
+      size: 5
+    }
+    const uploadApi = uploads(vi.fn().mockResolvedValue(image))
+    const hook = renderController(uploadApi)
+
+    act(() =>
+      hook.result.current.actions.stageFiles([
+        new File(['image'], 'figure.png', { type: 'image/png' })
+      ])
+    )
+    await flushAsyncWork()
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    expect(uploadApi.deleteUpload).not.toHaveBeenCalled()
+
+    hook.unmount()
+
     expect(uploadApi.deleteUpload).toHaveBeenCalledWith({ path: '/uploads/figure.png' })
   })
 
@@ -203,11 +266,63 @@ describe('workspace composer controller', () => {
       ])
     )
     expect(hook.result.current.view.transfers).toHaveLength(1)
+    const originalTransferId = hook.result.current.view.transfers[0].transferId
 
     act(() => expect(hook.result.current.actions.undo()).toBe(true))
 
     expect(hook.result.current.view.transfers).toEqual([])
     expect(uploadApi.abortTransfer).toHaveBeenCalledOnce()
+
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+    expect(hook.result.current.view.transfers).toHaveLength(1)
+    expect(hook.result.current.view.transfers[0].transferId).not.toBe(originalTransferId)
+    expect(uploadApi.stageLocalFile).toHaveBeenCalledTimes(2)
+  })
+
+  it('restores a failed upload on redo without retrying it', async () => {
+    const stageLocalFile = vi.fn().mockRejectedValue(new Error('disk full'))
+    const hook = renderController(uploads(stageLocalFile))
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.stageFiles([new File(['paper'], 'paper.pdf')]))
+    await flushAsyncWork()
+    expect(hook.result.current.view.transfers[0]).toMatchObject({
+      name: 'paper.pdf',
+      status: 'error',
+      error: 'disk full'
+    })
+
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    expect(hook.result.current.view.transfers).toEqual([])
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+
+    expect(hook.result.current.view.transfers[0]).toMatchObject({
+      name: 'paper.pdf',
+      status: 'error',
+      error: 'disk full'
+    })
+    expect(stageLocalFile).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a shared pending transfer while undoing and redoing a later text edit', () => {
+    const pending = deferred<UploadedAttachment | null>()
+    const stageLocalFile = vi.fn(() => pending.promise)
+    const uploadApi = uploads(stageLocalFile)
+    const hook = renderController(uploadApi)
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.stageFiles([new File(['image'], 'figure.png')]))
+    const transferId = hook.result.current.view.transfers[0].transferId
+    act(() => hook.result.current.actions.changeDoc(textDoc('describe it')))
+
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    expect(hook.result.current.view.transfers[0].transferId).toBe(transferId)
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+
+    expect(hook.result.current.view.doc).toEqual(textDoc('describe it'))
+    expect(hook.result.current.view.transfers[0].transferId).toBe(transferId)
+    expect(stageLocalFile).toHaveBeenCalledOnce()
+    expect(uploadApi.abortTransfer).not.toHaveBeenCalled()
   })
 
   it('keeps an attachment whose pending transfer completed after a later text edit', async () => {
@@ -253,6 +368,7 @@ describe('workspace composer controller', () => {
 
     expect(hook.result.current.view.doc).toEqual(textDoc('history prompt'))
     expect(hook.result.current.actions.undo()).toBe(false)
+    expect(hook.result.current.actions.redo()).toBe(false)
   })
 
   it('clears draft undo when a customize prefill replaces the Composer document', () => {
@@ -269,6 +385,7 @@ describe('workspace composer controller', () => {
 
     expect(docToText(hook.result.current.view.doc)).not.toBe('scratch')
     expect(hook.result.current.actions.undo()).toBe(false)
+    expect(hook.result.current.actions.redo()).toBe(false)
   })
 
   it('undoes a long paste as one Composer edit', async () => {
@@ -299,7 +416,15 @@ describe('workspace composer controller', () => {
     expect(hook.result.current.view.doc).toEqual(emptyDoc)
     expect(hook.result.current.view.caretRequest?.position).toEqual({ nodeIndex: 0, offset: 3 })
     expect(hook.result.current.view.attachments).toEqual([])
-    expect(uploadApi.deleteUpload).toHaveBeenCalledWith({ path: '/uploads/paste.txt' })
+    expect(uploadApi.deleteUpload).not.toHaveBeenCalled()
+
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+    expect(hook.result.current.view.doc.nodes[1]).toMatchObject({
+      type: 'pasted-text',
+      id: 'paste-1',
+      attachmentId: 'upload-paste'
+    })
+    expect(hook.result.current.view.attachments[0]?.id).toBe('upload-paste')
   })
 
   it('stages a long pasted text node and binds the managed attachment back to its anchor', async () => {
@@ -341,6 +466,129 @@ describe('workspace composer controller', () => {
       transferId: undefined
     })
     expect(docToText(hook.result.current.view.doc)).toBe('before  after')
+  })
+
+  it('restarts and rebinds an undone pending long paste when it is redone', async () => {
+    const first = deferred<UploadedAttachment | null>()
+    const second = deferred<UploadedAttachment | null>()
+    const stageLocalFile = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    const uploadApi = uploads(stageLocalFile)
+    const hook = renderController(uploadApi)
+    mounted.push(hook)
+    const node: ComposerPastedTextNode = { type: 'pasted-text', id: 'paste-1', text: 'payload' }
+
+    act(() => hook.result.current.actions.stagePastedText(pastedDoc(node), node))
+    const firstTransferId = hook.result.current.view.transfers[0].transferId
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+
+    const secondTransferId = hook.result.current.view.transfers[0].transferId
+    expect(secondTransferId).not.toBe(firstTransferId)
+    expect(hook.result.current.view.doc.nodes[1]).toMatchObject({
+      type: 'pasted-text',
+      id: 'paste-1',
+      transferId: secondTransferId
+    })
+
+    await act(async () => {
+      first.resolve({
+        id: 'upload-old',
+        sessionId: '.pending',
+        name: 'old.txt',
+        originalName: 'old.txt',
+        path: '/uploads/old.txt',
+        mimeType: 'text/plain',
+        size: 7
+      })
+      await first.promise
+      await Promise.resolve()
+    })
+    await act(async () => {
+      second.resolve({
+        id: 'upload-redone',
+        sessionId: '.pending',
+        name: 'redone.txt',
+        originalName: 'redone.txt',
+        path: '/uploads/redone.txt',
+        mimeType: 'text/plain',
+        size: 7
+      })
+      await second.promise
+      await Promise.resolve()
+    })
+
+    expect(hook.result.current.view.attachments[0]?.id).toBe('upload-redone')
+    expect(hook.result.current.view.doc.nodes[1]).toMatchObject({
+      type: 'pasted-text',
+      id: 'paste-1',
+      transferId: undefined,
+      attachmentId: 'upload-redone'
+    })
+    expect(uploadApi.deleteUpload).toHaveBeenCalledWith({ path: '/uploads/old.txt' })
+  })
+
+  it('releases a re-staged pasted attachment replaced by repeated undo and redo', async () => {
+    const stageLocalFile = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'upload-old',
+        sessionId: '.pending',
+        name: 'old.txt',
+        originalName: 'old.txt',
+        path: '/uploads/old.txt',
+        mimeType: 'text/plain',
+        size: 3
+      })
+      .mockResolvedValueOnce({
+        id: 'upload-new',
+        sessionId: '.pending',
+        name: 'new.txt',
+        originalName: 'new.txt',
+        path: '/uploads/new.txt',
+        mimeType: 'text/plain',
+        size: 3
+      })
+      .mockResolvedValueOnce({
+        id: 'upload-old-restaged',
+        sessionId: '.pending',
+        name: 'old-restaged.txt',
+        originalName: 'old-restaged.txt',
+        path: '/uploads/old-restaged.txt',
+        mimeType: 'text/plain',
+        size: 3
+      })
+      .mockResolvedValueOnce({
+        id: 'upload-old-restaged-again',
+        sessionId: '.pending',
+        name: 'old-restaged-again.txt',
+        originalName: 'old-restaged-again.txt',
+        path: '/uploads/old-restaged-again.txt',
+        mimeType: 'text/plain',
+        size: 3
+      })
+    const uploadApi = uploads(stageLocalFile)
+    const hook = renderController(uploadApi)
+    mounted.push(hook)
+    const oldPaste: ComposerPastedTextNode = { type: 'pasted-text', id: 'paste-old', text: 'old' }
+    const newPaste: ComposerPastedTextNode = { type: 'pasted-text', id: 'paste-new', text: 'new' }
+
+    act(() => hook.result.current.actions.stagePastedText(pastedDoc(oldPaste), oldPaste))
+    await flushAsyncWork()
+    act(() => hook.result.current.actions.stagePastedText(pastedDoc(newPaste), newPaste))
+    await flushAsyncWork()
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    await flushAsyncWork()
+    expect(hook.result.current.view.attachments[0]?.id).toBe('upload-old-restaged')
+
+    act(() => expect(hook.result.current.actions.redo()).toBe(true))
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
+    await flushAsyncWork()
+
+    expect(hook.result.current.view.attachments[0]?.id).toBe('upload-old-restaged-again')
+    expect(uploadApi.deleteUpload).toHaveBeenCalledWith({ path: '/uploads/old-restaged.txt' })
   })
 
   it('stages copied pasted-text anchors as one independent upload batch', async () => {
@@ -437,9 +685,16 @@ describe('workspace composer controller', () => {
     await flushAsyncWork()
 
     expect(hook.result.current.view.attachments).toHaveLength(1)
+    act(() =>
+      hook.result.current.actions.changeDoc({
+        nodes: [...hook.result.current.view.doc.nodes, { type: 'text', text: ' typed' }]
+      })
+    )
+    act(() => expect(hook.result.current.actions.undo()).toBe(true))
     act(() => hook.result.current.actions.restorePastedText('paste-1'))
 
     expect(hook.result.current.view.doc).toEqual(textDoc('before payload after'))
+    expect(hook.result.current.actions.redo()).toBe(false)
     expect(hook.result.current.view.attachments).toEqual([])
     expect(hook.result.current.view.caretRequest?.position).toEqual({
       nodeIndex: 0,
