@@ -67,6 +67,7 @@ import { ArtifactProvenanceRepository } from './artifacts/provenance-repository'
 import { ProvenanceMessageSnapshotRepository } from './artifacts/provenance-message-snapshot'
 import { ArtifactRunRegistry } from './artifacts/run-registry'
 import { createComputeIpcModule } from './compute/ipc'
+import { bindComputeApprovalSessionLifecycle } from './compute/approval-session-lifecycle'
 import type { ComputeJobOwnerLiveness } from './compute/job-deletion-owner'
 import { AgentComputeService } from './compute/agent-compute-service'
 import { createSessionCatalogHydration } from './compute/session-catalog-hydration'
@@ -2126,6 +2127,21 @@ const createApplicationModules = async (
   })
   // ACP identity resolution and the Specialist settings IPC must use the same service instance.
   // Creating it only for settings leaves create-session unable to resolve a selected UUID.
+  const approvalSessionLifecycle = bindComputeApprovalSessionLifecycle(
+    {
+      onSessionTurnStarted: (sessionId, turnToken) =>
+        skillImportApprovalBroker.beginSessionTurn(sessionId, turnToken),
+      onSessionTurnEnded: (sessionId, turnToken) =>
+        skillImportApprovalBroker.endSessionTurn(sessionId, turnToken),
+      onSkillImportAttachmentEligible: (sessionId, turnToken, attachmentUri) =>
+        skillImportApprovalBroker.allowSessionTurnAttachment(sessionId, turnToken, attachmentUri),
+      onSessionCancellationRequested: (sessionId) =>
+        skillImportApprovalBroker.cancelSession(sessionId),
+      onSessionUnavailable: (sessionId) => skillImportApprovalBroker.cancelSession(sessionId),
+      onAllSessionsCancellationRequested: () => skillImportApprovalBroker.cancelAll()
+    },
+    computeIpcModule.handlers
+  )
   const runtime = await modules.add(
     {
       mcpEntryPath: mainEntryPath,
@@ -2142,22 +2158,23 @@ const createApplicationModules = async (
       permissionGrantRegistry,
       taskNotifications,
       notificationInbox,
-      onSessionTurnStarted: (sessionId, turnToken) =>
-        skillImportApprovalBroker.beginSessionTurn(sessionId, turnToken),
-      onSessionTurnEnded: (sessionId, turnToken) =>
-        skillImportApprovalBroker.endSessionTurn(sessionId, turnToken),
-      onSkillImportAttachmentEligible: (sessionId, turnToken, attachmentUri) =>
-        skillImportApprovalBroker.allowSessionTurnAttachment(sessionId, turnToken, attachmentUri),
+      onSessionTurnStarted: approvalSessionLifecycle.onSessionTurnStarted,
+      onSessionTurnEnded: approvalSessionLifecycle.onSessionTurnEnded,
+      onSkillImportAttachmentEligible: approvalSessionLifecycle.onSkillImportAttachmentEligible,
       onTrustedMessageAttribution: (projectId, event) =>
         messageAttributionAuthority.recordRuntimeEvent(projectId, event),
-      onSessionCancellationRequested: (sessionId) =>
-        skillImportApprovalBroker.cancelSession(sessionId),
-      onSessionUnavailable: (sessionId) => skillImportApprovalBroker.cancelSession(sessionId),
-      onAllSessionsCancellationRequested: () => skillImportApprovalBroker.cancelAll(),
+      onSessionCancellationRequested: approvalSessionLifecycle.onSessionCancellationRequested,
+      onSessionUnavailable: approvalSessionLifecycle.onSessionUnavailable,
+      onAllSessionsCancellationRequested:
+        approvalSessionLifecycle.onAllSessionsCancellationRequested,
+      onSessionDeleteStarted: (sessionId) =>
+        computeIpcModule.handlers.approvalBeginSessionDeletion(sessionId),
       beforeSessionDelete: async (sessionId) => {
         await sideChatOwnerRef.current?.invalidateParents([sessionId])
         await notebookService.shutdownSession(sessionId)
       },
+      afterSessionDelete: (sessionId, retained) =>
+        computeIpcModule.handlers.approvalFinishSessionDeletion(sessionId, retained),
       initializationBarrier: initialConnectorSkillsReady,
       profileService,
       sessionPersistenceCoordinator,
