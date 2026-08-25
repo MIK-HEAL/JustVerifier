@@ -67,14 +67,18 @@ type WorkspaceComposerController = {
     caretRequest: { key: number; position: ComposerCaretPosition } | undefined
   }
   actions: {
-    changeDoc: (doc: ComposerDoc) => void
+    changeDoc: (doc: ComposerDoc, caret?: ComposerCaretPosition) => void
     navigateHistory: (direction: 'previous' | 'next') => boolean
     stageFiles: (files: File[]) => void
-    stagePastedText: (doc: ComposerDoc, node: ComposerPastedTextStage) => void
+    stagePastedText: (
+      doc: ComposerDoc,
+      node: ComposerPastedTextStage,
+      caret?: ComposerCaretPosition
+    ) => void
     cancelTransfer: (transfer: ComposerUploadTransfer) => void
     removeAttachment: (attachment: UploadedAttachment) => void
     restorePastedText: (pastedTextId: string) => void
-    undoPastedTextRemoval: () => boolean
+    undo: () => boolean
     setError: (error: string | null) => void
   }
   lifecycle: {
@@ -159,9 +163,10 @@ const useWorkspaceComposerController = ({
     cancelTransfer,
     removeAttachment,
     restorePastedText,
-    undoPastedTextRemoval,
+    undo,
     setError,
-    clearPastedTextUndo
+    clearPastedTextUndo,
+    clearUndo
   } = uploadController.actions
   const {
     activateDraftAttachments,
@@ -190,8 +195,15 @@ const useWorkspaceComposerController = ({
     if (appliedCustomizePrefill?.projectId === activeProjectId) {
       delete historyRef.current[newConversationDraftKey]
       clearPastedTextUndo(newConversationDraftKey)
+      clearUndo(newConversationDraftKey)
     }
-  }, [activeProjectId, appliedCustomizePrefill, clearPastedTextUndo, newConversationDraftKey])
+  }, [
+    activeProjectId,
+    appliedCustomizePrefill,
+    clearPastedTextUndo,
+    clearUndo,
+    newConversationDraftKey
+  ])
 
   useLayoutEffect(() => {
     docRef.current = doc
@@ -267,6 +279,7 @@ const useWorkspaceComposerController = ({
           delete historyRef.current[currentDraftKey]
           markChanged(currentDraftKey)
           clearPastedTextUndo(currentDraftKey)
+          clearUndo(currentDraftKey)
           setActiveDoc(navigation.scratch)
           setHistoryBrowsingKey(undefined)
           setHistoryStatus('Draft restored')
@@ -306,6 +319,7 @@ const useWorkspaceComposerController = ({
       )
       markChanged(currentDraftKey)
       clearPastedTextUndo(currentDraftKey)
+      clearUndo(currentDraftKey)
       setActiveDoc(normalized.doc)
       setHistoryBrowsingKey(currentDraftKey)
       setHistoryStatus(
@@ -326,6 +340,7 @@ const useWorkspaceComposerController = ({
       markChanged,
       ready,
       clearPastedTextUndo,
+      clearUndo,
       setActiveDoc,
       transfers.length
     ]
@@ -351,6 +366,7 @@ const useWorkspaceComposerController = ({
     if (JSON.stringify(normalized.doc) !== JSON.stringify(doc)) {
       markChanged(currentDraftKey)
       clearPastedTextUndo(currentDraftKey)
+      clearUndo(currentDraftKey)
       setActiveDoc(normalized.doc)
     }
     setHistoryStatus(
@@ -362,6 +378,7 @@ const useWorkspaceComposerController = ({
     )
   }, [
     clearPastedTextUndo,
+    clearUndo,
     currentDraftKey,
     doc,
     historyBrowsingKey,
@@ -385,11 +402,13 @@ const useWorkspaceComposerController = ({
     delete historyRef.current[currentDraftKey]
     markChanged(currentDraftKey)
     clearPastedTextUndo(currentDraftKey)
+    clearUndo(currentDraftKey)
     setActiveDoc(navigation.scratch)
     setHistoryBrowsingKey(undefined)
     setHistoryStatus('Draft restored')
   }, [
     clearPastedTextUndo,
+    clearUndo,
     currentDraftKey,
     hasActiveSession,
     historyBrowsingKey,
@@ -400,19 +419,21 @@ const useWorkspaceComposerController = ({
 
   const captureSend = useCallback((): ComposerSendSnapshot => {
     clearPastedTextUndo()
+    clearUndo()
     return {
       draftKey: activeDraftKeyRef.current,
       version: versionsRef.current[activeDraftKeyRef.current] ?? 0,
       doc,
       attachments
     }
-  }, [attachments, clearPastedTextUndo, doc])
+  }, [attachments, clearPastedTextUndo, clearUndo, doc])
   const clearDraft = useCallback(
     (draftKey: string, expectedVersion?: number): boolean => {
       const currentVersion = versionsRef.current[draftKey] ?? 0
       if (expectedVersion !== undefined && currentVersion !== expectedVersion) return false
       clearHistory(draftKey)
       clearPastedTextUndo(draftKey)
+      clearUndo(draftKey)
       delete draftsRef.current[draftKey]
       if (activeDraftKeyRef.current !== draftKey) return true
       setActiveDoc(emptyDoc)
@@ -420,7 +441,7 @@ const useWorkspaceComposerController = ({
       setError(null)
       return true
     },
-    [clearActiveAttachments, clearHistory, clearPastedTextUndo, setActiveDoc, setError]
+    [clearActiveAttachments, clearHistory, clearPastedTextUndo, clearUndo, setActiveDoc, setError]
   )
   const restoreFailedSend = useCallback(
     (snapshot: ComposerSendSnapshot, preserveOnConflict = false): boolean => {
@@ -477,7 +498,7 @@ const useWorkspaceComposerController = ({
       cancelTransfer,
       removeAttachment,
       restorePastedText,
-      undoPastedTextRemoval,
+      undo,
       setError
     },
     lifecycle: {
