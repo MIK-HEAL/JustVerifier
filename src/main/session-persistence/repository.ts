@@ -21,7 +21,11 @@ import {
 } from '../../shared/session-persistence'
 import { decodeSessionDataPaths, encodeSessionDataPaths } from './session-data-paths'
 import { SessionPersistenceOperationScheduler } from './operation-scheduler'
-import { buildSessionProjection, type SessionProjectionRepository } from './projection'
+import {
+  assertSessionProjectionStorageShape,
+  buildSessionProjection,
+  type SessionProjectionRepository
+} from './projection'
 import {
   DurableJsonRecoveryBarrierError,
   readDurableJsonFile,
@@ -35,6 +39,13 @@ const PROJECT_DELETION_COMMIT_MARKER = '.project-deletion-committed'
 const MANIFEST_FILE = 'manifest.json'
 const PRE_S2_BACKUP_SUFFIX = '.pre-s2-backup'
 const PRE_SUBAGENT_MODEL_BACKUP_SUFFIX = '.pre-subagent-model-backup'
+
+const nextSessionRevision = (revision: number): number => {
+  if (!Number.isSafeInteger(revision) || revision < 0 || revision >= Number.MAX_SAFE_INTEGER) {
+    throw new Error('Session revision cannot be incremented safely.')
+  }
+  return revision + 1
+}
 
 const hasS2AttemptSchema = (value: unknown): boolean => {
   if (typeof value !== 'object' || value === null) return false
@@ -448,6 +459,7 @@ class SessionRepository {
       if (freshResult.diagnostics?.isComplete === false) {
         return { result: freshResult, sessions: projectIncompleteSummaries(freshResult) }
       }
+      for (const session of freshResult.sessions) assertSessionProjectionStorageShape(session)
       const assignments = await this.projection!.numberAssignments()
       const existingNumberById = new Map(assignments.map(({ id, number }) => [id, number]))
       const existingIdByNumber = new Map(assignments.map(({ id, number }) => [number, id]))
@@ -769,14 +781,18 @@ class SessionRepository {
         throw new SessionRevisionConflictError(expectedRevision, actualRevision)
       }
     }
+    const nextRevision = nextSessionRevision(actualRevision)
 
+    if (this.projection && this.projectionWritesSuspended) {
+      assertSessionProjectionStorageShape(session)
+    }
     const projectedSession =
       this.projection && !this.projectionWritesSuspended
         ? await this.projection.prepareSave(session)
         : session
     const durableSession: PersistedChatSession = {
       ...projectedSession,
-      revision: actualRevision + 1
+      revision: nextRevision
     }
     await this.writeSession(durableSession)
     if (this.projectionWritesSuspended) {
@@ -799,7 +815,9 @@ class SessionRepository {
       const key = `${session.projectId}:${session.id}`
       const durableSession: PersistedChatSession = {
         ...session,
-        revision: Math.max(sessionRevision(session), this.sessionRevisions.get(key) ?? 0) + 1
+        revision: nextSessionRevision(
+          Math.max(sessionRevision(session), this.sessionRevisions.get(key) ?? 0)
+        )
       }
       await this.writeSessionToDirectory(durableSession, this.deletedProjectDir(session.projectId))
       if (this.projectionWritesSuspended) this.suspendedProjectionCatalogMutation = true

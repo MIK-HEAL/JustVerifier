@@ -1,4 +1,4 @@
-import { mkdtemp, rename, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rename, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -107,6 +107,10 @@ const session = (id: string, createdAt = 100): PersistedChatSession => ({
   createdAt,
   updatedAt: createdAt + 5
 })
+
+const sessionWithInvalidProjection = (id: string, createdAt = 100): PersistedChatSession => {
+  return { ...session(id, createdAt), updatedAt: Number.MAX_VALUE }
+}
 
 describe('Session projection', () => {
   let client: PrismaClient | undefined
@@ -292,6 +296,175 @@ describe('Session projection', () => {
     await expect(client.session.count()).resolves.toBe(75)
     await expect(client.sessionTurnUsage.count()).resolves.toBe(75)
     await expect(client.sessionModelCallUsage.count()).resolves.toBe(150)
+  })
+
+  it('does not replace Session authority when an invalid projection integer rejects the save', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-session-save-validation-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({
+      data: { id: 'project-1', name: 'Project', createdAt: new Date(50) }
+    })
+    const projection = new SessionProjectionRepository(async () => client!)
+    const repository = new SessionRepository(storageRoot, {}, projection)
+    const saved = await repository.saveSession(session('session-1'))
+    const authorityPath = join(storageRoot, 'sessions', 'project-1', 'session-1.json')
+    const originalAuthority = await readFile(authorityPath, 'utf8')
+
+    await expect(
+      repository.saveSession({
+        ...saved,
+        title: 'Rejected update',
+        updatedAt: Number.MAX_VALUE
+      })
+    ).rejects.toThrow('Session projection updatedAt must be a non-negative safe integer.')
+
+    expect.soft(await readFile(authorityPath, 'utf8')).toBe(originalAuthority)
+    await expect(projection.pending()).resolves.toEqual([])
+  })
+
+  it('validates the incremented Session revision before writing authority', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-session-revision-validation-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'project-1', name: 'Project' } })
+    const projection = new SessionProjectionRepository(async () => client!)
+    const repository = new SessionRepository(storageRoot, {}, projection)
+    const authorityPath = join(storageRoot, 'sessions', 'project-1', 'revision-overflow.json')
+
+    const saveError = await repository
+      .saveSession({ ...session('revision-overflow'), revision: Number.MAX_SAFE_INTEGER })
+      .then(() => undefined)
+      .catch((error: unknown) => error)
+    const authority = await readFile(authorityPath, 'utf8').catch(() => undefined)
+
+    expect.soft(authority).toBeUndefined()
+    expect(saveError).toEqual(
+      expect.objectContaining({
+        message: 'Session revision cannot be incremented safely.'
+      })
+    )
+    await expect(projection.pending()).resolves.toEqual([])
+  })
+
+  it('rejects a zero context-window size before replacing Session authority', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-session-context-window-validation-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'project-1', name: 'Project' } })
+    const projection = new SessionProjectionRepository(async () => client!)
+    const repository = new SessionRepository(storageRoot, {}, projection)
+    const saved = await repository.saveSession(session('context-window'))
+    const authorityPath = join(storageRoot, 'sessions', 'project-1', 'context-window.json')
+    const originalAuthority = await readFile(authorityPath, 'utf8')
+    const invalid = { ...session('context-window'), number: saved.number, revision: saved.revision }
+    invalid.messages[1].modelCallUsage![0].contextWindowSize = 0
+
+    const saveError = await repository
+      .saveSession(invalid)
+      .then(() => undefined)
+      .catch((error: unknown) => error)
+
+    expect.soft(await readFile(authorityPath, 'utf8')).toBe(originalAuthority)
+    expect(saveError).toEqual(
+      expect.objectContaining({
+        message: 'Session projection modelCall.contextWindowSize must be a positive safe integer.'
+      })
+    )
+    await expect(projection.pending()).resolves.toEqual([])
+  })
+
+  it('rejects whitespace projection identifiers before replacing Session authority', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-session-text-validation-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'project-1', name: 'Project' } })
+    const projection = new SessionProjectionRepository(async () => client!)
+    const repository = new SessionRepository(storageRoot, {}, projection)
+    const saved = await repository.saveSession(session('blank-source'))
+    const authorityPath = join(storageRoot, 'sessions', 'project-1', 'blank-source.json')
+    const originalAuthority = await readFile(authorityPath, 'utf8')
+    const invalid = { ...session('blank-source'), number: saved.number, revision: saved.revision }
+    invalid.messages[1].modelCallUsage![0].sourceInvocationId = ' '
+
+    const saveError = await repository
+      .saveSession(invalid)
+      .then(() => undefined)
+      .catch((error: unknown) => error)
+
+    expect.soft(await readFile(authorityPath, 'utf8')).toBe(originalAuthority)
+    expect(saveError).toEqual(
+      expect.objectContaining({
+        message: 'Session projection modelCall.sourceInvocationId must be a non-empty string.'
+      })
+    )
+    await expect(projection.pending()).resolves.toEqual([])
+  })
+
+  it('rejects invalid Session statuses before replacing authority', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-session-status-validation-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'project-1', name: 'Project' } })
+    const projection = new SessionProjectionRepository(async () => client!)
+    const repository = new SessionRepository(storageRoot, {}, projection)
+    const saved = await repository.saveSession(session('invalid-status'))
+    const authorityPath = join(storageRoot, 'sessions', 'project-1', 'invalid-status.json')
+    const originalAuthority = await readFile(authorityPath, 'utf8')
+    const invalid = { ...session('invalid-status'), number: saved.number, revision: saved.revision }
+    Object.assign(invalid, { status: 'paused' })
+
+    const saveError = await repository
+      .saveSession(invalid)
+      .then(() => undefined)
+      .catch((error: unknown) => error)
+
+    expect.soft(await readFile(authorityPath, 'utf8')).toBe(originalAuthority)
+    expect(saveError).toEqual(
+      expect.objectContaining({
+        message: 'Session projection status must be a persisted Session status.'
+      })
+    )
+    await expect(projection.pending()).resolves.toEqual([])
+  })
+
+  it('rejects an invalid Session save while projection publication is suspended', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-session-suspended-validation-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'project-1', name: 'Project' } })
+    const files = new SessionRepository(storageRoot)
+    await files.saveSession(session('older', 100))
+    const stale = await files.loadAll()
+    const projection = new SessionProjectionRepository(async () => client!)
+    const repository = new SessionRepository(storageRoot, {}, projection)
+    const authorityStarted = createDeferred<void>()
+    const authorityReleased = createDeferred<void>()
+    const initializing = repository.ensureSessionProjection(async () => {
+      authorityStarted.resolve()
+      await authorityReleased.promise
+      return stale
+    })
+
+    await authorityStarted.promise
+    const saveError = await repository
+      .saveSession(sessionWithInvalidProjection('invalid', 200))
+      .then(() => undefined)
+      .catch((error: unknown) => error)
+    const authorityPath = join(storageRoot, 'sessions', 'project-1', 'invalid.json')
+    const authority = await readFile(authorityPath, 'utf8').catch(() => undefined)
+    authorityReleased.resolve()
+    const initializationError = await initializing
+      .then(() => undefined)
+      .catch((error: unknown) => error)
+
+    expect(saveError).toEqual(
+      expect.objectContaining({
+        message: 'Session projection updatedAt must be a non-negative safe integer.'
+      })
+    )
+    expect(authority).toBeUndefined()
+    expect(initializationError).toBeUndefined()
   })
 
   it('keeps a deleted metadata tombstone, excludes its facts, and never reuses its number', async () => {
@@ -603,6 +776,34 @@ describe('Session projection', () => {
     await expect(
       client.sessionNumberSequence.findUnique({ where: { id: 'global' } })
     ).resolves.toMatchObject({ nextNumber: 3 })
+  })
+
+  it('rejects an invalid backfill before clearing the existing projection', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-session-rebuild-validation-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'project-1', name: 'Project' } })
+    const projection = new SessionProjectionRepository(async () => client!)
+    const repository = new SessionRepository(storageRoot, {}, projection)
+    const retained = await repository.saveSession(session('retained', 100))
+    await projection.replaceAll([retained])
+    await client.sessionProjectionState.update({
+      where: { id: 'session-projection' },
+      data: { projectionVersion: 1 }
+    })
+    const files = new SessionRepository(storageRoot)
+    await files.saveSession(sessionWithInvalidProjection('invalid', 200))
+
+    await expect(repository.ensureSessionProjection(() => files.loadAll())).rejects.toThrow(
+      'Session projection updatedAt must be a non-negative safe integer.'
+    )
+    await expect(client.session.findUnique({ where: { id: retained.id } })).resolves.toMatchObject({
+      id: retained.id,
+      deletedAtMs: null
+    })
+    await expect(
+      client.sessionProjectionState.findUnique({ where: { id: 'session-projection' } })
+    ).resolves.toMatchObject({ projectionVersion: 1 })
   })
 
   it('derives degraded summaries from read-only authority instead of stale SQLite rows', async () => {

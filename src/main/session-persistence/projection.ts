@@ -18,6 +18,16 @@ import {
 const PROJECTION_STATE_ID = 'session-projection'
 const PROJECTION_VERSION = 2
 const SESSION_NUMBER_SEQUENCE_ID = 'global'
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER)
+const MAX_SQLITE_INT = 2_147_483_647
+const PERSISTED_SESSION_STATUSES: ReadonlySet<string> = new Set([
+  'idle',
+  'running',
+  'waiting-for-user',
+  'waiting-permission',
+  'waiting-plan-approval',
+  'error'
+] satisfies readonly PersistedSessionStatus[])
 
 type ProjectionClient = () => Promise<PrismaClient>
 
@@ -53,6 +63,127 @@ type SessionProjection = Readonly<{
   runs: Array<{ messageId: string; createdAtMs: bigint }>
   artifactRefs: Array<{ artifactId: string; artifactCreatedAtMs: bigint | null }>
 }>
+
+const assertProjectionStorageShape = (projection: SessionProjection): void => {
+  const assertText = (value: unknown, field: string): void => {
+    if (typeof value !== 'string') {
+      throw new Error(`Session projection ${field} must be a string.`)
+    }
+  }
+  const assertNonEmptyText = (value: unknown, field: string): void => {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new Error(`Session projection ${field} must be a non-empty string.`)
+    }
+  }
+  const assertStatus = (value: unknown, field: string): void => {
+    if (typeof value !== 'string' || !PERSISTED_SESSION_STATUSES.has(value)) {
+      throw new Error(`Session projection ${field} must be a persisted Session status.`)
+    }
+  }
+  const assertInt = (value: number, field: string): void => {
+    if (!Number.isSafeInteger(value) || value < 0 || value > MAX_SQLITE_INT) {
+      throw new Error(`Session projection ${field} must fit a non-negative SQLite Int.`)
+    }
+  }
+  const assertSafeNumber = (value: number, field: string): void => {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`Session projection ${field} must be a non-negative safe integer.`)
+    }
+  }
+  const assertBigInt = (value: bigint, field: string): void => {
+    if (value < 0n || value > MAX_SAFE_INTEGER_BIGINT) {
+      throw new Error(`Session projection ${field} must be a non-negative safe integer.`)
+    }
+  }
+  const assertNullableNonEmptyText = (value: string | null, field: string): void => {
+    if (value !== null) assertNonEmptyText(value, field)
+  }
+  const assertNullableBigInt = (value: bigint | null, field: string): void => {
+    if (value !== null) assertBigInt(value, field)
+  }
+  const assertNullablePositiveBigInt = (value: bigint | null, field: string): void => {
+    if (value !== null && (value <= 0n || value > MAX_SAFE_INTEGER_BIGINT)) {
+      throw new Error(`Session projection ${field} must be a positive safe integer.`)
+    }
+  }
+  const assertUnique = (values: string[], field: string): void => {
+    if (new Set(values).size !== values.length) {
+      throw new Error(`Session projection ${field} must be unique.`)
+    }
+  }
+
+  for (const field of ['id', 'projectId'] as const) {
+    assertNonEmptyText(projection.summary[field], field)
+  }
+  assertText(projection.summary.title, 'title')
+  assertStatus(projection.summary.status, 'status')
+  assertStatus(projection.summary.presentedStatus, 'presentedStatus')
+  for (const field of ['activeMessageCount', 'artifactCount', 'filesRevision'] as const) {
+    assertInt(projection.summary[field], field)
+  }
+  for (const field of ['revision', 'createdAt', 'updatedAt'] as const) {
+    assertSafeNumber(projection.summary[field], field)
+  }
+  if (projection.summary.archivedAt !== undefined) {
+    assertSafeNumber(projection.summary.archivedAt, 'archivedAt')
+  }
+  if (projection.summary.presentedActivityAt !== undefined) {
+    assertSafeNumber(projection.summary.presentedActivityAt, 'presentedActivityAt')
+  }
+
+  for (const usage of projection.turnUsage) {
+    assertNonEmptyText(usage.messageId, 'turnUsage.messageId')
+    assertBigInt(usage.completedAtMs, 'turnUsage.completedAtMs')
+    assertBigInt(usage.inputTokens, 'turnUsage.inputTokens')
+    assertBigInt(usage.cacheTokens, 'turnUsage.cacheTokens')
+    assertNullableBigInt(usage.cachedReadTokens, 'turnUsage.cachedReadTokens')
+    assertNullableBigInt(usage.cachedWriteTokens, 'turnUsage.cachedWriteTokens')
+    assertBigInt(usage.outputTokens, 'turnUsage.outputTokens')
+    if (usage.modelCallCount !== null) assertInt(usage.modelCallCount, 'turnUsage.modelCallCount')
+  }
+  assertUnique(
+    projection.turnUsage.map(({ messageId }) => messageId),
+    'turnUsage.messageId'
+  )
+  for (const call of projection.modelCalls) {
+    assertNonEmptyText(call.messageId, 'modelCall.messageId')
+    assertNonEmptyText(call.callId, 'modelCall.callId')
+    assertInt(call.callIndex, 'modelCall.callIndex')
+    assertNullableNonEmptyText(call.sourceInvocationId, 'modelCall.sourceInvocationId')
+    assertNullableNonEmptyText(call.frameworkId, 'modelCall.frameworkId')
+    assertNullableNonEmptyText(call.backendId, 'modelCall.backendId')
+    assertNullableNonEmptyText(call.model, 'modelCall.model')
+    assertBigInt(call.inputTokens, 'modelCall.inputTokens')
+    assertBigInt(call.cacheTokens, 'modelCall.cacheTokens')
+    assertNullableBigInt(call.cachedReadTokens, 'modelCall.cachedReadTokens')
+    assertNullableBigInt(call.cachedWriteTokens, 'modelCall.cachedWriteTokens')
+    assertBigInt(call.outputTokens, 'modelCall.outputTokens')
+    assertNullableBigInt(call.contextUsedTokens, 'modelCall.contextUsedTokens')
+    assertNullablePositiveBigInt(call.contextWindowSize, 'modelCall.contextWindowSize')
+  }
+  assertUnique(
+    projection.modelCalls.map(({ callId }) => callId),
+    'modelCall.callId'
+  )
+  assertUnique(
+    projection.modelCalls.map(({ messageId, callIndex }) => `${messageId}\0${callIndex}`),
+    'modelCall.messageId/callIndex'
+  )
+  for (const run of projection.runs) {
+    assertNonEmptyText(run.messageId, 'run.messageId')
+    assertBigInt(run.createdAtMs, 'run.createdAtMs')
+  }
+  assertUnique(
+    projection.runs.map(({ messageId }) => messageId),
+    'run.messageId'
+  )
+  for (const artifact of projection.artifactRefs) {
+    assertNonEmptyText(artifact.artifactId, 'artifactRef.artifactId')
+    if (artifact.artifactCreatedAtMs !== null) {
+      assertBigInt(artifact.artifactCreatedAtMs, 'artifactRef.artifactCreatedAtMs')
+    }
+  }
+}
 
 const finiteNonNegativeInteger = (value: number | undefined): number =>
   value !== undefined && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0
@@ -250,6 +381,10 @@ export const buildSessionProjection = (session: PersistedChatSession): SessionPr
   }
 }
 
+export const assertSessionProjectionStorageShape = (session: PersistedChatSession): void => {
+  assertProjectionStorageShape(buildSessionProjection(session))
+}
+
 const sessionData = (
   projection: SessionProjection,
   number: number
@@ -400,6 +535,7 @@ export class SessionProjectionRepository {
   async prepareSave(session: PersistedChatSession): Promise<PersistedChatSession> {
     const client = await this.client()
     const projection = buildSessionProjection(session)
+    assertProjectionStorageShape(projection)
     const number = await client.$transaction(async (tx) => {
       const project = await tx.project.findFirst({
         where: { id: session.projectId, deletedAt: null },
@@ -453,8 +589,9 @@ export class SessionProjectionRepository {
   async commitSave(session: PersistedChatSession): Promise<void> {
     const number = session.number
     if (number === undefined) throw new Error('Session projection requires a number.')
-    const client = await this.client()
     const projection = buildSessionProjection(session)
+    assertProjectionStorageShape(projection)
+    const client = await this.client()
     await client.$transaction(async (tx) => {
       const project = await tx.project.findFirst({
         where: { id: session.projectId, deletedAt: null },
@@ -481,8 +618,9 @@ export class SessionProjectionRepository {
   // Session row and number were allocated when the pending marker was created, so reconciliation
   // updates only that existing identity and cannot create new authority for a deleted Project.
   async commitReconciliation(session: PersistedChatSession): Promise<void> {
-    const client = await this.client()
     const projection = buildSessionProjection(session)
+    assertProjectionStorageShape(projection)
+    const client = await this.client()
     await client.$transaction(async (tx) => {
       const existing = await tx.session.findUnique({ where: { id: session.id } })
       if (!existing) throw new Error('Pending Session projection identity is missing.')
@@ -552,7 +690,9 @@ export class SessionProjectionRepository {
       .map((session) => {
         const number = session.number
         if (number === undefined) throw new Error('Backfilled Session is missing its number.')
-        return { session: { ...session, number }, projection: buildSessionProjection(session) }
+        const projection = buildSessionProjection(session)
+        assertProjectionStorageShape(projection)
+        return { session: { ...session, number }, projection }
       })
     const turnUsage = projected.flatMap(({ session, projection }) =>
       projection.turnUsage.map((usage) => ({ sessionId: session.id, ...usage }))
