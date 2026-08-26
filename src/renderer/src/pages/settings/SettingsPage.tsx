@@ -83,6 +83,7 @@ import {
   type ProviderFormValue
 } from './provider-form-value'
 import { SettingsPanelLoadingBoundary } from './SettingsPanelLoadingBoundary'
+import { localizeProviderResourceMessage } from './validation-message'
 import { loadSettingsPanel } from './settings-panel-loader'
 
 const AgentPanel = lazy(async () => ({ default: (await import('./AgentPanel')).AgentPanel }))
@@ -856,7 +857,11 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
       }
     } catch (error) {
       setStatusOk(false)
-      setStatusMessage(error instanceof Error ? error.message : t('Could not save provider.'))
+      setStatusMessage(
+        error instanceof Error
+          ? localizeProviderResourceMessage(error.message, t)
+          : t('Could not save provider.')
+      )
     } finally {
       setIsSaving(false)
     }
@@ -879,7 +884,9 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
               count: result.models?.length ?? 0
             })
           : t("Couldn't fetch models: {{reason}}. Using the bundled list.", {
-              reason: result.message ?? t('request failed')
+              reason: result.message
+                ? localizeProviderResourceMessage(result.message, t)
+                : t('request failed')
             })
       )
     } finally {
