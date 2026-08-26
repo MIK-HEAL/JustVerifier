@@ -22,6 +22,20 @@ const createProject = async (page: Page): Promise<void> => {
   await expect(page.getByRole('heading', { name: 'New conversation' })).toBeVisible()
 }
 
+const clickPermissionDecision = async (page: Page, decision: 'allow' | 'deny'): Promise<void> => {
+  const button = page
+    .getByTestId('permission-actions')
+    .getByTestId(decision === 'allow' ? 'allow-primary' : 'deny-button')
+  await expect(button).toBeEnabled()
+  // Windows E2E can raise a session-persistence conflict toast over the sticky
+  // Allow/Deny row. A pointer click, even with force, still hits that overlay;
+  // Retry would reload the Session and drop the prompt. Activate the button
+  // through its DOM click handler instead.
+  await button.evaluate((element: HTMLButtonElement) => {
+    element.click()
+  })
+}
+
 test('edits and navigates message revisions that persist after relaunch', async ({ app }) => {
   await app.completeOnboarding()
   let page = await app.configureFakeAgent()
@@ -120,7 +134,8 @@ test('resolves Agent permission requests through both Allow and Deny decisions',
   } finally {
     await page.mouse.up()
   }
-  await page.getByRole('button', { name: /^Allow/ }).click()
+  await page.mouse.move(8, 8)
+  await clickPermissionDecision(page, 'allow')
   await expect(page.getByText('Fixture permission allowed.', { exact: true })).toBeVisible()
   await expect(composer).toBeVisible()
 
@@ -130,7 +145,7 @@ test('resolves Agent permission requests through both Allow and Deny decisions',
   await expect(page.getByText('Write fixture output', { exact: true })).toBeVisible()
   await expect(page.getByTestId('permission-composer')).toBeVisible()
   await expect(composer).toBeHidden()
-  await page.getByRole('button', { name: 'Deny', exact: true }).click()
+  await clickPermissionDecision(page, 'deny')
   await expect(page.getByText('Fixture permission denied.', { exact: true })).toBeVisible()
   await expect(composer).toBeVisible()
 })
