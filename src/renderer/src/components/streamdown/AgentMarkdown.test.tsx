@@ -42,7 +42,8 @@ vi.mock('streamdown', () => ({
   }
 }))
 
-const { AgentMarkdown, SessionMessageLink } = await import('./AgentMarkdown')
+const { AgentMarkdown } = await import('./AgentMarkdown')
+const { SessionMessageLink } = await import('./SessionMessageLink')
 const { StreamingBlock } = await import('./StreamingBlock')
 
 describe('AgentMarkdown renderer recovery', () => {
@@ -312,72 +313,5 @@ describe('AgentMarkdown renderer recovery', () => {
     })
 
     expect(container.querySelector('[data-testid="rich-markdown"]')?.textContent).toBe('abcXYZ')
-  })
-
-  it('uses one lazy, no-referrer favicon source per hostname and falls back on failure', async () => {
-    await act(async () => {
-      root.render(
-        <SessionMessageLink href="https://pubmed.ncbi.nlm.nih.gov/123?view=full">
-          Paper
-        </SessionMessageLink>
-      )
-    })
-
-    let favicon = container.querySelector<HTMLImageElement>('[data-session-link-favicon] img')
-    expect(favicon?.getAttribute('src')).toBe('https://pubmed.ncbi.nlm.nih.gov/favicon.ico')
-    expect(favicon?.getAttribute('loading')).toBe('lazy')
-    expect(favicon?.getAttribute('referrerpolicy')).toBe('no-referrer')
-
-    await act(async () => {
-      root.render(
-        <SessionMessageLink href="https://pubmed.ncbi.nlm.nih.gov/456">Paper</SessionMessageLink>
-      )
-    })
-    favicon = container.querySelector<HTMLImageElement>('[data-session-link-favicon] img')
-    expect(favicon?.getAttribute('src')).toBe('https://pubmed.ncbi.nlm.nih.gov/favicon.ico')
-
-    await act(async () => {
-      favicon?.dispatchEvent(new Event('error'))
-    })
-    expect(container.querySelector('[data-session-link-favicon]')?.getAttribute('data-state')).toBe(
-      'error'
-    )
-    expect(container.querySelector('[data-session-link-favicon] img')).toBeNull()
-    expect(container.querySelector('[data-session-link-favicon-fallback]')).not.toBeNull()
-
-    await act(async () => {
-      root.render(
-        <SessionMessageLink href="mailto:researcher@example.com">Email</SessionMessageLink>
-      )
-    })
-    expect(container.querySelector('[data-session-link-favicon]')).toBeNull()
-  })
-
-  it('keeps the external-link safety confirmation before opening a session link', async () => {
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
-
-    await act(async () => {
-      root.render(<SessionMessageLink href="https://example.com/paper">Paper</SessionMessageLink>)
-    })
-
-    const link = container.querySelector<HTMLButtonElement>('[data-session-message-link]')
-    await act(async () => {
-      link?.click()
-    })
-    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)))
-
-    const dialog = document.body.querySelector<HTMLElement>(
-      '[role="dialog"][aria-label="Open external link?"]'
-    )
-    expect(dialog).not.toBeNull()
-
-    const openLink = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find(
-      (button) => button.textContent?.trim() === 'Open link'
-    )
-    await act(async () => {
-      openLink?.click()
-    })
-
-    expect(open).toHaveBeenCalledWith('https://example.com/paper', '_blank', 'noreferrer')
   })
 })

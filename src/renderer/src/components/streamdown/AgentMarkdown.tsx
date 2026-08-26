@@ -1,24 +1,16 @@
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V5 */
-import {
-  Component,
-  memo,
-  useMemo,
-  useState,
-  type ComponentProps,
-  type ErrorInfo,
-  type ReactNode
-} from 'react'
+import { Component, memo, useMemo, useState, type ErrorInfo, type ReactNode } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import { code } from '@streamdown/code'
 import { cjk } from '@streamdown/cjk'
 import { createMathPlugin } from '@streamdown/math'
 import { mermaid } from '@streamdown/mermaid'
-import { Globe2 } from 'lucide-react'
 import { Streamdown, type Components, type LinkSafetyConfig } from 'streamdown'
 import 'katex/dist/katex.min.css'
 
 import { AGENT_ALLOWED_TAGS, AGENT_CONTROLS } from './streamdown-config'
 import { LinkSafetyModal } from './LinkSafetyModal'
+import { SessionMessageLink } from './SessionMessageLink'
 import { StreamingBlock } from './StreamingBlock'
 import { createAgentMarkdownNormalizer } from './normalize-agent-markdown'
 import { useSmoothStreamingContent } from './use-smooth-streaming-content'
@@ -34,85 +26,6 @@ type AgentMarkdownProps = {
 
 type RichAgentMarkdownProps = AgentMarkdownProps & {
   incrementalBlocks?: boolean
-}
-
-type SessionMessageLinkProps = ComponentProps<'a'> & {
-  node?: unknown
-  'data-incomplete'?: boolean
-}
-
-type FaviconState = 'loading' | 'success' | 'error'
-
-const getSessionLinkFaviconUrl = (href: string | undefined): string | undefined => {
-  if (!href) return undefined
-
-  try {
-    const url = new URL(href)
-    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname) return undefined
-
-    return `https://${url.hostname.toLowerCase()}/favicon.ico`
-  } catch {
-    return undefined
-  }
-}
-
-const SessionLinkFavicon = ({ src }: { src: string }): React.JSX.Element => {
-  const [state, setState] = useState<FaviconState>('loading')
-
-  return (
-    <span data-session-link-favicon="" data-state={state} aria-hidden="true">
-      <Globe2 data-session-link-favicon-fallback="" />
-      {state !== 'error' ? (
-        <img
-          src={src}
-          alt=""
-          width="16"
-          height="16"
-          loading="lazy"
-          decoding="async"
-          referrerPolicy="no-referrer"
-          draggable={false}
-          onLoad={() => setState('success')}
-          onError={() => setState('error')}
-        />
-      ) : null}
-    </span>
-  )
-}
-
-const SessionMessageLink = ({
-  children,
-  className,
-  href,
-  'data-incomplete': dataIncomplete
-}: SessionMessageLinkProps): React.JSX.Element => {
-  const [isOpen, setIsOpen] = useState(false)
-  const faviconUrl = getSessionLinkFaviconUrl(href)
-
-  return (
-    <>
-      <button
-        type="button"
-        className={className}
-        data-incomplete={dataIncomplete}
-        data-session-message-link=""
-        data-streamdown="link"
-        disabled={!href}
-        onClick={() => setIsOpen(true)}
-      >
-        {faviconUrl ? <SessionLinkFavicon key={faviconUrl} src={faviconUrl} /> : null}
-        {children}
-      </button>
-      {href ? (
-        <LinkSafetyModal
-          url={href}
-          isOpen={isOpen}
-          onClose={() => setIsOpen(false)}
-          onConfirm={() => window.open(href, '_blank', 'noreferrer')}
-        />
-      ) : null}
-    </>
-  )
 }
 
 const sessionLinkComponents = { a: SessionMessageLink } satisfies Components
@@ -347,4 +260,4 @@ const AgentMarkdown = memo(
 
 AgentMarkdown.displayName = 'AgentMarkdown'
 
-export { AgentMarkdown, PresentedAgentMarkdown, SessionMessageLink }
+export { AgentMarkdown, PresentedAgentMarkdown }
