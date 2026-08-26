@@ -211,9 +211,13 @@ describe('JobPoller', () => {
 
     await poller.tick()
 
-    expect(connectionBroker.acquire).toHaveBeenCalledWith(job.provider_id, {
-      intent: 'job_poll'
-    })
+    expect(connectionBroker.acquire).toHaveBeenCalledWith(
+      job.provider_id,
+      expect.objectContaining({
+        intent: 'job_poll',
+        signal: expect.any(AbortSignal)
+      })
+    )
     expect(update).toHaveBeenCalledWith(
       'job-1',
       expect.objectContaining({ status: 'success', exitCode: 0 })
@@ -837,6 +841,53 @@ describe('JobPoller', () => {
     expect(updateIfStatus.mock.invocationCallOrder[0]).toBeLessThan(
       onJobUpdated.mock.invocationCallOrder[0]
     )
+  })
+
+  it('does not mark timeout when shutdown cancels the fallback kill', async () => {
+    const job = makeJob({ timeout_seconds: 10, started_at: Date.now() - 71_000 })
+    const controller = new AbortController()
+    const update = vi.fn((_id: string, u: unknown) => Promise.resolve({ ...job, ...(u as object) }))
+    const updateIfStatus = guardStatusUpdate(update)
+    const jobRepo = {
+      findNonTerminal: vi.fn(async () => [job]),
+      get: vi.fn(async () => job),
+      update,
+      updateIfStatus
+    } as unknown as ComputeJobRepository
+    const pollOutput = withNonce([
+      'JOB_START:job-1',
+      'alive:1',
+      '',
+      '',
+      'STDOUT_END:job-1',
+      '',
+      'STDERR_END:job-1'
+    ])
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: pollOutput,
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })
+      .mockImplementationOnce(async () => {
+        controller.abort()
+        throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' })
+      })
+    const poller = new JobPoller({
+      connectionBroker: brokerFromRunner({ run }),
+      hostRepository: { get: vi.fn(async () => sampleHost()) } as unknown as ComputeHostRepository,
+      jobRepository: jobRepo,
+      makeNonce: () => NONCE
+    })
+
+    await poller.tick(controller.signal)
+
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(updateIfStatus).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
   })
 
   it('serializes overlapping results so a late fallback timeout cannot kill after success', async () => {
@@ -1503,7 +1554,7 @@ describe('JobPoller — harvest wiring', () => {
     await Promise.resolve()
 
     // The orphaned terminal+unharvested job should have been harvested
-    expect(harvestFn).toHaveBeenCalledWith(terminalJob)
+    expect(harvestFn).toHaveBeenCalledWith(terminalJob, expect.any(AbortSignal))
   })
 
   it('does not re-harvest already-harvested jobs in recovery scan', async () => {
