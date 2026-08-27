@@ -494,7 +494,8 @@ const sendIntentKeys = [
   'specialistId',
   'enabledComputeHosts',
   'selectedComputeHosts',
-  'agentConfiguration'
+  'agentConfiguration',
+  'preserveSelection'
 ] as const
 const ownerDependencyNames = (path: string): string[] => {
   const targets = new Set(importsFrom(path).map((reference) => reference.target))
@@ -656,6 +657,7 @@ describe('workspace runtime architecture', () => {
     }
     expect(unsupportedFacadeImports).toEqual([])
     expect(hookConsumers).toEqual([
+      'lib/compute/useJobAnalysisEffect.ts',
       'pages/workspace/WorkspacePage.tsx',
       'pages/workspace/workspace-message-queue-controller.ts'
     ])
