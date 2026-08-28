@@ -703,6 +703,78 @@ describe('startWebHttpServer', () => {
     publicSocket.close()
   })
 
+  it('disconnects event sockets before their outgoing backlog exceeds the byte limit', async () => {
+    const server = await startTestWebHttpServer({
+      host: '127.0.0.1',
+      port: 0,
+      token: 'test-token',
+      staticRoot: '/unused',
+      rpc: {
+        channels: () => [],
+        invoke: vi.fn(),
+        releaseClient: vi.fn(),
+        dispose: vi.fn()
+      },
+      bootstrap: {
+        appName: 'Open Science',
+        appVersion: '0.0.0',
+        configRoot: '/fake/root',
+        platform: 'test',
+        versions: { electron: '1', chrome: '1', node: '1' }
+      }
+    })
+    servers.push(server)
+    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/api/v1/events?token=test-token`)
+    await new Promise<void>((resolve) => socket.once('open', resolve))
+    const closed = new Promise<'closed'>((resolve) => socket.once('close', () => resolve('closed')))
+    const bufferedAmount = vi
+      .spyOn(WebSocket.prototype, 'bufferedAmount', 'get')
+      .mockReturnValue(Number.MAX_SAFE_INTEGER)
+
+    applicationEvents.publish('acp:event', [
+      {
+        id: 'event-1',
+        timestamp: 1,
+        level: 'info',
+        sessionId: 'session-1',
+        kind: 'message',
+        text: 'Backlogged event'
+      }
+    ])
+    const outcome = await Promise.race([
+      closed,
+      new Promise<'still-open'>((resolve) => setTimeout(() => resolve('still-open'), 250))
+    ])
+    bufferedAmount.mockRestore()
+
+    expect(outcome).toBe('closed')
+
+    const oversizedSocket = new WebSocket(
+      `ws://127.0.0.1:${server.port}/api/v1/events?token=test-token`
+    )
+    await new Promise<void>((resolve) => oversizedSocket.once('open', resolve))
+    const oversizedClosed = new Promise<'closed'>((resolve) =>
+      oversizedSocket.once('close', () => resolve('closed'))
+    )
+    applicationEvents.publish('acp:event', [
+      {
+        id: 'event-2',
+        timestamp: 2,
+        level: 'info',
+        sessionId: 'session-1',
+        kind: 'message',
+        text: 'x'.repeat(17 * 1024 * 1024)
+      }
+    ])
+
+    await expect(
+      Promise.race([
+        oversizedClosed,
+        new Promise<'still-open'>((resolve) => setTimeout(() => resolve('still-open'), 250))
+      ])
+    ).resolves.toBe('closed')
+  })
+
   it('replays internal renderer events published while the Web client is disconnected', async () => {
     const server = await startTestWebHttpServer({
       host: '127.0.0.1',
@@ -778,10 +850,28 @@ describe('startWebHttpServer', () => {
     applicationEvents.publish('settings:connector-runtime-changed', undefined)
 
     const replayed: unknown[] = []
+    const bufferedAmount = vi
+      .spyOn(WebSocket.prototype, 'bufferedAmount', 'get')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(16 * 1024 * 1024)
     const secondSocket = new WebSocket(eventSocketUrl(0))
-    secondSocket.on('message', (data) => replayed.push(JSON.parse(data.toString())))
+    const replayCompleted = new Promise<'ready' | 'closed'>((resolve) => {
+      secondSocket.on('message', (data) => {
+        const message = JSON.parse(data.toString()) as { kind?: string }
+        replayed.push(message)
+        if (message.kind === 'ready') resolve('ready')
+      })
+      secondSocket.once('close', () => resolve('closed'))
+    })
     await new Promise<void>((resolve) => secondSocket.once('open', resolve))
-    await vi.waitFor(() => expect(replayed).toHaveLength(3))
+    const replayOutcome = await Promise.race([
+      replayCompleted,
+      new Promise<'timed-out'>((resolve) => setTimeout(() => resolve('timed-out'), 500))
+    ])
+    bufferedAmount.mockRestore()
+
+    expect(replayOutcome).toBe('ready')
     expect(replayed).toEqual([
       expect.objectContaining({
         kind: 'event',
