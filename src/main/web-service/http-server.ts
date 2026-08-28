@@ -51,6 +51,10 @@ import type {
 import { TaskApiError, type HeadlessTaskApi } from './task-api'
 
 const MAX_RPC_BODY_BYTES = 64 * 1024 * 1024
+// Preserve one maximum-size request per logical client while leaving the same amount of capacity
+// for other authenticated clients. Browser uploads use much smaller 8 MiB chunks in normal use.
+const MAX_CLIENT_IN_FLIGHT_RPC_BODY_BYTES = 64 * 1024 * 1024
+const MAX_SERVER_IN_FLIGHT_RPC_BODY_BYTES = 128 * 1024 * 1024
 const MIN_GZIP_BYTES = 1_024
 const INTERNAL_SERVER_ERROR_MESSAGE = 'Internal server error'
 const DEFAULT_EVENT_HEARTBEAT_INTERVAL_MS = 10_000
@@ -105,6 +109,7 @@ type WebServerOptions = {
   applicationCommands: Pick<ApplicationCommandComposition, 'localWeb' | 'remoteWeb'>
   applicationEvents: ApplicationEventSource
   eventHeartbeatIntervalMs?: number
+  requestBodyBudgets?: RequestBodyBudgets
   externalAccess?: ExternalWebAccess
   tasks?: Pick<
     HeadlessTaskApi,
@@ -130,6 +135,92 @@ type WebServerOptions = {
     configRoot: string
     platform: string
     versions: { electron: string; chrome: string; node: string }
+  }
+}
+
+type RequestBodyBudgets = Readonly<{
+  perRequestBytes: number
+  perClientInFlightBytes: number
+  serverInFlightBytes: number
+}>
+
+type RequestBodyBudgetDimension = 'request' | 'client' | 'server'
+
+type RequestBodyBudgetLease = {
+  clientId: string
+  reservedBytes: number
+  released: boolean
+}
+
+class RequestBodyBudgetExceededError extends Error {
+  readonly name = 'RequestBodyBudgetExceededError'
+
+  constructor(readonly dimension: RequestBodyBudgetDimension) {
+    super(
+      dimension === 'request'
+        ? 'Request body is too large.'
+        : dimension === 'client'
+          ? 'Too many request body bytes are already in flight for this client.'
+          : 'The server is temporarily at its request body capacity.'
+    )
+  }
+}
+
+class RequestBodyBudgetRegistry {
+  private serverInFlightBytes = 0
+  private readonly clientInFlightBytes = new Map<string, number>()
+  private readonly requestLeases = new WeakMap<IncomingMessage, RequestBodyBudgetLease>()
+
+  constructor(private readonly budgets: RequestBodyBudgets) {
+    for (const [name, value] of Object.entries(budgets)) {
+      if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new TypeError(`${name} must be a positive safe integer.`)
+      }
+    }
+  }
+
+  reserve(request: IncomingMessage, clientId: string, bytes: number): RequestBodyBudgetLease {
+    const lease: RequestBodyBudgetLease = { clientId, reservedBytes: 0, released: false }
+    this.increase(lease, bytes)
+    this.requestLeases.set(request, lease)
+    return lease
+  }
+
+  increase(lease: RequestBodyBudgetLease, bytes: number): void {
+    if (lease.released) throw new Error('Cannot increase a released request body budget lease.')
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      throw new TypeError('Request body budget increments must be non-negative safe integers.')
+    }
+
+    const requestBytes = lease.reservedBytes + bytes
+    if (requestBytes > this.budgets.perRequestBytes) {
+      throw new RequestBodyBudgetExceededError('request')
+    }
+    const clientBytes = (this.clientInFlightBytes.get(lease.clientId) ?? 0) + bytes
+    if (clientBytes > this.budgets.perClientInFlightBytes) {
+      throw new RequestBodyBudgetExceededError('client')
+    }
+    const serverBytes = this.serverInFlightBytes + bytes
+    if (serverBytes > this.budgets.serverInFlightBytes) {
+      throw new RequestBodyBudgetExceededError('server')
+    }
+
+    lease.reservedBytes = requestBytes
+    this.serverInFlightBytes = serverBytes
+    if (clientBytes === 0) this.clientInFlightBytes.delete(lease.clientId)
+    else this.clientInFlightBytes.set(lease.clientId, clientBytes)
+  }
+
+  release(request: IncomingMessage): void {
+    const lease = this.requestLeases.get(request)
+    if (!lease) return
+    this.requestLeases.delete(request)
+    if (lease.released) return
+    lease.released = true
+    this.serverInFlightBytes -= lease.reservedBytes
+    const clientBytes = (this.clientInFlightBytes.get(lease.clientId) ?? 0) - lease.reservedBytes
+    if (clientBytes === 0) this.clientInFlightBytes.delete(lease.clientId)
+    else this.clientInFlightBytes.set(lease.clientId, clientBytes)
   }
 }
 
@@ -238,17 +329,53 @@ const webRpcError = (
   })
 }
 
-const readJsonBody = async (request: IncomingMessage): Promise<unknown> => {
+const declaredContentLength = (request: IncomingMessage): number | undefined => {
+  const value = request.headers['content-length']
+  if (typeof value !== 'string' || !/^\d+$/u.test(value)) return undefined
+  const length = Number(value)
+  return Number.isSafeInteger(length) ? length : undefined
+}
+
+const closeRequestAfterResponse = (request: IncomingMessage, response: ServerResponse): void => {
+  response.shouldKeepAlive = false
+  if (!response.headersSent) response.setHeader('connection', 'close')
+  if (response.writableFinished) request.destroy()
+  else response.once('finish', () => request.destroy())
+}
+
+const readJsonBody = async (
+  request: IncomingMessage,
+  response: ServerResponse,
+  registry: RequestBodyBudgetRegistry
+): Promise<unknown> => {
+  const clientId = String(request.headers['x-open-science-client'] ?? 'web')
+  const declared = declaredContentLength(request)
+  let lease: RequestBodyBudgetLease
+  try {
+    lease = registry.reserve(request, clientId, declared ?? 0)
+  } catch (error) {
+    if (error instanceof RequestBodyBudgetExceededError) {
+      closeRequestAfterResponse(request, response)
+    }
+    throw error
+  }
   const chunks: Buffer[] = []
   let size = 0
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    size += buffer.length
-    if (size > MAX_RPC_BODY_BYTES) throw new Error('RPC request body is too large.')
-    chunks.push(buffer)
+  try {
+    for await (const chunk of request) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.length
+      if (declared === undefined) registry.increase(lease, buffer.length)
+      chunks.push(buffer)
+    }
+  } catch (error) {
+    if (error instanceof RequestBodyBudgetExceededError) {
+      closeRequestAfterResponse(request, response)
+    }
+    throw error
   }
   if (chunks.length === 0) return {}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'), (_key, child) => {
+  return JSON.parse(Buffer.concat(chunks, size).toString('utf8'), (_key, child) => {
     if (
       child &&
       typeof child === 'object' &&
@@ -443,6 +570,21 @@ const assertExternalAuthorizationCurrent = (
 }
 
 const taskError = (response: ServerResponse, error: unknown): void => {
+  if (error instanceof RequestBodyBudgetExceededError) {
+    const status = error.dimension === 'request' ? 413 : error.dimension === 'client' ? 429 : 503
+    json(response, status, {
+      error: {
+        code:
+          error.dimension === 'request'
+            ? 'payload_too_large'
+            : error.dimension === 'client'
+              ? 'client_busy'
+              : 'server_busy',
+        message: error.message
+      }
+    })
+    return
+  }
   if (error instanceof SyntaxError) {
     json(response, 400, {
       error: { code: 'invalid_request', message: 'Request body must be valid JSON.' }
@@ -558,6 +700,7 @@ const handleTaskApiRequest = async (
   url: URL,
   tasks: NonNullable<WebServerOptions['tasks']>,
   callerContext: CallerContext,
+  requestBodyBudgetRegistry: RequestBodyBudgetRegistry,
   idempotencyRegistry: TaskIdempotencyRegistry,
   externalAuthorization?: ExternalWebAccessAuthorization
 ): Promise<boolean> =>
@@ -569,7 +712,11 @@ const handleTaskApiRequest = async (
         return true
       }
       if (url.pathname === '/api/v1/projects' && request.method === 'POST') {
-        const body = (await readJsonBody(request)) as CreateTaskProjectRequest
+        const body = (await readJsonBody(
+          request,
+          response,
+          requestBodyBudgetRegistry
+        )) as CreateTaskProjectRequest
         assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 201, {
           data: await runIdempotentTask(
@@ -585,7 +732,11 @@ const handleTaskApiRequest = async (
       }
       const projectMatch = url.pathname.match(/^\/api\/v1\/projects\/([^/]+)$/)
       if (projectMatch && request.method === 'PATCH') {
-        const body = (await readJsonBody(request)) as UpdateTaskProjectRequest
+        const body = (await readJsonBody(
+          request,
+          response,
+          requestBodyBudgetRegistry
+        )) as UpdateTaskProjectRequest
         assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.updateProject(decodeURIComponent(projectMatch[1]), body)
@@ -600,7 +751,11 @@ const handleTaskApiRequest = async (
         return true
       }
       if (url.pathname === '/api/v1/runs' && request.method === 'POST') {
-        const body = (await readJsonBody(request)) as StartTaskRunRequest
+        const body = (await readJsonBody(
+          request,
+          response,
+          requestBodyBudgetRegistry
+        )) as StartTaskRunRequest
         assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 202, {
           data: await runIdempotentTask(
@@ -623,7 +778,7 @@ const handleTaskApiRequest = async (
       }
       const cancelRunMatch = url.pathname.match(/^\/api\/v1\/runs\/([^/]+)\/cancel$/)
       if (cancelRunMatch && request.method === 'POST') {
-        await readJsonBody(request)
+        await readJsonBody(request, response, requestBodyBudgetRegistry)
         assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.cancelRun(decodeURIComponent(cancelRunMatch[1]))
@@ -642,7 +797,9 @@ const handleTaskApiRequest = async (
         /^\/api\/v1\/sessions\/([^/]+)\/plan\/respond$/
       )
       if (sessionPlanResponseMatch && request.method === 'POST' && tasks.respondSessionPlan) {
-        const body = parseTaskPlanResponseRequest(await readJsonBody(request))
+        const body = parseTaskPlanResponseRequest(
+          await readJsonBody(request, response, requestBodyBudgetRegistry)
+        )
         assertExternalAuthorizationCurrent(externalAuthorization)
         json(response, 200, {
           data: await tasks.respondSessionPlan(
@@ -750,6 +907,13 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
   const internalEventStream = new InternalWebEventStream()
   const commandClient = createApplicationCommandClient()
   const taskIdempotencyRegistry = new TaskIdempotencyRegistry()
+  const requestBodyBudgetRegistry = new RequestBodyBudgetRegistry(
+    options.requestBodyBudgets ?? {
+      perRequestBytes: MAX_RPC_BODY_BYTES,
+      perClientInFlightBytes: MAX_CLIENT_IN_FLIGHT_RPC_BODY_BYTES,
+      serverInFlightBytes: MAX_SERVER_IN_FLIGHT_RPC_BODY_BYTES
+    }
+  )
   const clientLeases = new ClientLeaseRegistry((clientId) => {
     commandClient.releaseClient('web', clientId)
   })
@@ -777,7 +941,6 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
         response.end('Unauthorized')
         return
       }
-
       if (auth.ok && auth.queryToken && request.method === 'GET' && url.pathname === '/') {
         persistAuthCookie(response, options.token)
         url.searchParams.delete('token')
@@ -842,6 +1005,7 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
                 }
               : {})
           }),
+          requestBodyBudgetRegistry,
           taskIdempotencyRegistry,
           externalAuthorization
         ))
@@ -863,8 +1027,17 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
         }
         let body: unknown
         try {
-          body = await readJsonBody(request)
+          body = await readJsonBody(request, response, requestBodyBudgetRegistry)
         } catch (error) {
+          if (error instanceof RequestBodyBudgetExceededError) {
+            webRpcError(
+              response,
+              error.dimension === 'request' ? 413 : error.dimension === 'client' ? 429 : 503,
+              error.dimension === 'request' ? 'invalid_request' : 'handler_error',
+              error.message
+            )
+            return
+          }
           webRpcError(
             response,
             400,
@@ -970,6 +1143,8 @@ const startWebHttpServer = async (options: WebServerOptions): Promise<RunningWeb
       json(response, 500, {
         error: INTERNAL_SERVER_ERROR_MESSAGE
       })
+    } finally {
+      requestBodyBudgetRegistry.release(request)
     }
   }
   const server = createServer((request, response) =>
