@@ -426,7 +426,12 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
     if (this.checkLifecycle) await this.checkLifecycle
     if (this.applying || this.downloadToken) return this.status
     if (this.status.state === 'ready') return this.status
-    if (this.status.state !== 'available') return this.status
+    if (
+      this.status.state !== 'available' &&
+      !(this.status.state === 'error' && this.status.latest)
+    ) {
+      return this.status
+    }
 
     const operation = startDiagnosticOperation(this.log, {
       operation: 'update-download',
@@ -443,7 +448,15 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
     const generation = ++this.downloadGeneration
     const token = this.createCancellationToken()
     this.downloadToken = token
-    this.setStatus({ ...this.status, state: 'downloading', progress: 0, downloadedBytes: 0 })
+    this.setStatus({
+      ...this.status,
+      state: 'downloading',
+      progress: 0,
+      downloadedBytes: 0,
+      downloadProgress: undefined,
+      error: undefined,
+      blockedBy: undefined
+    })
 
     const lifecycle = (async () => {
       try {
@@ -468,6 +481,7 @@ export class ElectronUpdaterStrategy implements UpdateStrategy {
         // rejects and can't poison the next download()'s drain.
         if (!token.cancelled) {
           this.setStatus({
+            ...this.status,
             state: 'error',
             error: error instanceof Error ? error.message : 'Download failed'
           })
