@@ -38,6 +38,23 @@ type AcpIpcSessionAdmission = {
   ): Promise<Result>
 }
 
+type AcpSessionMemoryPreferenceResolver = (request: {
+  sessionId: string
+  projectId?: string
+}) => Promise<boolean | undefined>
+
+const withDurableMemoryPreference = async (
+  request: AcpResumeSessionRequest,
+  resolveMemoryEnabled?: AcpSessionMemoryPreferenceResolver
+): Promise<AcpResumeSessionRequest> => {
+  if (!resolveMemoryEnabled) return request
+  const memoryEnabled = await resolveMemoryEnabled({
+    sessionId: request.sessionId,
+    ...(request.projectId ? { projectId: request.projectId } : {})
+  })
+  return { ...request, memoryEnabled: memoryEnabled ?? false }
+}
+
 const withResponseAdmission = <Result>(
   sessionAdmission: AcpIpcSessionAdmission,
   sessionId: string | undefined,
@@ -51,7 +68,8 @@ const registerAcpIpcHandlerSet = (
   sessionAdmission: AcpIpcSessionAdmission,
   respondDelegatedQuestion?: (
     input: NonNullable<ElicitationResponse['delegatedQuestion']> & { requestId: string }
-  ) => Promise<void>
+  ) => Promise<void>,
+  resolveMemoryEnabled?: AcpSessionMemoryPreferenceResolver
 ): void => {
   ipcMainHandle('acp:get-state', () => runtime.getSnapshot())
   ipcMainHandle('acp:connect', (_event, request: AcpConnectRequest) => runtime.connect(request))
@@ -59,8 +77,8 @@ const registerAcpIpcHandlerSet = (
   ipcMainHandle('acp:create-session', (_event, request: AcpCreateSessionRequest) =>
     workflows.createSession(request)
   )
-  ipcMainHandle('acp:resume-session', (_event, request: AcpResumeSessionRequest) =>
-    workflows.resumeSession(request)
+  ipcMainHandle('acp:resume-session', async (_event, request: AcpResumeSessionRequest) =>
+    workflows.resumeSession(await withDurableMemoryPreference(request, resolveMemoryEnabled))
   )
   ipcMainHandle(
     'acp:continue-interrupted-turn',
@@ -68,8 +86,8 @@ const registerAcpIpcHandlerSet = (
       workflows.continueInterruptedTurn(request)
   )
   ipcMainHandle('acp:reset-session-context', (_event, request: AcpResumeSessionRequest) =>
-    sessionAdmission.withSessionAvailableById(request.sessionId, () =>
-      runtime.resetSessionContext(request)
+    sessionAdmission.withSessionAvailableById(request.sessionId, async () =>
+      runtime.resetSessionContext(await withDurableMemoryPreference(request, resolveMemoryEnabled))
     )
   )
   ipcMainHandle('acp:compact-session', (_event, request: AcpCompactSessionRequest) =>
@@ -92,6 +110,7 @@ const registerAcpIpcHandlerSet = (
     const referencedSessions = sanitizeSessionReferences(untrustedSessionReferences)
     const rendererRequest: AcpPromptRequest = {
       ...untrustedRequest,
+      memoryEnabled: request.memoryEnabled !== false,
       turnIntent: request.turnIntent === 'plan-first' ? 'plan-first' : undefined,
       ...(referencedSessions.length > 0 ? { referencedSessions } : {}),
       continuation: undefined,
@@ -178,11 +197,18 @@ const installAcpIpcHandlers = (
         input: NonNullable<ElicitationResponse['delegatedQuestion']> & { requestId: string }
       ) => Promise<void>)
     | undefined,
-  sessionAdmission: AcpIpcSessionAdmission
+  sessionAdmission: AcpIpcSessionAdmission,
+  resolveMemoryEnabled?: AcpSessionMemoryPreferenceResolver
 ): IpcHandlerInstallation => {
   const scope = createIpcHandlerInstallationScope()
   try {
-    registerAcpIpcHandlerSet(runtime, workflows, sessionAdmission, respondDelegatedQuestion)
+    registerAcpIpcHandlerSet(
+      runtime,
+      workflows,
+      sessionAdmission,
+      respondDelegatedQuestion,
+      resolveMemoryEnabled
+    )
     // Kill the agent child on quit so it never outlives the app as an orphaned process.
     return scope.complete(installAgentShutdownGuard(app, runtime))
   } catch (error) {
@@ -192,4 +218,4 @@ const installAcpIpcHandlers = (
 }
 
 export { installAcpIpcHandlers }
-export type { AcpIpcSessionAdmission }
+export type { AcpIpcSessionAdmission, AcpSessionMemoryPreferenceResolver }

@@ -363,6 +363,10 @@ class AcpRuntimeCoordinator {
     return runtime?.hasLiveSession(projectId, sessionId) ?? false
   }
 
+  isSessionMemoryEnabled(sessionId: string): boolean {
+    return this.findRuntimeForSession(sessionId)?.isSessionMemoryEnabled(sessionId) ?? false
+  }
+
   liveSessionProjectId(sessionId: string): string | undefined {
     return this.sessionRuntimes.get(sessionId)?.liveSessionProjectId(sessionId)
   }
@@ -1401,6 +1405,7 @@ class AcpRuntimeCoordinator {
           cwd: session.cwd,
           ...(session.projectId ? { projectId: session.projectId } : {}),
           ...(session.permissionProfile ? { permissionProfile: session.permissionProfile } : {}),
+          memoryEnabled: session.memoryEnabled !== false,
           ...(session.previousFrameworkId
             ? { previousFrameworkId: session.previousFrameworkId }
             : {}),

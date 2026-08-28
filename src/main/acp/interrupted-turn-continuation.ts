@@ -183,6 +183,7 @@ const buildContinuationRequest = (
   return {
     sessionId: request.sessionId,
     text: buildContinuationPrompt(prompt, Boolean(contextReset)),
+    memoryEnabled: session.memoryEnabled !== false,
     suppressUserMessage: true,
     provenanceContext,
     ...(prompt.turnIntent === 'plan-first' || livePrompt?.turnIntent === 'plan-first'

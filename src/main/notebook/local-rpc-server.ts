@@ -83,6 +83,12 @@ import type {
   HostViewImageResult,
   TransientViewImage
 } from './host-view-image-service'
+import {
+  memoryAgentRememberRequestSchema,
+  memoryAgentSearchRequestSchema,
+  type MemoryAgentContext
+} from '../../shared/memory'
+import type { MemoryService } from '../memory/service'
 import { isRecord } from './value-guards'
 
 const log = createLogger('notebook:local-rpc')
@@ -110,6 +116,11 @@ type NotebookLocalRpcServerOptions = {
       signal?: AbortSignal
     ): Promise<unknown>
   }
+  memoryService?: Pick<
+    MemoryService,
+    'listCategoriesForAgent' | 'searchForAgent' | 'rememberForAgent'
+  >
+  isMemoryEnabledForSession?: (sessionId: string) => boolean | Promise<boolean>
   computeService?: {
     callCommand(
       context: { sessionId: string; projectId: string },
@@ -310,6 +321,7 @@ type NotebookRpcSessionBinding = {
   sessionId: string
   projectId?: string
   agentFrameId?: string
+  memoryTools?: boolean
   delegatedWorkRole?: 'main' | 'delegate'
   delegatedWorkAttemptId?: string
   allowedMethods?: ReadonlySet<string>
@@ -403,9 +415,16 @@ const CONTROL_RPC_METHODS = new Set([
   'currentModelCall',
   'listModelsCall',
   'viewImageCall',
-  'requestUserInput'
+  'requestUserInput',
+  'memoryListCategories',
+  'memorySearch',
+  'memoryRemember'
 ])
-const DELEGATED_CONTROL_RPC_METHODS = new Set([...CONTROL_RPC_METHODS, 'delegatedOutputCall'])
+const MEMORY_RPC_METHODS = new Set(['memoryListCategories', 'memorySearch', 'memoryRemember'])
+const DELEGATED_CONTROL_RPC_METHODS = new Set([
+  ...[...CONTROL_RPC_METHODS].filter((method) => !MEMORY_RPC_METHODS.has(method)),
+  'delegatedOutputCall'
+])
 const SKILL_IMPORT_RPC_METHODS = new Set(['skillImport'])
 const PLAN_RPC_METHODS = new Set(['planCall'])
 
@@ -475,6 +494,8 @@ class NotebookLocalRpcServer {
   private readonly isHostSkillsAvailable: NotebookLocalRpcServerOptions['isHostSkillsAvailable']
   private readonly transport: NotebookLocalRpcServerOptions['transport']
   private readonly connectorService: NotebookLocalRpcServerOptions['connectorService']
+  private readonly memoryService: NotebookLocalRpcServerOptions['memoryService']
+  private readonly isMemoryEnabledForSession: NotebookLocalRpcServerOptions['isMemoryEnabledForSession']
   private readonly computeService: NotebookLocalRpcServerOptions['computeService']
   private readonly skillImporter: NotebookLocalRpcServerOptions['skillImporter']
   private readonly planService: NotebookLocalRpcServerOptions['planService']
@@ -531,6 +552,8 @@ class NotebookLocalRpcServer {
     this.isHostSkillsAvailable = options.isHostSkillsAvailable
     this.transport = options.transport
     this.connectorService = options.connectorService
+    this.memoryService = options.memoryService
+    this.isMemoryEnabledForSession = options.isMemoryEnabledForSession
     this.computeService = options.computeService
     this.skillImporter = options.skillImporter
     this.planService = options.planService
@@ -916,7 +939,8 @@ class NotebookLocalRpcServer {
   async issueSessionConnection(
     sessionId: string,
     projectId: string,
-    agentFrameId: string
+    agentFrameId: string,
+    memoryTools = true
   ): Promise<NotebookRpcConnection> {
     if (!agentFrameId.trim()) {
       throw new Error('Notebook RPC capabilities require an explicit Agent Frame owner.')
@@ -938,6 +962,7 @@ class NotebookLocalRpcServer {
       sessionId: resolvedSessionId,
       projectId,
       agentFrameId: resolvedAgentFrameId,
+      memoryTools,
       delegatedWorkRole: 'main'
     })
     return {
@@ -1116,6 +1141,7 @@ class NotebookLocalRpcServer {
       sessionId: resolvedSessionId,
       projectId,
       agentFrameId: resolvedAgentFrameId,
+      memoryTools: delegatedWorkIdentity.role === 'main',
       delegatedWorkRole: delegatedWorkIdentity.role,
       ...(delegatedWorkIdentity.attemptId
         ? { delegatedWorkAttemptId: delegatedWorkIdentity.attemptId }
@@ -1433,6 +1459,20 @@ class NotebookLocalRpcServer {
           if (sessionBinding.allowedMethods && !sessionBinding.allowedMethods.has(method)) {
             throw new RpcHttpError(403, `Notebook RPC capability does not allow ${method}.`)
           }
+          if (MEMORY_RPC_METHODS.has(method) && sessionBinding.memoryTools !== true) {
+            throw new RpcHttpError(403, 'Memory is disabled for this Session.')
+          }
+          if (MEMORY_RPC_METHODS.has(method) && this.isMemoryEnabledForSession) {
+            let memoryEnabled = false
+            try {
+              memoryEnabled = await this.isMemoryEnabledForSession(sessionBinding.sessionId)
+            } catch (error) {
+              log.warn('Memory Session gate read failed', errorLogFields(error))
+            }
+            if (!memoryEnabled) {
+              throw new RpcHttpError(403, 'Memory is disabled for this Session.')
+            }
+          }
           if (
             (method === 'artifactsCall' || method === 'lineageCall') &&
             !sessionBinding.isControl
@@ -1626,7 +1666,17 @@ class NotebookLocalRpcServer {
                       caller_role: sessionBinding.delegatedWorkRole,
                       _hostCapabilityProjection: hostCapabilities
                     }
-                  : {})
+                  : {}),
+            ...(MEMORY_RPC_METHODS.has(method)
+              ? {
+                  sessionId: sessionBinding.sessionId,
+                  projectId: sessionBinding.projectId,
+                  agentId: this.sessionSpecialists.get(sessionBinding.sessionId),
+                  turnId:
+                    sessionBinding.activeControlInvocation?.turnId ??
+                    this.artifactProvenanceContexts.get(sessionBinding.sessionId)?.promptMessageId
+                }
+              : {})
           }
         } else {
           if (authorization !== `Bearer ${this.token}`) {
@@ -1763,6 +1813,43 @@ class NotebookLocalRpcServer {
     params: Record<string, unknown>,
     signal: AbortSignal
   ): Promise<unknown> {
+    if (MEMORY_RPC_METHODS.has(method)) {
+      if (!this.memoryService) throw new Error('Memory service is not configured.')
+      if (typeof params.sessionId !== 'string') {
+        throw new Error('Memory RPC requires a trusted session binding.')
+      }
+      if (typeof params.projectId !== 'string') {
+        throw new Error('Memory RPC requires a trusted project binding.')
+      }
+      const context: MemoryAgentContext = {
+        projectId: params.projectId,
+        sessionId: params.sessionId,
+        ...(typeof params.agentId === 'string' ? { agentId: params.agentId } : {}),
+        ...(typeof params.turnId === 'string' ? { turnId: params.turnId } : {})
+      }
+      if (method === 'memoryListCategories') {
+        return this.memoryService.listCategoriesForAgent(context)
+      }
+      if (method === 'memorySearch') {
+        return this.memoryService.searchForAgent(
+          memoryAgentSearchRequestSchema.parse({
+            query: params.query,
+            categoryIds: params.categoryIds,
+            limit: params.limit
+          }),
+          context
+        )
+      }
+      return this.memoryService.rememberForAgent(
+        memoryAgentRememberRequestSchema.parse({
+          categoryId: params.categoryId,
+          content: params.content,
+          analysis: params.analysis
+        }),
+        context
+      )
+    }
+
     // Artifact stdio/HTTP MCP handlers cannot own SQLite connections. Route the trusted run-bound
     // save envelope back into the main process, where the Provenance repository owns transactions,
     // immutable Version publication, and idempotency.

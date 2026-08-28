@@ -301,13 +301,18 @@ type ConversationPanelElicitation = {
 
 type ConversationPanelAgentControls = {
   canChange: boolean
+  canChangeAutoReview: boolean
+  canChangeMemory: boolean
+  canChangeSpecialist: boolean
   modelConfiguration?: SessionAgentConfiguration
   modelUnavailable?: boolean
   changeModelConfiguration?: (configuration: SessionAgentConfiguration) => void
   autoReviewEnabled: boolean
+  memoryEnabled?: boolean
   enabledComputeHosts: string[]
   selectedComputeHosts?: string[]
   toggleAutoReview: (enabled: boolean) => void
+  toggleMemory?: (enabled: boolean) => void
   setComputeHostEnabled?: (providerId: string, enabled: boolean) => void
   setComputeHostSelected?: (providerId: string, selected: boolean) => void
 }
@@ -496,13 +501,18 @@ const ConversationPanel = ({
   const { requests: pendingElicitations, respond: onRespondToElicitation } = elicitation
   const {
     canChange: canChangeAgentControls,
+    canChangeAutoReview,
+    canChangeMemory,
+    canChangeSpecialist,
     modelConfiguration,
     modelUnavailable = false,
     changeModelConfiguration = () => undefined,
     autoReviewEnabled,
+    memoryEnabled = true,
     enabledComputeHosts,
     selectedComputeHosts = [],
     toggleAutoReview: onAutoReviewToggle,
+    toggleMemory: onMemoryToggle = () => undefined,
     setComputeHostEnabled: onComputeHostEnabledChange = () => undefined,
     setComputeHostSelected: onComputeHostSelectedChange = () => undefined
   } = agentControls
@@ -1327,6 +1337,7 @@ const ConversationPanel = ({
                               profileState={permissionProfileState}
                               grants={permissionGrants}
                               autoReviewEnabled={autoReviewEnabled}
+                              memoryEnabled={memoryEnabled}
                               readOnly
                               permissionProfileReadOnly
                               grantActionsReadOnly
@@ -1337,6 +1348,7 @@ const ConversationPanel = ({
                               onComputeHostSelectedChange={onComputeHostSelectedChange}
                               onProfileChange={onPermissionProfileChange}
                               onAutoReviewChange={onAutoReviewToggle}
+                              onMemoryChange={onMemoryToggle}
                               onRevokeGrant={onRevokePermissionGrant}
                               onClearGrants={onClearPermissionGrants}
                               showSpecialist={activeSession !== undefined}
@@ -1883,7 +1895,10 @@ const ConversationPanel = ({
                           profileState={permissionProfileState}
                           grants={permissionGrants}
                           autoReviewEnabled={autoReviewEnabled}
+                          memoryEnabled={memoryEnabled}
                           readOnly={!canChangeAgentControls}
+                          autoReviewReadOnly={!canChangeAutoReview}
+                          memoryReadOnly={!canChangeMemory}
                           permissionProfileReadOnly={!canChangePermissionProfile}
                           grantActionsReadOnly={false}
                           autoReviewDisabled={!canEditDraft}
@@ -1893,6 +1908,7 @@ const ConversationPanel = ({
                           onComputeHostSelectedChange={onComputeHostSelectedChange}
                           onProfileChange={onPermissionProfileChange}
                           onAutoReviewChange={onAutoReviewToggle}
+                          onMemoryChange={onMemoryToggle}
                           onRevokeGrant={onRevokePermissionGrant}
                           onClearGrants={onClearPermissionGrants}
                           showSpecialist={
@@ -1903,6 +1919,7 @@ const ConversationPanel = ({
                           }
                           specialistId={specialistId}
                           specialistUnavailable={specialistUnavailable}
+                          specialistReadOnly={!canChangeSpecialist}
                           onSpecialistChange={onSpecialistChange}
                           openRequest={agentControlsOpenRequest}
                           computeOpenRequest={computeControlsOpenRequest}
@@ -1910,7 +1927,7 @@ const ConversationPanel = ({
 
                         <ComposerSpecialistPicker
                           selectedId={specialistId}
-                          readOnly={!canChangeAgentControls}
+                          readOnly={!canChangeSpecialist}
                           onChange={onSpecialistChange}
                         />
 

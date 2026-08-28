@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { WEB_EVENT_CHANNELS, WEB_INVOKE_CHANNELS } from './web-api-map.generated'
 import {
   ELECTRON_APPLICATION_COMMAND_CHANNELS,
-  RENDERER_CONTRACT_CATALOG
+  RENDERER_CONTRACT_CATALOG,
+  RENDERER_CONTRACT_GROUPS
 } from './renderer-contract-catalog'
 import { projectRendererContractMaps } from './renderer-contract'
 
@@ -209,8 +210,91 @@ describe('renderer contract catalog', () => {
     })
   })
 
+  it('publishes the complete Memory capability from the typed renderer contract', () => {
+    const memory = RENDERER_CONTRACT_GROUPS.find(({ capability }) => capability === 'memory')
+
+    expect(
+      memory?.contracts.map(({ publicPath, channel, kind, applicationCommand }) => ({
+        publicPath,
+        channel,
+        kind,
+        applicationCommand
+      }))
+    ).toEqual([
+      {
+        publicPath: 'memory.clearAll',
+        channel: 'memory:clear-all',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.createCategory',
+        channel: 'memory:create-category',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.createEntry',
+        channel: 'memory:create-entry',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.deleteCategory',
+        channel: 'memory:delete-category',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.deleteEntry',
+        channel: 'memory:delete-entry',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.onChanged',
+        channel: 'memory:changed',
+        kind: 'event',
+        applicationCommand: undefined
+      },
+      {
+        publicPath: 'memory.setEnabled',
+        channel: 'memory:set-enabled',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.snapshot',
+        channel: 'memory:snapshot',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.updateCategory',
+        channel: 'memory:update-category',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      },
+      {
+        publicPath: 'memory.updateEntry',
+        channel: 'memory:update-entry',
+        kind: 'method',
+        applicationCommand: 'runtime-validated'
+      }
+    ])
+  })
+
   it('marks the runtime-validated command slice', () => {
     expect(paths(({ applicationCommand }) => applicationCommand === 'runtime-validated')).toEqual([
+      'memory.clearAll',
+      'memory.createCategory',
+      'memory.createEntry',
+      'memory.deleteCategory',
+      'memory.deleteEntry',
+      'memory.setEnabled',
+      'memory.snapshot',
+      'memory.updateCategory',
+      'memory.updateEntry',
       'projects.create',
       'projects.delete',
       'projects.get',
@@ -226,6 +310,15 @@ describe('renderer contract catalog', () => {
       'tags.update'
     ])
     expect(ELECTRON_APPLICATION_COMMAND_CHANNELS).toEqual([
+      'memory:clear-all',
+      'memory:create-category',
+      'memory:create-entry',
+      'memory:delete-category',
+      'memory:delete-entry',
+      'memory:set-enabled',
+      'memory:snapshot',
+      'memory:update-category',
+      'memory:update-entry',
       'projects:create',
       'projects:delete',
       'projects:get',

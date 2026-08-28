@@ -915,6 +915,7 @@ describe('Session Store architecture', () => {
       'setBranchSwitchBlocked',
       'setContextUsage',
       'setFixLoopActive',
+      'setMemoryEnabled',
       'setPermissionProfile',
       'setSessionSpecialistId',
       'togglePinned',

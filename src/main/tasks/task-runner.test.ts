@@ -1702,6 +1702,7 @@ describe('TaskRunner', () => {
   it('resumes a detached session without duplicating the new prompt in history replay', async () => {
     const existing: PersistedChatSession = {
       ...session,
+      memoryEnabled: false,
       agentConfiguration: {
         providerId: 'provider-1',
         model: 'model-1',
@@ -1815,6 +1816,7 @@ describe('TaskRunner', () => {
   it('adopts a persisted agent configuration for an attached session', async () => {
     const existing: PersistedChatSession = {
       ...session,
+      memoryEnabled: false,
       agentConfiguration: {
         providerId: 'provider-1',
         model: 'model-1',
@@ -1847,6 +1849,7 @@ describe('TaskRunner', () => {
     expect(resumeSession).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: existing.id,
+        memoryEnabled: false,
         agentConfiguration: existing.agentConfiguration
       })
     )

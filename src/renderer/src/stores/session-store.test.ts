@@ -182,11 +182,14 @@ describe('session store', () => {
       revise: { allowed: true },
       branchFromMessage: { allowed: false, disabledReason: 'session-pending' },
       startSideChat: { allowed: false, disabledReason: 'session-pending' },
-      changeAgentControls: { allowed: false, disabledReason: 'session-pending' }
+      changeAgentControls: { allowed: false, disabledReason: 'session-pending' },
+      changeAutoReview: { allowed: false, disabledReason: 'session-pending' },
+      changeSpecialist: { allowed: false, disabledReason: 'session-pending' },
+      changeMemory: { allowed: false, disabledReason: 'session-pending' }
     })
   })
 
-  it('keeps a new Turn available while history replay is pending and blocks other Session actions', () => {
+  it('keeps replay-independent Session actions available while history replay is pending', () => {
     const actionability = projectSessionActionability({
       id: 'session-replay',
       projectId: 'project-1',
@@ -202,9 +205,12 @@ describe('session store', () => {
     expect(actionability.actions).toMatchObject({
       startTurn: { allowed: true },
       revise: { allowed: true },
-      branchFromMessage: { allowed: false, disabledReason: 'session-pending' },
+      branchFromMessage: { allowed: true },
       startSideChat: { allowed: false, disabledReason: 'session-pending' },
-      changeAgentControls: { allowed: false, disabledReason: 'session-pending' }
+      changeAgentControls: { allowed: false, disabledReason: 'session-pending' },
+      changeAutoReview: { allowed: true },
+      changeSpecialist: { allowed: true },
+      changeMemory: { allowed: true }
     })
   })
 
@@ -5438,6 +5444,7 @@ describe('session store public contract', () => {
         'setElicitationHistoryReplayRequest',
         'setElicitationPending',
         'setFixLoopActive',
+        'setMemoryEnabled',
         'setPermissionPending',
         'setPermissionProfile',
         'setSessionSpecialistId',
@@ -5474,6 +5481,7 @@ describe('session store public contract', () => {
       'src/renderer/src/lib/acp/workspace-runtime-selection-owner.ts',
       'src/renderer/src/lib/acp/workspace-runtime-session-branch-owner.ts',
       'src/renderer/src/lib/acp/workspace-runtime-session-lifecycle-owner.ts',
+      'src/renderer/src/lib/acp/workspace-runtime-session-memory-owner.ts',
       'src/renderer/src/lib/acp/workspace-subagent-runtime-presentation.ts',
       'src/renderer/src/lib/active-session-display.ts',
       'src/renderer/src/lib/compute/useJobAnalysisEffect.ts',
@@ -5534,6 +5542,7 @@ describe('session store public contract', () => {
       'src/renderer/src/pages/workspace/use-side-chat-controller.ts',
       'src/renderer/src/pages/workspace/use-workspace-branch-switch-guard.ts',
       'src/renderer/src/pages/workspace/visible-project-sessions.ts',
+      'src/renderer/src/pages/workspace/workspace-agent-control-availability.ts',
       'src/renderer/src/pages/workspace/workspace-compute-host-access-controller.ts',
       'src/renderer/src/pages/workspace/workspace-conversation-controller.ts',
       'src/renderer/src/pages/workspace/workspace-conversation-items.ts',
@@ -5813,6 +5822,7 @@ describe('branchInNewSession', () => {
               contextUsage: { used: 500, size: 1_000 },
               pinned: true,
               autoReviewEnabled: true,
+              memoryEnabled: false,
               enabledComputeHosts: ['ssh:build'],
               filesRevision: 7,
               artifacts: [
@@ -5876,6 +5886,7 @@ describe('branchInNewSession', () => {
       agentBackendId: 'codex:shared',
       agentModel: 'gpt-5.4',
       autoReviewEnabled: true,
+      memoryEnabled: false,
       enabledComputeHosts: ['ssh:build'],
       branchSource: {
         sessionId: 'source-session',
@@ -6187,10 +6198,18 @@ describe('branchInNewSession', () => {
     expect(useSessionStore.getState().sessions).toEqual([sourceBefore])
   })
 
-  it('refuses a source that still needs history replay', () => {
-    useSessionStore.getState().appendUserMessage({
+  it('branches from persisted history while the source Provider still needs replay', () => {
+    const prompt = useSessionStore.getState().appendUserMessage({
       sessionId: 'source-session',
-      content: 'stable source'
+      content: 'stable source',
+      cwd: '/workspace/project',
+      projectId: 'default-project'
+    })
+    const answer = useSessionStore.getState().appendAgentMessageChunk({
+      sessionId: 'source-session',
+      streamId: 'source-stream',
+      eventId: 'source-event',
+      content: 'stable answer'
     })
     useSessionStore.getState().finishRun('source-session')
     useSessionStore.setState((state) => ({
@@ -6200,15 +6219,25 @@ describe('branchInNewSession', () => {
           : session
       )
     }))
-    const sourceBefore = structuredClone(useSessionStore.getState().sessions[0])
+    const result = useSessionStore.getState().branchInNewSession({
+      sourceSessionId: 'source-session',
+      sourceMessageId: answer?.messageId ?? ''
+    })
 
+    expect(result).toEqual({ sessionId: expect.stringMatching(/^pending-session-/) })
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      id: result?.sessionId,
+      isPending: true,
+      pendingHistoryReplay: { kind: 'all' },
+      messages: [
+        expect.objectContaining({ id: prompt?.messageId }),
+        expect.objectContaining({ id: answer?.messageId })
+      ]
+    })
     expect(
-      useSessionStore.getState().branchInNewSession({
-        sourceSessionId: 'source-session',
-        content: 'must not nest an unreplayed Session'
-      })
-    ).toBeUndefined()
-    expect(useSessionStore.getState().sessions).toEqual([sourceBefore])
+      useSessionStore.getState().sessions.find((session) => session.id === 'source-session')
+        ?.pendingHistoryReplay
+    ).toEqual({ kind: 'all' })
   })
 })
 

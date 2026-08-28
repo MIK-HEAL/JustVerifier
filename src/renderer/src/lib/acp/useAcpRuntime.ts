@@ -63,7 +63,8 @@ const useAcpRuntime = (): {
     projectId?: string,
     permissionProfile?: PermissionProfileId,
     specialistId?: string,
-    agentTarget?: AcpSessionAgentTarget
+    agentTarget?: AcpSessionAgentTarget,
+    memoryEnabled?: boolean
   ) => Promise<AcpCreateSessionResponse>
   resumeSession: (
     sessionId: AcpResumeSessionRequest['sessionId'],
@@ -76,14 +77,16 @@ const useAcpRuntime = (): {
     providerSessionId?: AcpResumeSessionRequest['providerSessionId'],
     providerContinuityToken?: AcpResumeSessionRequest['providerContinuityToken'],
     specialistBindingPending?: AcpResumeSessionRequest['specialistBindingPending'],
-    agentTarget?: AcpSessionAgentTarget
+    agentTarget?: AcpSessionAgentTarget,
+    memoryEnabled?: boolean
   ) => Promise<AcpCreateSessionResponse>
   continueInterruptedTurn: (request: AcpContinueInterruptedTurnRequest) => Promise<AcpStateSnapshot>
   resetSessionContext: (
     sessionId: AcpResumeSessionRequest['sessionId'],
     cwd: AcpResumeSessionRequest['cwd'],
     projectId?: string,
-    permissionProfile?: PermissionProfileId
+    permissionProfile?: PermissionProfileId,
+    memoryEnabled?: boolean
   ) => Promise<AcpCreateSessionResponse>
   compactSession: (
     sessionId: string,
@@ -106,6 +109,7 @@ const useAcpRuntime = (): {
     contextReset?: AcpPromptRequest['contextReset'],
     planContinuation?: AcpPromptRequest['planContinuation'],
     turnIntent?: AcpPromptRequest['turnIntent'],
+    memoryEnabled?: boolean,
     referencedSessions?: AcpPromptRequest['referencedSessions']
   ) => Promise<AcpStateSnapshot>
   respondToPermission: (
@@ -279,13 +283,15 @@ const useAcpRuntime = (): {
       projectId?: string,
       permissionProfile?: PermissionProfileId,
       specialistId?: string,
-      agentTarget?: AcpSessionAgentTarget
+      agentTarget?: AcpSessionAgentTarget,
+      memoryEnabled = true
     ) =>
       runValueAction(setIsConnecting, () =>
         window.api.acp.createSession({
           cwd,
           projectId,
           permissionProfile,
+          memoryEnabled,
           specialistId,
           ...(agentTarget ? { agentTarget } : {})
         })
@@ -306,7 +312,8 @@ const useAcpRuntime = (): {
       providerSessionId?: AcpResumeSessionRequest['providerSessionId'],
       providerContinuityToken?: AcpResumeSessionRequest['providerContinuityToken'],
       specialistBindingPending?: AcpResumeSessionRequest['specialistBindingPending'],
-      agentTarget?: AcpSessionAgentTarget
+      agentTarget?: AcpSessionAgentTarget,
+      memoryEnabled = true
     ) =>
       runValueAction(setIsConnecting, () =>
         window.api.acp.resumeSession({
@@ -314,6 +321,7 @@ const useAcpRuntime = (): {
           cwd,
           projectId,
           permissionProfile,
+          memoryEnabled,
           previousFrameworkId,
           previousBackendId,
           specialistId,
@@ -339,10 +347,17 @@ const useAcpRuntime = (): {
       sessionId: AcpResumeSessionRequest['sessionId'],
       cwd: AcpResumeSessionRequest['cwd'],
       projectId?: string,
-      permissionProfile?: PermissionProfileId
+      permissionProfile?: PermissionProfileId,
+      memoryEnabled = true
     ) =>
       runValueAction(setIsConnecting, () =>
-        window.api.acp.resetSessionContext({ sessionId, cwd, projectId, permissionProfile })
+        window.api.acp.resetSessionContext({
+          sessionId,
+          cwd,
+          projectId,
+          permissionProfile,
+          memoryEnabled
+        })
       ),
     [runValueAction]
   )
@@ -390,12 +405,14 @@ const useAcpRuntime = (): {
       contextReset?: AcpPromptRequest['contextReset'],
       planContinuation?: AcpPromptRequest['planContinuation'],
       turnIntent?: AcpPromptRequest['turnIntent'],
+      memoryEnabled = true,
       referencedSessions?: AcpPromptRequest['referencedSessions']
     ) =>
       runSendPromptAction(() =>
         window.api.acp.sendPrompt({
           sessionId,
           text,
+          memoryEnabled,
           attachments,
           // Omit the field entirely when no skills were picked so the request stays minimal.
           ...(forcedSkillIds && forcedSkillIds.length > 0 ? { forcedSkillIds } : {}),

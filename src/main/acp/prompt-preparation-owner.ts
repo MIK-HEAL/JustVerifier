@@ -58,6 +58,13 @@ type AcpPromptPreparationOwnerOptions = Readonly<{
     sessionId: string,
     paths: string[]
   ) => Promise<() => void>
+  memory?: {
+    recallForPrompt(
+      requestText: string,
+      context: { projectId: string }
+    ): Promise<string | undefined>
+  }
+  isMemoryEnabledForSession?: (sessionId: string) => boolean
   notebook?: Readonly<{
     peekHandoffContext?: (sessionId: string) => NotebookHandoffContext | undefined
     registerTurnInputs?: (input: NotebookTurnInputs) => Promise<void>
@@ -217,11 +224,27 @@ class AcpPromptPreparationOwner {
         input.request.contextReset || input.request.historyPreamble
           ? this.options.notebook?.peekHandoffContext?.(input.request.sessionId)
           : undefined
+      const memoryEnabled = this.options.isMemoryEnabledForSession
+        ? this.options.isMemoryEnabledForSession(input.request.sessionId)
+        : input.request.memoryEnabled !== false
+      const recalledMemory = !memoryEnabled
+        ? undefined
+        : await this.options.memory
+            ?.recallForPrompt(input.request.text, { projectId: input.projectId })
+            .catch((error: unknown) => {
+              log.warn('memory auto-recall failed; continuing without recalled records', {
+                sessionId: input.request.sessionId,
+                ...errorLogFields(error)
+              })
+              return undefined
+            })
+      if (await cancelled()) return cancelPrepared()
       const promptText = [
         input.protectedContext,
         input.request.historyPreamble,
         notebookHandoff ? notebookHandoffPrompt(notebookHandoff) : undefined,
         promptPrefix,
+        recalledMemory,
         buildSessionReferencePrompt(input.request.referencedSessions),
         skillPreparation.text
       ]

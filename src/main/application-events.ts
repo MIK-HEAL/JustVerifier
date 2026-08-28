@@ -35,6 +35,7 @@ import type { SideChatRelayDeliveredEvent, SideChatRuntimeEvent } from '../share
 import type { UpdateStatus } from '../shared/update'
 import type { LocalePreferenceSnapshot } from '../shared/locale'
 import type { TagsChangedEvent } from '../shared/tags'
+import type { MemoryChangedEvent } from '../shared/memory'
 import { createLogger, errorLogFields } from './logger'
 
 const log = createLogger('application-events')
@@ -62,6 +63,7 @@ export type ApplicationEventMap = {
   'project-files:changed': ProjectFilesChangedEvent
   'permissions:changed': PermissionGrantsChangedEvent
   'tags:changed': TagsChangedEvent
+  'memory:changed': MemoryChangedEvent
   'connectors:approval-request': ConnectorApprovalRequest
   'connectors:approval-settled': string
   'skills:conversation-import-request': ConversationSkillImportApprovalRequest

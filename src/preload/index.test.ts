@@ -347,6 +347,16 @@ describe('preload bridge — public surface inventory', () => {
       'logs.getPath',
       'logs.openFile',
       'logs.revealInFolder',
+      'memory.clearAll',
+      'memory.createCategory',
+      'memory.createEntry',
+      'memory.deleteCategory',
+      'memory.deleteEntry',
+      'memory.onChanged',
+      'memory.setEnabled',
+      'memory.snapshot',
+      'memory.updateCategory',
+      'memory.updateEntry',
       'network.checkConnectivity',
       'network.getInfo',
       'notebook.appendCodeCell',
@@ -749,6 +759,7 @@ describe('preload bridge — core renderer contract catalog', () => {
       'lifecycle',
       'locale',
       'local-fs',
+      'memory',
       'logs',
       'network',
       'notifications',
@@ -790,6 +801,25 @@ describe('preload bridge — core renderer contract catalog', () => {
         ...invokeMock.mock.calls[0].slice(1)
       )
     }
+  })
+
+  it('projects Memory requests and events without a handwritten preload bridge', async () => {
+    const request = { enabled: false }
+    await getApiCallable('memory.setEnabled')(request)
+
+    expect(invokeMock).toHaveBeenCalledWith('memory:set-enabled', request)
+
+    const listener = vi.fn()
+    const unsubscribe = getApiCallable('memory.onChanged')(listener) as () => void
+    const wrappedListener = onMock.mock.calls.at(-1)?.[1]
+    const event = { revision: 42 }
+
+    wrappedListener?.({ sender: 'electron' }, event)
+    unsubscribe()
+
+    expect(onMock).toHaveBeenCalledWith('memory:changed', wrappedListener)
+    expect(listener).toHaveBeenCalledWith(event)
+    expect(removeListenerMock).toHaveBeenCalledWith('memory:changed', wrappedListener)
   })
 
   it('routes all generic events and removes each wrapped listener by exact identity', () => {

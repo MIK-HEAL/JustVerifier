@@ -172,8 +172,11 @@ const registerWithFakes = (overrides?: {
   specialistSkillCatalog?: Array<{ id: string; frameworkName: string; displayName: string }>
   provisionedConnectorSkillNames?: string[]
   customMcpServers?: Array<{ id: string; name: string }>
+  memory?: AcpTestOptions['memory']
+  delegatedNotebookConnection?: AcpTestOptions['delegatedNotebookConnection']
   archiveAvailability?: Parameters<typeof createAcpHandlerWorkflows>[3]
   interruptedTurnSessions?: Parameters<typeof createAcpHandlerWorkflows>[4]
+  resolveMemoryEnabled?: Parameters<typeof installAcpIpcHandlers>[4]
 }): AcpTestOptions => {
   const taskNotifications =
     overrides?.taskNotifications ??
@@ -208,7 +211,9 @@ const registerWithFakes = (overrides?: {
     onAllSessionsCancellationRequested: overrides?.onAllSessionsCancellationRequested,
     beforeSessionDelete: overrides?.beforeSessionDelete,
     initializationBarrier: overrides?.initializationBarrier,
-    profileService: overrides?.profileService as never
+    profileService: overrides?.profileService as never,
+    memory: overrides?.memory,
+    delegatedNotebookConnection: overrides?.delegatedNotebookConnection
   }
 
   const runtime = createAcpRuntime(options)
@@ -223,7 +228,8 @@ const registerWithFakes = (overrides?: {
       overrides?.interruptedTurnSessions
     ),
     undefined,
-    overrides?.archiveAvailability ?? passThroughSessionAdmission
+    overrides?.archiveAvailability ?? passThroughSessionAdmission,
+    overrides?.resolveMemoryEnabled
   )
   return options as AcpTestOptions
 }
@@ -634,6 +640,21 @@ describe('ACP module transport seam', () => {
 
     expect(handlers.has('acp:get-state')).toBe(true)
     expect(handlers.has('acp:respond-permission')).toBe(true)
+  })
+})
+
+describe('ACP runtime composition — memory eligibility', () => {
+  it('passes recall to the primary runtime and withholds it from delegated runtimes', () => {
+    const memory = { recallForPrompt: vi.fn().mockResolvedValue(undefined) }
+
+    registerWithFakes({ memory })
+    expect(AcpRuntimeMock.mock.calls.at(-1)?.[0]).toMatchObject({ memory })
+
+    registerWithFakes({
+      memory,
+      delegatedNotebookConnection: {} as AcpTestOptions['delegatedNotebookConnection']
+    })
+    expect(AcpRuntimeMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('memory')
   })
 })
 
@@ -1105,6 +1126,42 @@ describe('installAcpIpcHandlers — reset-session-context bridge', () => {
     expect(result).toEqual({ sessionId: 's-1', cwd: '/workspace', contextReset: true })
   })
 
+  it('uses the durable Memory preference for renderer resume and reset requests', async () => {
+    const resolveMemoryEnabled = vi.fn(async () => false)
+    registerWithFakes({ resolveMemoryEnabled })
+    const request: AcpResumeSessionRequest = {
+      sessionId: 's-1',
+      cwd: '/workspace',
+      projectId: 'project-1',
+      memoryEnabled: true
+    }
+
+    await handlers.get('acp:resume-session')?.({}, request)
+    await handlers.get('acp:reset-session-context')?.({}, request)
+
+    expect(resumeSession).toHaveBeenCalledWith({ ...request, memoryEnabled: false })
+    expect(resetSessionContext).toHaveBeenCalledWith({ ...request, memoryEnabled: false })
+    expect(resolveMemoryEnabled).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails closed when the durable Memory preference is missing', async () => {
+    const resolveMemoryEnabled = vi.fn(async () => undefined)
+    registerWithFakes({ resolveMemoryEnabled })
+    const request: AcpResumeSessionRequest = {
+      sessionId: 's-1',
+      cwd: '/workspace',
+      projectId: 'project-1',
+      memoryEnabled: true
+    }
+
+    await handlers.get('acp:resume-session')?.({}, request)
+    await handlers.get('acp:reset-session-context')?.({}, request)
+
+    expect(resumeSession).toHaveBeenCalledWith({ ...request, memoryEnabled: false })
+    expect(resetSessionContext).toHaveBeenCalledWith({ ...request, memoryEnabled: false })
+    expect(resolveMemoryEnabled).toHaveBeenCalledTimes(2)
+  })
+
   it('rejects reset before runtime mutation when Session admission is closed', async () => {
     const failure = new Error('Project is being deleted.')
     const withSessionAvailableById = vi.fn().mockRejectedValue(failure)
@@ -1510,7 +1567,9 @@ describe('installAcpIpcHandlers — acp:send-prompt notification tracking', () =
       sessionId: 'session-1',
       text: 'Plot the curve',
       continuation: undefined,
-      suppressUserMessage: undefined
+      suppressUserMessage: undefined,
+      turnIntent: undefined,
+      memoryEnabled: true
     })
     expect(sendPrompt).toHaveBeenCalledWith(
       expect.objectContaining({

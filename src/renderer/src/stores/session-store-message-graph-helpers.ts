@@ -42,6 +42,7 @@ export type AppendUserMessageInput = {
   agentBackendId?: PersistedChatSession['agentBackendId']
   agentModel?: string
   agentConfiguration?: PersistedChatSession['agentConfiguration']
+  memoryEnabled?: boolean
   // Resolved send target stamped onto the user Message; drives config-change timeline markers.
   agentTarget?: PersistedChatMessage['agentTarget']
   isPending?: boolean
@@ -66,6 +67,7 @@ export type BranchInNewSessionInput = {
   agentBackendId?: PersistedChatSession['agentBackendId']
   agentModel?: string
   agentConfiguration?: PersistedChatSession['agentConfiguration']
+  memoryEnabled?: boolean
   agentTarget?: PersistedChatMessage['agentTarget']
   specialistId?: string | null
 }
@@ -461,7 +463,6 @@ export const projectSessionBranchSnapshot = (
 
 export const canBranchInNewSession = (session: ChatSession): boolean =>
   !session.isPending &&
-  !session.pendingHistoryReplay &&
   !session.activeRun &&
   session.status !== 'running' &&
   session.status !== 'waiting-for-user' &&

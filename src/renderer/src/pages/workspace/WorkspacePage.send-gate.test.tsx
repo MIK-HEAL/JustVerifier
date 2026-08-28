@@ -38,7 +38,8 @@ const runtime = vi.hoisted(() => ({
   ensureSessionReady: vi.fn().mockResolvedValue(undefined),
   cancelRun: vi.fn(),
   deleteRuntimeSession: vi.fn(),
-  respondToPermission: vi.fn()
+  respondToPermission: vi.fn(),
+  setMemoryEnabled: vi.fn()
 }))
 
 vi.mock('@/components/ui/resizable', () => ({
@@ -63,7 +64,8 @@ vi.mock('@/lib/acp/useWorkspaceAgentRuntime', () => ({
     ensureSessionReady: runtime.ensureSessionReady,
     cancelRun: runtime.cancelRun,
     deleteRuntimeSession: runtime.deleteRuntimeSession,
-    respondToPermission: runtime.respondToPermission
+    respondToPermission: runtime.respondToPermission,
+    setMemoryEnabled: runtime.setMemoryEnabled
   })
 }))
 
@@ -255,6 +257,9 @@ describe('WorkspacePage send gate while compacting', () => {
       await renderPage()
 
       expect(conversationProps.agentControls.canChange).toBe(false)
+      expect(conversationProps.agentControls.canChangeAutoReview).toBe(false)
+      expect(conversationProps.agentControls.canChangeMemory).toBe(false)
+      expect(conversationProps.agentControls.canChangeSpecialist).toBe(false)
       expect(conversationProps.permissions.canChangePermissionProfile).toBe(true)
     }
   )
@@ -671,7 +676,7 @@ describe('WorkspacePage send gate while compacting', () => {
     expect(conversationProps.conversation.availability.revise).toBe(false)
   })
 
-  it('blocks follow-on Session actions until a pending history replay is sent', async () => {
+  it('keeps replay-independent Session actions available until history replay is sent', async () => {
     useSessionStore.setState({
       sessions: [
         createSession({
@@ -706,7 +711,7 @@ describe('WorkspacePage send gate while compacting', () => {
     })
 
     expect(conversationProps.conversation.availability.submit).toBe(true)
-    expect(conversationProps.conversation.availability.branch).toBe(false)
+    expect(conversationProps.conversation.availability.branch).toBe(true)
     expect(conversationProps.workflows.review.disabled).toBe(true)
     expect(conversationProps.workflows.saveAsSkill.disabled).toBe(true)
     expect(conversationProps.contextWindow.canCompact).toBe(false)
@@ -714,6 +719,9 @@ describe('WorkspacePage send gate while compacting', () => {
       'Send a message to reconnect this session before compacting.'
     )
     expect(conversationProps.agentControls.canChange).toBe(false)
+    expect(conversationProps.agentControls.canChangeAutoReview).toBe(true)
+    expect(conversationProps.agentControls.canChangeMemory).toBe(true)
+    expect(conversationProps.agentControls.canChangeSpecialist).toBe(true)
     expect(conversationProps.permissions.canChangePermissionProfile).toBe(false)
     expect(conversationProps.view.sideChatDisabledReason).toBe(
       'Resolve the current Session operation first.'
@@ -771,5 +779,18 @@ describe('WorkspacePage send gate while compacting', () => {
     })
 
     expect(conversationProps.view.actionError).toBe('Continuation failed')
+  })
+
+  it('surfaces a failed Memory reconfiguration for the active conversation', async () => {
+    runtime.setMemoryEnabled.mockRejectedValueOnce(new Error('Memory update failed'))
+    await renderPage()
+
+    await act(async () => {
+      conversationProps.agentControls.toggleMemory?.(false)
+      await Promise.resolve()
+    })
+
+    expect(runtime.setMemoryEnabled).toHaveBeenCalledWith('sess-a', false)
+    expect(conversationProps.view.actionError).toBe('Memory update failed')
   })
 })

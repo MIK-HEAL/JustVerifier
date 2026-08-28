@@ -32,6 +32,8 @@ import { createApplicationEventModule, type ApplicationEventSource } from './app
 import { TagRepository } from './tags/repository'
 import { TagResourceCatalog } from './tags/resource-catalog'
 import { TagService } from './tags/service'
+import { MemoryRepository } from './memory/repository'
+import { MemoryService } from './memory/service'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
@@ -839,7 +841,8 @@ const createApplicationModules = async (
         sideChatOwnerRef.current?.restoreProject(projectId)
         await computeJobDeletionPort.abortProjectJobDeletion(projectId)
       }
-    }
+    },
+    applicationEvents
   )
   const detectArchiveBlockingSessions = (): ReturnType<typeof detectActiveSessions> =>
     detectActiveSessions({
@@ -1116,6 +1119,10 @@ const createApplicationModules = async (
       listSpecialists: async () =>
         (await profileService.listForSettings()).filter(({ kind }) => kind !== 'reviewer')
     }),
+    applicationEvents
+  )
+  const memoryService = new MemoryService(
+    new MemoryRepository(() => getProjectDbClient(configRoot)),
     applicationEvents
   )
   const tagCleanupLog = createLogger('tags:cleanup')
@@ -1824,6 +1831,7 @@ const createApplicationModules = async (
                     ...(latest.permissionProfile
                       ? { permissionProfile: latest.permissionProfile }
                       : {}),
+                    memoryEnabled: latest.memoryEnabled !== false,
                     ...(latest.agentFrameworkId
                       ? { previousFrameworkId: latest.agentFrameworkId }
                       : {}),
@@ -1935,6 +1943,10 @@ const createApplicationModules = async (
         runtimeRef.current?.getSessionFramework(sessionId) !== 'codebuddy',
       connectorService,
       computeService: agentComputeService,
+      memoryService,
+      isMemoryEnabledForSession: async (sessionId) =>
+        (runtimeRef.current?.isSessionMemoryEnabled(sessionId) ?? false) &&
+        (await memoryService.isEnabled()),
       skillImporter: conversationSkillImporter,
       planService: {
         call: (input) => {
@@ -2210,6 +2222,7 @@ const createApplicationModules = async (
       delegatedWork: delegatedWork.root,
       sideChatRelays: mainPromptSideChatRelay,
       imageInputCompatibility,
+      memory: memoryService,
       resolveComputeExecutionTargetIds: (sessionId) => hostsRegistry.getSelected(sessionId)
     },
     (options) => {
@@ -3303,6 +3316,22 @@ const createApplicationModules = async (
     },
     permissionGrants: permissionGrantProjection,
     tags: tagService,
+    memory: {
+      snapshot: () => memoryService.snapshot(),
+      setEnabled: async (request) => {
+        const before = await memoryService.isEnabled()
+        const snapshot = await memoryService.setEnabled(request)
+        if (before !== snapshot.enabled) await runtime.requestSkillsReload()
+        return snapshot
+      },
+      createCategory: (request) => memoryService.createCategory(request),
+      updateCategory: (request) => memoryService.updateCategory(request),
+      deleteCategory: (request) => memoryService.deleteCategory(request),
+      createEntry: (request) => memoryService.createEntry(request),
+      updateEntry: (request) => memoryService.updateEntry(request),
+      deleteEntry: (request) => memoryService.deleteEntry(request),
+      clearAll: () => memoryService.clearAll()
+    },
     dataContent: {
       artifacts: artifactHandlers,
       electron: {
@@ -3430,6 +3459,18 @@ const createApplicationModules = async (
         sessionAdmission: {
           withSessionAvailableById: (sessionId, operation) =>
             archiveCoordinator.withSessionAvailableById(sessionId, operation)
+        },
+        resolveMemoryEnabled: async ({ sessionId, projectId }) => {
+          const sessions = projectId
+            ? [await sessionRepository.loadSession(projectId, sessionId)].filter(
+                (session): session is PersistedChatSession => session !== undefined
+              )
+            : (await sessionRepository.loadAll()).sessions.filter(
+                (session) => session.id === sessionId
+              )
+          if (sessions.length === 0) return undefined
+          if (sessions.length !== 1) return false
+          return sessions[0].memoryEnabled !== false
         },
         respondDelegatedQuestion: (input) => {
           if (!delegatedWork.root.respondQuestion) {

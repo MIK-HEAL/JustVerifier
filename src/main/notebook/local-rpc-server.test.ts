@@ -4,11 +4,17 @@ import { request as httpRequest, type ClientRequest, type Server } from 'node:ht
 import { createConnection, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import type { PrismaClient } from '@prisma/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ABOUT_YOU_MEMORY_CATEGORY_ID } from '../../shared/memory'
 import type { NotebookRunInputFile } from '../../shared/notebook'
 import { PlanCommandError } from '../../shared/session-plan/contract'
+import { migrateApplicationDatabase } from '../database/migration-service'
 import { fetchLocalRpc } from '../local-rpc-transport'
+import { MemoryRepository } from '../memory/repository'
+import { MemoryService } from '../memory/service'
+import { createProjectDbClient } from '../projects/prisma-client'
 import { NotebookLocalRpcServer } from './local-rpc-server'
 import { NotebookControlCompletionCapturedError, NotebookRuntimeService } from './runtime-service'
 import { NotebookRunRepository, getRuntimeRoot } from './repository'
@@ -77,6 +83,307 @@ afterEach(async () => {
 })
 
 describe('notebook local RPC server', () => {
+  it('routes memory search through a main-only capability after trusted session binding', async () => {
+    const memoryResult = {
+      id: 'entry-1',
+      categoryId: 'category-1',
+      categoryName: 'Research',
+      scope: 'project' as const,
+      content: 'trusted result',
+      revision: 1,
+      provenance: { origin: 'agent' as const, agentId: 'specialist-1' },
+      updatedAt: 1
+    }
+    const memorySearch = vi.fn(async () => [memoryResult])
+    const server = new NotebookLocalRpcServer({} as never, {
+      transport: 'tcp',
+      memoryService: {
+        listCategoriesForAgent: vi.fn(async () => []),
+        searchForAgent: memorySearch,
+        rememberForAgent: vi.fn(async () => ({
+          status: 'created' as const,
+          memory: { ...memoryResult, content: 'saved' }
+        }))
+      }
+    })
+    const control = await server.issueControlConnection(
+      'trusted-session',
+      'project-1',
+      'root-frame-trusted-session'
+    )
+    server.registerSessionSpecialist('trusted-session', 'specialist-1')
+
+    try {
+      const response = await fetch(control.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${control.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'memorySearch',
+          params: {
+            query: 'microscopy',
+            limit: 4,
+            projectId: 'forged-project',
+            sessionId: 'forged'
+          }
+        })
+      })
+
+      expect(response.status).toBe(200)
+      expect(memorySearch).toHaveBeenCalledWith(
+        {
+          query: 'microscopy',
+          categoryIds: undefined,
+          limit: 4
+        },
+        {
+          projectId: 'project-1',
+          sessionId: 'trusted-session',
+          agentId: 'specialist-1'
+        }
+      )
+    } finally {
+      control.release()
+      await server.close()
+    }
+  })
+
+  it('rejects Memory RPC through a Session capability issued with Memory disabled', async () => {
+    const memorySearch = vi.fn(async () => [])
+    const server = new NotebookLocalRpcServer({} as never, {
+      transport: 'tcp',
+      memoryService: {
+        listCategoriesForAgent: vi.fn(async () => []),
+        searchForAgent: memorySearch,
+        rememberForAgent: vi.fn()
+      }
+    })
+    const connection = await server.issueSessionConnection(
+      'session-off',
+      'project-1',
+      'root-frame-session-off',
+      false
+    )
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ method: 'memorySearch', params: { query: 'private' } })
+      })
+
+      expect(response.status).toBe(403)
+      expect(memorySearch).not.toHaveBeenCalled()
+    } finally {
+      connection.release?.()
+      await server.close()
+    }
+  })
+
+  it('rejects Memory RPC when the current Main-owned Session gate is disabled', async () => {
+    const memorySearch = vi.fn(async () => [])
+    const server = new NotebookLocalRpcServer({} as never, {
+      transport: 'tcp',
+      isMemoryEnabledForSession: async () => false,
+      memoryService: {
+        listCategoriesForAgent: vi.fn(async () => []),
+        searchForAgent: memorySearch,
+        rememberForAgent: vi.fn()
+      }
+    })
+    const control = await server.issueControlConnection(
+      'session-off',
+      'project-1',
+      'root-frame-session-off'
+    )
+
+    try {
+      const response = await fetch(control.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${control.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ method: 'memorySearch', params: { query: 'private' } })
+      })
+
+      expect(response.status).toBe(403)
+      expect(memorySearch).not.toHaveBeenCalled()
+    } finally {
+      control.release()
+      await server.close()
+    }
+  })
+
+  it('recalls an Agent memory after reopen from another session and Agent', async () => {
+    const root = await createStorageRoot()
+    let client: PrismaClient = createProjectDbClient(root)
+    const createMemoryService = (): MemoryService =>
+      new MemoryService(new MemoryRepository(async () => client), { publish: vi.fn() })
+
+    try {
+      await migrateApplicationDatabase(client)
+      await client.project.createMany({
+        data: [
+          { id: 'project-a', name: 'Project A' },
+          { id: 'project-b', name: 'Project B' }
+        ]
+      })
+      const firstMemoryService = createMemoryService()
+      await firstMemoryService.setEnabled({ enabled: true })
+      const firstServer = new NotebookLocalRpcServer({} as never, {
+        transport: 'tcp',
+        memoryService: firstMemoryService
+      })
+      const firstControl = await firstServer.issueControlConnection(
+        'session-a',
+        'project-a',
+        'root-frame-session-a'
+      )
+      firstServer.registerSessionSpecialist('session-a', 'agent-a')
+
+      try {
+        const response = await fetch(firstControl.endpoint, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${firstControl.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'memoryRemember',
+            params: {
+              categoryId: ABOUT_YOU_MEMORY_CATEGORY_ID,
+              content: 'Always report migration checks before delivery.',
+              analysis: {
+                scope: 'project',
+                durability: 'cross-session',
+                evidence: 'user-stated',
+                subject: 'Delivery checks',
+                reason: 'Future sessions in this project need the same delivery check.',
+                categoryReason: 'This is a stable user preference.'
+              },
+              projectId: 'forged-project',
+              sessionId: 'forged-session',
+              agentId: 'forged-agent'
+            }
+          })
+        })
+
+        expect(response.status).toBe(200)
+      } finally {
+        firstControl.release()
+        await firstServer.close()
+      }
+
+      await client.$disconnect()
+      client = createProjectDbClient(root)
+      await migrateApplicationDatabase(client)
+      const secondMemoryService = createMemoryService()
+
+      await expect(
+        secondMemoryService.recallForPrompt('Continue with an unrelated task.', {
+          projectId: 'project-a'
+        })
+      ).resolves.toContain('Always report migration checks before delivery.')
+      await expect(
+        secondMemoryService.recallForPrompt('Continue with an unrelated task.', {
+          projectId: 'project-b'
+        })
+      ).resolves.toBeUndefined()
+
+      const secondServer = new NotebookLocalRpcServer({} as never, {
+        transport: 'tcp',
+        memoryService: secondMemoryService
+      })
+      const secondControl = await secondServer.issueControlConnection(
+        'session-b',
+        'project-a',
+        'root-frame-session-b'
+      )
+      secondServer.registerSessionSpecialist('session-b', 'agent-b')
+
+      try {
+        const response = await fetch(secondControl.endpoint, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${secondControl.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'memorySearch',
+            params: { query: 'migration checks', limit: 5 }
+          })
+        })
+        const payload = (await response.json()) as {
+          result: Array<{ content: string; provenance: { origin: string; agentId?: string } }>
+        }
+
+        expect(response.status).toBe(200)
+        expect(payload.result).toEqual([
+          expect.objectContaining({
+            content: 'Always report migration checks before delivery.',
+            provenance: { origin: 'agent', agentId: 'agent-a' }
+          })
+        ])
+      } finally {
+        secondControl.release()
+        await secondServer.close()
+      }
+    } finally {
+      await client.$disconnect()
+    }
+  })
+
+  it('does not authorize memory tools for delegated control capabilities', async () => {
+    const memoryResult = {
+      id: 'entry-1',
+      categoryId: 'category-1',
+      categoryName: 'Research',
+      scope: 'project' as const,
+      content: 'saved',
+      revision: 1,
+      provenance: { origin: 'agent' as const },
+      updatedAt: 1
+    }
+    const memorySearch = vi.fn(async () => [])
+    const server = new NotebookLocalRpcServer({} as never, {
+      transport: 'tcp',
+      memoryService: {
+        listCategoriesForAgent: vi.fn(async () => []),
+        searchForAgent: memorySearch,
+        rememberForAgent: vi.fn(async () => ({ status: 'created' as const, memory: memoryResult }))
+      }
+    })
+    const control = await server.issueControlConnection(
+      'delegate-session',
+      'project-1',
+      'delegate-frame',
+      { role: 'delegate', attemptId: 'attempt-1' }
+    )
+
+    try {
+      const response = await fetch(control.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${control.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ method: 'memorySearch', params: { query: 'private' } })
+      })
+
+      expect(response.status).toBe(403)
+      expect(memorySearch).not.toHaveBeenCalled()
+    } finally {
+      control.release()
+      await server.close()
+    }
+  })
+
   it('rejects an authenticated request body above the local RPC budget', async () => {
     const server = new NotebookLocalRpcServer({} as never, {
       transport: 'tcp',

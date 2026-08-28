@@ -108,6 +108,7 @@ type TaskAgentResumeSessionRequest = {
   cwd: string
   projectId: string
   permissionProfile: PermissionProfileId
+  memoryEnabled?: boolean
   previousFrameworkId?: AgentFrameworkId
   previousBackendId?: string
   previousModel?: string
@@ -990,6 +991,7 @@ class TaskRunner {
           previousModel: existing.agentModel,
           providerSessionId: existing.providerSessionId,
           providerContinuityToken: existing.providerContinuityToken,
+          memoryEnabled: existing.memoryEnabled !== false,
           ...(specialistId ? { specialistId } : {}),
           ...(existing.specialistBindingPending === true ? { specialistBindingPending: true } : {}),
           ...(existing.agentConfiguration

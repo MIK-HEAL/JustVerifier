@@ -1343,7 +1343,8 @@ describe('workspace durable elicitation', () => {
           providerId: backendId.slice(backendId.indexOf(':') + 1),
           model: 'session-model',
           reasoningEffort: 'high'
-        }
+        },
+        true
       )
       expect(resumeSession.mock.invocationCallOrder[0]).toBeLessThan(
         respondToElicitation.mock.invocationCallOrder[0]
@@ -1680,7 +1681,8 @@ describe('workspace durable elicitation', () => {
         providerId: 'provider-2',
         model: 'new-model',
         reasoningEffort: 'high'
-      }
+      },
+      true
     )
     expect(onSendPreparationStateChange.mock.calls).toEqual([
       [session.id, true],
@@ -2463,6 +2465,9 @@ describe('workspace agent message sending', () => {
       [],
       undefined,
       expect.objectContaining({ promptMessageId: expect.any(String) }),
+      true,
+      undefined,
+      undefined,
       true
     )
     expect(useSessionStore.getState().sessions[0].branchContextResetRequired).toBeUndefined()
@@ -2525,7 +2530,8 @@ describe('workspace agent message sending', () => {
       'transport-session-1',
       '/workspace/project',
       'project-1',
-      'ask'
+      'ask',
+      true
     )
     expect(resumeSession).toHaveBeenCalledWith(
       'transport-session-1',
@@ -2537,7 +2543,9 @@ describe('workspace agent message sending', () => {
       undefined,
       undefined,
       undefined,
-      undefined
+      undefined,
+      undefined,
+      true
     )
     expect(shutdown.mock.invocationCallOrder[0]).toBeLessThan(
       resumeSession.mock.invocationCallOrder[0]
@@ -2628,7 +2636,8 @@ describe('workspace agent message sending', () => {
       'transport-session-1',
       '/workspace/project',
       'project-1',
-      'ask'
+      'ask',
+      true
     )
     expect(resumeSession).toHaveBeenCalledWith(
       'transport-session-1',
@@ -2640,7 +2649,9 @@ describe('workspace agent message sending', () => {
       undefined,
       undefined,
       undefined,
-      undefined
+      undefined,
+      undefined,
+      true
     )
     expect(shutdown.mock.invocationCallOrder[0]).toBeLessThan(
       resumeSession.mock.invocationCallOrder[0]
@@ -2886,7 +2897,8 @@ describe('workspace agent message sending', () => {
       undefined,
       undefined,
       undefined,
-      { frameworkId: 'codex', ...agentConfiguration }
+      { frameworkId: 'codex', ...agentConfiguration },
+      true
     )
     expect(runtime.resetSessionContext).not.toHaveBeenCalled()
     expect(runtime.sendPrompt).toHaveBeenCalledOnce()
@@ -2968,7 +2980,9 @@ describe('workspace agent message sending', () => {
       '/workspace/project',
       undefined,
       'ask',
-      undefined
+      undefined,
+      undefined,
+      true
     )
     expect(runtime.sendPrompt).not.toHaveBeenCalled()
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
@@ -3015,7 +3029,10 @@ describe('workspace agent message sending', () => {
       undefined,
       undefined,
       expect.objectContaining({ promptMessageId: expect.any(String) }),
-      false
+      false,
+      undefined,
+      undefined,
+      true
     )
   })
 
@@ -3177,7 +3194,9 @@ describe('workspace agent message sending', () => {
       '/workspace/project',
       'project-1',
       'ask',
-      undefined
+      undefined,
+      undefined,
+      true
     )
     expect(useSessionStore.getState().selectedSessionId).toBe(branched?.sessionId)
     expect(useSessionStore.getState().sessions).toHaveLength(2)
@@ -3215,7 +3234,8 @@ describe('workspace agent message sending', () => {
       expect.objectContaining({ promptMessageId: branched?.messageId }),
       true,
       undefined,
-      'plan-first'
+      'plan-first',
+      true
     )
   })
 
@@ -3276,7 +3296,9 @@ describe('workspace agent message sending', () => {
       '/workspace/project',
       'project-1',
       'ask',
-      'specialist-b'
+      'specialist-b',
+      undefined,
+      true
     )
     expect(runtime.sendPrompt).not.toHaveBeenCalled()
     expect(saveSession).toHaveBeenCalledWith(
@@ -3501,6 +3523,9 @@ describe('workspace agent message sending', () => {
       [],
       undefined,
       expect.objectContaining({ promptMessageId: branched?.messageId }),
+      true,
+      undefined,
+      undefined,
       true
     )
   })
@@ -3630,6 +3655,9 @@ describe('workspace agent message sending', () => {
       [],
       undefined,
       expect.objectContaining({ promptMessageId: branched?.messageId }),
+      true,
+      undefined,
+      undefined,
       true
     )
   })
@@ -3832,7 +3860,14 @@ describe('workspace agent message sending', () => {
       projectId: 'project-1'
     })
 
-    expect(runtime.createSession).toHaveBeenCalledWith(undefined, 'project-1', 'ask', undefined)
+    expect(runtime.createSession).toHaveBeenCalledWith(
+      undefined,
+      'project-1',
+      'ask',
+      undefined,
+      undefined,
+      true
+    )
   })
 
   it('does not persist the runtime home when managed session creation omits cwd', async () => {
@@ -4013,7 +4048,10 @@ describe('workspace agent message sending', () => {
       undefined,
       undefined,
       expect.objectContaining({ promptMessageId: expect.any(String) }),
-      false
+      false,
+      undefined,
+      undefined,
+      true
     )
     expect(useSessionStore.getState().sessions[0].messages[0].uploads?.[0]).not.toHaveProperty(
       'path'
@@ -4120,7 +4158,10 @@ describe('workspace agent message sending', () => {
       undefined,
       undefined,
       expect.objectContaining({ promptMessageId: expect.any(String) }),
-      false
+      false,
+      undefined,
+      undefined,
+      true
     )
     expect(useSessionStore.getState().selectedSessionId).toBe('transport-session-1')
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
@@ -4227,14 +4268,18 @@ describe('workspace agent message sending', () => {
       undefined,
       'project-1',
       'ask',
-      undefined
+      undefined,
+      undefined,
+      true
     )
     expect(runtime.createSession).toHaveBeenNthCalledWith(
       2,
       undefined,
       'project-1',
       'ask',
-      undefined
+      undefined,
+      undefined,
+      true
     )
   })
 
@@ -4715,6 +4760,7 @@ describe('workspace agent message sending', () => {
       text: 'Continue restored conversation',
       cwd: '/workspace/project'
     })
+    await flushRuntimeTasks()
 
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
       status: 'error',
@@ -4782,6 +4828,7 @@ describe('workspace agent message sending', () => {
       text: 'Continue restored conversation',
       cwd: '/workspace/project'
     })
+    await flushRuntimeTasks()
 
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
       status: 'error',
@@ -4918,7 +4965,8 @@ describe('resuming an interrupted session on demand', () => {
       undefined,
       undefined,
       undefined,
-      agentTarget
+      agentTarget,
+      true
     )
     expect(useSessionStore.getState().sessions[0]).toMatchObject({ status: 'idle' })
     expect(useSessionStore.getState().sessions[0].error).toBeUndefined()
@@ -5844,7 +5892,9 @@ describe('resuming an interrupted session on demand', () => {
       undefined,
       undefined,
       undefined,
-      undefined
+      undefined,
+      undefined,
+      true
     )
     const preamble = runtime.sendPrompt.mock.calls[0]?.[5]
     expect(preamble).toContain('Analyze the data with Claude')
@@ -6289,7 +6339,8 @@ describe('resuming an interrupted session on demand', () => {
       undefined,
       undefined,
       undefined,
-      { frameworkId: 'codex', ...snapshot }
+      { frameworkId: 'codex', ...snapshot },
+      true
     )
     expect(runtime.sendPrompt).toHaveBeenCalledOnce()
     expect(useSessionStore.getState().sessions[0].agentConfiguration).toEqual(preferred)
@@ -6477,6 +6528,7 @@ describe('recovering from a request-size overflow', () => {
       'processRuntimeEvents',
       'compact',
       'ensureReady',
+      'reconfigureMemory',
       'resume',
       'cancel'
     ])
@@ -6571,7 +6623,8 @@ describe('recovering from a request-size overflow', () => {
       undefined,
       undefined,
       undefined,
-      admittedTarget
+      admittedTarget,
+      true
     )
   })
 
@@ -6658,7 +6711,8 @@ describe('recovering from a request-size overflow', () => {
       undefined,
       undefined,
       undefined,
-      admittedTarget
+      admittedTarget,
+      true
     )
   })
 
@@ -6725,7 +6779,8 @@ describe('recovering from a request-size overflow', () => {
     )
 
     await vi.waitFor(() => expect(runtime.sendPrompt).toHaveBeenCalledTimes(1))
-    expect(runtime.resumeSession.mock.calls.at(-1)?.at(-1)).toEqual(laterTarget)
+    expect(runtime.resumeSession.mock.calls.at(-1)?.at(-2)).toEqual(laterTarget)
+    expect(runtime.resumeSession.mock.calls.at(-1)?.at(-1)).toBe(true)
   })
 
   it('persists the reset provider identity and re-sends the failed turn with a text preamble', async () => {
@@ -6785,7 +6840,8 @@ describe('recovering from a request-size overflow', () => {
       'session-1',
       '/workspace/project',
       'default-project',
-      'ask'
+      'ask',
+      true
     )
     // The unanswered turn is re-sent (not duplicated) with the prior turn replayed as a text preamble.
     expect(runtime.sendPrompt.mock.calls[0]?.[1]).toBe('now compare with this new screenshot')
@@ -6806,7 +6862,8 @@ describe('recovering from a request-size overflow', () => {
       'provider-session-new',
       'continuity-new',
       undefined,
-      agentTarget
+      agentTarget,
+      true
     )
     expect(toPersistedSession(useSessionStore.getState().sessions[0])).toMatchObject({
       agentFrameworkId: 'codex',
@@ -7618,13 +7675,16 @@ describe('resendEditedWorkspaceMessage', () => {
       undefined,
       undefined,
       undefined,
-      undefined
+      undefined,
+      undefined,
+      true
     )
     expect(runtime.resetSessionContext).toHaveBeenCalledWith(
       'session-1',
       '/workspace/project',
       'default-project',
-      'ask'
+      'ask',
+      true
     )
     expect(drainRuntimeEvents).toHaveBeenCalledOnce()
     expect(preparationChanged).toHaveBeenLastCalledWith('session-1', false)
@@ -7737,7 +7797,8 @@ describe('resendEditedWorkspaceMessage', () => {
       'session-1',
       '/workspace/project',
       'default-project',
-      'ask'
+      'ask',
+      true
     )
 
     // The kept turns replay as a text preamble (the edited turn is not duplicated into it), and the

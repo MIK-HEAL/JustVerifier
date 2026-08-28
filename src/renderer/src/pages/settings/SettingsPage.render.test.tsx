@@ -11,6 +11,8 @@ import type { ProviderView } from '../../../../shared/settings'
 import type { SpecialistProfileView } from '../../../../shared/specialist'
 import { i18next } from '@/i18n'
 import { createInitialComputeState, useComputeStore } from '@/stores/compute-store'
+import { createInitialMemoryState, useMemoryStore } from '@/stores/memory-store'
+import { useNavigationStore } from '@/stores/navigation-store'
 import { createInitialProjectState, useProjectStore } from '@/stores/project-store'
 import { usePermissionGrantsStore } from '@/stores/permission-grants-store'
 import { createInitialSessionState, useSessionStore } from '@/stores/session-store'
@@ -56,6 +58,7 @@ beforeAll(async () => {
     import('./ConnectorImportView'),
     import('./ConnectorsPanel'),
     import('./GeneralPanel'),
+    import('./MemoryPanel'),
     import('./NetworkPanel'),
     import('./PermissionsPanel'),
     import('./RemoteControlPanel'),
@@ -251,6 +254,33 @@ const installApi = (): void => {
     compute: {
       list: vi.fn().mockResolvedValue([])
     },
+    memory: {
+      snapshot: vi.fn().mockResolvedValue({
+        revision: 1,
+        enabled: false,
+        categories: [
+          {
+            id: 'memory-category-about-you',
+            systemKey: 'about-you',
+            autoRecall: true,
+            revision: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            entries: []
+          }
+        ],
+        projects: []
+      }),
+      setEnabled: vi.fn(),
+      createCategory: vi.fn(),
+      updateCategory: vi.fn(),
+      deleteCategory: vi.fn(),
+      createEntry: vi.fn(),
+      updateEntry: vi.fn(),
+      deleteEntry: vi.fn(),
+      clearAll: vi.fn(),
+      onChanged: vi.fn(() => vi.fn())
+    },
     tags: {
       snapshot: vi.fn().mockResolvedValue({
         revision: 1,
@@ -266,8 +296,10 @@ beforeEach(() => {
   installApi()
   useSettingsStore.setState(createInitialSettingsState())
   useProjectStore.setState(createInitialProjectState())
+  useNavigationStore.setState({ view: 'home', activeProjectId: undefined })
   useSessionStore.setState(createInitialSessionState())
   useComputeStore.setState(createInitialComputeState())
+  useMemoryStore.setState(createInitialMemoryState())
   useTagStore.setState(createInitialTagState())
   useRuntimeSettingsStore.setState({
     envs: null,
@@ -389,6 +421,159 @@ const installCustomProviderSnapshot = (): ProviderView => {
 }
 
 describe('SettingsPage layout', () => {
+  it('gives Memory a definite-height owner so its note list scrolls internally', async () => {
+    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () => navButton('Memory')?.click())
+
+    const panel = document.body.querySelector<HTMLElement>('[data-slot="memory-panel"]')
+    expect(panel).not.toBeNull()
+    expect(panel?.parentElement?.className.split(/\s+/)).toContain('h-full')
+  })
+
+  it('refreshes Memory from the backend every time its navigation option opens', async () => {
+    const readMemory = vi.mocked(window.api.memory.snapshot)
+    readMemory.mockResolvedValue({
+      revision: 2,
+      enabled: true,
+      categories: [
+        {
+          id: 'memory-category-about-you',
+          systemKey: 'about-you',
+          autoRecall: true,
+          revision: 2,
+          createdAt: 1,
+          updatedAt: 2,
+          entries: [
+            {
+              id: 'memory-entry-first',
+              categoryId: 'memory-category-about-you',
+              categoryName: null,
+              projectId: 'project-a',
+              projectName: 'Project A',
+              content: 'First server memory',
+              origin: 'agent',
+              revision: 1,
+              createdAt: 2,
+              updatedAt: 2
+            }
+          ]
+        }
+      ],
+      projects: []
+    })
+
+    await act(async () => root.render(<SettingsPage open onClose={vi.fn()} />))
+    await act(async () => navButton('Memory')?.click())
+    await waitFor(() => expect(document.body.textContent).toContain('First server memory'))
+    await act(async () => navButton('General')?.click())
+
+    readMemory.mockResolvedValue({
+      revision: 3,
+      enabled: true,
+      categories: [
+        {
+          id: 'memory-category-about-you',
+          systemKey: 'about-you',
+          autoRecall: true,
+          revision: 3,
+          createdAt: 1,
+          updatedAt: 3,
+          entries: [
+            {
+              id: 'memory-entry-latest',
+              categoryId: 'memory-category-about-you',
+              categoryName: null,
+              projectId: 'project-a',
+              projectName: 'Project A',
+              content: 'Latest agent-created memory',
+              origin: 'agent',
+              revision: 1,
+              createdAt: 3,
+              updatedAt: 3
+            }
+          ]
+        }
+      ],
+      projects: []
+    })
+    await act(async () => navButton('Memory')?.click())
+
+    await waitFor(() => expect(document.body.textContent).toContain('Latest agent-created memory'))
+  })
+
+  it('switches to a project from its Memory container and closes Settings', async () => {
+    const onClose = vi.fn()
+    useProjectStore.setState({
+      projects: [
+        {
+          id: 'project-a',
+          name: 'Project A',
+          description: '',
+          isExample: false,
+          createdAt: 1,
+          updatedAt: 2
+        }
+      ],
+      isLoaded: true
+    })
+    vi.mocked(window.api.memory.snapshot).mockResolvedValue({
+      revision: 2,
+      enabled: true,
+      categories: [
+        {
+          id: 'memory-category-about-you',
+          systemKey: 'about-you',
+          autoRecall: true,
+          revision: 2,
+          createdAt: 1,
+          updatedAt: 2,
+          entries: []
+        }
+      ],
+      projects: [
+        {
+          projectId: 'project-a',
+          name: 'Project A',
+          archived: false,
+          entries: [
+            {
+              id: 'project-memory',
+              categoryId: null,
+              categoryName: null,
+              projectId: 'project-a',
+              projectName: 'Project A',
+              content: 'Project memory',
+              origin: 'agent',
+              revision: 1,
+              createdAt: 2,
+              updatedAt: 2
+            }
+          ]
+        }
+      ]
+    })
+
+    await act(async () => root.render(<SettingsPage open onClose={onClose} />))
+    await act(async () => navButton('Memory')?.click())
+    await waitFor(() => expect(document.body.textContent).toContain('Project A'))
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('Project A'))
+        ?.click()
+    )
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.trim() === 'Open project')
+        ?.click()
+    )
+
+    expect(useNavigationStore.getState()).toMatchObject({
+      view: 'workspace',
+      activeProjectId: 'project-a'
+    })
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('opens a resource Tag through Settings history and returns to the catalog with Back', async () => {
     vi.mocked(window.api.tags.snapshot).mockResolvedValue({
       revision: 2,
@@ -729,7 +914,7 @@ describe('SettingsPage layout', () => {
     expect(dialog?.getAttribute('data-slot')).toBe('settings-surface')
     expect(dialog?.className).toContain('overscroll-contain')
 
-    // Left navigation grouped as Capabilities (Skills, Connectors, Specialists, Compute, Network)
+    // Left navigation grouped as Capabilities (Skills, Connectors, Specialists, Memory, Compute, Network)
     // and Workspace (Model, Agent, Tags, Permissions, Runtimes, Storage, Remote, Usage, General).
     // Feedback and Archived are anchored at the navigation bottom.
     const nav = document.body.querySelector('nav[aria-label="Settings"]')
@@ -744,23 +929,24 @@ describe('SettingsPage layout', () => {
     expect(nav?.textContent).toContain('Workspace')
     expect(nav?.textContent).not.toContain('Remote access')
     const navItems = nav?.querySelectorAll('li') ?? []
-    expect(navItems).toHaveLength(16)
+    expect(navItems).toHaveLength(17)
     expect(navItems[0]?.textContent).toContain('Skills')
     expect(navItems[1]?.textContent).toContain('Connectors')
     expect(navItems[2]?.textContent).toContain('Specialists')
-    expect(navItems[3]?.textContent).toContain('Compute')
-    expect(navItems[4]?.textContent).toContain('Network')
-    expect(navItems[5]?.textContent).toContain('Model')
-    expect(navItems[6]?.textContent).toContain('Agent')
-    expect(navItems[7]?.textContent).toContain('Tags')
-    expect(navItems[8]?.textContent).toContain('Permissions')
-    expect(navItems[9]?.textContent).toContain('Runtimes')
-    expect(navItems[10]?.textContent).toContain('Storage')
-    expect(navItems[11]?.textContent?.trim()).toBe('Remote')
-    expect(navItems[12]?.textContent).toContain('Usage')
-    expect(navItems[13]?.textContent).toContain('General')
-    expect(navItems[14]?.textContent).toContain('Feedback')
-    expect(navItems[15]?.textContent).toContain('Archived')
+    expect(navItems[3]?.textContent).toContain('Memory')
+    expect(navItems[4]?.textContent).toContain('Compute')
+    expect(navItems[5]?.textContent).toContain('Network')
+    expect(navItems[6]?.textContent).toContain('Model')
+    expect(navItems[7]?.textContent).toContain('Agent')
+    expect(navItems[8]?.textContent).toContain('Tags')
+    expect(navItems[9]?.textContent).toContain('Permissions')
+    expect(navItems[10]?.textContent).toContain('Runtimes')
+    expect(navItems[11]?.textContent).toContain('Storage')
+    expect(navItems[12]?.textContent?.trim()).toBe('Remote')
+    expect(navItems[13]?.textContent).toContain('Usage')
+    expect(navItems[14]?.textContent).toContain('General')
+    expect(navItems[15]?.textContent).toContain('Feedback')
+    expect(navItems[16]?.textContent).toContain('Archived')
     const modelNavButton = navButton('Model')
     const agentNavButton = navButton('Agent')
     expect(modelNavButton?.querySelector('.lucide-brain')).not.toBeNull()

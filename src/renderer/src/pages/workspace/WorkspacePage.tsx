@@ -70,6 +70,7 @@ import { useSideChatController } from './use-side-chat-controller'
 import { isSaveAsSkillRunning, resolveSaveAsSkillAvailability } from './save-as-skill-availability'
 import { createWorkspaceComputeHostAccessController } from './workspace-compute-host-access-controller'
 import { useWorkspaceSessionAgentConfiguration } from './workspace-session-agent-configuration-controller'
+import { resolveWorkspaceAgentControlAvailability } from './workspace-agent-control-availability'
 import { annotationValidationMessage } from './annotations/annotation-validation-message'
 
 type WorkspacePageProps = {
@@ -220,6 +221,7 @@ const WorkspacePage = ({
   // conversation starts disabled; the user can toggle it on before sending. On send it is stamped
   // onto the created session through the Conversation submit transaction.
   const [newConversationAutoReviewEnabled, setNewConversationAutoReviewEnabled] = useState(false)
+  const [newConversationMemoryEnabled, setNewConversationMemoryEnabled] = useState(true)
   // Draft compute hosts for a not-yet-created conversation. Cleared when a new conversation draft
   // is started, and stamped onto the session by the Conversation submit transaction.
   const [newConversationEnabledComputeHosts, setNewConversationEnabledComputeHosts] = useState<
@@ -434,6 +436,9 @@ const WorkspacePage = ({
   const activeAutoReviewEnabled = activeSession
     ? activeSession.autoReviewEnabled === true
     : newConversationAutoReviewEnabled
+  const activeMemoryEnabled = activeSession
+    ? activeSession.memoryEnabled !== false
+    : newConversationMemoryEnabled
   const computeHostAccess = createWorkspaceComputeHostAccessController({
     activeSession,
     newConversationEnabledComputeHosts,
@@ -442,8 +447,6 @@ const WorkspacePage = ({
     setNewConversationSelectedComputeHosts,
     setError: setAttachmentError
   })
-  // True while any review for the active session is in the 'running' lifecycle.
-  // Select the Project-scoped review array so pushes stay reactive without cross-Project collisions.
   const activeSessionId = activeSession?.id
   const isReviewing = useReviewStore((state) => {
     if (!activeSessionId) return false
@@ -471,6 +474,7 @@ const WorkspacePage = ({
     hasPendingPermissionRequest: (sessionId) =>
       pendingPermissions.some((request) => request.sessionId === sessionId),
     newConversationAutoReviewEnabled,
+    newConversationMemoryEnabled,
     newConversationEnabledComputeHosts,
     newConversationSelectedComputeHosts,
     composer,
@@ -481,6 +485,7 @@ const WorkspacePage = ({
     setAutoReviewEnabled,
     resetNewConversationSettings: () => {
       setNewConversationAutoReviewEnabled(false)
+      setNewConversationMemoryEnabled(true)
       setNewConversationEnabledComputeHosts([])
       setNewConversationSelectedComputeHosts([])
       resetNewConversationConfiguration()
@@ -567,12 +572,14 @@ const WorkspacePage = ({
     activeSession?.id,
     !canEditMessage || activeSessionSaveAsSkillPending || conversation.queue.items.length > 0
   )
-  const canChangeAgentControls =
+  const agentControlAvailability = resolveWorkspaceAgentControlAvailability(
     isSessionPersistenceReady &&
-    activeSessionActionability?.actions.changeAgentControls.allowed !== false &&
-    !activeSessionHasRuntimeInteraction &&
-    !activeSession?.compacting &&
-    conversation.queue.items.length === 0
+      !activeSessionHasRuntimeInteraction &&
+      !activeSession?.compacting &&
+      conversation.queue.items.length === 0,
+    sessionController.view.specialist.barrierInFlight,
+    activeSessionActionability?.actions
+  )
   const canChangePermissionProfile =
     isSessionPersistenceReady &&
     !activeSessionHasSendPreparation &&
@@ -765,6 +772,7 @@ const WorkspacePage = ({
     setAttachmentError(null)
     setNewConversationPermissionProfile(defaultPermissionProfile)
     setNewConversationAutoReviewEnabled(false)
+    setNewConversationMemoryEnabled(true)
     setNewConversationEnabledComputeHosts([])
     setNewConversationSelectedComputeHosts([])
     resetNewConversationConfiguration()
@@ -835,8 +843,6 @@ const WorkspacePage = ({
     void setPermissionProfile(activeSession.id, profile)
   }
 
-  // Persists the auto-review toggle for the active session; for a not-yet-created conversation it
-  // updates the draft state, which the Conversation submit transaction stamps onto the new session.
   const changeAutoReviewEnabled = (enabled: boolean): void => {
     if (!activeSession) {
       setNewConversationAutoReviewEnabled(enabled)
@@ -846,8 +852,15 @@ const WorkspacePage = ({
     setAutoReviewEnabled(activeSession.id, enabled)
   }
 
-  // Manually triggers a review of the last completed turn, bypassing autoReviewEnabled and the
-  // suppressAutoReviewOnceFor loop guard. Disabled logic is enforced by isRequestReviewDisabled.
+  const changeMemoryEnabled = (enabled: boolean): void => {
+    if (!activeSession) return setNewConversationMemoryEnabled(enabled)
+
+    setAttachmentError(null)
+    void runtime.setMemoryEnabled(activeSession.id, enabled).catch((error: unknown) => {
+      setAttachmentError(error instanceof Error ? error.message : String(error))
+    })
+  }
+
   const requestManualReview = (): void => {
     if (!activeSession) return
 
@@ -1100,14 +1113,16 @@ const WorkspacePage = ({
               respond: respondToElicitation
             }}
             agentControls={{
-              canChange: canChangeAgentControls,
+              ...agentControlAvailability,
               modelConfiguration: activeAgentConfiguration,
               modelUnavailable: agentConfigurationUnavailable,
               changeModelConfiguration: changeAgentConfiguration,
               autoReviewEnabled: activeAutoReviewEnabled,
+              memoryEnabled: activeMemoryEnabled,
               enabledComputeHosts: computeHostAccess.enabledProviderIds,
               selectedComputeHosts: computeHostAccess.selectedProviderIds,
               toggleAutoReview: changeAutoReviewEnabled,
+              toggleMemory: changeMemoryEnabled,
               setComputeHostEnabled: computeHostAccess.setHostEnabled,
               setComputeHostSelected: computeHostAccess.setHostSelected
             }}

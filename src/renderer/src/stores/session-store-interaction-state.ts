@@ -44,6 +44,9 @@ export type SessionActionabilityProjection = Readonly<{
     branchFromMessage: SessionActionAvailability
     startSideChat: SessionActionAvailability
     changeAgentControls: SessionActionAvailability
+    changeAutoReview: SessionActionAvailability
+    changeSpecialist: SessionActionAvailability
+    changeMemory: SessionActionAvailability
     archive: SessionActionAvailability
   }>
 }>
@@ -175,6 +178,11 @@ export const projectSessionActionability = (
         : 'plan-approval-pending'
     : undefined
   const replayOrPendingReason = sessionPending ? 'session-pending' : undefined
+  const replayIndependentChangeDisabledReason = session.isPending
+    ? 'session-pending'
+    : running
+      ? 'session-running'
+      : (attentionDisabledReason ?? interactionDisabledReason)
   const activity = waitReason ? 'waiting' : running ? 'running' : 'inactive'
 
   return {
@@ -187,13 +195,21 @@ export const projectSessionActionability = (
       startTurn: actionAvailability(turnDisabledReason),
       revise: actionAvailability(revisionDisabledReason),
       branchFromMessage: actionAvailability(
-        replayOrPendingReason ?? (running ? 'session-running' : attentionDisabledReason)
+        session.isPending
+          ? 'session-pending'
+          : running
+            ? 'session-running'
+            : attentionDisabledReason
       ),
       startSideChat: actionAvailability(replayOrPendingReason ?? attentionDisabledReason),
       changeAgentControls: actionAvailability(
         replayOrPendingReason ??
           (running ? 'session-running' : (attentionDisabledReason ?? interactionDisabledReason))
       ),
+      // Replay-independent settings may change while the provider still awaits transcript replay.
+      changeAutoReview: actionAvailability(replayIndependentChangeDisabledReason),
+      changeSpecialist: actionAvailability(replayIndependentChangeDisabledReason),
+      changeMemory: actionAvailability(replayIndependentChangeDisabledReason),
       archive: actionAvailability(running ? 'session-running' : attentionDisabledReason)
     }
   }

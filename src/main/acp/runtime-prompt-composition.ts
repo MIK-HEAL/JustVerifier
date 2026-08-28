@@ -144,6 +144,9 @@ const composeAcpRuntimePromptOwners = (
       (await base.connectionResources.selectBridgeSkills(text, catalog, signal, observeUsage)) ??
       [],
     authorizeReferencedUploads: options.skillImport?.authorizeReferencedUploads,
+    memory: options.memory,
+    isMemoryEnabledForSession: (sessionId) =>
+      session.sessionRegistry.lookup(sessionId)?.aggregate.snapshot().memoryEnabled ?? false,
     ...(options.notebook
       ? {
           notebook: {

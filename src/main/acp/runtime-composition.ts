@@ -157,6 +157,7 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   sideChatRelays?: AcpRuntimeOptions['sideChatRelays']
   imageInputCompatibility?: AcpRuntimeOptions['imageInputCompatibility']
   resolveComputeExecutionTargetIds?: AcpRuntimeOptions['resolveComputeExecutionTargetIds']
+  memory?: AcpRuntimeOptions['memory']
 }
 
 // Composes the compatibility façade while the coordinator remains the cross-generation Session owner.
@@ -197,7 +198,8 @@ const createAcpRuntime = ({
   spawnAgent,
   sideChatRelays,
   imageInputCompatibility,
-  resolveComputeExecutionTargetIds
+  resolveComputeExecutionTargetIds,
+  memory
 }: AcpRuntimeCompositionOptions): AcpRuntimeCoordinator => {
   const configRoot = resolveConfigRoot()
   const dataRoot = resolveDataRoot()
@@ -311,13 +313,16 @@ const createAcpRuntime = ({
         notebook: {
           projectId: DEFAULT_ARTIFACT_PROJECT_ID,
           mcpEntryPath,
-          getRpcConnection: ({ sessionId, projectId }) =>
+          memoryTools: !delegatedNotebookConnection,
+          isMemoryEnabled: () => memory?.isEnabled?.() ?? Promise.resolve(false),
+          getRpcConnection: ({ sessionId, projectId, memoryTools }) =>
             delegatedNotebookConnection
               ? Promise.resolve(delegatedNotebookConnection)
               : notebookRpcServer.issueSessionConnection(
                   sessionId,
                   projectId,
-                  `root-frame-${sessionId}`
+                  `root-frame-${sessionId}`,
+                  memoryTools
                 ),
           ...(delegatedNotebookConnection
             ? {}
@@ -438,6 +443,7 @@ const createAcpRuntime = ({
           : {}),
         callbacks: runtimeCallbacks,
         sideChatRelays,
+        ...(!delegatedNotebookConnection && memory ? { memory } : {}),
         permissionGrantStore,
         permissionGrantRegistry,
         permissionGrantContext,
