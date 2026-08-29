@@ -56,6 +56,29 @@ const winEnv = (overrides: Partial<CliLauncherEnv> = {}): CliLauncherEnv => ({
   ...overrides
 })
 
+const WINDOWS_PATH_RECEIPT_OWNER = 'Open Science Windows PATH entry. Managed by the app.'
+const windowsPathPendingPath = (env: CliLauncherEnv): string =>
+  join(planCliLauncher(env).binDir, '.open-science-path-pending')
+const windowsPathReceiptPath = (env: CliLauncherEnv): string =>
+  join(planCliLauncher(env).binDir, '.open-science-path-receipt')
+const writeWindowsPathJournal = async (
+  env: CliLauncherEnv,
+  state: 'pending' | 'owned' = 'owned',
+  beforePath = 'C:\\Windows\\System32'
+): Promise<void> => {
+  const binDir = planCliLauncher(env).binDir
+  await writeFile(
+    state === 'pending' ? windowsPathPendingPath(env) : windowsPathReceiptPath(env),
+    JSON.stringify({
+      version: 1,
+      owner: WINDOWS_PATH_RECEIPT_OWNER,
+      binDir,
+      beforePath,
+      afterPath: `${beforePath};${binDir}`
+    })
+  )
+}
+
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'os-cli-'))
 })
@@ -324,7 +347,7 @@ describe.each([
     await expect(getCliLauncherStatus(env)).resolves.toMatchObject({ installed: true })
     await installCliLauncher(env, () => true)
     await expect(readFile(plan.target, 'utf8')).resolves.toBe(plan.shim)
-    await uninstallCliLauncher(env)
+    await uninstallCliLauncher(env, () => true)
     await expect(readFile(plan.target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
@@ -410,17 +433,40 @@ describe('hard-linked launcher safety', () => {
 
 describe('buildWindowsPathCommand', () => {
   it('embeds the bin dir as a PowerShell literal, not via -args', () => {
-    const { command, args } = buildWindowsPathCommand(
-      'C:\\Users\\me\\AppData\\Roaming\\Open Science\\bin'
-    )
+    const binDir = 'C:\\Users\\me\\AppData\\Roaming\\Open Science\\bin'
+    const { command, args } = buildWindowsPathCommand(binDir)
     expect(command).toBe('powershell')
     // The script must be passed to -Command and contain the actual dir literal; -args (the fragile
     // form that could leave $args empty and write the wrong PATH) must not be used.
     expect(args).toContain('-Command')
     expect(args).not.toContain('-args')
     const script = args[args.length - 1]
-    expect(script).toContain("$binDir = 'C:\\Users\\me\\AppData\\Roaming\\Open Science\\bin'")
+    expect(script).toContain(`$binDir = '${binDir}'`)
+    expect(script).toContain(`$pendingPath = '${join(binDir, '.open-science-path-pending')}'`)
+    expect(script).toContain(
+      "$pendingTempPath = [IO.Path]::Combine([IO.Path]::GetDirectoryName($pendingPath), '.open-science-path-pending.' + [Guid]::NewGuid().ToString('N') + '.tmp')"
+    )
+    expect(script).toContain(`$receiptPath = '${join(binDir, '.open-science-path-receipt')}'`)
+    expect(script).toContain(`$receiptOwner = '${WINDOWS_PATH_RECEIPT_OWNER}'`)
+    expect(script).toContain("TrimEnd([char[]]'\\/') -ieq $normalizedBinDir")
     expect(script).toContain("[Environment]::SetEnvironmentVariable('Path'")
+    expect(script).toContain(
+      '$stream = [IO.File]::Open($pendingTempPath, [IO.FileMode]::CreateNew,'
+    )
+    expect(script).toContain('if ($pendingTempCreated -and [IO.File]::Exists($pendingTempPath)) {')
+    expect(script.indexOf('$pendingTempCreated = $true')).toBeGreaterThan(
+      script.indexOf('$stream = [IO.File]::Open($pendingTempPath')
+    )
+    expect(script.indexOf('$stream.Flush($true)')).toBeLessThan(
+      script.indexOf('[IO.File]::Move($pendingTempPath, $pendingPath)')
+    )
+    expect(script.indexOf('[IO.File]::Move($pendingTempPath, $pendingPath)')).toBeLessThan(
+      script.lastIndexOf("[Environment]::SetEnvironmentVariable('Path', $next")
+    )
+    expect(script.lastIndexOf("[Environment]::SetEnvironmentVariable('Path', $next")).toBeLessThan(
+      script.lastIndexOf('[IO.File]::Move($pendingPath, $receiptPath)')
+    )
+    expect(script).toContain("throw 'The pending PATH ownership journal cannot be reconciled.'")
   })
 
   it("doubles embedded single quotes so a quote in the path can't break out of the literal", () => {
@@ -457,13 +503,156 @@ describe('installCliLauncher on Windows PATH edit', () => {
   it('skips the PATH edit entirely when the bin dir is already on PATH', async () => {
     const binDir = join(home, 'AppData', 'Roaming', 'Open Science', 'bin')
     let called = false
-    const status = await installCliLauncher(winEnv({ pathVar: `C:\\Windows;${binDir}` }), () => {
-      called = true
-      return true
-    })
+    const status = await installCliLauncher(
+      winEnv({ pathVar: `C:\\Windows;${binDir.toUpperCase()}\\` }),
+      () => {
+        called = true
+        return true
+      }
+    )
     expect(called).toBe(false)
     expect(status.onPath).toBe(true)
     expect(status.pathHint).toBeUndefined()
+  })
+
+  it.each([
+    ['unmanaged', 'because it is not managed by Open Science'],
+    ['ambiguous', 'The Windows PATH ownership journal is ambiguous.']
+  ] as const)('rejects an %s PATH journal before creating the shim', async (scenario, message) => {
+    const env = winEnv()
+    const plan = planCliLauncher(env)
+    await mkdir(plan.binDir, { recursive: true })
+    if (scenario === 'unmanaged') {
+      await writeFile(windowsPathReceiptPath(env), 'user-owned content')
+    } else {
+      await writeWindowsPathJournal(env, 'pending')
+      await writeWindowsPathJournal(env, 'owned')
+    }
+
+    await expect(installCliLauncher(env, () => true)).rejects.toThrow(message)
+    await expect(readFile(plan.target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+})
+
+describe('uninstallCliLauncher on Windows PATH edit', () => {
+  it('cleans up an owned PATH entry even when the managed shim is already missing', async () => {
+    const env = winEnv()
+    await mkdir(planCliLauncher(env).binDir, { recursive: true })
+    await writeWindowsPathJournal(env)
+    const runCommand = vi.fn(() => true)
+
+    const status = await uninstallCliLauncher(env, runCommand)
+
+    expect(runCommand).toHaveBeenCalledOnce()
+    expect(status).toMatchObject({ installed: false, onPath: false })
+    await expect(readFile(windowsPathReceiptPath(env), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
+  it('preserves the shim and aborts when an existing PATH journal is unmanaged', async () => {
+    const env = winEnv()
+    await installCliLauncher(env, () => true)
+    await writeFile(windowsPathReceiptPath(env), 'user-owned content')
+    const runCommand = vi.fn(() => true)
+
+    await expect(uninstallCliLauncher(env, runCommand)).rejects.toThrow(
+      'because it is not managed by Open Science'
+    )
+
+    expect(runCommand).not.toHaveBeenCalled()
+    await expect(readFile(planCliLauncher(env).target, 'utf8')).resolves.toContain(
+      'Managed by the app'
+    )
+    await expect(readFile(windowsPathReceiptPath(env), 'utf8')).resolves.toBe('user-owned content')
+  })
+
+  it('removes the owned PATH entry before deleting the managed shim', async () => {
+    const env = winEnv()
+    await installCliLauncher(env, () => true)
+    await writeWindowsPathJournal(env)
+    const calls: Array<{ command: string; args: string[] }> = []
+
+    const status = await uninstallCliLauncher(env, (command, args) => {
+      calls.push({ command, args })
+      return true
+    })
+
+    expect(calls).toHaveLength(1)
+    const script = calls[0].args.at(-1) ?? ''
+    expect(script).toContain("$state = 'owned'")
+    expect(script).toContain('$matches = @($parts | Where-Object')
+    expect(script).toContain("TrimEnd([char[]]'\\/') -ieq $normalizedBinDir")
+    expect(script).toContain(
+      "throw 'The owned PATH entry no longer matches its recorded snapshot.'"
+    )
+    expect(script).toContain("SetEnvironmentVariable('Path', $beforePath, 'User')")
+    expect(status).toMatchObject({ installed: false, onPath: false })
+    await expect(readFile(planCliLauncher(env).target, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+    await expect(readFile(windowsPathReceiptPath(env), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
+  it('fails closed when ownership continuity no longer matches the recorded snapshot', async () => {
+    const env = winEnv()
+    await installCliLauncher(env, () => true)
+    await writeWindowsPathJournal(env)
+
+    await expect(
+      uninstallCliLauncher(env, (_command, args) => {
+        expect(args.at(-1)).toContain(
+          "throw 'The owned PATH entry no longer matches its recorded snapshot.'"
+        )
+        return false
+      })
+    ).rejects.toThrow('Could not remove')
+    await expect(readFile(planCliLauncher(env).target, 'utf8')).resolves.toContain(
+      'Managed by the app'
+    )
+    await expect(readFile(windowsPathReceiptPath(env), 'utf8')).resolves.toContain(
+      WINDOWS_PATH_RECEIPT_OWNER
+    )
+  })
+
+  it('reconciles a pending journal only when PATH matches its before or after snapshot', async () => {
+    const env = winEnv()
+    await installCliLauncher(env, () => true)
+    await writeWindowsPathJournal(env, 'pending')
+    const calls: Array<{ command: string; args: string[] }> = []
+
+    await uninstallCliLauncher(env, (command, args) => {
+      calls.push({ command, args })
+      return true
+    })
+
+    const script = calls[0].args.at(-1) ?? ''
+    expect(script).toContain("$state = 'pending'")
+    expect(script).toContain('if ($current -ceq $beforePath) { return }')
+    expect(script).toContain('if ($current -cne $afterPath)')
+    await expect(readFile(windowsPathPendingPath(env), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
+  it('preserves a pre-existing user PATH entry when no ownership receipt exists', async () => {
+    const binDir = join(home, 'AppData', 'Roaming', 'Open Science', 'bin')
+    const env = winEnv({ pathVar: `C:\\Windows;${binDir.toUpperCase()}\\` })
+    const runCommand = vi.fn(() => true)
+    await installCliLauncher(env, runCommand)
+
+    const status = await uninstallCliLauncher(env, runCommand)
+
+    expect(runCommand).not.toHaveBeenCalled()
+    expect(status).toMatchObject({ installed: false, onPath: false })
+    await expect(readFile(windowsPathReceiptPath(env), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+    await expect(readFile(planCliLauncher(env).target, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
   })
 })
 
