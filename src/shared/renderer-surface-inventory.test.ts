@@ -77,7 +77,11 @@ const GENERATED_SOURCE_OMISSIONS = [
   'sessions.sendFlushResponse',
   'settings.exportCustomServerTemplate',
   'settings.exportSkill',
+  'settings.onConnectorCredentialRequest',
+  'settings.onConnectorCredentialSettled',
   'settings.previewCustomServerTemplateExport',
+  'settings.replayPendingConnectorCredentialRequests',
+  'settings.respondConnectorCredentialRequest',
   'settings.selectCustomServerTemplate',
   'sideChat.cancel',
   'sideChat.close',
@@ -216,6 +220,7 @@ const REMOTE_LOCAL_ONLY_CHANNELS: GroupedInventory = {
     'set-close-preference',
     'set-default-permission-profile',
     'set-notifications-enabled',
+    'set-openalex-credential',
     'set-package-mirror',
     'set-network-proxy',
     'set-project-files-filter',
@@ -223,6 +228,7 @@ const REMOTE_LOCAL_ONLY_CHANNELS: GroupedInventory = {
     'uninstall-codebuddy',
     'uninstall-codex',
     'uninstall-opencode',
+    'validate-openalex-credential',
     'wait-xai-oauth-login'
   ],
   storage: [

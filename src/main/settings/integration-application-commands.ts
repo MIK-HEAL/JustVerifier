@@ -34,6 +34,8 @@ type ConnectorIntegrationWorkflows = Pick<
   | 'setConnectorAutoAllow'
   | 'setToolPermission'
   | 'setNcbiCredentials'
+  | 'setOpenAlexCredential'
+  | 'validateOpenAlexCredential'
   | 'addCustomServer'
   | 'setCustomServerEnabled'
   | 'removeCustomServer'
@@ -127,6 +129,16 @@ const settingsIntegrationApplicationCommands = Object.freeze({
     OwnerArgs<ConnectorIntegrationWorkflows, 'setNcbiCredentials'>,
     OwnerResult<ConnectorIntegrationWorkflows, 'setNcbiCredentials'>
   >('settings:set-ncbi-credentials'),
+  setOpenAlexCredential: defineApplicationCommand<
+    'settings:set-openalex-credential',
+    OwnerArgs<ConnectorIntegrationWorkflows, 'setOpenAlexCredential'>,
+    OwnerResult<ConnectorIntegrationWorkflows, 'setOpenAlexCredential'>
+  >('settings:set-openalex-credential'),
+  validateOpenAlexCredential: defineApplicationCommand<
+    'settings:validate-openalex-credential',
+    OwnerArgs<ConnectorIntegrationWorkflows, 'validateOpenAlexCredential'>,
+    OwnerResult<ConnectorIntegrationWorkflows, 'validateOpenAlexCredential'>
+  >('settings:validate-openalex-credential'),
   addCustomServer: defineApplicationCommand<
     'settings:add-custom-server',
     OwnerArgs<ConnectorIntegrationWorkflows, 'addCustomServer'>,
@@ -208,6 +220,8 @@ const settingsConnectorApplicationCommandGroup = defineApplicationCommandGroup(
     settingsIntegrationApplicationCommands.setConnectorAutoAllow,
     settingsIntegrationApplicationCommands.setToolPermission,
     settingsIntegrationApplicationCommands.setNcbiCredentials,
+    settingsIntegrationApplicationCommands.setOpenAlexCredential,
+    settingsIntegrationApplicationCommands.validateOpenAlexCredential,
     settingsIntegrationApplicationCommands.addCustomServer,
     settingsIntegrationApplicationCommands.setCustomServerEnabled,
     settingsIntegrationApplicationCommands.removeCustomServer,
@@ -267,6 +281,14 @@ const registerIntegrationSettingsApplicationCommands = (
         dependencies.connectors.setToolPermission(args[0]),
       'settings:set-ncbi-credentials': ({ args }) =>
         dependencies.connectors.setNcbiCredentials(args[0]),
+      'settings:set-openalex-credential': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:set-openalex-credential')
+        return dependencies.connectors.setOpenAlexCredential(args[0])
+      },
+      'settings:validate-openalex-credential': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:validate-openalex-credential')
+        return dependencies.connectors.validateOpenAlexCredential(args[0])
+      },
       'settings:add-custom-server': ({ args }) => dependencies.connectors.addCustomServer(args[0]),
       'settings:set-custom-server-enabled': ({ args }) =>
         dependencies.connectors.setCustomServerEnabled(args[0]),

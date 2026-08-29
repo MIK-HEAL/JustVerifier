@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   ConnectorApprovalRequest,
+  ConnectorCredentialRequest,
   ConnectorDetailView,
   ConnectorView,
   ConnectorsSnapshot,
@@ -63,6 +64,8 @@ const createCommands = (): ConnectorCommands => ({
   setConnectorAutoAllow: vi.fn(async () => snapshot()),
   setToolPermission: vi.fn(async () => detail),
   setNcbiCredentials: vi.fn(async () => snapshot()),
+  setOpenAlexCredential: vi.fn(async () => snapshot()),
+  validateOpenAlexCredential: vi.fn(async () => ({ valid: true as const })),
   addCustomServer: vi.fn(async () => snapshot()),
   updateCustomServer: vi.fn(async () => snapshot()),
   authenticateCustomServer: vi.fn(async () => snapshot()),
@@ -71,7 +74,8 @@ const createCommands = (): ConnectorCommands => ({
   cancelCustomServerAuthentication: vi.fn(async () => undefined),
   setCustomServerEnabled: vi.fn(async () => snapshot()),
   removeCustomServer: vi.fn(async () => snapshot()),
-  respondConnectorApproval: vi.fn(async () => undefined)
+  respondConnectorApproval: vi.fn(async () => undefined),
+  respondConnectorCredentialRequest: vi.fn(async () => undefined)
 })
 
 const createHarness = (
@@ -709,5 +713,28 @@ describe('settings Connectors slice', () => {
     store.getState().dismissApproval('first')
 
     expect(store.getState().pendingApprovals).toEqual([second])
+  })
+
+  it('removes every matching credential request after one successful save', async () => {
+    const first: ConnectorCredentialRequest = {
+      id: 'first',
+      credentialId: 'openalex',
+      connector: 'literature',
+      method: 'openalex_search_works'
+    }
+    const second: ConnectorCredentialRequest = {
+      ...first,
+      id: 'second',
+      method: 'openalex_get_work'
+    }
+    store.setState({ pendingCredentialRequests: [first, second] })
+
+    await store.getState().respondCredentialRequest('first', true)
+
+    expect(commands.respondConnectorCredentialRequest).toHaveBeenCalledWith({
+      id: 'first',
+      configured: true
+    })
+    expect(store.getState().pendingCredentialRequests).toEqual([])
   })
 })
