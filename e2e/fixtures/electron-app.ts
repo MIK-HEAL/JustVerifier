@@ -118,6 +118,7 @@ type ElectronApp = {
   >
   requestMainWindowClose: () => Promise<void>
   restoreDelegatedHandoffCleanup: (childName: string) => Promise<void>
+  showMainWindow: () => Promise<void>
   restart: (options?: { resourceProfilePhase?: string }) => Promise<Page>
   restartWithCorruptHistoricalSessionFile: (projectId: string) => Promise<Page>
   sabotageDelegatedHandoffCleanup: (childName: string) => Promise<void>
@@ -265,6 +266,17 @@ const openMainWindow = async (
     )
     .toBe('ready')
   await page.getByText('Loading settings...').waitFor({ state: 'hidden', timeout: 60_000 })
+  if (process.platform === 'win32') {
+    // The workspace GitHub star nudge opens after 5s in a visible Windows window and is not part
+    // of these journeys. Leave other platforms on the default cooldown so their layout timing
+    // matches the previously passing CI.
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        'open-science:github-star-nudge-last-shown-at',
+        String(Date.now())
+      )
+    })
+  }
   return page
 }
 
@@ -514,6 +526,12 @@ class ElectronAppHarness implements ElectronApp {
     // Specs assert English copy. Pin the locale so the host language can't leak in — Main
     // resolves a 'system' preference from the OS language list, ignoring Chromium's --lang.
     settings.localePreference = 'en'
+    if (process.platform === 'win32') {
+      // Inherit would spawn a second fake Agent just to generate the Session title. That extra
+      // process and its queued/running/terminal Session writes overlap the first user turn on
+      // Windows CI and leave the conversation stuck on Thinking.
+      settings.sessionDetailsModel = { mode: 'disabled' }
+    }
     await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
     await this.launch()
     return this.page
@@ -550,6 +568,15 @@ class ElectronAppHarness implements ElectronApp {
 
       return { minimized: mainWindow.isMinimized(), visible: mainWindow.isVisible() }
     })
+  }
+
+  async showMainWindow(): Promise<void> {
+    await this.runningApplication.evaluate(({ BrowserWindow }) => {
+      const mainWindow = BrowserWindow.getAllWindows()[0]
+      if (!mainWindow) throw new Error('Open Science main window was not found.')
+      mainWindow.show()
+    })
+    await expect.poll(() => this.mainWindowState()).toMatchObject({ visible: true })
   }
 
   async launchSecondInstance(): Promise<Page> {
