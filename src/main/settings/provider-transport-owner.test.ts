@@ -172,6 +172,7 @@ describe('ProviderTransportOwner generations', () => {
       key: 'openai-token-0',
       model: 'model-a'
     })
+    expect(generation.providerConfiguration).toBeUndefined()
     expect(generation.environment?.NO_PROXY).toBe(generation.environment?.no_proxy)
     await generation.release()
     expect(selector.close).toHaveBeenCalledOnce()
@@ -449,7 +450,7 @@ describe('ProviderTransportOwner generations', () => {
       providerId: 'main',
       apiType: 'anthropic',
       baseUrl: 'http://127.0.0.1:43000',
-      headers: { authorization: 'Bearer anthropic-bridge-token' }
+      headers: { 'x-api-key': 'anthropic-bridge-token' }
     })
     expect(generation.environment?.NO_PROXY).toBe(generation.environment?.no_proxy)
     expect(generation.anthropicBridgeLease?.setTarget('provider-a/model-a')).toBe(true)
@@ -533,6 +534,7 @@ describe('ProviderTransportOwner generations', () => {
     const providerA = generation.providerModelCatalog?.find(
       ({ provider }) => provider.model === 'model-a'
     )?.provider
+    expect(generation.providerConfiguration).toBeUndefined()
     if (!providerA?.openaiBaseUrl || !providerA.key) throw new Error('Missing provider A loopback')
     const sendA = (): Promise<Response> =>
       fetch(`${providerA.openaiBaseUrl}/chat/completions`, {
@@ -585,6 +587,7 @@ describe('ProviderTransportOwner generations', () => {
       model: 'model-a',
       apiEndpoints: ['responses']
     })
+    expect(generation.providerConfiguration).toBeUndefined()
     expect(generation.providerTransportLease?.setTarget(initialTargetId)).toBe(true)
     expect(generation.environment?.NO_PROXY).toBe(generation.environment?.no_proxy)
     await generation.release()

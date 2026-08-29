@@ -532,7 +532,7 @@ class ProviderTransportOwner {
           providerId: CLAUDE_ACP_CONFIGURABLE_PROVIDER_ID,
           apiType: 'anthropic',
           baseUrl: connection.baseUrl,
-          headers: { authorization: `Bearer ${connection.token}` }
+          headers: { 'x-api-key': connection.token }
         },
         anthropicBridgeLease: {
           setTarget: (targetId: string) => bridge.setTarget(targetId),
