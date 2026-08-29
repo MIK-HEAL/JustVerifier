@@ -29,6 +29,7 @@ import {
 import type { AgentModelChangeTarget, ResolvedAgentBackend } from '../agent-framework'
 import { modelFacingAppMcpToolName } from '../agent-framework/app-mcp-names'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
+import type { SessionAuxiliaryTurnUsageRecord } from '../session-persistence/auxiliary-turn-usage'
 import { createLogger, diagnosticErrorFields } from '../logger'
 import { AgentMcpHttpHost } from '../acp/mcp-http-host'
 import { prepareRestrictedBackend } from '../acp/restricted-runtime-profile'
@@ -121,6 +122,7 @@ type SideChatRuntimeOwnerOptions = Readonly<{
     }): Promise<boolean>
   }>
   onEvent: (event: SideChatRuntimeEvent) => void
+  recordUsage?: (record: SessionAuxiliaryTurnUsageRecord) => Promise<unknown>
   setParentInteractionsPaused?: (parentSessionId: string, paused: boolean) => void
   createRuntime?: (options: AcpRuntimeOptions) => SideChatRuntimePort
 }>
@@ -432,9 +434,11 @@ class SideChatRuntimeOwner {
       const bridge = initialBackend.responsesBridgeLease
 
       const runtimeRef: { current?: SideChatRuntimePort } = {}
+      const auxiliaryUsage = this.createRuntimeAuxiliaryUsage(() => activeChat)
       const runtimeOptions: AcpRuntimeOptions = {
         appVersion: this.options.appVersion,
         defaultCwd: cwd,
+        ...(auxiliaryUsage ? { auxiliaryUsage } : {}),
         resolveBackend: () => {
           if (backend) {
             backendTransferred = true
@@ -917,9 +921,11 @@ class SideChatRuntimeOwner {
       const initialBackend = backend
       const bridge = initialBackend.responsesBridgeLease
       const runtimeRef: { current?: SideChatRuntimePort } = {}
+      const auxiliaryUsage = this.createRuntimeAuxiliaryUsage(() => activeChat)
       const runtimeOptions: AcpRuntimeOptions = {
         appVersion: this.options.appVersion,
         defaultCwd: cwd,
+        ...(auxiliaryUsage ? { auxiliaryUsage } : {}),
         resolveBackend: () => {
           if (backend) {
             backendTransferred = true
@@ -1238,6 +1244,39 @@ class SideChatRuntimeOwner {
       })
   }
 
+  private createRuntimeAuxiliaryUsage(
+    active: () => ActiveSideChat | undefined
+  ): AcpRuntimeOptions['auxiliaryUsage'] {
+    const recordUsage = this.options.recordUsage
+    if (!recordUsage) return undefined
+
+    const resolveActive = (runtimeSessionId: string): ActiveSideChat | undefined => {
+      const current = active()
+      if (
+        !current ||
+        current.closing ||
+        current.runtimeSessionId !== runtimeSessionId ||
+        this.activeByParent.get(current.parentSessionId) !== current
+      ) {
+        return undefined
+      }
+      return current
+    }
+
+    return {
+      projectIdForSession: async (runtimeSessionId) => resolveActive(runtimeSessionId)?.projectId,
+      record: async (record) => {
+        const current = resolveActive(record.sessionId)
+        if (!current) return
+        await recordUsage({
+          ...record,
+          projectId: current.projectId,
+          sessionId: current.parentSessionId
+        })
+      }
+    }
+  }
+
   private handleRuntimeEvent(active: ActiveSideChat, event: AcpRuntimeEvent): void {
     if (active.closing || this.activeByParent.get(active.parentSessionId) !== active) return
     if (event.kind === 'message' && event.role === 'assistant') {
@@ -1271,6 +1310,28 @@ class SideChatRuntimeOwner {
       active.error = event.text ?? event.title ?? 'Side chat failed.'
     } else if (event.kind === 'stop') {
       active.running = false
+      if (event.turnUsage && this.options.recordUsage) {
+        active.persistTail = active.persistTail
+          .catch(() => undefined)
+          .then(() =>
+            this.options.recordUsage!({
+              projectId: active.projectId,
+              sessionId: active.parentSessionId,
+              eventId: `${active.sideSessionId}:user-${active.entrySequence}`,
+              source: 'side-chat',
+              frameworkId: active.frameworkId,
+              ...(active.model ? { model: active.model } : {}),
+              completedAtMs: event.timestamp,
+              usage: event.turnUsage!
+            })
+          )
+          .then(
+            () => undefined,
+            (error) => {
+              log.warn('Side chat Usage persistence failed', diagnosticErrorFields(error))
+            }
+          )
+      }
     }
     const revision = this.touch(active)
     this.queuePersist(active, event.kind === 'error' ? 'error' : 'open')

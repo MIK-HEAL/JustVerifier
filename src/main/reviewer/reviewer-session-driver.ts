@@ -1,6 +1,7 @@
 // Drives one Reviewer ACP session to its terminal update while projecting its streamed action log.
 
 import { extractProviderToolName, extractTerminalMeta } from '../acp/runtime-events'
+import type { PromptResponse, SessionNotification } from '@agentclientprotocol/sdk'
 import type { ReviewerLogEntry } from '../../shared/reviewer'
 
 type ReviewerLogLimits = {
@@ -36,6 +37,8 @@ type DrivableSession = {
   nextUpdate: () => Promise<{
     kind: string
     stopReason?: string
+    response?: PromptResponse
+    notification?: SessionNotification
     update?: { sessionUpdate?: string; [key: string]: unknown }
   }>
 }
@@ -54,6 +57,8 @@ type DriveCallbacks = {
   onUpdate?: (entry: ReviewerLogEntry) => void
   // Reuse one state object when multiple drives append to the same persisted Review log.
   logState?: { budget?: ReviewerLogBudget }
+  onNotification?: (notification: SessionNotification) => void
+  onStop?: (response: PromptResponse) => void
 }
 
 // In-flight accumulator for streaming content (thought/message chunks are assembled into whole entries).
@@ -442,7 +447,7 @@ export const driveReviewerToStop = async (
 ): Promise<string | undefined> => {
   const { timeoutMs, maxUpdates, signal } = options
   const logLimits = { ...DEFAULT_REVIEWER_LOG_LIMITS, ...options.logLimits }
-  const { onUpdate, logState } = callbacks ?? {}
+  const { onUpdate, logState, onNotification, onStop } = callbacks ?? {}
   let logBudget = logState?.budget
   if (!logBudget && onUpdate) {
     logBudget = new ReviewerLogBudget(logLimits.maxLogBytes, onUpdate)
@@ -491,9 +496,11 @@ export const driveReviewerToStop = async (
       if (result.kind === 'stop') {
         // Flush any in-flight streaming chunks before returning.
         flushAccumulator(acc, emitUpdate)
+        if (result.response) onStop?.(result.response)
         return result.stopReason
       }
 
+      if (result.notification) onNotification?.(result.notification)
       const sessionUpdate = result.update?.sessionUpdate ?? ''
 
       // Only discrete updates count toward the loop cap; streaming content chunks do not (they scale

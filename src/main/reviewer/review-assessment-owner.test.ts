@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PrismaClient } from '@prisma/client'
 
 import type { AcpRuntime } from '../acp/runtime'
+import { getAgentFramework } from '../agent-framework'
 import type {
   NewCheck,
   Review,
@@ -29,6 +30,11 @@ const harness = vi.hoisted(() => ({
     | (() => Promise<{
         kind: string
         stopReason?: string
+        response?: { stopReason: 'end_turn' }
+        notification?: {
+          sessionId: string
+          update: { sessionUpdate: string; [key: string]: unknown }
+        }
         update?: { sessionUpdate?: string; [key: string]: unknown }
       }>)
     | undefined,
@@ -207,6 +213,7 @@ const runtime = (contextModel?: string, sessionModel?: string): AcpRuntime =>
     ...(contextModel || sessionModel
       ? {
           captureBackend: () => ({
+            framework: getAgentFramework('codex'),
             context: {
               ...(contextModel ? { model: contextModel } : {}),
               supportsImageInput: false
@@ -221,6 +228,7 @@ const runtime = (contextModel?: string, sessionModel?: string): AcpRuntime =>
     buildReviewerSession: async () => {
       outsideMutation('acp:build')
       return {
+        cwd: '/tmp/reviewer-session',
         session: {
           sessionId: 'reviewer-session',
           prompt: () => {
@@ -311,6 +319,63 @@ describe('review assessment owner', () => {
       'write:commit',
       'mutation:end'
     ])
+  })
+
+  it('records normalized Reviewer usage for the owning Session', async () => {
+    const reviewRepository = makeRepository()
+    const acpRuntime = runtime('reviewer-runtime-model')
+    const observe = vi.fn()
+    const finalize = vi.fn(async () => ({
+      turnUsage: { inputTokens: 13, cacheTokens: 2, outputTokens: 5 },
+      modelTurnCount: 2
+    }))
+    vi.mocked(acpRuntime).beginProviderTurnObservation = vi.fn(async () => ({
+      observe,
+      finalize,
+      cancel: vi.fn()
+    }))
+    const usageNotification = {
+      sessionId: 'reviewer-session',
+      update: { sessionUpdate: 'usage_update', used: 10, size: 128_000 }
+    }
+    const updates = [
+      {
+        kind: 'session_update',
+        notification: usageNotification,
+        update: usageNotification.update
+      },
+      {
+        kind: 'stop',
+        stopReason: 'end_turn',
+        response: { stopReason: 'end_turn' as const }
+      }
+    ]
+    harness.nextUpdate = async () => updates.shift()!
+    const recordUsage = vi.fn(async () => undefined)
+
+    await runReviewAssessment({
+      ...commonOptions(reviewRepository),
+      acpRuntime,
+      mode: 'initial',
+      recordUsage
+    })
+
+    expect(recordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        eventId: 'assessment-review:initial',
+        source: 'reviewer',
+        frameworkId: 'codex',
+        model: 'reviewer-runtime-model',
+        usage: { inputTokens: 13, cacheTokens: 2, outputTokens: 5, turnCount: 2 }
+      })
+    )
+    expect(acpRuntime.beginProviderTurnObservation).toHaveBeenCalledWith({
+      providerSessionId: 'reviewer-session',
+      cwd: '/tmp/reviewer-session'
+    })
+    expect(observe).toHaveBeenCalledWith(usageNotification)
   })
 
   it('completes an explicit empty initial assessment and classifies its completion log', async () => {
