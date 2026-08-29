@@ -214,6 +214,7 @@ const runtime = (contextModel?: string, sessionModel?: string): AcpRuntime =>
       ? {
           captureBackend: () => ({
             framework: getAgentFramework('codex'),
+            providerId: 'reviewer-provider',
             context: {
               ...(contextModel ? { model: contextModel } : {}),
               supportsImageInput: false
@@ -367,6 +368,7 @@ describe('review assessment owner', () => {
         eventId: 'assessment-review:initial',
         source: 'reviewer',
         frameworkId: 'codex',
+        providerId: 'reviewer-provider',
         model: 'reviewer-runtime-model',
         usage: { inputTokens: 13, cacheTokens: 2, outputTokens: 5, turnCount: 2 }
       })

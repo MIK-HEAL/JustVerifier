@@ -405,7 +405,14 @@ class HostModelService {
           signal,
           outputLimitBytes: DEFAULT_OUTPUT_LIMIT_BYTES
         })
-        await this.recordUsage(context, eventId, result.frameworkId, result.model, result.usage)
+        await this.recordUsage(
+          context,
+          eventId,
+          result.frameworkId,
+          target.providerId,
+          result.model,
+          result.usage
+        )
         return result
       } catch (error) {
         const usage = extractRestrictedInferenceUsage(error)
@@ -413,6 +420,7 @@ class HostModelService {
           context,
           eventId,
           target.frameworkId,
+          target.providerId,
           target.model.kind === 'required' ? target.model.id : undefined,
           usage
         )
@@ -427,6 +435,7 @@ class HostModelService {
     context: HostLlmCallContext | undefined,
     eventId: string,
     frameworkId: SessionAuxiliaryTurnUsageRecord['frameworkId'],
+    providerId: string,
     model: string | undefined,
     usage: RestrictedInferenceResult['usage']
   ): Promise<void> {
@@ -437,6 +446,7 @@ class HostModelService {
         eventId,
         source: 'host-llm',
         frameworkId,
+        providerId,
         model,
         completedAtMs: Date.now(),
         usage

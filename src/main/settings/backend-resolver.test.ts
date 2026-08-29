@@ -888,6 +888,7 @@ describe('AgentBackendResolver configured and explicit targets', () => {
 
     expect(target).toEqual({
       frameworkId: 'codex',
+      providerId: 'provider-a',
       backendId: 'codex:provider-a',
       route: 'codex-bridge',
       model: 'model-a',

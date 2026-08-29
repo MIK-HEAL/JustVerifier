@@ -20,6 +20,7 @@ type SessionAuxiliaryTurnUsageRecord = Readonly<{
   eventId: string
   source: SessionAuxiliaryTurnUsageSource
   frameworkId: string
+  providerId?: string
   model?: string
   completedAtMs: number
   usage: AcpTurnTokenUsage
@@ -58,6 +59,8 @@ class SessionAuxiliaryTurnUsageRecorder {
     const sessionId = nonEmpty(input.sessionId, 'sessionId')
     const eventId = nonEmpty(input.eventId, 'eventId')
     const frameworkId = nonEmpty(input.frameworkId, 'frameworkId')
+    const providerId =
+      input.providerId === undefined ? null : nonEmpty(input.providerId, 'providerId')
     const model = input.model === undefined ? null : nonEmpty(input.model, 'model')
     const cachedReadTokens = optionalNonNegative(input.usage.cachedReadTokens, 'cachedReadTokens')
     const cachedWriteTokens = optionalNonNegative(
@@ -87,6 +90,7 @@ class SessionAuxiliaryTurnUsageRecorder {
             eventId,
             source: input.source,
             frameworkId,
+            providerId,
             model,
             completedAtMs: nonNegative(input.completedAtMs, 'completedAtMs'),
             inputTokens: nonNegative(input.usage.inputTokens, 'inputTokens'),

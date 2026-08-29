@@ -289,6 +289,7 @@ export const runReviewAssessment = async (
               eventId,
               source: 'reviewer',
               frameworkId: backend.framework.id,
+              ...(backend.providerId ? { providerId: backend.providerId } : {}),
               model: runtimeModel ?? (review.model || undefined),
               completedAtMs: Date.now(),
               usage: {

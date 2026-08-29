@@ -608,7 +608,14 @@ class ImageInputCompatibilityOwner {
         signal: context.signal,
         outputLimitBytes: MAX_EVIDENCE_OUTPUT_BYTES
       })
-      await this.recordUsage(context, eventId, result.frameworkId, result.model, result.usage)
+      await this.recordUsage(
+        context,
+        eventId,
+        result.frameworkId,
+        target.providerId,
+        result.model,
+        result.usage
+      )
       return parseEvidence(result.text)
     } catch (error) {
       const usage = extractRestrictedInferenceUsage(error)
@@ -616,6 +623,7 @@ class ImageInputCompatibilityOwner {
         context,
         eventId,
         target.frameworkId,
+        target.providerId,
         target.model.kind === 'required' ? target.model.id : undefined,
         usage
       )
@@ -627,6 +635,7 @@ class ImageInputCompatibilityOwner {
     context: Readonly<{ projectId?: string; sessionId?: string }>,
     eventId: string,
     frameworkId: SessionAuxiliaryTurnUsageRecord['frameworkId'],
+    providerId: string,
     model: string | undefined,
     usage: RestrictedInferenceResult['usage']
   ): Promise<void> {
@@ -638,6 +647,7 @@ class ImageInputCompatibilityOwner {
         eventId,
         source: 'vision',
         frameworkId,
+        providerId,
         model,
         completedAtMs: Date.now(),
         usage

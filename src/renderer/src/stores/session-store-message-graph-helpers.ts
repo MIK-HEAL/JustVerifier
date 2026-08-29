@@ -157,6 +157,7 @@ export const projectSessionGraph = (
       sessionId: session.id,
       messages: session.messages.map(stripTransientMessageState),
       frameworkId: session.agentFrameworkId,
+      providerId: session.agentConfiguration?.providerId,
       backendId: session.agentBackendId,
       model: session.agentModel,
       createdAt: session.createdAt,
@@ -165,6 +166,7 @@ export const projectSessionGraph = (
   const withSegment = ensureConversationRuntimeSegment(initial, {
     id: runtimeSegmentId,
     frameworkId,
+    providerId: session.agentConfiguration?.providerId,
     backendId,
     model,
     startedAt: now,

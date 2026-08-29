@@ -264,6 +264,7 @@ class BackendRoutePlanner {
         : input.target.providerId
     return Object.freeze({
       frameworkId: input.frameworkId,
+      providerId: input.target.providerId,
       backendId: `${input.frameworkId}:${backendProviderId}`,
       route,
       model,

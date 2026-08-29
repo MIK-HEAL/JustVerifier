@@ -98,6 +98,7 @@ describe('ImageInputCompatibilityOwner', () => {
         sessionId: 'session-1',
         source: 'vision',
         frameworkId: 'opencode',
+        providerId: 'vision-provider',
         model: 'vision-model',
         usage: expect.objectContaining({ inputTokens: 8, outputTokens: 2 })
       })

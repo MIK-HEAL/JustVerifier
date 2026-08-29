@@ -153,6 +153,7 @@ type ActiveSideChat = {
   turnAccepted?: Deferred
   closing: boolean
   frameworkId: PersistedSideChat['frameworkId']
+  providerId?: string
   backendId?: string
   providerSessionId?: string
   providerContinuityToken?: string
@@ -495,6 +496,7 @@ class SideChatRuntimeOwner {
         running: false,
         closing: false,
         frameworkId: created.frameworkId ?? initialBackend.framework.id,
+        ...(initialBackend.providerId ? { providerId: initialBackend.providerId } : {}),
         ...((created.backendId ?? initialBackend.backendId)
           ? { backendId: created.backendId ?? initialBackend.backendId }
           : {}),
@@ -596,6 +598,7 @@ class SideChatRuntimeOwner {
         const applied = await active.runtime.applyModelChange(target)
         if (applied) {
           active.frameworkId = target.frameworkId
+          active.providerId = target.providerId ?? active.providerId
           active.backendId = target.backendId
           active.model = target.model
           this.queuePersist(active, 'open')
@@ -981,6 +984,7 @@ class SideChatRuntimeOwner {
         running: false,
         closing: false,
         frameworkId: sideChat.frameworkId,
+        ...(sideChat.providerId ? { providerId: sideChat.providerId } : {}),
         ...(sideChat.backendId ? { backendId: sideChat.backendId } : {}),
         ...(sideChat.providerSessionId ? { providerSessionId: sideChat.providerSessionId } : {}),
         ...(sideChat.providerContinuityToken
@@ -1034,6 +1038,7 @@ class SideChatRuntimeOwner {
             ...sideChat,
             lifecycle: 'error',
             frameworkId: activeChat.frameworkId,
+            ...(activeChat.providerId ? { providerId: activeChat.providerId } : {}),
             ...(activeChat.backendId ? { backendId: activeChat.backendId } : {}),
             ...(activeChat.providerSessionId
               ? { providerSessionId: activeChat.providerSessionId }
@@ -1071,6 +1076,7 @@ class SideChatRuntimeOwner {
   ): void {
     active.runtimeSessionId = response.sessionId
     active.frameworkId = response.frameworkId ?? backend?.framework.id ?? active.frameworkId
+    active.providerId = backend?.providerId ?? active.providerId
     active.backendId = response.backendId ?? backend?.backendId ?? active.backendId
     active.providerSessionId = response.providerSessionId ?? active.providerSessionId
     active.providerContinuityToken =
@@ -1090,6 +1096,7 @@ class SideChatRuntimeOwner {
       id: active.sideSessionId,
       lifecycle,
       frameworkId: active.frameworkId,
+      ...(active.providerId ? { providerId: active.providerId } : {}),
       ...(active.backendId ? { backendId: active.backendId } : {}),
       ...(active.providerSessionId ? { providerSessionId: active.providerSessionId } : {}),
       ...(active.providerContinuityToken
@@ -1320,6 +1327,7 @@ class SideChatRuntimeOwner {
               eventId: `${active.sideSessionId}:user-${active.entrySequence}`,
               source: 'side-chat',
               frameworkId: active.frameworkId,
+              ...(active.providerId ? { providerId: active.providerId } : {}),
               ...(active.model ? { model: active.model } : {}),
               completedAtMs: event.timestamp,
               usage: event.turnUsage!
@@ -1498,6 +1506,7 @@ class SideChatRuntimeOwner {
         id: active.sideSessionId,
         lifecycle: 'error',
         frameworkId: active.frameworkId,
+        ...(active.providerId ? { providerId: active.providerId } : {}),
         ...(active.backendId ? { backendId: active.backendId } : {}),
         ...(active.providerSessionId ? { providerSessionId: active.providerSessionId } : {}),
         ...(active.providerContinuityToken

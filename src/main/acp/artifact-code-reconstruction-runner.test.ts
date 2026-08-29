@@ -179,6 +179,7 @@ describe('ArtifactCodeReconstructionRunner cleanup', () => {
         sessionId: 'session-1',
         source: 'artifact-code-reconstruction',
         frameworkId: 'claude-code',
+        providerId: 'provider-a',
         model: 'model-a',
         usage
       })

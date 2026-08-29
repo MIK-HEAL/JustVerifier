@@ -275,6 +275,7 @@ describe('conversation graph materialization diagnostics', () => {
       updatedAt: 1
     })
     conversationGraph.runtimeSegments[0].frameworkId = 'future-acp'
+    conversationGraph.runtimeSegments[0].providerId = 'provider-1'
 
     const decoded = decodeSessionFile({
       version: SESSION_FILE_VERSION,
@@ -289,7 +290,7 @@ describe('conversation graph materialization diagnostics', () => {
       status: 'ok',
       session: {
         conversationGraph: {
-          runtimeSegments: [{ frameworkId: 'future-acp' }]
+          runtimeSegments: [{ frameworkId: 'future-acp', providerId: 'provider-1' }]
         }
       }
     })
@@ -2665,6 +2666,7 @@ describe('normalizeSessionFile with activities', () => {
           id: 'side-chat-123',
           lifecycle: 'interrupted',
           frameworkId: 'codex',
+          providerId: 'provider-1',
           backendId: 'codex-responses',
           providerSessionId: 'provider-session-1',
           providerContinuityToken: 'bridge-token-1',
@@ -2691,6 +2693,7 @@ describe('normalizeSessionFile with activities', () => {
         id: 'side-chat-123',
         lifecycle: 'interrupted',
         frameworkId: 'codex',
+        providerId: 'provider-1',
         backendId: 'codex-responses',
         providerSessionId: 'provider-session-1',
         providerContinuityToken: 'bridge-token-1',

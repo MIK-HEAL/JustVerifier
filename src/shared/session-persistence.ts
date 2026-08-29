@@ -289,6 +289,7 @@ export type PersistedSideChat = Readonly<{
   id: string
   lifecycle: PersistedSideChatLifecycle
   frameworkId: AgentFrameworkId
+  providerId?: string
   backendId?: string
   providerSessionId?: string
   providerContinuityToken?: string
@@ -1054,6 +1055,7 @@ const sanitizePersistedSideChatWithLegacyRelays = (
       'id',
       'lifecycle',
       'frameworkId',
+      'providerId',
       'backendId',
       'providerSessionId',
       'providerContinuityToken',
@@ -1075,6 +1077,10 @@ const sanitizePersistedSideChatWithLegacyRelays = (
   const id = asBoundedString(value.id, MAX_SIDE_CHAT_ID_CHARS)
   const lifecycle = asString(value.lifecycle) as PersistedSideChatLifecycle | undefined
   const frameworkId = asString(value.frameworkId) as AgentFrameworkId | undefined
+  const providerId =
+    value.providerId === undefined
+      ? undefined
+      : asBoundedString(value.providerId, MAX_SIDE_CHAT_OPAQUE_CHARS)
   const backendId =
     value.backendId === undefined
       ? undefined
@@ -1099,6 +1105,7 @@ const sanitizePersistedSideChatWithLegacyRelays = (
     !SIDE_CHAT_LIFECYCLES.has(lifecycle) ||
     !frameworkId ||
     !AGENT_FRAMEWORK_IDS.has(frameworkId) ||
+    (value.providerId !== undefined && providerId === undefined) ||
     (value.backendId !== undefined && backendId === undefined) ||
     (value.providerSessionId !== undefined && providerSessionId === undefined) ||
     (value.providerContinuityToken !== undefined && providerContinuityToken === undefined) ||
@@ -1125,6 +1132,7 @@ const sanitizePersistedSideChatWithLegacyRelays = (
     id,
     lifecycle,
     frameworkId,
+    ...(providerId !== undefined ? { providerId } : {}),
     ...(backendId !== undefined ? { backendId } : {}),
     ...(providerSessionId !== undefined ? { providerSessionId } : {}),
     ...(providerContinuityToken !== undefined ? { providerContinuityToken } : {}),
@@ -3494,6 +3502,9 @@ const sanitizeConversationGraph = (
             agentFrameId,
             frameworkId,
             startedAt,
+            ...(asString(candidate.providerId)
+              ? { providerId: asString(candidate.providerId) }
+              : {}),
             ...(asString(candidate.backendId) ? { backendId: asString(candidate.backendId) } : {}),
             ...(asString(candidate.agentName) ? { agentName: asString(candidate.agentName) } : {}),
             ...(asString(candidate.model) ? { model: asString(candidate.model) } : {}),
@@ -3623,6 +3634,7 @@ export const materializeSessionConversationGraph = (
           sessionId: session.id,
           messages: session.messages,
           frameworkId: session.agentFrameworkId,
+          providerId: session.agentConfiguration?.providerId,
           backendId: session.agentBackendId,
           model: session.agentModel,
           createdAt: session.createdAt,
@@ -3930,6 +3942,7 @@ const sanitizeSession = (
       sessionId: sanitized.id,
       messages: sanitized.messages,
       frameworkId: sanitized.agentFrameworkId,
+      providerId: sanitized.agentConfiguration?.providerId,
       backendId: sanitized.agentBackendId,
       model: sanitized.agentModel,
       createdAt: sanitized.createdAt,

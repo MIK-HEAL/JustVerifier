@@ -37,6 +37,7 @@ import {
   MEMORY_AUXILIARY_TABLE_NAMES
 } from './migrations/0017-agent-memory-project-scope'
 import { sessionAuxiliaryTurnUsageMigration } from './migrations/0018-session-auxiliary-turn-usage'
+import { sessionUsageAttributionMigration } from './migrations/0019-session-usage-attribution'
 import {
   applySqliteMigrationOperations,
   type SqliteMigrationOperation
@@ -286,6 +287,12 @@ const SESSION_AUXILIARY_TURN_USAGE_CHECKSUM = checksumMigrationPayload(
   sessionAuxiliaryTurnUsageMigration.verifiers,
   sessionAuxiliaryTurnUsageMigration.operations
 )
+const SESSION_USAGE_ATTRIBUTION_CHECKSUM = checksumMigrationPayload(
+  sessionUsageAttributionMigration.id,
+  sessionUsageAttributionMigration.statements,
+  sessionUsageAttributionMigration.verifiers,
+  sessionUsageAttributionMigration.operations
+)
 const COMPUTE_JOB_SENSITIVE_DATA_ENCRYPTION_CHECKSUM = checksumMigrationPayload(
   computeJobSensitiveDataEncryptionMigration.id,
   computeJobSensitiveDataEncryptionMigration.statements,
@@ -482,6 +489,12 @@ const MIGRATION_MANIFEST = [
   {
     ...sessionAuxiliaryTurnUsageMigration,
     checksum: SESSION_AUXILIARY_TURN_USAGE_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...sessionUsageAttributionMigration,
+    checksum: SESSION_USAGE_ATTRIBUTION_CHECKSUM,
     backupOnApply: 'required',
     backupRetention: 'retain'
   }
@@ -748,6 +761,7 @@ const verifyCurrentApplicationSchema = async (client: PrismaClient): Promise<voi
   })
   await runMigrationVerifiers(client, agentMemoryProjectScopeMigration.verifiers)
   await runMigrationVerifiers(client, sessionAuxiliaryTurnUsageMigration.verifiers)
+  await runMigrationVerifiers(client, sessionUsageAttributionMigration.verifiers)
 }
 
 const readLedger = async (client: PrismaClient): Promise<LedgerRow[]> => {

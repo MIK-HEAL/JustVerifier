@@ -108,7 +108,14 @@ export class ArtifactCodeReconstructionRunner {
         agentName: RECONSTRUCTION_AGENT_NAME,
         description: 'One-shot Artifact code reconstruction without tools.'
       })
-      await this.recordUsage(context, eventId, result.frameworkId, result.model, result.usage)
+      await this.recordUsage(
+        context,
+        eventId,
+        result.frameworkId,
+        target.providerId,
+        result.model,
+        result.usage
+      )
       return {
         text: result.text,
         frameworkId: result.frameworkId,
@@ -119,6 +126,7 @@ export class ArtifactCodeReconstructionRunner {
         context,
         eventId,
         target.frameworkId,
+        target.providerId,
         target.model.kind === 'required' ? target.model.id : undefined,
         extractRestrictedInferenceUsage(error)
       )
@@ -151,6 +159,7 @@ export class ArtifactCodeReconstructionRunner {
     context: ArtifactCodeReconstructionRunContext | undefined,
     eventId: string,
     frameworkId: SessionAuxiliaryTurnUsageRecord['frameworkId'],
+    providerId: string,
     model: string | undefined,
     usage: SessionAuxiliaryTurnUsageRecord['usage'] | undefined
   ): Promise<void> {
@@ -161,6 +170,7 @@ export class ArtifactCodeReconstructionRunner {
         eventId,
         source: 'artifact-code-reconstruction',
         frameworkId,
+        providerId,
         model,
         completedAtMs: Date.now(),
         usage

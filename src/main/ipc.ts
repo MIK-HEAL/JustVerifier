@@ -1689,6 +1689,7 @@ const createApplicationModules = async (
       const backend = runtimeRef.current?.captureSessionBackend(session.id)
       if (!backend) throw new Error('The originating Session runtime is unavailable.')
       return settingsService.admitSubagentExecutionModel(session.agentFrameworkId, {
+        providerId: backend.providerId,
         backendId: backend.backendId,
         modelRoute: backend.modelRoute,
         model: backend.context.model,

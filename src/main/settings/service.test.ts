@@ -2677,6 +2677,7 @@ describe('SettingsService: preflight & spawn config', () => {
     expect(await service.getPreflight()).toMatchObject({ activeProviderReady: true })
     const backend = await resolveActiveBackend(service)
 
+    expect(backend.providerId).toBe(CODEX_SUBSCRIPTION_PROVIDER_ID)
     expect(backend.backendId).toBe('codex:builtin-codex-isolated')
     expect(backend.sessionModel).toBe('gpt-5.6-terra')
     expect(backend.sessionModelRequired).toBe(true)
@@ -2705,6 +2706,20 @@ describe('SettingsService: preflight & spawn config', () => {
     expect(await readFile(join(storageRoot, 'codex', 'config.toml'), 'utf8')).toBe(
       'model = "account-default"\ncli_auth_credentials_store = "ephemeral"\n'
     )
+
+    await service.setSubagentModel({ mode: 'inherit' })
+    await expect(
+      service.resolveSubagentExecutionModel('codex', {
+        providerId: backend.providerId,
+        backendId: backend.backendId,
+        modelRoute: backend.modelRoute,
+        model: backend.sessionModel,
+        reasoningEffort: backend.sessionEffort
+      })
+    ).resolves.toMatchObject({
+      providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+      backendId: 'codex:builtin-codex-isolated'
+    })
 
     const fallbackService = createService(undefined, {
       codexDetected: { path: adapterPath, version: 'codex-acp 1.6.2' },

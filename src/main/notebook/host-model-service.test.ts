@@ -142,6 +142,7 @@ describe('HostModelService', () => {
         sessionId: 'session-1',
         source: 'host-llm',
         frameworkId: 'claude-code',
+        providerId: 'provider-a',
         model: 'model-a',
         usage: expect.objectContaining({ inputTokens: 11, outputTokens: 3 })
       })

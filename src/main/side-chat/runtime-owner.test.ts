@@ -68,6 +68,7 @@ const backend = (
   env: Record<string, string> = {}
 ): ResolvedAgentBackend => ({
   framework,
+  providerId: 'provider-a',
   executablePath: `/managed/${framework.id}`,
   env,
   sessionModel: 'model-a',
@@ -83,6 +84,7 @@ const target: ExplicitAgentBackendTarget = {
 
 const modelChangeTarget = (model: string): AgentModelChangeTarget => ({
   frameworkId: 'claude-code',
+  providerId: 'provider-a',
   backendId: 'claude-code:provider-a',
   route: 'claude-anthropic',
   model,
@@ -539,6 +541,7 @@ describe('SideChatRuntimeOwner lifecycle', () => {
       eventId: 'context-compaction:side-chat',
       source: 'context-compaction',
       frameworkId: 'claude-code',
+      providerId: 'provider-a',
       model: 'model-a',
       completedAtMs: 100,
       usage: { inputTokens: 7, cacheTokens: 1, outputTokens: 2, turnCount: 1 }
@@ -552,6 +555,7 @@ describe('SideChatRuntimeOwner lifecycle', () => {
           eventId: `${started.sideSessionId}:user-1`,
           source: 'side-chat',
           frameworkId: 'claude-code',
+          providerId: 'provider-a',
           model: 'model-a',
           completedAtMs: 101,
           usage: expect.objectContaining({ inputTokens: 9, outputTokens: 3 })
@@ -563,7 +567,8 @@ describe('SideChatRuntimeOwner lifecycle', () => {
         projectId: 'project-1',
         sessionId: 'main-coalesce',
         eventId: 'context-compaction:side-chat',
-        source: 'context-compaction'
+        source: 'context-compaction',
+        providerId: 'provider-a'
       })
     )
     expect(owner.list().chats[0]?.entries).toEqual(
@@ -1056,6 +1061,7 @@ describe('SideChatRuntimeOwner lifecycle', () => {
           id: 'side-chat-restored',
           lifecycle: 'open',
           frameworkId: 'claude-code',
+          providerId: 'provider-a',
           backendId: 'claude-code:provider-a',
           providerSessionId: 'provider-restored',
           historyPreamble: 'Original Main snapshot.',
@@ -1089,6 +1095,7 @@ describe('SideChatRuntimeOwner lifecycle', () => {
       eventId: 'context-compaction:restored-side-chat',
       source: 'context-compaction',
       frameworkId: 'claude-code',
+      providerId: 'provider-a',
       completedAtMs: 30,
       usage: { inputTokens: 5, cacheTokens: 0, outputTokens: 1, turnCount: 1 }
     })
@@ -1110,7 +1117,8 @@ describe('SideChatRuntimeOwner lifecycle', () => {
         projectId: 'project-1',
         sessionId: 'main-restored',
         eventId: 'context-compaction:restored-side-chat',
-        source: 'context-compaction'
+        source: 'context-compaction',
+        providerId: 'provider-a'
       })
     )
     expect(persistence.save).toHaveBeenCalledWith(

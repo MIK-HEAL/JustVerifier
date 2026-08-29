@@ -136,6 +136,9 @@ describe('Session projection', () => {
     expect(projected.turnUsage).toEqual([
       {
         messageId: 'session-1-usage',
+        frameworkId: 'opencode',
+        providerId: null,
+        model: 'gpt-5',
         completedAtMs: 104n,
         inputTokens: 10n,
         cacheTokens: 4n,
@@ -153,6 +156,7 @@ describe('Session projection', () => {
         callIndex: 0,
         sourceInvocationId: 'provider-call-1',
         frameworkId: 'opencode',
+        providerId: null,
         backendId: 'opencode-backend',
         model: 'gpt-5',
         inputTokens: 6n,
@@ -169,6 +173,7 @@ describe('Session projection', () => {
         callIndex: 1,
         sourceInvocationId: 'provider-call-2',
         frameworkId: 'opencode',
+        providerId: null,
         backendId: 'opencode-backend',
         model: 'gpt-5',
         inputTokens: 4n,
@@ -228,6 +233,7 @@ describe('Session projection', () => {
         eventId: 'details-request',
         source: 'session-details',
         frameworkId: 'codex',
+        providerId: 'provider-1',
         model: 'gpt-5',
         completedAtMs: 112n,
         inputTokens: 7n,
@@ -237,6 +243,34 @@ describe('Session projection', () => {
         outputTokens: 3n,
         modelCallCount: 1
       }
+    ])
+  })
+
+  it('projects the owning runtime provider onto turn and model-call usage', () => {
+    const input = session('attributed')
+    input.conversationGraph = createLinearConversationGraph({
+      sessionId: input.id,
+      messages: input.messages,
+      frameworkId: 'opencode',
+      providerId: 'provider-1',
+      backendId: 'opencode:provider-1',
+      model: 'gpt-5',
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt
+    })
+
+    const projected = buildSessionProjection(input)
+    expect(projected.turnUsage).toEqual([
+      expect.objectContaining({
+        messageId: 'attributed-usage',
+        frameworkId: 'opencode',
+        providerId: 'provider-1',
+        model: 'gpt-5'
+      })
+    ])
+    expect(projected.modelCalls).toEqual([
+      expect.objectContaining({ providerId: 'provider-1' }),
+      expect.objectContaining({ providerId: 'provider-1' })
     ])
   })
 
@@ -356,6 +390,7 @@ describe('Session projection', () => {
       eventId: 'side-stop-1',
       source: 'side-chat' as const,
       frameworkId: 'codebuddy',
+      providerId: 'provider-a',
       model: 'model-a',
       completedAtMs: 120,
       usage: {
@@ -377,7 +412,13 @@ describe('Session projection', () => {
     await expect(
       client.sessionAuxiliaryTurnUsage.findMany({ where: { sessionId: projected.id } })
     ).resolves.toMatchObject([
-      { eventId: 'side-stop-1', source: 'side-chat', inputTokens: 5n, modelCallCount: 1 }
+      {
+        eventId: 'side-stop-1',
+        source: 'side-chat',
+        providerId: 'provider-a',
+        inputTokens: 5n,
+        modelCallCount: 1
+      }
     ])
     await expect(repository.usage()).resolves.toMatchObject({
       usageEvents: expect.arrayContaining([

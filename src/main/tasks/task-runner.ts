@@ -1085,6 +1085,7 @@ class TaskRunner {
       const graphWithRuntime = ensureConversationRuntimeSegment(currentGraph, {
         id: `runtime-segment-${userMessageId}`,
         frameworkId: session.agentFrameworkId ?? 'claude-code',
+        providerId: session.agentConfiguration?.providerId,
         backendId: session.agentBackendId,
         model: session.agentModel,
         startedAt: now,

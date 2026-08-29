@@ -231,6 +231,9 @@ const composeAcpRuntimePromptOwners = (
                 eventId,
                 source: 'context-compaction',
                 frameworkId,
+                ...(base.backendGeneration.current.providerId
+                  ? { providerId: base.backendGeneration.current.providerId }
+                  : {}),
                 model,
                 completedAtMs,
                 usage: {
