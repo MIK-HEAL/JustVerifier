@@ -43,7 +43,14 @@ vi.mock('electron', () => ({
 const { initDataRoot } = await import('../storage-root')
 const { createStorageCommandOwner } = await import('./command-owner')
 const { registerStorageIpcHandlers } = await import('./ipc')
-const { clearMigrationPending, isMigrationPending } = await import('./migration-state')
+const {
+  clearMigrationPending,
+  installMigrationQuitGuard,
+  isMigrationInProgress,
+  isMigrationPending,
+  waitForDataRootWriters,
+  withDataRootWrite
+} = await import('./migration-state')
 const { clearApplicationShutdownTrigger, currentApplicationShutdownTrigger } =
   await import('../application-shutdown-trigger')
 const { readMigrationMarker, writeMigrationMarker } = await import('./migration-marker')
@@ -74,6 +81,25 @@ const invoke = (channel: string, payload?: unknown): Promise<unknown> =>
 // just a microtask flush, before the mocked runtime.disconnect() (the next await) is reached.
 const tick = (ms = 50): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+type MigrationQuitGuardApp = Parameters<typeof installMigrationQuitGuard>[0]
+const makeMigrationQuitGuardApp = (): MigrationQuitGuardApp & {
+  fireBeforeQuit: () => { prevented: boolean }
+} => {
+  let listener: ((event: { preventDefault: () => void }) => void) | undefined
+  const quit = vi.fn()
+  return {
+    on: ((event: string, fn: (event: { preventDefault: () => void }) => void) => {
+      if (event === 'before-quit') listener = fn
+    }) as MigrationQuitGuardApp['on'],
+    quit,
+    fireBeforeQuit: () => {
+      let prevented = false
+      listener?.({ preventDefault: () => (prevented = true) })
+      return { prevented }
+    }
+  }
+}
+
 type FakeDeps = Parameters<typeof registerStorageIpcHandlers>[0]
 
 const fakeDeps = (overrides: Partial<FakeDeps> = {}): FakeDeps => ({
@@ -88,12 +114,15 @@ const fakeDeps = (overrides: Partial<FakeDeps> = {}): FakeDeps => ({
   },
   getActivePromptSessions: vi.fn().mockReturnValue([]),
   getActiveDelegatedSessions: vi.fn().mockReturnValue([]),
+  hasActiveReviewerWork: vi.fn().mockReturnValue(false),
   settingsService: {
     setDataRoot: vi.fn().mockResolvedValue(undefined),
     dismissLegacyDataMovePrompt: vi.fn().mockResolvedValue(undefined),
     getStoredSettings: vi.fn().mockResolvedValue({})
   },
   cleanupRuntimeCache: vi.fn(() => true),
+  prepareDataRootHandoff: vi.fn().mockResolvedValue(true),
+  validateNewDataRoot: vi.fn().mockResolvedValue({ ok: true }),
   relaunch: vi.fn(),
   ...overrides
 })
@@ -237,7 +266,8 @@ describe('storage IPC handlers', () => {
     initDataRoot(dataRoot)
     await seedVerifiedMarker(target, dataRoot)
     const pauseDataRootWriters = vi.fn().mockRejectedValue(new Error('busy'))
-    const deps = fakeDeps({ pauseDataRootWriters })
+    const notifyDataRootHandoffAborted = vi.fn()
+    const deps = { ...fakeDeps({ pauseDataRootWriters }), notifyDataRootHandoffAborted }
     const restartedOwner = createStorageCommandOwner(deps)
 
     await expect(restartedOwner.commitAndRelaunch({ parent: targetParent })).resolves.toEqual({
@@ -248,6 +278,7 @@ describe('storage IPC handlers', () => {
     expect(await readMigrationMarker(target)).toMatchObject({ status: 'verified' })
     expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
     expect(isMigrationPending()).toBe(false)
+    expect(notifyDataRootHandoffAborted).toHaveBeenCalledOnce()
   })
 
   it('blocks recovered commit while delegated work is still running', async () => {
@@ -636,6 +667,214 @@ describe('storage IPC handlers', () => {
     expect(isMigrationPending()).toBe(false)
   })
 
+  it('rechecks delegated work after migration handoff preparation', async () => {
+    initDataRoot(dataRoot)
+    const getActiveDelegatedSessions = vi
+      .fn()
+      .mockReturnValueOnce([])
+      .mockReturnValue([{ projectId: 'project-1', sessionId: 'delegated-race' }])
+    const runDataRootMigration = vi.fn().mockResolvedValue({ ok: true })
+    const deps = fakeDeps({ getActiveDelegatedSessions, runDataRootMigration })
+    registerStorageIpcHandlers(deps)
+
+    await expect(invoke('storage:migrate', { parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'Subagents are still running. Return to their tasks and stop them before moving data.'
+    })
+
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+    expect(isMigrationPending()).toBe(false)
+  })
+
+  it('does not start a migration copy when handoff durability cannot be confirmed', async () => {
+    initDataRoot(dataRoot)
+    const runDataRootMigration = vi.fn()
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(false)
+    const deps = fakeDeps({ runDataRootMigration, prepareDataRootHandoff })
+    registerStorageIpcHandlers(deps)
+
+    await expect(invoke('storage:migrate', { parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'Could not prepare the app to switch data locations safely. Please try again.'
+    })
+
+    expect(prepareDataRootHandoff).toHaveBeenCalledOnce()
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+    expect(isMigrationPending()).toBe(false)
+  })
+
+  it('does not enter handoff teardown while reviewer work is active', async () => {
+    initDataRoot(dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const runDataRootMigration = vi.fn().mockResolvedValue({ ok: true })
+    const deps = fakeDeps({
+      hasActiveReviewerWork: vi.fn().mockReturnValue(true),
+      prepareDataRootHandoff,
+      runDataRootMigration
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(invoke('storage:migrate', { parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'A review is still running. Stop it before moving data.'
+    })
+
+    expect(prepareDataRootHandoff).not.toHaveBeenCalled()
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+  })
+
+  it('rechecks reviewer work after migration target validation', async () => {
+    initDataRoot(dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const runDataRootMigration = vi.fn().mockResolvedValue({ ok: true })
+    const deps = fakeDeps({
+      hasActiveReviewerWork: vi.fn().mockReturnValueOnce(false).mockReturnValue(true),
+      prepareDataRootHandoff,
+      runDataRootMigration
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(invoke('storage:migrate', { parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'A review is still running. Stop it before moving data.'
+    })
+
+    expect(prepareDataRootHandoff).not.toHaveBeenCalled()
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+  })
+
+  it('rechecks reviewer work after migration handoff preparation', async () => {
+    initDataRoot(dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const runDataRootMigration = vi.fn().mockResolvedValue({ ok: true })
+    const deps = fakeDeps({
+      hasActiveReviewerWork: vi
+        .fn()
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(false)
+        .mockReturnValue(true),
+      prepareDataRootHandoff,
+      runDataRootMigration
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(invoke('storage:migrate', { parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'A review is still running. Stop it before moving data.'
+    })
+
+    expect(prepareDataRootHandoff).toHaveBeenCalledOnce()
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+  })
+
+  it('rejects an invalid migration target before preparing the handoff', async () => {
+    initDataRoot(dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const deps = fakeDeps({ prepareDataRootHandoff, validateNewDataRoot: undefined })
+    registerStorageIpcHandlers(deps)
+
+    await expect(
+      invoke('storage:migrate', { parent: join(currentParent, 'missing-parent') })
+    ).resolves.toMatchObject({ ok: false })
+
+    expect(prepareDataRootHandoff).not.toHaveBeenCalled()
+    expect(deps.runtime.disconnect).not.toHaveBeenCalled()
+    expect(deps.notebook.shutdownAll).not.toHaveBeenCalled()
+    expect(isMigrationPending()).toBe(false)
+  })
+
+  it('reserves command and lifecycle migration guards while handoff preparation is pending', async () => {
+    initDataRoot(dataRoot)
+    let resolveFirstPreparation: ((ready: boolean) => void) | undefined
+    const prepareDataRootHandoff = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveFirstPreparation = resolve
+          })
+      )
+      .mockResolvedValue(false)
+    const runDataRootMigration = vi.fn()
+    const deps = fakeDeps({ prepareDataRootHandoff, runDataRootMigration })
+    registerStorageIpcHandlers(deps)
+
+    const first = invoke('storage:migrate', { parent: targetParent })
+    await vi.waitFor(() => expect(prepareDataRootHandoff).toHaveBeenCalledOnce())
+    expect(isMigrationInProgress()).toBe(true)
+    expect(isMigrationPending()).toBe(false)
+
+    await expect(invoke('storage:migrate', { parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'A migration is already in progress.'
+    })
+
+    resolveFirstPreparation?.(false)
+    await first
+    expect(prepareDataRootHandoff).toHaveBeenCalledOnce()
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+    expect(isMigrationInProgress()).toBe(false)
+  })
+
+  it('honors cancellation while migration target validation is pending', async () => {
+    initDataRoot(dataRoot)
+    let finishValidation: ((result: { ok: true }) => void) | undefined
+    const validateNewDataRoot = vi.fn(
+      () =>
+        new Promise<{ ok: true }>((resolve) => {
+          finishValidation = resolve
+        })
+    )
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const runDataRootMigration = vi.fn().mockResolvedValue({ ok: true })
+    const deps = fakeDeps({
+      validateNewDataRoot,
+      prepareDataRootHandoff,
+      runDataRootMigration
+    })
+    registerStorageIpcHandlers(deps)
+
+    const migration = invoke('storage:migrate', { parent: targetParent })
+    await vi.waitFor(() => expect(validateNewDataRoot).toHaveBeenCalledOnce())
+    await invoke('storage:cancel-migrate')
+    finishValidation?.({ ok: true })
+
+    await expect(migration).resolves.toEqual({
+      ok: false,
+      error: 'migration cancelled',
+      cancelled: true
+    })
+    expect(prepareDataRootHandoff).not.toHaveBeenCalled()
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+  })
+
+  it('honors cancellation while migration handoff preparation is pending', async () => {
+    initDataRoot(dataRoot)
+    let finishPreparation: ((ready: boolean) => void) | undefined
+    const prepareDataRootHandoff = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishPreparation = resolve
+        })
+    )
+    const runDataRootMigration = vi.fn().mockResolvedValue({ ok: true })
+    const deps = fakeDeps({ prepareDataRootHandoff, runDataRootMigration })
+    registerStorageIpcHandlers(deps)
+
+    const migration = invoke('storage:migrate', { parent: targetParent })
+    await vi.waitFor(() => expect(prepareDataRootHandoff).toHaveBeenCalledOnce())
+    await invoke('storage:cancel-migrate')
+    finishPreparation?.(true)
+
+    await expect(migration).resolves.toEqual({
+      ok: false,
+      error: 'migration cancelled',
+      cancelled: true
+    })
+    expect(runDataRootMigration).not.toHaveBeenCalled()
+    expect(isMigrationPending()).toBe(false)
+  })
+
   it('uses the shared prepared runner when exporting runtime locks for migration', async () => {
     initDataRoot(dataRoot)
     const runner = {
@@ -708,6 +947,213 @@ describe('storage IPC handlers', () => {
     expect(deps.relaunch).not.toHaveBeenCalled()
   })
 
+  it('commit-and-relaunch keeps the old root when handoff durability cannot be confirmed', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(false)
+    const deps = fakeDeps({ prepareDataRootHandoff })
+    registerStorageIpcHandlers(deps)
+
+    await expect(
+      invoke('storage:commit-and-relaunch', { parent: targetParent })
+    ).resolves.toMatchObject({ ok: false })
+
+    expect(prepareDataRootHandoff).toHaveBeenCalledOnce()
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+    expect(existsSync(target)).toBe(true)
+  })
+
+  it('does not enter recovered-commit teardown while reviewer work is active', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const deps = fakeDeps({
+      hasActiveReviewerWork: vi.fn().mockReturnValue(true),
+      prepareDataRootHandoff
+    })
+    const restartedOwner = createStorageCommandOwner(deps)
+
+    await expect(restartedOwner.commitAndRelaunch({ parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'A review is still running. Stop it before finishing the move.'
+    })
+
+    expect(prepareDataRootHandoff).not.toHaveBeenCalled()
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('rechecks reviewer work immediately before recovered pointer commit', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const deps = fakeDeps({
+      hasActiveReviewerWork: vi
+        .fn()
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(false)
+        .mockReturnValue(true),
+      prepareDataRootHandoff,
+      pauseDataRootWriters: vi.fn().mockResolvedValue(undefined)
+    })
+    const restartedOwner = createStorageCommandOwner(deps)
+
+    await expect(restartedOwner.commitAndRelaunch({ parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'A review is still running. Stop it before finishing the move.'
+    })
+
+    expect(prepareDataRootHandoff).toHaveBeenCalledOnce()
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('reserves the lifecycle guard while a recovered commit prepares', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    let finishPreparation: ((ready: boolean) => void) | undefined
+    const prepareDataRootHandoff = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishPreparation = resolve
+        })
+    )
+    const deps = fakeDeps({ prepareDataRootHandoff })
+    const restartedOwner = createStorageCommandOwner(deps)
+
+    const commit = restartedOwner.commitAndRelaunch({ parent: targetParent })
+    await vi.waitFor(() => expect(prepareDataRootHandoff).toHaveBeenCalledOnce())
+    try {
+      expect(isMigrationInProgress()).toBe(true)
+      expect(isMigrationPending()).toBe(false)
+    } finally {
+      finishPreparation?.(false)
+    }
+
+    await expect(commit).resolves.toMatchObject({ ok: false })
+    expect(isMigrationInProgress()).toBe(false)
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+  })
+
+  it('cancels a recovered commit before quit-anyway reissues quit', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    let finishPreparation: ((ready: boolean) => void) | undefined
+    const prepareDataRootHandoff = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishPreparation = resolve
+        })
+    )
+    const deps = fakeDeps({ prepareDataRootHandoff })
+    const restartedOwner = createStorageCommandOwner(deps)
+    const guardApp = makeMigrationQuitGuardApp()
+    installMigrationQuitGuard(guardApp, () => true)
+
+    const commit = restartedOwner.commitAndRelaunch({ parent: targetParent })
+    await vi.waitFor(() => expect(prepareDataRootHandoff).toHaveBeenCalledOnce())
+    const { prevented } = guardApp.fireBeforeQuit()
+    const quitWasReissuedBeforePreparationSettled = vi.mocked(guardApp.quit).mock.calls.length > 0
+    finishPreparation?.(true)
+
+    await expect(commit).resolves.toMatchObject({ ok: false })
+    await vi.waitFor(() => expect(guardApp.quit).toHaveBeenCalledOnce())
+    expect(prevented).toBe(true)
+    expect(quitWasReissuedBeforePreparationSettled).toBe(false)
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('clears recovered writer gates before quit-anyway reissues quit', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    let finishPause: (() => void) | undefined
+    const pauseDataRootWriters = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPause = resolve
+        })
+    )
+    const deps = fakeDeps({ pauseDataRootWriters })
+    const restartedOwner = createStorageCommandOwner(deps)
+    const guardApp = makeMigrationQuitGuardApp()
+    installMigrationQuitGuard(guardApp, () => true)
+
+    const commit = restartedOwner.commitAndRelaunch({ parent: targetParent })
+    await vi.waitFor(() => expect(pauseDataRootWriters).toHaveBeenCalledOnce())
+    expect(isMigrationInProgress()).toBe(true)
+    expect(isMigrationPending()).toBe(true)
+
+    const { prevented } = guardApp.fireBeforeQuit()
+    expect(prevented).toBe(true)
+    expect(guardApp.quit).not.toHaveBeenCalled()
+    finishPause?.()
+
+    await expect(commit).resolves.toMatchObject({ ok: false, cancelled: true })
+    await vi.waitFor(() => expect(guardApp.quit).toHaveBeenCalledOnce())
+    expect(isMigrationInProgress()).toBe(false)
+    expect(isMigrationPending()).toBe(false)
+    expect(await readMigrationMarker(target)).toMatchObject({ status: 'verified' })
+  })
+
+  it('keeps a committed recovered handoff non-cancellable after quit-anyway', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    let finishPointerWrite: (() => void) | undefined
+    const setDataRoot = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPointerWrite = resolve
+        })
+    )
+    const deps = fakeDeps({
+      settingsService: {
+        setDataRoot,
+        dismissLegacyDataMovePrompt: vi.fn().mockResolvedValue(undefined),
+        getStoredSettings: vi.fn().mockResolvedValue({})
+      }
+    })
+    const restartedOwner = createStorageCommandOwner(deps)
+    const guardApp = makeMigrationQuitGuardApp()
+    installMigrationQuitGuard(guardApp, () => true)
+
+    const commit = restartedOwner.commitAndRelaunch({ parent: targetParent })
+    await vi.waitFor(() => expect(setDataRoot).toHaveBeenCalledOnce())
+    guardApp.fireBeforeQuit()
+    expect(guardApp.quit).not.toHaveBeenCalled()
+    finishPointerWrite?.()
+
+    await expect(commit).resolves.toEqual({ ok: true })
+    await vi.waitFor(() => expect(guardApp.quit).toHaveBeenCalledOnce())
+    expect(deps.relaunch).toHaveBeenCalledOnce()
+    expect(isMigrationPending()).toBe(true)
+  })
+
+  it('rechecks delegated work after recovered commit preparation', async () => {
+    initDataRoot(dataRoot)
+    await seedVerifiedMarker(target, dataRoot)
+    const getActiveDelegatedSessions = vi
+      .fn()
+      .mockReturnValueOnce([])
+      .mockReturnValue([{ projectId: 'project-1', sessionId: 'delegated-race' }])
+    const deps = fakeDeps({
+      getActiveDelegatedSessions,
+      pauseDataRootWriters: vi.fn().mockResolvedValue(undefined)
+    })
+    const restartedOwner = createStorageCommandOwner(deps)
+
+    await expect(restartedOwner.commitAndRelaunch({ parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error:
+        'Subagents are still running. Return to their tasks and stop them before finishing the move.'
+    })
+
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+    expect(isMigrationPending()).toBe(false)
+  })
+
   it('commit-and-relaunch delegates production cleanup to the orderly app quit lifecycle', async () => {
     initDataRoot(dataRoot)
     // No injected relaunch: exercise the real app.relaunch -> app.quit handoff.
@@ -738,9 +1184,12 @@ describe('storage IPC handlers', () => {
     expect(cleanupRuntimeCache).toHaveBeenCalledWith(join(dataRoot, 'runtime'))
   })
 
-  it('set-data-root-and-relaunch delegates production cleanup to the orderly app quit lifecycle', async () => {
+  it('set-data-root-and-relaunch pauses writers and delegates final cleanup to app quit', async () => {
     initDataRoot(dataRoot)
-    const deps = fakeDeps({ relaunch: undefined })
+    const deps = fakeDeps({
+      relaunch: undefined,
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
     registerStorageIpcHandlers(deps)
 
     await expect(
@@ -749,7 +1198,7 @@ describe('storage IPC handlers', () => {
 
     expect(deps.runtime.shutdownForQuit).not.toHaveBeenCalled()
     expect(deps.notebook.dispose).not.toHaveBeenCalled()
-    expect(deps.notebook.shutdownAll).not.toHaveBeenCalled()
+    expect(deps.notebook.shutdownAll).toHaveBeenCalledOnce()
     expect(appRelaunch).toHaveBeenCalledTimes(1)
     expect(appQuit).toHaveBeenCalledTimes(1)
     expect(appExit).not.toHaveBeenCalled()
@@ -1257,6 +1706,379 @@ describe('storage IPC handlers', () => {
       completeOnboarding: false
     })
     expect(deps.relaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('set-data-root-and-relaunch keeps the old root when handoff durability cannot be confirmed', async () => {
+    initDataRoot(dataRoot)
+    await mkdir(join(target, 'artifacts'), { recursive: true })
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(false)
+    const deps = fakeDeps({
+      prepareDataRootHandoff,
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(
+      invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    ).resolves.toEqual({
+      ok: false,
+      error: 'Could not prepare the app to switch data locations safely. Please try again.'
+    })
+
+    expect(prepareDataRootHandoff).toHaveBeenCalledOnce()
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('passes the requesting Web renderer through to the data-root durability gate', async () => {
+    initDataRoot(dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(false)
+    const owner = createStorageCommandOwner(
+      fakeDeps({
+        prepareDataRootHandoff,
+        classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+      })
+    )
+
+    const target = { surface: 'web-renderer', lifecycleClientId: 'web:client-a' } as const
+    await owner.setDataRootAndRelaunch({ parent: targetParent }, target)
+
+    expect(prepareDataRootHandoff).toHaveBeenCalledWith(target, false)
+  })
+
+  it('set-data-root-and-relaunch refuses delegated work before preparing the handoff', async () => {
+    initDataRoot(dataRoot)
+    const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+    const deps = fakeDeps({
+      getActiveDelegatedSessions: vi
+        .fn()
+        .mockReturnValue([{ projectId: 'project-1', sessionId: 'delegated-1' }]),
+      prepareDataRootHandoff,
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(
+      invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    ).resolves.toMatchObject({ ok: false })
+
+    expect(prepareDataRootHandoff).not.toHaveBeenCalled()
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    {
+      label: 'root-agent prompt',
+      overrides: {
+        getActivePromptSessions: vi
+          .fn()
+          .mockReturnValue([{ projectId: 'project-1', sessionId: 'agent-1' }])
+      }
+    },
+    {
+      label: 'notebook execution',
+      overrides: {
+        notebook: {
+          shutdownAll: vi.fn().mockResolvedValue({ reaped: true }),
+          dispose: vi.fn().mockResolvedValue({ reaped: true }),
+          getActiveNotebookSessions: vi
+            .fn()
+            .mockReturnValue([{ projectId: 'project-1', sessionId: 'notebook-1' }])
+        }
+      }
+    },
+    {
+      label: 'review',
+      overrides: {
+        hasActiveReviewerWork: vi.fn().mockReturnValue(true)
+      }
+    }
+  ])(
+    'set-data-root-and-relaunch preserves active $label before handoff teardown',
+    async ({ overrides }) => {
+      initDataRoot(dataRoot)
+      const prepareDataRootHandoff = vi.fn().mockResolvedValue(true)
+      const deps = fakeDeps({
+        ...overrides,
+        prepareDataRootHandoff,
+        classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+      })
+      registerStorageIpcHandlers(deps)
+
+      await expect(
+        invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+      ).resolves.toMatchObject({ ok: false })
+
+      expect(prepareDataRootHandoff).not.toHaveBeenCalled()
+      expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+      expect(deps.relaunch).not.toHaveBeenCalled()
+    }
+  )
+
+  it('reserves the lifecycle guard before direct handoff classification awaits', async () => {
+    initDataRoot(dataRoot)
+    let finishClassification: ((result: { kind: 'invalid'; error: string }) => void) | undefined
+    const classifyDataRoot = vi.fn(
+      () =>
+        new Promise<{ kind: 'invalid'; error: string }>((resolve) => {
+          finishClassification = resolve
+        })
+    )
+    const deps = fakeDeps({ classifyDataRoot })
+    registerStorageIpcHandlers(deps)
+
+    const handoff = invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    await vi.waitFor(() => expect(classifyDataRoot).toHaveBeenCalledOnce())
+    try {
+      expect(isMigrationInProgress()).toBe(true)
+      expect(isMigrationPending()).toBe(false)
+    } finally {
+      finishClassification?.({ kind: 'invalid', error: 'not usable' })
+      await handoff
+    }
+
+    expect(isMigrationInProgress()).toBe(false)
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+  })
+
+  it('cancels a direct handoff before quit-anyway reissues quit', async () => {
+    initDataRoot(dataRoot)
+    let finishPreparation: ((ready: boolean) => void) | undefined
+    const prepareDataRootHandoff = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishPreparation = resolve
+        })
+    )
+    const deps = fakeDeps({
+      prepareDataRootHandoff,
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    const owner = createStorageCommandOwner(deps)
+    const guardApp = makeMigrationQuitGuardApp()
+    installMigrationQuitGuard(guardApp, () => true)
+
+    const handoff = owner.setDataRootAndRelaunch({ parent: targetParent })
+    await vi.waitFor(() => expect(prepareDataRootHandoff).toHaveBeenCalledOnce())
+    const { prevented } = guardApp.fireBeforeQuit()
+    const quitWasReissuedBeforePreparationSettled = vi.mocked(guardApp.quit).mock.calls.length > 0
+    finishPreparation?.(true)
+
+    await expect(handoff).resolves.toMatchObject({ ok: false })
+    await vi.waitFor(() => expect(guardApp.quit).toHaveBeenCalledOnce())
+    expect(prevented).toBe(true)
+    expect(quitWasReissuedBeforePreparationSettled).toBe(false)
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('keeps a committed direct handoff non-cancellable after quit-anyway', async () => {
+    initDataRoot(dataRoot)
+    let finishPointerWrite: (() => void) | undefined
+    const setDataRoot = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPointerWrite = resolve
+        })
+    )
+    const deps = fakeDeps({
+      settingsService: {
+        setDataRoot,
+        dismissLegacyDataMovePrompt: vi.fn().mockResolvedValue(undefined),
+        getStoredSettings: vi.fn().mockResolvedValue({})
+      },
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    const owner = createStorageCommandOwner(deps)
+    const guardApp = makeMigrationQuitGuardApp()
+    installMigrationQuitGuard(guardApp, () => true)
+
+    const handoff = owner.setDataRootAndRelaunch({ parent: targetParent })
+    await vi.waitFor(() => expect(setDataRoot).toHaveBeenCalledOnce())
+    guardApp.fireBeforeQuit()
+    expect(guardApp.quit).not.toHaveBeenCalled()
+    finishPointerWrite?.()
+
+    await expect(handoff).resolves.toEqual({ ok: true })
+    await vi.waitFor(() => expect(guardApp.quit).toHaveBeenCalledOnce())
+    expect(deps.relaunch).toHaveBeenCalledOnce()
+    expect(isMigrationPending()).toBe(true)
+  })
+
+  it('holds the write gate from direct handoff preparation through relaunch', async () => {
+    initDataRoot(dataRoot)
+    const setDataRoot = vi.fn(async () => {
+      expect(isMigrationPending()).toBe(true)
+    })
+    const relaunch = vi.fn(() => {
+      expect(isMigrationPending()).toBe(true)
+      expect(isMigrationInProgress()).toBe(false)
+    })
+    const deps = fakeDeps({
+      settingsService: {
+        setDataRoot,
+        dismissLegacyDataMovePrompt: vi.fn().mockResolvedValue(undefined),
+        getStoredSettings: vi.fn().mockResolvedValue({})
+      },
+      relaunch,
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(
+      invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    ).resolves.toEqual({ ok: true })
+
+    expect(setDataRoot).toHaveBeenCalledOnce()
+    expect(relaunch).toHaveBeenCalledOnce()
+    expect(isMigrationPending()).toBe(true)
+  })
+
+  it('drains existing writer leases before a direct pointer switch', async () => {
+    initDataRoot(dataRoot)
+    let finishWriter: (() => void) | undefined
+    const activeWrite = withDataRootWrite(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWriter = resolve
+        })
+    )
+    const pauseDataRootWriters = vi.fn(() => waitForDataRootWriters())
+    const deps = fakeDeps({
+      pauseDataRootWriters,
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    registerStorageIpcHandlers(deps)
+
+    const handoff = invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    try {
+      await vi.waitFor(() => expect(isMigrationPending()).toBe(true))
+      await tick(25)
+      expect(pauseDataRootWriters).toHaveBeenCalledOnce()
+      expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    } finally {
+      finishWriter?.()
+      await activeWrite
+    }
+
+    await expect(handoff).resolves.toEqual({ ok: true })
+    expect(deps.settingsService.setDataRoot).toHaveBeenCalledOnce()
+  })
+
+  it('restores renderer preparation when a direct handoff fails after durability', async () => {
+    initDataRoot(dataRoot)
+    const notifyDataRootHandoffAborted = vi.fn()
+    const deps = {
+      ...fakeDeps({
+        pauseDataRootWriters: vi.fn().mockRejectedValue(new Error('busy')),
+        classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+      }),
+      notifyDataRootHandoffAborted
+    }
+    const owner = createStorageCommandOwner(deps)
+
+    await expect(owner.setDataRootAndRelaunch({ parent: targetParent })).resolves.toMatchObject({
+      ok: false
+    })
+
+    expect(notifyDataRootHandoffAborted).toHaveBeenCalledOnce()
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+  })
+
+  it('restores renderer preparation when a migration copy fails after durability', async () => {
+    initDataRoot(dataRoot)
+    const notifyDataRootHandoffAborted = vi.fn()
+    const deps = {
+      ...fakeDeps({
+        runDataRootMigration: vi.fn().mockResolvedValue({ ok: false, error: 'copy failed' })
+      }),
+      notifyDataRootHandoffAborted
+    }
+    const owner = createStorageCommandOwner(deps)
+
+    await expect(owner.migrate({ parent: targetParent })).resolves.toEqual({
+      ok: false,
+      error: 'copy failed'
+    })
+
+    expect(notifyDataRootHandoffAborted).toHaveBeenCalledOnce()
+    expect(isMigrationPending()).toBe(false)
+  })
+
+  it.each([
+    {
+      label: 'delegated work',
+      overrides: {
+        getActiveDelegatedSessions: vi
+          .fn()
+          .mockReturnValueOnce([])
+          .mockReturnValue([{ projectId: 'project-1', sessionId: 'delegated-race' }])
+      }
+    },
+    {
+      label: 'root-agent work',
+      overrides: {
+        getActivePromptSessions: vi
+          .fn()
+          .mockReturnValueOnce([])
+          .mockReturnValue([{ projectId: 'project-1', sessionId: 'agent-race' }])
+      }
+    },
+    {
+      label: 'notebook work',
+      overrides: {
+        notebook: {
+          shutdownAll: vi.fn().mockResolvedValue({ reaped: true }),
+          dispose: vi.fn().mockResolvedValue({ reaped: true }),
+          getActiveNotebookSessions: vi
+            .fn()
+            .mockReturnValueOnce([])
+            .mockReturnValue([{ projectId: 'project-1', sessionId: 'notebook-race' }])
+        }
+      }
+    },
+    {
+      label: 'reviewer work',
+      overrides: {
+        hasActiveReviewerWork: vi.fn().mockReturnValueOnce(false).mockReturnValue(true)
+      }
+    }
+  ])('rechecks $label after draining direct-switch writers', async ({ overrides }) => {
+    initDataRoot(dataRoot)
+    const deps = fakeDeps({
+      ...overrides,
+      pauseDataRootWriters: vi.fn().mockResolvedValue(undefined),
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(
+      invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    ).resolves.toMatchObject({ ok: false })
+
+    expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+    expect(deps.relaunch).not.toHaveBeenCalled()
+    expect(isMigrationPending()).toBe(false)
+  })
+
+  it('forces the committed old process to exit when direct relaunch throws', async () => {
+    initDataRoot(dataRoot)
+    const deps = fakeDeps({
+      relaunch: vi.fn(() => {
+        throw new Error('restart scheduling failed')
+      }),
+      classifyDataRoot: vi.fn().mockResolvedValue({ kind: 'adopt' })
+    })
+    registerStorageIpcHandlers(deps)
+
+    await expect(
+      invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    ).resolves.toEqual({ ok: false, error: 'restart scheduling failed' })
+
+    expect(deps.settingsService.setDataRoot).toHaveBeenCalledOnce()
+    expect(appExit).toHaveBeenCalledWith(1)
+    expect(isMigrationPending()).toBe(true)
   })
 
   it('diagnoses an adopted data root without retaining its path', async () => {

@@ -95,6 +95,13 @@ import {
   type ShutdownStepOutcome
 } from './lifecycle-shutdown'
 import { registerLifecycleIpcHandlers } from './lifecycle-broadcast'
+import {
+  createWebSessionPersistenceFlush,
+  rendererSessionPersistenceFlushBlocksShutdown,
+  type RendererSessionPersistenceFlushPolicy,
+  type RendererSessionPersistenceSurface,
+  type RendererSessionPersistenceTarget
+} from './session-persistence/renderer-flush'
 import { createLogsCommandOwner, registerLogsIpcHandlers } from './logs-ipc'
 import { registerWindowIpcHandlers } from './window-ipc'
 import { registerWindowFindIpcHandlers } from './window-find-ipc'
@@ -309,7 +316,11 @@ import type {
 import { editSessionDetailsRequestSchema } from '../shared/session-persistence'
 import { registerStorageIpcHandlers } from './storage/ipc'
 import { createStorageCommandOwner } from './storage/command-owner'
-import { withDataRootWrite } from './storage/migration-state'
+import {
+  isMigrationInProgress,
+  isMigrationPending,
+  withDataRootWrite
+} from './storage/migration-state'
 import { normalizeLegacyDataPaths } from './storage/normalize-legacy-paths'
 import { createDelegatedActivityProjection, detectActiveSessions } from './storage/detect-active'
 import {
@@ -322,7 +333,12 @@ import {
 } from './storage-root'
 import { createUpdateCommandOwner, registerUpdateIpcHandlers } from './update/ipc'
 import { createUpdateStrategy } from './update/create-strategy'
-import { createActiveResearchSafeInstallGate, createDurableInstallGate } from './update/strategy'
+import {
+  createActiveResearchSafeInstallGate,
+  createDataRootResearchSafeInstallGate,
+  createDurableInstallGate,
+  type InstallReadiness
+} from './update/strategy'
 import type { UpdateBlocker } from '../shared/update'
 import { startUpdateScheduler } from './update/scheduler'
 import { createDefaultUploadRepository, registerUploadIpcHandlers } from './uploads/ipc'
@@ -358,8 +374,12 @@ type IpcRegistrationOptions = {
   // Renders the built-in icon variants to preview data URLs for the Appearance picker.
   listAppIconPreviews?: () => AppIconPreview[]
   // Flushes renderer-owned Session/Preview state after backend teardown and before an in-place
-  // updater can close the renderer. Desktop startup supplies the late-bound window implementation.
-  confirmUpdateRendererDurability?: () => Promise<boolean>
+  // handoff (update install or data-root switch). Desktop startup supplies the late-bound window.
+  confirmRendererDurability?: (
+    policy?: RendererSessionPersistenceFlushPolicy,
+    surface?: RendererSessionPersistenceSurface
+  ) => Promise<boolean>
+  notifyRendererDurabilityAborted?: () => void
   // Retained as an explicit startup marker while the app owns the only handoff composition.
   handoffRuntime?: 'production'
 }
@@ -406,7 +426,8 @@ const createApplicationModules = async (
     translate = englishNativeTranslator,
     onAppIconVariantChanged,
     listAppIconPreviews,
-    confirmUpdateRendererDurability = () => Promise.resolve(true)
+    confirmRendererDurability = () => Promise.resolve(true),
+    notifyRendererDurabilityAborted = () => undefined
   }: IpcRegistrationOptions,
   modules: ApplicationModuleBuilder,
   composition: DiagnosticOperation
@@ -434,6 +455,7 @@ const createApplicationModules = async (
     installRendererBroadcastEventHub,
     createApplicationEventModule
   )
+  const webSessionPersistenceFlush = createWebSessionPersistenceFlush(applicationEvents)
   // One settings service backs both the settings IPC and the ACP spawn config (single source of truth).
   const specialistPackageSkillAdapter = new UserSkillSpecialistPackageAdapter(resolveStorageRoot())
   const settingsRepository = new SettingsRepository(
@@ -2666,25 +2688,49 @@ const createApplicationModules = async (
     notebook: notebookService,
     log: createLogger('shutdown')
   })
+  const durableBackendHandoffGate = createDurableInstallGate(
+    () => shutdownCoordinator.runForUpdateGate(UPDATE_SHUTDOWN_BUDGET_MS),
+    () => confirmRendererDurability()
+  )
+  const detectResearchBlockers = (): UpdateBlocker[] => {
+    const blockers: UpdateBlocker[] = detectActiveSessions({
+      runtime: { getActivePromptSessions: () => runtime.getQuitBlockingPromptSessions() },
+      delegated: { getActiveDelegatedSessions },
+      notebook: notebookService
+    }).map((session) => session.kind)
+    if (reviewerModelRuntimeShutdown?.hasActiveWork()) blockers.push('reviewer')
+    return blockers
+  }
+  const durableDataRootHandoffGate = (
+    target: RendererSessionPersistenceTarget,
+    confirmedInterruption: boolean
+  ): Promise<InstallReadiness> =>
+    createDurableInstallGate(
+      createDataRootResearchSafeInstallGate(
+        detectResearchBlockers,
+        () => shutdownCoordinator.runForUpdateGate(UPDATE_SHUTDOWN_BUDGET_MS),
+        confirmedInterruption
+      ),
+      async () => {
+        if (target.surface !== 'web-renderer') {
+          return confirmRendererDurability('data-root-handoff', target.surface)
+        }
+        const outcome = await webSessionPersistenceFlush.flush(target.lifecycleClientId)
+        const blocked = rendererSessionPersistenceFlushBlocksShutdown(outcome, 'data-root-handoff')
+        if (blocked) webSessionPersistenceFlush.notifyAborted()
+        return !blocked
+      }
+    )()
   // Construct update handling only after its backend-shutdown gate exists. The in-place strategy owns
   // this immutable dependency from construction; the manifest fallback ignores it because it does not
   // quit the running app to install.
   const updateStrategy = createUpdateStrategy(process.platform, {
     translate,
     installGate: createActiveResearchSafeInstallGate(
-      () => {
-        const blockers: UpdateBlocker[] = detectActiveSessions({
-          runtime: { getActivePromptSessions: () => runtime.getQuitBlockingPromptSessions() },
-          delegated: { getActiveDelegatedSessions },
-          notebook: notebookService
-        }).map((session) => session.kind)
-        if (reviewerModelRuntimeShutdown?.hasActiveWork()) blockers.push('reviewer')
-        return blockers
-      },
-      createDurableInstallGate(
-        () => shutdownCoordinator.runForUpdateGate(UPDATE_SHUTDOWN_BUDGET_MS),
-        confirmUpdateRendererDurability
-      )
+      detectResearchBlockers,
+      durableBackendHandoffGate,
+      () => isMigrationInProgress() || isMigrationPending(),
+      notifyRendererDurabilityAborted
     )
   })
   const updateCommandOwner = createUpdateCommandOwner(updateStrategy)
@@ -3168,8 +3214,21 @@ const createApplicationModules = async (
     notebook: notebookService,
     getActivePromptSessions: () => runtime.getActivePromptSessions(),
     getActiveDelegatedSessions,
+    hasActiveReviewerWork: () => reviewerModelRuntimeShutdown?.hasActiveWork() ?? false,
     settingsService,
-    micromambaRunner
+    micromambaRunner,
+    acknowledgeWebRendererFlush: webSessionPersistenceFlush.acknowledge,
+    notifyDataRootHandoffAborted: () => {
+      try {
+        notifyRendererDurabilityAborted()
+      } finally {
+        webSessionPersistenceFlush.notifyAborted()
+      }
+    },
+    prepareDataRootHandoff: async (target, confirmedInterruption) => {
+      const readiness = await durableDataRootHandoffGate(target, confirmedInterruption)
+      return readiness.completed && readiness.reaped
+    }
   })
   declareElectronAdapter('storage', () =>
     registerStorageIpcHandlers(
@@ -3178,6 +3237,7 @@ const createApplicationModules = async (
         notebook: notebookService,
         getActivePromptSessions: () => runtime.getActivePromptSessions(),
         getActiveDelegatedSessions,
+        hasActiveReviewerWork: () => reviewerModelRuntimeShutdown?.hasActiveWork() ?? false,
         settingsService
       },
       storageCommandOwner
@@ -3292,6 +3352,7 @@ const createApplicationModules = async (
   const reviewerModelRuntime = await modules.add(
     {
       appVersion: app.getVersion(),
+      isDataRootHandoffActive: () => isMigrationInProgress() || isMigrationPending(),
       captureModel: () => settingsService.admitReviewerExecutionModel(),
       resolveTarget: (target, context) =>
         settingsService.resolveExplicitAgentBackend(target, context)

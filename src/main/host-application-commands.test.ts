@@ -108,6 +108,7 @@ const createDependencies = (): HostApplicationCommandDependencies => ({
     abortFixLoop: vi.fn(() => undefined)
   },
   storage: {
+    acknowledgeDataRootHandoffFlush: vi.fn(() => undefined),
     getStatus: vi.fn(async () => ({
       dataRoot: '/data',
       isDefault: true,
@@ -175,7 +176,7 @@ const commandByName = (name: string): ApplicationCommand<string, readonly unknow
 }
 
 describe('Host application commands', () => {
-  it('defines the exact 53 request channels in their existing capability groups', () => {
+  it('defines the exact 54 request channels in their existing capability groups', () => {
     const expected = RENDERER_CONTRACT_GROUPS.filter(({ capability }) =>
       HOST_CAPABILITIES.includes(capability as (typeof HOST_CAPABILITIES)[number])
     ).map(({ capability, contracts }) => {
@@ -193,7 +194,7 @@ describe('Host application commands', () => {
       }
     })
 
-    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(53)
+    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(54)
     expect(
       hostApplicationCommandGroups.map(({ name, commands }) => ({
         capability: name,
@@ -209,7 +210,7 @@ describe('Host application commands', () => {
       {} as HostApplicationCommandDependencies
     )
 
-    expect(router.dispatcher.commandNames()).toHaveLength(53)
+    expect(router.dispatcher.commandNames()).toHaveLength(54)
     installation.uninstall()
     expect(router.dispatcher.commandNames()).toEqual([])
   })
@@ -228,6 +229,7 @@ describe('Host application commands', () => {
     const reviewSession = { projectId: 'project-1', appSessionId: 'session-1' }
     const parent = { parent: '/target' }
     const root = { parent: '/target', markOnboarding: true }
+    const flushResponse = { requestId: 'flush-1', status: 'completed' as const }
     const markReadRequest = { ids: ['message-1'] }
     const markAllReadRequest = { throughSequence: 7 }
     const markSessionCompletionsReadRequest = { sessionIds: ['session-1'] }
@@ -320,6 +322,10 @@ describe('Host application commands', () => {
       invocation([reviewSession])
     )
     await router.dispatcher.invoke(hostApplicationCommands.reviewer.run, invocation([reviewRun]))
+    await router.dispatcher.invoke(
+      hostApplicationCommands.storage.acknowledgeDataRootHandoffFlush,
+      invocation([flushResponse])
+    )
     await router.dispatcher.invoke(hostApplicationCommands.storage.cancelMigrate, invocation([]))
     await router.dispatcher.invoke(
       hostApplicationCommands.storage.commitAndRelaunch,
@@ -383,8 +389,16 @@ describe('Host application commands', () => {
     expect(dependencies.reviewer.run).toHaveBeenCalledWith(reviewRun)
     expect(dependencies.reviewer.getForSession).toHaveBeenCalledWith(reviewSession)
     expect(dependencies.reviewer.abort).toHaveBeenCalledWith(reviewSession)
-    expect(dependencies.storage.commitAndRelaunch).toHaveBeenCalledWith(parent)
-    expect(dependencies.storage.setDataRootAndRelaunch).toHaveBeenCalledWith(root)
+    expect(dependencies.storage.acknowledgeDataRootHandoffFlush).toHaveBeenCalledWith(
+      flushResponse,
+      'electron:7'
+    )
+    expect(dependencies.storage.commitAndRelaunch).toHaveBeenCalledWith(parent, {
+      surface: 'electron-renderer'
+    })
+    expect(dependencies.storage.setDataRootAndRelaunch).toHaveBeenCalledWith(root, {
+      surface: 'electron-renderer'
+    })
     expect(dependencies.update.apply).toHaveBeenCalledWith({ relaunch: false })
     expect(dependencies.update.download).toHaveBeenCalledWith({ nonInteractive: true })
 
@@ -392,6 +406,42 @@ describe('Host application commands', () => {
     expect(
       ownerMethods.filter(vi.isMockFunction).every((method) => method.mock.calls.length === 1)
     ).toBe(true)
+  })
+
+  it('routes local Web data-root handoffs to the post-teardown renderer handshake', async () => {
+    const dependencies = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerHostApplicationCommands(router.registrar, dependencies)
+    const caller = createWebCallerContext('local-web')
+    const parent = { parent: '/target' }
+    const root = { ...parent, markOnboarding: true }
+
+    await router.dispatcher.invoke(
+      hostApplicationCommands.storage.migrate,
+      invocation([parent], caller)
+    )
+    await router.dispatcher.invoke(
+      hostApplicationCommands.storage.commitAndRelaunch,
+      invocation([parent], caller)
+    )
+    await router.dispatcher.invoke(
+      hostApplicationCommands.storage.setDataRootAndRelaunch,
+      invocation([root], caller)
+    )
+    const flushResponse = { requestId: 'web-flush-1', status: 'completed' as const }
+    await router.dispatcher.invoke(
+      hostApplicationCommands.storage.acknowledgeDataRootHandoffFlush,
+      invocation([flushResponse], caller)
+    )
+
+    const target = { surface: 'web-renderer', lifecycleClientId: 'web:local-web' }
+    expect(dependencies.storage.migrate).toHaveBeenCalledWith(parent, target)
+    expect(dependencies.storage.commitAndRelaunch).toHaveBeenCalledWith(parent, target)
+    expect(dependencies.storage.setDataRootAndRelaunch).toHaveBeenCalledWith(root, target)
+    expect(dependencies.storage.acknowledgeDataRootHandoffFlush).toHaveBeenCalledWith(
+      flushResponse,
+      'web:local-web'
+    )
   })
 
   it('rejects the exact local-only host inventory before entering an owner', async () => {
@@ -402,6 +452,7 @@ describe('Host application commands', () => {
     const previewRequest = { path: '/data/result.txt', encoding: 'utf8' as const }
     const parent = { parent: '/target' }
     const argsByChannel: Readonly<Record<string, readonly unknown[]>> = {
+      'storage:ack-data-root-handoff-flush': [{ requestId: 'flush-1', status: 'completed' }],
       'local-fs:grant-root': [{ path: '/data', access: 'ro' }],
       'local-fs:granted-roots:remove': [{ id: 'root-1' }],
       'local-fs:granted-roots:set-access': [{ id: 'root-1', access: 'rw' }],
@@ -429,7 +480,7 @@ describe('Host application commands', () => {
         .filter((channel): channel is string => channel !== null)
     )
 
-    expect(localOnlyChannels).toHaveLength(26)
+    expect(localOnlyChannels).toHaveLength(27)
     for (const channel of localOnlyChannels) {
       await expect(
         router.dispatcher.invoke(

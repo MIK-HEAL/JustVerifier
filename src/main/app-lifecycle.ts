@@ -73,7 +73,7 @@ export type AppLifecycleDeps = {
   rendererFlushTimeoutMs?: number
   // Classifies an orderly shutdown without changing its cleanup sequence.
   shutdownTrigger?: () => ApplicationShutdownTrigger
-  // True while a data-root migration is copying; a quit during it is owned by the migration guard.
+  // True while a data-root handoff is validating, preparing, or copying; its quit guard owns exits.
   isMigrationInProgress: () => boolean
   // Requests an app quit (app.quit); the before-quit handler below turns it into an awaited teardown.
   quit: () => void
@@ -251,13 +251,19 @@ export const installAppLifecycle = (
       return
     }
     const trigger = shutdownTrigger()
+    // Renderer persistence may cancel only an ordinary quit. Update and data-root relaunches pass a
+    // producer-teardown + renderer-durability gate before committing their handoff; once app.quit()
+    // runs, cancellation would leave the old process alive after the external pointer changed.
+    const ordinaryQuit = trigger === 'quit'
+    const delegatedWorkBlocksShutdown = ordinaryQuit
 
-    // Final synchronous resource-safety boundary. A delegated Attempt may start after an earlier
-    // confirmation snapshot (or after a saved close preference was read), and requestQuit(true) can
-    // arrive directly from the Windows titlebar path. Never enter preparation/flush/teardown while
-    // such work exists; clear confirmation/trigger state and show the hard-blocking prompt instead.
+    // Final synchronous delegated-work safety boundary. A delegated Attempt may start after an earlier
+    // confirmation snapshot (or after a saved close preference was read). Storage commands quiesce and
+    // await all producers before marking migration-relaunch, and the updater does the same before
+    // quitAndInstall. Once either committed handoff invokes app.quit(), it must continue; cancelling
+    // there would strand the already-started installer or a process cached on the old data root.
     const delegatedAtShutdownBoundary = detectDelegatedWork()
-    if (delegatedAtShutdownBoundary.length > 0) {
+    if (delegatedWorkBlocksShutdown && delegatedAtShutdownBoundary.length > 0) {
       event.preventDefault()
       quitConfirmed = false
       clearApplicationShutdownTrigger()
@@ -271,7 +277,7 @@ export const installAppLifecycle = (
 
     // Confirmation gate: unless the user already confirmed (e.g. Windows X -> Quit), confirm the
     // quit. An empty active-session list makes confirmClose('quit', []) resolve 'quit' with no modal.
-    if (!quitConfirmed && trigger === 'quit') {
+    if (!quitConfirmed && ordinaryQuit) {
       event.preventDefault()
       if (confirmInFlight) return
       confirmInFlight = true
@@ -347,7 +353,7 @@ export const installAppLifecycle = (
         rendererPreflightOutcome = preflight.outcome
         rendererPreflightResult = preflight.result
         if (
-          trigger !== 'update' &&
+          ordinaryQuit &&
           rendererSessionPersistenceFlushBlocksShutdown(rendererPreflightOutcome)
         ) {
           shutdownAbortedForRendererPersistence = true
@@ -383,10 +389,7 @@ export const installAppLifecycle = (
         )
         rendererFlushOutcome = finalFlush.outcome
         rendererFlushResult = finalFlush.result
-        if (
-          trigger !== 'update' &&
-          rendererSessionPersistenceFlushBlocksShutdown(rendererFlushOutcome)
-        ) {
+        if (ordinaryQuit && rendererSessionPersistenceFlushBlocksShutdown(rendererFlushOutcome)) {
           shutdownAbortedForRendererPersistence = true
           diagnostics?.complete({
             degraded: true,

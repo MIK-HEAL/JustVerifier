@@ -99,6 +99,67 @@ describe('completeQuitPersistenceFlush', () => {
     expect(removeRequest).toHaveBeenCalledOnce()
   })
 
+  it('acknowledges a Web handoff through the local storage command', async () => {
+    let notifyFlush: (request: {
+      requestId: string
+      targetLifecycleClientId?: string
+    }) => void = () => undefined
+    const ackDataRootHandoffFlush = vi.fn(async () => undefined)
+    vi.stubGlobal('window', {
+      api: {
+        lifecycle: { getClientId: vi.fn(async () => 'web:client-a') },
+        sessions: {
+          onFlushRequest: (listener: typeof notifyFlush) => {
+            notifyFlush = listener
+            return vi.fn()
+          }
+        },
+        storage: { ackDataRootHandoffFlush }
+      }
+    })
+
+    const { unmount } = renderHook(() => useQuitPersistenceFlush())
+    notifyFlush({ requestId: 'web-flush-1', targetLifecycleClientId: 'web:client-a' })
+
+    await vi.waitFor(() =>
+      expect(ackDataRootHandoffFlush).toHaveBeenCalledWith({
+        requestId: 'web-flush-1',
+        status: 'completed'
+      })
+    )
+    unmount()
+  })
+
+  it('ignores a Web handoff request targeted at another browser tab', async () => {
+    let notifyFlush: (request: {
+      requestId: string
+      targetLifecycleClientId?: string
+    }) => void = () => undefined
+    const getClientId = vi.fn(async () => 'web:client-b')
+    const ackDataRootHandoffFlush = vi.fn(async () => undefined)
+    vi.stubGlobal('window', {
+      api: {
+        lifecycle: { getClientId },
+        sessions: {
+          onFlushRequest: (listener: typeof notifyFlush) => {
+            notifyFlush = listener
+            return vi.fn()
+          }
+        },
+        storage: { ackDataRootHandoffFlush }
+      }
+    })
+
+    const { unmount } = renderHook(() => useQuitPersistenceFlush())
+    notifyFlush({ requestId: 'web-flush-1', targetLifecycleClientId: 'web:client-a' })
+
+    await vi.waitFor(() => expect(getClientId).toHaveBeenCalledOnce())
+    expect(flushSessionPersistence).not.toHaveBeenCalled()
+    expect(flushPreviewPersistence).not.toHaveBeenCalled()
+    expect(ackDataRootHandoffFlush).not.toHaveBeenCalled()
+    unmount()
+  })
+
   it('drains terminal runtime events before flushing and acknowledging', async () => {
     const calls: string[] = []
 
