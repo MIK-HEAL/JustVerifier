@@ -31,6 +31,7 @@ export type OfficialVendorId =
   | 'xiaomimimo'
   | 'sensenova'
   | 'volcengine'
+  | 'tencent'
   | 'opencode-go'
   | 'opencode'
   | 'openrouter'
@@ -70,6 +71,9 @@ export type OfficialVendor = {
   // for legacy Anthropic-compatible vendor entries. A dual-endpoint vendor lists both, e.g.
   // ['anthropic', 'openai'].
   apiEndpoints?: readonly ChatApiEndpoint[]
+  // Whether Anthropic Messages authenticates with `x-api-key` instead of `Authorization: Bearer`.
+  // Absent keeps the existing bearer behavior used by the other compatible vendors.
+  anthropicApiKeyHeader?: boolean
   // Model ids offered in the composer once a key is stored. First entry is the default selection when
   // the vendor is first added.
   models: OfficialModel[]
@@ -617,6 +621,44 @@ export const OFFICIAL_VENDORS: OfficialVendor[] = [
         'doubao-seed-2-0-mini-260215'
       ]
     }
+  },
+  {
+    id: 'tencent',
+    label: 'Tencent TokenHub',
+    reasoningEffort: 'unsupported',
+    // TokenHub exposes Anthropic Messages, OpenAI Chat Completions, and Responses from regional
+    // hosts. China and International are separate account sites with distinct consoles, API keys,
+    // and domains, so keep the site explicit rather than retrying credentials across editions. The
+    // broader TokenHub catalog also contains non-language models, so this provider stays curated.
+    apiEndpoints: ['anthropic', 'openai', 'responses'],
+    anthropicApiKeyHeader: true,
+    regions: [
+      {
+        id: 'international',
+        label: 'International (Singapore)',
+        baseUrl: 'https://tokenhub-intl.tencentcloudmaas.com',
+        openaiBaseUrl: 'https://tokenhub-intl.tencentcloudmaas.com/v1',
+        apiKeyUrl: 'https://console.tencentcloud.com/tokenhub/apikey'
+      },
+      {
+        id: 'china',
+        label: 'China (Guangzhou)',
+        baseUrl: 'https://tokenhub.tencentmaas.com',
+        openaiBaseUrl: 'https://tokenhub.tencentmaas.com/v1',
+        apiKeyUrl: 'https://console.cloud.tencent.com/tokenhub/apikey'
+      }
+    ],
+    models: [
+      { id: 'hy4-preview', contextWindow: 1_000_000 },
+      { id: 'glm-5.3', contextWindow: 1_000_000 },
+      { id: 'glm-5.3-flash', contextWindow: 1_000_000 },
+      { id: 'kimi-k3', contextWindow: 1_048_576 },
+      { id: 'deepseek-v4-flash', contextWindow: 1_000_000 },
+      { id: 'deepseek-v4-pro', contextWindow: 1_000_000 },
+      { id: 'minimax-m3', contextWindow: 1_000_000 }
+    ]
+    // The curated language models above are text-only in TokenHub's model matrix, so no
+    // `multimodal` rule.
   },
   {
     id: 'opencode-go',
@@ -1213,6 +1255,9 @@ export const resolveVendorApiEndpoints = (id: OfficialVendorId): ChatApiEndpoint
   const endpoints = VENDORS_BY_ID.get(id)?.apiEndpoints
   return endpoints && endpoints.length > 0 ? [...endpoints] : ['anthropic']
 }
+
+export const usesVendorAnthropicApiKeyHeader = (id: OfficialVendorId): boolean =>
+  VENDORS_BY_ID.get(id)?.anthropicApiKeyHeader === true
 
 // Models a vendor is statically known not to drive over the Codex Responses->Chat bridge (see
 // OfficialVendor.bridgeUnsupportedModels). Empty for every vendor whose whole catalog converts.
