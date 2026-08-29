@@ -151,9 +151,11 @@ vi.mock('@/components/RemoteJobBadge', () => ({
 
 vi.mock('./WorkspaceMessageScroller', () => ({
   WorkspaceMessageScroller: ({
+    credentialPending,
     isResumingSession,
     pendingElicitations = []
   }: {
+    credentialPending?: boolean
     isResumingSession?: boolean
     pendingElicitations?: unknown[]
   }): React.JSX.Element => (
@@ -162,6 +164,7 @@ vi.mock('./WorkspaceMessageScroller', () => ({
         <span data-testid="resume-progress-indicator">Resuming session</span>
       ) : null}
       <span data-testid="scroller-pending-elicitations">{pendingElicitations.length}</span>
+      <span data-testid="scroller-credential-pending">{String(credentialPending ?? false)}</span>
     </>
   )
 }))
@@ -537,6 +540,7 @@ const createPanelDefaults = (): PanelProps => ({
   },
   permissions: {
     requests: [],
+    credentialRequests: [],
     permissionProfile: 'ask',
     permissionProfileState: undefined,
     permissionGrants: [],
@@ -1482,6 +1486,56 @@ describe('ConversationPanel composer intake', () => {
     ) as HTMLDivElement
     expect(nextPermissionComposer).not.toBe(permissionComposer)
     expect(nextPermissionComposer.style.height).toBe('')
+  })
+
+  it('puts Session credential recovery in the content-bounded Composer lane', () => {
+    const activeSession: ChatSession = {
+      id: 'session-credential',
+      projectId: 'project-a',
+      title: 'OpenAlex credential',
+      cwd: '/workspace',
+      status: 'running',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    renderPanel({
+      view: { activeSession },
+      permissions: {
+        ...createPanelDefaults().permissions,
+        credentialRequests: [
+          {
+            id: 'credential-1',
+            credentialId: 'openalex',
+            connector: 'literature',
+            method: 'openalex_search_works',
+            sessionId: activeSession.id
+          }
+        ]
+      },
+      elicitation: {
+        requests: [
+          {
+            requestId: 'elicitation-after-credential',
+            sessionId: activeSession.id,
+            toolCallId: 'tool-ask-after-credential',
+            message: 'Which scope should the agent use?',
+            fields: []
+          }
+        ]
+      }
+    })
+
+    expect(container.querySelector('[data-testid="credential-composer"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="credential-composer-scroll"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Resize credential panel"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="connector-credential-controls"]')).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="scroller-credential-pending"]')?.textContent
+    ).toBe('true')
+    expect(container.querySelector('[data-testid="elicitation-composer"]')).toBeNull()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expectComposerCoveredByBlockingOverlay()
   })
 
   it('serializes a pending question ahead of Plan approval in the shared blocking lane', () => {
