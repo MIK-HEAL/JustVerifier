@@ -176,6 +176,9 @@ const HomePage = ({
 }: HomePageProps): React.JSX.Element => {
   const { t } = useTranslation()
   const projects = useProjectStore((state) => state.projects)
+  const hasPendingProjectCleanup = useProjectStore(
+    (state) => state.pendingDeletionCleanupProjectIds.size > 0
+  )
   const loadError = useProjectStore((state) => state.loadError)
   const loadProjects = useProjectStore((state) => state.loadProjects)
   const updateProject = useProjectStore((state) => state.updateProject)
@@ -874,6 +877,14 @@ const HomePage = ({
                 role="alert"
               >
                 {projectActionError}
+              </div>
+            ) : null}
+            {hasPendingProjectCleanup ? (
+              <div
+                className="mb-3 rounded-2xl border border-status-warning-foreground/30 bg-status-warning-surface/40 px-4 py-3 text-sm text-status-warning-foreground dark:border-status-warning-dark-foreground/30 dark:bg-status-warning-dark-surface/20 dark:text-status-warning-dark-foreground"
+                role="status"
+              >
+                {t('Project deleted. Cleanup will continue in the background.')}
               </div>
             ) : null}
             {loadError ? (
