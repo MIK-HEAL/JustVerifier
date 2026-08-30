@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -108,6 +108,15 @@ describe('ConnectorSettingsModule', () => {
     const c = await service.getConnectors()
     expect(c?.askToolIds ?? []).not.toContain(toolId)
     expect(c?.blockedToolIds ?? []).toContain(toolId)
+  })
+
+  it('does not persist policy for an unknown connector tool', async () => {
+    await expect(
+      service.setToolPermission({ toolId: 'chemistry/not-a-real-tool', permission: 'ask' })
+    ).rejects.toThrow('Unknown')
+
+    const connectors = await service.getConnectors()
+    expect(connectors?.askToolIds ?? []).not.toContain('chemistry/not-a-real-tool')
   })
 
   it('treats block as stronger than ask when reading inconsistent stored policy', async () => {
@@ -375,6 +384,87 @@ describe('ConnectorSettingsModule', () => {
 
     expect(keychain.encryptedValues).toEqual([])
     expect((await repository.getSettings()).connectors?.customMcpServers ?? []).toEqual([])
+  })
+
+  it.each([
+    {
+      label: 'Windows environment variables',
+      platform: 'win32',
+      request: {
+        name: 'ambiguous-add-env',
+        transport: 'stdio' as const,
+        command: 'npx',
+        env: { API_TOKEN: 'first', api_token: 'second' }
+      }
+    },
+    {
+      label: 'HTTP headers',
+      platform: 'darwin',
+      request: {
+        name: 'ambiguous-add-headers',
+        transport: 'streamable_http' as const,
+        url: 'https://mcp.example.test',
+        headers: { Authorization: 'first', authorization: 'second' }
+      }
+    }
+  ])('rejects case-colliding $label before add persistence', async ({ platform, request }) => {
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: platform })
+    try {
+      await expect(addCustomServer(request)).rejects.toThrow(/duplicate credential name/i)
+      expect(keychain.encryptedValues).toEqual([])
+      expect((await repository.getSettings()).connectors?.customMcpServers ?? []).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
+    }
+  })
+
+  it.each([
+    {
+      label: 'Windows environment variables',
+      platform: 'win32',
+      transport: 'stdio' as const,
+      replacement: { env: { API_TOKEN: 'first', api_token: 'second' } }
+    },
+    {
+      label: 'HTTP headers',
+      platform: 'darwin',
+      transport: 'streamable_http' as const,
+      replacement: { headers: { Authorization: 'first', authorization: 'second' } }
+    }
+  ])('rejects case-colliding $label before update persistence', async (testCase) => {
+    const added = await addCustomServer({
+      name: `ambiguous-update-${testCase.transport.replaceAll('_', '-')}`,
+      transport: testCase.transport,
+      ...(testCase.transport === 'stdio' ? { command: 'npx' } : { url: 'https://mcp.example.test' })
+    })
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', {
+      configurable: true,
+      value: testCase.platform
+    })
+    keychain.encryptedValues.length = 0
+    try {
+      await expect(
+        service.updateCustomServer({
+          id: added.customServers[0].id,
+          transport: testCase.transport,
+          ...(testCase.transport === 'stdio'
+            ? { command: 'npx' }
+            : { url: 'https://mcp.example.test' }),
+          ...testCase.replacement
+        })
+      ).rejects.toThrow(/duplicate credential name/i)
+      expect(keychain.encryptedValues).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
+    }
   })
 
   it('includes retained secrets when validating an updated Connector total', async () => {
@@ -827,6 +917,78 @@ describe('ConnectorSettingsModule', () => {
     )
   })
 
+  it('keeps persisted identity conflicts visible but unavailable', async () => {
+    const baseline = await repository.getSettings()
+    await writeFile(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        ...baseline,
+        connectors: {
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'duplicate-id',
+              name: 'duplicate-one',
+              displayName: 'Duplicate one',
+              transport: 'stdio',
+              command: 'first-command',
+              enabled: true
+            },
+            {
+              id: 'duplicate-id',
+              name: 'duplicate-two',
+              displayName: 'Duplicate two',
+              transport: 'stdio',
+              command: 'second-command',
+              enabled: true
+            },
+            {
+              id: 'chemistry',
+              name: 'built-in-id-collision',
+              displayName: 'Built-in ID collision',
+              transport: 'stdio',
+              command: 'third-command',
+              enabled: true
+            },
+            {
+              id: 'cross-id',
+              name: 'cross-name',
+              displayName: 'Cross one',
+              transport: 'stdio',
+              command: 'fourth-command',
+              enabled: true
+            },
+            {
+              id: 'cross-name',
+              name: 'cross-other',
+              displayName: 'Cross two',
+              transport: 'stdio',
+              command: 'fifth-command',
+              enabled: true
+            },
+            {
+              id: 'Invalid ID',
+              name: 'invalid-id-format',
+              displayName: 'Invalid ID format',
+              transport: 'stdio',
+              command: 'sixth-command',
+              enabled: true
+            }
+          ]
+        }
+      })
+    )
+    service = new ConnectorSettingsModule(new SettingsRepository(dir))
+
+    const snapshot = await service.listConnectors()
+
+    expect(snapshot.customServers).toHaveLength(6)
+    expect(snapshot.customServers.every((server) => server.availability === 'unavailable')).toBe(
+      true
+    )
+  })
+
   it('exports only credential names and validates imports against installed connectors', async () => {
     const snapshot = await addCustomServer({
       id: 'internal-export-id',
@@ -862,6 +1024,19 @@ describe('ConnectorSettingsModule', () => {
       transport: 'streamable_http',
       url: 'https://example.com/mcp'
     })
+  })
+
+  it('rejects credentials over non-loopback HTTP before persistence', async () => {
+    await expect(
+      addCustomServer({
+        name: 'remote-http-credentials',
+        transport: 'streamable_http',
+        url: 'http://example.com/mcp',
+        headers: { Authorization: 'Bearer secret' }
+      })
+    ).rejects.toThrow(/HTTPS|loopback/)
+
+    expect((await repository.getSettings()).connectors?.customMcpServers ?? []).toEqual([])
   })
 
   it('stores OAuth configuration publicly and OAuth state encrypted', async () => {
@@ -901,6 +1076,119 @@ describe('ConnectorSettingsModule', () => {
 
     const enabled = await service.setCustomServerEnabled({ id, enabled: true })
     expect(enabled.customServers[0].enabled).toBe(true)
+  })
+
+  it('does not let a stale OAuth save replace a concurrent configuration edit', async () => {
+    const added = await addCustomServer({
+      name: 'oauth-config-race',
+      transport: 'streamable_http',
+      url: 'https://old.example/mcp',
+      oauth: { authorizationServerUrl: 'https://old.example/oauth' }
+    })
+    const id = added.customServers[0].id
+    const updateCustomServerOAuthState = repository.updateCustomServerOAuthState.bind(repository)
+    let releaseStaleSave!: () => void
+    const staleSaveReleased = new Promise<void>((resolve) => {
+      releaseStaleSave = resolve
+    })
+    let markStaleSaveStarted!: () => void
+    const staleSaveStarted = new Promise<void>((resolve) => {
+      markStaleSaveStarted = resolve
+    })
+    let intercepted = false
+    vi.spyOn(repository, 'updateCustomServerOAuthState').mockImplementation(
+      async (serverId, expectedFingerprint, expectedClientSecretRef, oauthRef) => {
+        if (!intercepted && oauthRef) {
+          intercepted = true
+          markStaleSaveStarted()
+          await staleSaveReleased
+        }
+        return updateCustomServerOAuthState(
+          serverId,
+          expectedFingerprint,
+          expectedClientSecretRef,
+          oauthRef
+        )
+      }
+    )
+
+    const staleSave = service.saveCustomServerOAuthState(id, {
+      tokens: { access_token: 'stale-token', token_type: 'Bearer' }
+    })
+    await staleSaveStarted
+    await service.updateCustomServer({
+      id,
+      transport: 'streamable_http',
+      url: 'https://new.example/mcp',
+      oauth: { authorizationServerUrl: 'https://new.example/oauth' }
+    })
+    releaseStaleSave()
+    await staleSave
+
+    const stored = (await repository.getSettings()).connectors?.customMcpServers?.[0]
+    expect(stored?.url).toBe('https://new.example/mcp')
+    expect(stored?.oauth?.authorizationServerUrl).toBe('https://new.example/oauth')
+    expect(stored?.oauthRef).toBeUndefined()
+  })
+
+  it('discards a stale OAuth save when only the client secret changed', async () => {
+    const added = await addCustomServer({
+      name: 'oauth-client-secret-race',
+      transport: 'streamable_http',
+      url: 'https://mcp.example.test',
+      oauth: {
+        authorizationServerUrl: 'https://auth.example.test',
+        clientId: 'registered-client',
+        clientSecret: 'old-client-secret'
+      }
+    })
+    const id = added.customServers[0].id
+    const updateCustomServerOAuthState = repository.updateCustomServerOAuthState.bind(repository)
+    let releaseStaleSave!: () => void
+    const staleSaveReleased = new Promise<void>((resolve) => {
+      releaseStaleSave = resolve
+    })
+    let markStaleSaveStarted!: () => void
+    const staleSaveStarted = new Promise<void>((resolve) => {
+      markStaleSaveStarted = resolve
+    })
+    vi.spyOn(repository, 'updateCustomServerOAuthState').mockImplementation(
+      async (serverId, expectedFingerprint, expectedClientSecretRef, oauthRef) => {
+        if (oauthRef) {
+          markStaleSaveStarted()
+          await staleSaveReleased
+        }
+        return updateCustomServerOAuthState(
+          serverId,
+          expectedFingerprint,
+          expectedClientSecretRef,
+          oauthRef
+        )
+      }
+    )
+
+    const staleSave = service.saveCustomServerOAuthState(id, {
+      tokens: { access_token: 'stale-token', token_type: 'Bearer' }
+    })
+    await staleSaveStarted
+    await service.updateCustomServer({
+      id,
+      transport: 'streamable_http',
+      url: 'https://mcp.example.test',
+      oauth: {
+        authorizationServerUrl: 'https://auth.example.test',
+        clientId: 'registered-client',
+        clientSecret: 'new-client-secret'
+      }
+    })
+    releaseStaleSave()
+    await staleSave
+
+    const stored = (await repository.getSettings()).connectors?.customMcpServers?.[0]
+    expect(stored?.oauthRef).toBeUndefined()
+    expect((await service.getConnectors())?.customMcpServers?.[0].oauthClientSecret).toBe(
+      'new-client-secret'
+    )
   })
 
   it('stores a pre-registered client secret as an encrypted ref and applies explicit edit semantics', async () => {

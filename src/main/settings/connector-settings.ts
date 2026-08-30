@@ -39,6 +39,7 @@ import {
   hasUsableCustomMcpCredentials,
   isCustomMcpServerRouteSafe
 } from '../connectors/custom-mcp-bootstrap'
+import { hasAmbiguousCustomMcpCredentialNames } from '../connectors/custom-mcp-windows-credential-names'
 import { getConnectorTools } from '../connectors/registry'
 import { encryptKey, isEncryptionAvailable, tryDecryptKey } from './crypto'
 import { sanitizeCustomMcpServer, type SettingsRepository } from './repository'
@@ -48,7 +49,11 @@ import {
   hasEmbeddedConnectorCredentials,
   parseConnectorTemplate
 } from './connector-template'
-import { CustomServerIdConflictError } from './custom-server-identity'
+import {
+  CustomServerIdConflictError,
+  customServerSecurityFingerprint
+} from './custom-server-identity'
+import { assertSecureCustomMcpUrl } from '../connectors/custom-mcp-url'
 
 type CustomServerSecurityChangeGuard = {
   commit(server: StoredCustomMcpServer): void
@@ -321,13 +326,23 @@ class ConnectorSettingsModule {
   }
 
   async setToolPermission(request: SetToolPermissionRequest): Promise<ConnectorDetailView> {
+    const separator = request.toolId.indexOf('/')
+    const connectorId = separator > 0 ? request.toolId.slice(0, separator) : ''
+    const method = separator > 0 ? request.toolId.slice(separator + 1) : ''
+    const connector = CONNECTOR_CATALOG.find((candidate) => candidate.id === connectorId)
+    if (
+      !connector ||
+      !method ||
+      !getConnectorTools(connectorId).some((tool) => tool.id === method)
+    ) {
+      throw new Error(`Unknown connector tool: ${request.toolId}`)
+    }
+
     await this.repository.setToolPolicy(
       request.toolId,
       request.permission === 'ask',
       request.permission === 'block'
     )
-    const connectorId = request.toolId.split('/')[0]
-
     return this.getConnectorDetail(connectorId)
   }
 
@@ -377,6 +392,12 @@ class ConnectorSettingsModule {
 
   async addCustomServer(request: AddCustomServerRequest): Promise<ConnectorsSnapshot> {
     assertCredentialFieldsAreEncrypted(request)
+    if (hasAmbiguousCustomMcpCredentialNames(request)) {
+      throw new Error('Duplicate credential names are not allowed on this platform.')
+    }
+    if (request.transport !== 'stdio' && request.url) {
+      assertSecureCustomMcpUrl(request.url.trim())
+    }
     const name = request.name.trim()
     const displayName = request.displayName.trim()
     const connectors = (await this.repository.getSettings()).connectors
@@ -498,6 +519,12 @@ class ConnectorSettingsModule {
     ) => Promise<CustomServerSecurityChangeGuard | void>
   ): Promise<ConnectorsSnapshot> {
     assertCredentialFieldsAreEncrypted(request)
+    if (hasAmbiguousCustomMcpCredentialNames(request)) {
+      throw new Error('Duplicate credential names are not allowed on this platform.')
+    }
+    if (request.transport !== 'stdio' && request.url) {
+      assertSecureCustomMcpUrl(request.url.trim())
+    }
     const existing = (await this.getConnectors())?.customMcpServers?.find(
       (server) => server.id === request.id
     )
@@ -628,7 +655,9 @@ class ConnectorSettingsModule {
 
   async saveCustomServerOAuthState(
     serverId: string,
-    state: StoredCustomMcpOAuthState | undefined
+    state: StoredCustomMcpOAuthState | undefined,
+    expectedConfigurationFingerprint?: string,
+    expectedOAuthClientSecretRef?: string
   ): Promise<void> {
     const stored = (await this.repository.getSettings()).connectors?.customMcpServers?.find(
       (server) => server.id === serverId
@@ -636,10 +665,14 @@ class ConnectorSettingsModule {
     if (!stored) throw new Error(`Unknown custom connector: ${serverId}`)
     if (!stored.oauth) throw new Error(`Custom connector "${serverId}" is not configured for OAuth`)
 
-    await this.repository.updateCustomServer(serverId, {
-      ...stored,
-      ...(state ? { oauthRef: encryptKey(JSON.stringify(state)) } : { oauthRef: undefined })
-    })
+    await this.repository.updateCustomServerOAuthState(
+      serverId,
+      expectedConfigurationFingerprint ?? customServerSecurityFingerprint(stored),
+      expectedConfigurationFingerprint === undefined
+        ? stored.oauthClientSecretRef
+        : expectedOAuthClientSecretRef,
+      state ? encryptKey(JSON.stringify(state)) : undefined
+    )
   }
 
   async disconnectCustomServer(serverId: string): Promise<ConnectorsSnapshot> {

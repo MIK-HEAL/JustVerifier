@@ -1,5 +1,3 @@
-import { createHmac, randomBytes } from 'node:crypto'
-
 import { ParserEngine } from './engine'
 import { ALL_CONNECTOR_IDS, getDescriptor, validateToolArguments } from './registry'
 import {
@@ -12,6 +10,7 @@ import {
 import { McpToolCallError, type CustomMcpServerConfig } from './mcp-client-manager'
 import type { ConnectorCredentialId, ConnectorCredentials, ToolDescriptor } from './types'
 import type { StoredConnectors, StoredCustomMcpServer } from '../settings/types'
+import { customServerSecurityFingerprint } from '../settings/custom-server-identity'
 import type { PermissionGrantRegistry } from '../permission-grants/registry'
 import { ConnectorPermissionBroker } from '../permission-grants/connector-broker'
 import type { ConnectorPermissionRequest } from '../permission-grants/connector-broker'
@@ -54,6 +53,7 @@ type ConnectorServiceDeps = {
       // open the right conversation.
       sessionId?: string
       availableScopes: ConnectorApprovalScope[]
+      approvalTarget?: NonNullable<ConnectorPermissionRequest['approvalTarget']>
     },
     signal?: AbortSignal
   ) => Promise<ApprovalDecision>
@@ -159,32 +159,6 @@ type CustomMcpFailureState = {
   probing: boolean
 }
 
-const stableRecordEntries = (record: Record<string, string> | undefined): [string, string][] =>
-  Object.entries(record ?? {}).sort(([left], [right]) => left.localeCompare(right))
-
-const customServerSecurityFingerprintKey = randomBytes(32)
-
-// Authenticates fields that can contain credentials. The process-local key lets the barrier compare
-// a configuration generation without retaining another plaintext copy or exposing an enumerable
-// digest. OAuth configuration contains only public metadata, so it remains outside the keyed digest.
-const customServerCredentialFingerprint = (server: StoredCustomMcpServer): string =>
-  createHmac('sha256', customServerSecurityFingerprintKey)
-    .update(
-      JSON.stringify([
-        server.transport,
-        server.command ?? null,
-        server.args ?? [],
-        server.url ?? null,
-        stableRecordEntries(server.envRefs ?? server.env),
-        stableRecordEntries(server.headerRefs ?? server.headers),
-        server.oauthClientSecretRef ?? null
-      ])
-    )
-    .digest('hex')
-
-const customServerSecurityFingerprint = (server: StoredCustomMcpServer): string =>
-  JSON.stringify([server.oauth ?? null, customServerCredentialFingerprint(server)])
-
 const unavailableConnectorMessage = (connector: string): string =>
   `Connector ${JSON.stringify(connector)} is unavailable. ` +
   'Do not retry with guessed Connector names. ' +
@@ -256,7 +230,11 @@ export class ConnectorService {
   private readonly customServerGenerations = new Map<string, number>()
   private readonly customServerBarriers = new Map<
     string,
-    { generation: number; expectedFingerprint?: string }
+    {
+      generation: number
+      expectedFingerprint?: string
+      expectedOAuthClientSecretRef?: string
+    }
   >()
   constructor(private readonly deps: ConnectorServiceDeps) {
     this.engine = deps.engine ?? new ParserEngine()
@@ -288,7 +266,8 @@ export class ConnectorService {
         if (barrier?.generation !== generation) return
         this.customServerBarriers.set(serverId, {
           generation,
-          expectedFingerprint: customServerSecurityFingerprint(server)
+          expectedFingerprint: customServerSecurityFingerprint(server),
+          expectedOAuthClientSecretRef: server.oauthClientSecretRef
         })
       },
       rollback: () => {
@@ -688,7 +667,8 @@ export class ConnectorService {
     if (!barrier) return generation
     if (
       barrier.expectedFingerprint === undefined ||
-      barrier.expectedFingerprint !== customServerSecurityFingerprint(custom)
+      barrier.expectedFingerprint !== customServerSecurityFingerprint(custom) ||
+      barrier.expectedOAuthClientSecretRef !== custom.oauthClientSecretRef
     ) {
       throw new ConnectorGateError('connector_configuration_changed')
     }
@@ -797,7 +777,17 @@ export class ConnectorService {
         method,
         args,
         context,
-        connectors
+        connectors,
+        {
+          connectorId: current.id,
+          connectorName: current.name,
+          displayName: current.displayName,
+          transport: current.transport,
+          target:
+            current.transport === 'stdio'
+              ? (current.command ?? '')
+              : new URL(current.url ?? '').origin
+        }
       )
       if (access.bypassMainPolicy) {
         return { custom: current, request, requireApprovalSatisfied }
@@ -873,7 +863,8 @@ export class ConnectorService {
     method: string,
     args: Record<string, unknown>,
     context: ConnectorCallContext,
-    connectors: StoredConnectors | undefined = this.deps.getConnectors()
+    connectors: StoredConnectors | undefined = this.deps.getConnectors(),
+    approvalTarget?: ConnectorPermissionRequest['approvalTarget']
   ): ConnectorPermissionRequest {
     return {
       capability: { kind: 'mcp_tool', key: `mcp:${capabilityServerId}/${method}` },
@@ -881,6 +872,7 @@ export class ConnectorService {
       connector: connectorLabel,
       method,
       args,
+      ...(approvalTarget ? { approvalTarget } : {}),
       policy: {
         aliases: policyIds,
         autoAllowIds: connectors?.autoAllowIds,

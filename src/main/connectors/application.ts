@@ -67,14 +67,23 @@ type ConnectorApplication = {
   skillImportApprovals: SkillImportApprovalBroker
 }
 
-const previewArgs = (args: Record<string, unknown>): string => {
+const MAX_APPROVAL_ARGS_JSON_CHARS = 64_000
+
+const serializeArgs = (
+  args: Record<string, unknown>
+): { preview: string; json: string; truncated: boolean } => {
   let json: string
   try {
     json = JSON.stringify(args)
   } catch {
     json = '{…}'
   }
-  return json.length > 300 ? `${json.slice(0, 300)}…` : json
+  const truncated = json.length > MAX_APPROVAL_ARGS_JSON_CHARS
+  return {
+    preview: json.length > 300 ? `${json.slice(0, 300)}…` : json,
+    json: truncated ? `${json.slice(0, MAX_APPROVAL_ARGS_JSON_CHARS)}…` : json,
+    truncated
+  }
 }
 
 const createConnectorApplication = (
@@ -153,17 +162,25 @@ const createConnectorApplication = (
     resolveApiKey: deps.resolveApiKey,
     mcpClientManager,
     permissionGrantRegistry: deps.permissionGrantRegistry,
-    requestApproval: ({ connector, method, args, sessionId, availableScopes }, signal) =>
-      connectorApprovals.request(
+    requestApproval: (
+      { connector, method, args, sessionId, availableScopes, approvalTarget },
+      signal
+    ) => {
+      const serializedArgs = serializeArgs(args)
+      return connectorApprovals.request(
         {
           connector,
+          ...(approvalTarget ?? {}),
           method,
-          argsPreview: previewArgs(args),
+          argsPreview: serializedArgs.preview,
+          argsJson: serializedArgs.json,
+          ...(serializedArgs.truncated ? { argsJsonTruncated: true } : {}),
           ...(sessionId ? { sessionId } : {}),
           availableScopes
         },
         signal
-      ),
+      )
+    },
     requestCredential: (request, signal) =>
       deps.canRequestCredential()
         ? credentialRequests.request(request, signal)
@@ -192,7 +209,18 @@ export const createConnectorApplicationModule = async (
     deps.mcpClientManager ??
     new McpClientManager({
       openExternal: deps.openExternal,
-      saveOAuthState: (serverId, state) => deps.settings.saveCustomServerOAuthState(serverId, state)
+      saveOAuthState: (
+        serverId,
+        state,
+        expectedConfigurationFingerprint,
+        expectedOAuthClientSecretRef
+      ) =>
+        deps.settings.saveCustomServerOAuthState(
+          serverId,
+          state,
+          expectedConfigurationFingerprint,
+          expectedOAuthClientSecretRef
+        )
     })
 
   try {

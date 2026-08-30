@@ -2,6 +2,10 @@ import type { CustomMcpServerConfig } from './mcp-client-manager'
 import type { StoredConnectors, StoredCustomMcpServer } from '../settings/types'
 import { hasEmbeddedConnectorCredentials } from '../settings/connector-template'
 import { ALL_CONNECTOR_IDS } from './registry'
+import { validateResourceId } from '../../shared/resource-id'
+import { customServerSecurityFingerprint } from '../settings/custom-server-identity'
+import { isSecureCustomMcpUrl } from './custom-mcp-url'
+import { hasAmbiguousCustomMcpCredentialNames } from './custom-mcp-windows-credential-names'
 
 export type CustomMcpFailureAvailability = 'unavailable' | 'unauthenticated'
 
@@ -25,6 +29,8 @@ export function toCustomMcpConfig(server: StoredCustomMcpServer): CustomMcpServe
   return {
     id: server.id,
     name: server.name,
+    configurationFingerprint: customServerSecurityFingerprint(server),
+    ...(server.oauthClientSecretRef ? { oauthClientSecretRef: server.oauthClientSecretRef } : {}),
     transport: server.transport,
     command: server.command ?? '',
     args: server.args,
@@ -58,9 +64,24 @@ export const isCustomMcpServerRouteSafe = (
   server: StoredCustomMcpServer,
   allServers: readonly StoredCustomMcpServer[]
 ): boolean => {
-  if (ALL_CONNECTOR_IDS.includes(server.name)) return false
+  if (
+    validateResourceId(server.id) ||
+    ALL_CONNECTOR_IDS.includes(server.id) ||
+    ALL_CONNECTOR_IDS.includes(server.name) ||
+    hasAmbiguousCustomMcpCredentialNames(server) ||
+    (server.transport !== 'stdio' && (!server.url || !isSecureCustomMcpUrl(server.url)))
+  ) {
+    return false
+  }
 
-  return allServers.every((candidate) => candidate === server || candidate.name !== server.name)
+  return allServers.every(
+    (candidate) =>
+      candidate === server ||
+      (candidate.id !== server.id &&
+        candidate.name !== server.name &&
+        candidate.id !== server.name &&
+        candidate.name !== server.id)
+  )
 }
 
 const hasResolvedSecretRecord = (

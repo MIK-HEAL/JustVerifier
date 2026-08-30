@@ -18,6 +18,7 @@ describe('toCustomMcpConfig', () => {
     expect(toCustomMcpConfig(server)).toEqual({
       id: 'srv-1',
       name: 'my-server',
+      configurationFingerprint: expect.any(String),
       transport: 'stdio',
       command: 'npx',
       args: ['-y', 'some-mcp-server'],
@@ -53,6 +54,7 @@ describe('toCustomMcpConfig', () => {
     expect(toCustomMcpConfig(server)).toEqual({
       id: 'srv-remote',
       name: 'remote-server',
+      configurationFingerprint: expect.any(String),
       transport: 'streamable_http',
       command: '',
       args: undefined,
@@ -74,6 +76,7 @@ describe('toCustomMcpConfig', () => {
         authorizationServerUrl: 'https://auth.example.test',
         clientId: 'registered-client'
       },
+      oauthClientSecretRef: 'enc:registered-secret',
       oauthClientSecret: 'registered-secret',
       oauthState: { tokens: { access_token: 'access', token_type: 'Bearer' } },
       enabled: true
@@ -82,6 +85,8 @@ describe('toCustomMcpConfig', () => {
     expect(toCustomMcpConfig(server)).toEqual({
       id: 'srv-oauth',
       name: 'oauth-server',
+      configurationFingerprint: expect.any(String),
+      oauthClientSecretRef: 'enc:registered-secret',
       transport: 'streamable_http',
       command: '',
       args: undefined,
@@ -197,6 +202,22 @@ describe('selectEnabledCustomServers', () => {
     expect(selectEnabledCustomServers({ enabledIds: [], autoAllowIds: [] })).toEqual([])
   })
 
+  it('keeps a persisted non-loopback HTTP server out of runtime discovery', () => {
+    const insecureRemote: StoredCustomMcpServer = {
+      ...remoteServer,
+      url: 'http://example.com/mcp',
+      headers: { Authorization: 'Bearer secret' }
+    }
+
+    expect(
+      selectEnabledCustomServers({
+        enabledIds: [],
+        autoAllowIds: [],
+        customMcpServers: [insecureRemote]
+      })
+    ).toEqual([])
+  })
+
   it('fails closed when custom Connectors have duplicate names', () => {
     const first: StoredCustomMcpServer = {
       ...stdioServer,
@@ -258,6 +279,64 @@ describe('selectEnabledCustomServers', () => {
         customMcpServers: [partialEnvironment, partialHeaders, partialOAuthClient]
       })
     ).toEqual([])
+  })
+
+  it('fails closed for historical credential names that collide on the active platform', () => {
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    try {
+      const ambiguousEnvironment: StoredCustomMcpServer = {
+        ...stdioServer,
+        id: 'ambiguous-environment',
+        name: 'ambiguous-environment',
+        env: { API_TOKEN: 'first', api_token: 'second' }
+      }
+      const ambiguousHeaders: StoredCustomMcpServer = {
+        ...remoteServer,
+        id: 'ambiguous-headers',
+        name: 'ambiguous-headers',
+        headers: { Authorization: 'first', authorization: 'second' }
+      }
+
+      expect(
+        selectEnabledCustomServers({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [ambiguousEnvironment, ambiguousHeaders]
+        })
+      ).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
+    }
+  })
+
+  it('keeps case-distinct historical environment variables runnable on Unix', () => {
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
+    try {
+      const caseDistinctEnvironment: StoredCustomMcpServer = {
+        ...stdioServer,
+        id: 'case-distinct-environment',
+        name: 'case-distinct-environment',
+        env: { API_TOKEN: 'first', api_token: 'second' }
+      }
+
+      expect(
+        selectEnabledCustomServers({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [caseDistinctEnvironment]
+        })
+      ).toEqual([caseDistinctEnvironment])
+    } finally {
+      Object.defineProperty(process, 'platform', {
+        configurable: true,
+        value: originalPlatform
+      })
+    }
   })
 
   it('ignores unresolved credential maps that are unused by the active transport', () => {

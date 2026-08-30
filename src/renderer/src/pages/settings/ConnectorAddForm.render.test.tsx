@@ -876,6 +876,123 @@ describe('ConnectorAddForm (edit)', () => {
     expect(addButton()?.disabled).toBe(true)
   })
 
+  it('reports malformed header lines instead of silently dropping them', () => {
+    act(() => {
+      root.render(
+        <ConnectorAddForm initialTransport="remote" onDone={vi.fn()} onCancel={vi.fn()} />
+      )
+    })
+
+    setValue('Display name', 'Remote memory')
+    setValue('Server URL', 'https://mcp.example.test')
+    openAdvancedSettings()
+    selectOption('Authentication', 'Static headers')
+    setValue('Headers', 'Authorization: Bearer secret\nBROKEN')
+    checkTrust()
+
+    expect(document.body.textContent).toContain('Line 2: use Name: Value.')
+    expect(addButton()?.disabled).toBe(true)
+  })
+
+  it('reports duplicate environment names instead of overwriting them', () => {
+    act(() => {
+      root.render(<ConnectorAddForm initialTransport="local" onDone={vi.fn()} onCancel={vi.fn()} />)
+    })
+
+    setValue('Display name', 'Memory')
+    openAdvancedSettings()
+    setValue('Environment variables', 'API_TOKEN=first\nAPI_TOKEN=second')
+    checkTrust()
+
+    expect(document.body.textContent).toContain('Line 2: API_TOKEN is duplicated.')
+    expect(addButton()?.disabled).toBe(true)
+  })
+
+  it('reports environment names that collide case-insensitively on Windows', () => {
+    const originalApi = window.api
+    window.api = { ...originalApi, platform: 'win32' } as Window['api']
+    act(() => {
+      root.render(<ConnectorAddForm initialTransport="local" onDone={vi.fn()} onCancel={vi.fn()} />)
+    })
+
+    setValue('Display name', 'Memory')
+    openAdvancedSettings()
+    setValue('Environment variables', 'API_TOKEN=first\napi_token=second')
+    checkTrust()
+
+    expect(document.body.textContent).toContain('Line 2: api_token is duplicated.')
+    expect(addButton()?.disabled).toBe(true)
+    window.api = originalApi
+  })
+
+  it('keeps case-distinct environment names valid on Unix', () => {
+    const originalApi = window.api
+    window.api = { ...originalApi, platform: 'darwin' } as Window['api']
+    act(() => {
+      root.render(<ConnectorAddForm initialTransport="local" onDone={vi.fn()} onCancel={vi.fn()} />)
+    })
+
+    setValue('Display name', 'Memory')
+    openAdvancedSettings()
+    setValue('Environment variables', 'API_TOKEN=first\napi_token=second')
+    checkTrust()
+
+    expect(document.body.textContent).not.toContain('Line 2: api_token is duplicated.')
+    expect(addButton()?.disabled).toBe(false)
+    window.api = originalApi
+  })
+
+  it('reports duplicate header names instead of overwriting them', () => {
+    act(() => {
+      root.render(
+        <ConnectorAddForm initialTransport="remote" onDone={vi.fn()} onCancel={vi.fn()} />
+      )
+    })
+    setValue('Display name', 'Remote memory')
+    setValue('Server URL', 'https://mcp.example.test')
+    openAdvancedSettings()
+    selectOption('Authentication', 'Static headers')
+    setValue('Headers', 'Authorization: first\nAuthorization: second')
+    checkTrust()
+
+    expect(document.body.textContent).toContain('Line 2: Authorization is duplicated.')
+    expect(addButton()?.disabled).toBe(true)
+  })
+
+  it('requires secure storage before submitting static credentials', () => {
+    useSettingsStore.setState({ encryptionAvailable: false })
+    act(() => {
+      root.render(<ConnectorAddForm initialTransport="local" onDone={vi.fn()} onCancel={vi.fn()} />)
+    })
+
+    setValue('Display name', 'Local memory')
+    openAdvancedSettings()
+    setValue('Environment variables', 'API_TOKEN=secret')
+    checkTrust()
+
+    expect(document.body.textContent).toContain('Secure credential storage is unavailable')
+    expect(addButton()?.disabled).toBe(true)
+  })
+
+  it('requires secure storage before submitting static remote headers', () => {
+    useSettingsStore.setState({ encryptionAvailable: false })
+    act(() => {
+      root.render(
+        <ConnectorAddForm initialTransport="remote" onDone={vi.fn()} onCancel={vi.fn()} />
+      )
+    })
+
+    setValue('Display name', 'Remote memory')
+    setValue('Server URL', 'https://mcp.example.test')
+    openAdvancedSettings()
+    selectOption('Authentication', 'Static headers')
+    setValue('Headers', 'Authorization: Bearer secret')
+    checkTrust()
+
+    expect(document.body.textContent).toContain('Secure credential storage is unavailable')
+    expect(addButton()?.disabled).toBe(true)
+  })
+
   it('keeps a legacy Connector editable when its name matches another stored ID', () => {
     useSettingsStore.setState({
       ...createInitialSettingsState(),
@@ -969,7 +1086,11 @@ describe('ConnectorAddForm (edit)', () => {
 
   it('clears OAuth state when switching a remote server to static headers', async () => {
     const updateCustomServer = vi.fn().mockResolvedValue(undefined)
-    useSettingsStore.setState({ ...createInitialSettingsState(), updateCustomServer })
+    useSettingsStore.setState({
+      ...createInitialSettingsState(),
+      encryptionAvailable: true,
+      updateCustomServer
+    })
     act(() => {
       root.render(
         <ConnectorAddForm
