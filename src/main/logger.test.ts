@@ -166,6 +166,14 @@ describe('logger: formatLine', () => {
       { text: 'Cookie: session=cookie-opaque-7319; Path=/', secrets: ['cookie-opaque-7319'] },
       { text: 'apiKey="json-opaque-7319"', secrets: ['json-opaque-7319'] },
       {
+        text: 'apiKey="quoted-left-opaque-7319 quoted-right-opaque-7319"',
+        secrets: ['quoted-left-opaque-7319', 'quoted-right-opaque-7319']
+      },
+      {
+        text: 'password=unquoted-left-opaque-7319 unquoted-right-opaque-7319; status=denied',
+        secrets: ['unquoted-left-opaque-7319', 'unquoted-right-opaque-7319']
+      },
+      {
         text: 'token=comma-token-opaque-7319,remaining-token-opaque-7319',
         secrets: ['comma-token-opaque-7319', 'remaining-token-opaque-7319']
       },
@@ -178,11 +186,23 @@ describe('logger: formatLine', () => {
         secrets: ['compound-camel-opaque-7319']
       },
       {
+        text: "providerApiKey='compound-left-opaque-7319 compound-right-opaque-7319'",
+        secrets: ['compound-left-opaque-7319', 'compound-right-opaque-7319']
+      },
+      {
+        text: 'providerApiKey=compound-left-opaque-7319 compound-right-opaque-7319; status=denied',
+        secrets: ['compound-left-opaque-7319', 'compound-right-opaque-7319']
+      },
+      {
         text: 'openai_api_key=compound-lower-opaque-7319',
         secrets: ['compound-lower-opaque-7319']
       },
       { text: 'OPENAI_API_KEY=env-opaque-7319', secrets: ['env-opaque-7319'] },
       { text: '--api-key cli-opaque-7319', secrets: ['cli-opaque-7319'] },
+      {
+        text: '--api-key "cli-left-opaque-7319 cli-right-opaque-7319"',
+        secrets: ['cli-left-opaque-7319', 'cli-right-opaque-7319']
+      },
       {
         text: '--authorization Bearer cli-scheme-opaque-7319',
         secrets: ['cli-scheme-opaque-7319']
@@ -200,6 +220,14 @@ describe('logger: formatLine', () => {
       {
         text: 'https://alice:malformed-url-opaque-7319@example.test:99999/path',
         secrets: ['alice', 'malformed-url-opaque-7319']
+      },
+      {
+        text: 'https://bucket.example.test/private?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=aws-signature-opaque-7319&version=7',
+        secrets: ['aws-signature-opaque-7319']
+      },
+      {
+        text: 'https://storage.example.test/private?sv=2024-11-04&sig=azure-signature-opaque-7319&version=7',
+        secrets: ['azure-signature-opaque-7319']
       },
       { text: 'sk-1234567890abcdef', secrets: ['sk-1234567890abcdef'] },
       { text: 'github_pat_1234567890abcdef', secrets: ['github_pat_1234567890abcdef'] },
