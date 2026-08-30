@@ -58,7 +58,7 @@ import {
   UserSkillRepository,
   isReservedSkillName
 } from '../skills/user-skill-repository'
-import { createLogger } from '../logger'
+import { createLogger, diagnosticErrorFields } from '../logger'
 import type { SettingsRepository } from './repository'
 import type { StoredSettings } from './types'
 import { encryptKey, maskKey, tryDecryptKey } from './crypto'
@@ -91,6 +91,10 @@ type DiscoveredAgentHomeSkill = {
   aliases: AgentHomeSkillRef[]
   fallbackAliases: AgentHomeSkillRef[]
   matchedFallbackDirectoryNames: Set<string>
+  identityMigration?: {
+    skill: AgentHomeSkillRef
+    options: NonNullable<Parameters<UserSkillRepository['importAgentHomeSkill']>[2]>
+  }
 }
 
 const log = createLogger('skills')
@@ -117,6 +121,7 @@ class SkillCatalogModule {
   private readonly userSkills: UserSkillRepository
   private readonly githubFetch: FetchLike
   private readonly registeredHelpers: RegisteredSkillHelperCatalog
+  private readonly failedAgentHomeIdentityMigrationPaths = new Set<string>()
   private userSkillCatalogRead: Promise<BundledSkill[]> | undefined
 
   constructor(private readonly options: SkillCatalogModuleOptions) {
@@ -685,6 +690,39 @@ class SkillCatalogModule {
     )
   }
 
+  async migrateAgentHomeSkillIdentities(): Promise<void> {
+    let discovered: DiscoveredAgentHomeSkill[]
+    let reservedNames: string[]
+    try {
+      ;[discovered, reservedNames] = await Promise.all([
+        this.discoverAgentHomeSkills(this.allAgentHomeDirs()),
+        this.bundledSkillNames()
+      ])
+    } catch (error) {
+      log.warn('Agent Home Skill identity migration scan failed', diagnosticErrorFields(error))
+      return
+    }
+
+    for (const item of discovered) {
+      if (!item.identityMigration) continue
+      const pathKey = process.platform === 'win32' ? item.realPath.toLowerCase() : item.realPath
+      try {
+        await this.userSkills.importAgentHomeSkill(item.realPath, item.identityMigration.skill, {
+          ...item.identityMigration.options,
+          reservedNames
+        })
+        this.failedAgentHomeIdentityMigrationPaths.delete(pathKey)
+      } catch (error) {
+        this.failedAgentHomeIdentityMigrationPaths.add(pathKey)
+        log.warn('Agent Home Skill identity migration failed', {
+          source: item.identityMigration.skill.source,
+          slug: item.identityMigration.skill.slug,
+          ...diagnosticErrorFields(error)
+        })
+      }
+    }
+  }
+
   private async discoverAgentHomeSkills(
     sources: AgentHomeSkillDir[]
   ): Promise<DiscoveredAgentHomeSkill[]> {
@@ -757,20 +795,18 @@ class SkillCatalogModule {
         if (!item) continue
         item.skill.alreadyImported = match.identityImported
         item.fallbackAliases.push(...match.fallbackAliases)
-        if (match.identityMigrationNeeded) {
-          try {
-            await this.userSkills.importAgentHomeSkill(
-              item.realPath,
-              { source: item.skill.source, slug: item.skill.slug },
-              {
-                aliases: item.aliases,
-                expectedSignature: match.matchedIdentitySignature,
-                expectedImportedIdentity: match.matchedImportedIdentity,
-                reservedNames: await this.bundledSkillNames()
-              }
-            )
-          } catch {
-            item.skill.alreadyImported = false
+        if (
+          match.identityMigrationNeeded &&
+          match.matchedIdentitySignature &&
+          match.matchedImportedIdentity
+        ) {
+          item.identityMigration = {
+            skill: { source: item.skill.source, slug: item.skill.slug },
+            options: {
+              aliases: item.aliases,
+              expectedSignature: match.matchedIdentitySignature,
+              expectedImportedIdentity: match.matchedImportedIdentity
+            }
           }
         }
       }
@@ -796,7 +832,13 @@ class SkillCatalogModule {
         candidate.item.matchedFallbackDirectoryNames.add(fallbackSlug)
       }
     }
-    await this.refreshRegisteredHelpers()
+    for (const item of discovered) {
+      if (!item.identityMigration) continue
+      const pathKey = process.platform === 'win32' ? item.realPath.toLowerCase() : item.realPath
+      if (this.failedAgentHomeIdentityMigrationPaths.has(pathKey)) {
+        item.skill.alreadyImported = false
+      }
+    }
     return discovered
   }
 
@@ -923,24 +965,31 @@ class SkillCatalogModule {
   }
 
   private agentHomeDirs(framework: AgentFrameworkId): AgentHomeSkillDir[] {
-    const sources: AgentHomeSkillDir[] = [
+    const sources = this.allAgentHomeDirs()
+    if (framework === 'claude-code') {
+      return sources.filter(({ source }) => source === 'agents' || source === 'claude')
+    }
+    if (framework === 'codex') {
+      return sources.filter(({ source }) => source === 'agents' || source === 'codex')
+    }
+    return sources.filter(({ source }) => source === 'agents')
+  }
+
+  private allAgentHomeDirs(): AgentHomeSkillDir[] {
+    return [
       {
         source: 'agents',
         dir: join(this.options.userAgentsDir ?? join(homedir(), '.agents'), 'skills')
-      }
-    ]
-    if (framework === 'claude-code') {
-      sources.push({
+      },
+      {
         source: 'claude',
         dir: join(this.options.userClaudeDir ?? join(homedir(), '.claude'), 'skills')
-      })
-    } else if (framework === 'codex') {
-      sources.push({
+      },
+      {
         source: 'codex',
         dir: join(this.options.userCodexDir ?? join(homedir(), '.codex'), 'skills')
-      })
-    }
-    return sources
+      }
+    ]
   }
 
   private async resolveAgentHomeSkillPath(
