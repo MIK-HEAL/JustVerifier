@@ -781,6 +781,162 @@ describe('ConnectorService', () => {
       )
     })
 
+    it('rejects a custom server when encrypted credentials are only partially resolved', async () => {
+      const call = vi.fn()
+      const mcpClientManager = manager(call)
+      const svc = new ConnectorService({
+        mcpClientManager,
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'srv-partial-credentials',
+              name: 'partial-credentials',
+              displayName: 'Partial credentials',
+              transport: 'stdio',
+              command: 'example-mcp',
+              envRefs: {
+                API_TOKEN: 'enc:resolved',
+                OPTIONAL_HOST_TOKEN: 'enc:unavailable'
+              },
+              env: { API_TOKEN: 'resolved-value' },
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+
+      await expect(svc.call('partial-credentials', 'do_thing', {}, internal)).rejects.toThrow(
+        /credential_unavailable/
+      )
+      expect(mcpClientManager.listTools).not.toHaveBeenCalled()
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('rejects a historical custom server with credentials embedded in its URL', async () => {
+      const call = vi.fn()
+      const mcpClientManager = manager(call)
+      const svc = new ConnectorService({
+        mcpClientManager,
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'srv-embedded-credential',
+              name: 'embedded-credential',
+              displayName: 'Embedded credential',
+              transport: 'streamable_http',
+              url: 'https://mcp.example.test?api_key=legacy-plaintext-secret',
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+
+      await expect(svc.call('embedded-credential', 'do_thing', {}, internal)).rejects.toThrow(
+        /credential_unavailable/
+      )
+      expect(mcpClientManager.listTools).not.toHaveBeenCalled()
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('rejects a historical custom server with credentials embedded in an OAuth URL', async () => {
+      const call = vi.fn()
+      const mcpClientManager = manager(call)
+      const svc = new ConnectorService({
+        mcpClientManager,
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'srv-oauth-url-credential',
+              name: 'oauth-url-credential',
+              displayName: 'OAuth URL credential',
+              transport: 'streamable_http',
+              url: 'https://mcp.example.test',
+              oauth: {
+                authorizationServerUrl: 'https://auth.example.test?api_key=legacy-plaintext-secret'
+              },
+              oauthState: { tokens: { access_token: 'access', token_type: 'Bearer' } },
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+
+      await expect(svc.call('oauth-url-credential', 'do_thing', {}, internal)).rejects.toThrow(
+        /credential_unavailable/
+      )
+      expect(mcpClientManager.listTools).not.toHaveBeenCalled()
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('rejects a historical custom server with curl-style user credentials', async () => {
+      const call = vi.fn()
+      const mcpClientManager = manager(call)
+      const svc = new ConnectorService({
+        mcpClientManager,
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'srv-user-credential',
+              name: 'user-credential',
+              displayName: 'User credential',
+              transport: 'stdio',
+              command: 'example-mcp',
+              args: ['-u', 'legacy-user:legacy-password'],
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+
+      await expect(svc.call('user-credential', 'do_thing', {}, internal)).rejects.toThrow(
+        /credential_unavailable/
+      )
+      expect(mcpClientManager.listTools).not.toHaveBeenCalled()
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('rejects a historical custom server with a credential-like custom header argument', async () => {
+      const call = vi.fn()
+      const mcpClientManager = manager(call)
+      const svc = new ConnectorService({
+        mcpClientManager,
+        getConnectors: () => ({
+          enabledIds: [],
+          autoAllowIds: [],
+          customMcpServers: [
+            {
+              id: 'srv-custom-header-credential',
+              name: 'custom-header-credential',
+              displayName: 'Custom header credential',
+              transport: 'stdio',
+              command: 'example-mcp',
+              args: ['--header', 'X-API-Token: legacy-plaintext-secret'],
+              enabled: true
+            }
+          ]
+        }),
+        resolveApiKey: () => undefined
+      })
+
+      await expect(svc.call('custom-header-credential', 'do_thing', {}, internal)).rejects.toThrow(
+        /credential_unavailable/
+      )
+      expect(mcpClientManager.listTools).not.toHaveBeenCalled()
+      expect(call).not.toHaveBeenCalled()
+    })
+
     it('does not dispatch a custom name that collides with a bundled connector', async () => {
       const call = vi.fn()
       const mcpClientManager = manager(call)
@@ -1287,10 +1443,15 @@ describe('ConnectorService', () => {
           clientId: 'registered-client'
         },
         oauthClientSecretRef: 'enc:old-secret',
+        oauthClientSecret: 'old-secret',
         oauthState: { tokens: { access_token: 'access', token_type: 'Bearer' as const } },
         enabled: true
       }
-      const replacement = { ...original, oauthClientSecretRef: 'enc:new-secret' }
+      const replacement = {
+        ...original,
+        oauthClientSecretRef: 'enc:new-secret',
+        oauthClientSecret: 'new-secret'
+      }
       let current = original
       let approve: ((decision: 'once') => void) | undefined
       const requestApproval = vi.fn(
