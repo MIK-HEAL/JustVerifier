@@ -11,6 +11,7 @@ import type {
   NotebookLiveEnvironmentOverlay,
   NotebookNamespaceVariable,
   NotebookOutput,
+  NotebookRunFileEvidence,
   NotebookRunEnvironmentCapture,
   NotebookRunSource,
   NotebookRunStatus,
@@ -43,11 +44,17 @@ export type NotebookSessionRuntimeBinding = NotebookRuntimeBinding & {
 }
 
 export type NotebookSessionExecutionRequest = {
+  // App-owned identity used to seal per-run file evidence. Optional keeps injected executors and
+  // direct tests source-compatible; production execution always supplies it.
+  runId?: string
   code: string
   helperModules?: readonly NotebookHelperModuleInjection[]
   cwd: string
   notebookSessionRoot: string
   dataRoot: string
+  fileEvidenceStorageRoot?: string
+  fileEvidenceRoot?: string
+  fileEvidenceStoragePrefix?: string
   runtimeRoot: string
   protectedDirs?: string[]
   timeoutMs?: number
@@ -76,6 +83,7 @@ export type NotebookSessionExecutionResult = {
   outputs: NotebookOutput[]
   truncated?: boolean
   workingFiles?: NotebookWorkingFile[]
+  fileEvidence?: NotebookRunFileEvidence
   environmentOverlay?: NotebookLiveEnvironmentOverlay
   environmentCapture?: NotebookRunEnvironmentCapture
   environmentManifest?: NotebookEnvironmentManifest

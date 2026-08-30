@@ -1373,6 +1373,9 @@ describe('notebook runtime service', () => {
       cwd: join(root, 'notebooks', 'default-project', 'session-1', 'data'),
       notebookSessionRoot: join(root, 'notebooks', 'default-project', 'session-1'),
       dataRoot: join(root, 'notebooks', 'default-project', 'session-1', 'data'),
+      fileEvidenceStorageRoot: root,
+      fileEvidenceRoot: join(root, 'notebook-file-evidence', 'default-project', 'session-1'),
+      fileEvidenceStoragePrefix: 'notebook-file-evidence/default-project/session-1',
       runtimeRoot: join(root, 'runtime')
     })
     expect(captureCompletedRun).toHaveBeenCalledWith(
@@ -2843,12 +2846,24 @@ describe('notebook runtime service', () => {
     })
   })
 
-  it('forwards repl workingFiles into the recorded run and the returned result', async () => {
+  it('forwards repl working files and file evidence into the recorded run', async () => {
     const root = await createStorageRoot()
     const writtenFile = {
       path: join(root, 'notebooks', 'default-project', 'session-1', 'handoff', 'data.json'),
       relativePath: 'handoff/data.json',
       kind: 'raw-data' as const
+    }
+    const fileEvidence = {
+      schemaVersion: 1 as const,
+      state: 'partial' as const,
+      scientificOutputCount: 1,
+      initialViewState: 'complete' as const,
+      managedRootsFinalState: 'partial' as const,
+      scientificOutputAnalysis: 'partial' as const,
+      fileReads: 'unavailable' as const,
+      externalPaths: 'unavailable' as const,
+      writerAttribution: 'unavailable' as const,
+      reasonCodes: ['file-reads-not-observed' as const]
     }
     const service = new NotebookRuntimeService({
       configRoot: root,
@@ -2863,7 +2878,8 @@ describe('notebook runtime service', () => {
           traceback: '',
           cwdAfter: request.cwd,
           outputs: [],
-          workingFiles: [writtenFile]
+          workingFiles: [writtenFile],
+          fileEvidence
         }),
         shutdown: async () => ({ reaped: true })
       })
@@ -2876,9 +2892,11 @@ describe('notebook runtime service', () => {
     })
 
     expect(result.workingFiles).toMatchObject([{ relativePath: 'handoff/data.json' }])
+    expect(result.fileEvidence).toEqual(fileEvidence)
 
     const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(state.runs[0].workingFiles).toMatchObject([{ relativePath: 'handoff/data.json' }])
+    expect(state.runs[0].fileEvidence).toEqual(fileEvidence)
   })
 
   describe('executeShell', () => {

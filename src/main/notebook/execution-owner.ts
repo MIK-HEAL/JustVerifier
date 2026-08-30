@@ -7,6 +7,7 @@ import type {
   NotebookCell,
   NotebookLanguage,
   NotebookOutput,
+  NotebookRunFileEvidence,
   NotebookRunRecord,
   NotebookRunProvenanceContext,
   NotebookRunSource,
@@ -46,10 +47,18 @@ import {
   type NotebookDependencyProjection
 } from './dependency-analysis'
 import type { NotebookHelperModuleHost, NotebookHelperModuleScope } from './helper-module-host'
+import { getNotebookFileEvidenceLocation } from './repository'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
-  'status' | 'stdout' | 'stderr' | 'traceback' | 'outputs' | 'truncated' | 'workingFiles'
+  | 'status'
+  | 'stdout'
+  | 'stderr'
+  | 'traceback'
+  | 'outputs'
+  | 'truncated'
+  | 'workingFiles'
+  | 'fileEvidence'
 > & { viewImages?: readonly TransientViewImage[] }
 
 type NotebookControlCompletionInterceptor = {
@@ -88,6 +97,7 @@ type McpRpcConnectionResolver = (
 
 type NotebookExecutionOwnerOptions = {
   configRoot: string
+  storageRoot: string
   runTerminalization: NotebookRunTerminalizationOwner
   dataExecutionAdmission: NotebookDataExecutionAdmissionOwner
   environmentStateTracker: Pick<EnvironmentStateTracker, 'prepareRun' | 'captureCompletedRun'>
@@ -157,6 +167,24 @@ class NotebookExecutionOwner {
 
   constructor(private readonly options: NotebookExecutionOwnerOptions) {
     this.shellProcess = options.shellProcess ?? new NotebookShellProcessAdapter(options.platform)
+  }
+
+  private fileEvidenceLocation(session: NotebookSessionAggregate): {
+    fileEvidenceStorageRoot: string
+    fileEvidenceRoot: string
+    fileEvidenceStoragePrefix: string
+  } {
+    const location = getNotebookFileEvidenceLocation(
+      this.options.storageRoot,
+      session.projectId,
+      session.sessionId,
+      session.lane
+    )
+    return {
+      fileEvidenceStorageRoot: this.options.storageRoot,
+      fileEvidenceRoot: location.root,
+      fileEvidenceStoragePrefix: location.storageKeyPrefix
+    }
   }
 
   setControlCompletionInterceptor(
@@ -284,6 +312,7 @@ class NotebookExecutionOwner {
           reachedExecutor = true
           const executionResult = await session
             .execute({
+              runId,
               code: cell.code,
               ...(helperPlan.injections.length ? { helperModules: helperPlan.injections } : {}),
               cwd: cwdBefore,
@@ -291,6 +320,7 @@ class NotebookExecutionOwner {
               environment,
               notebookSessionRoot: session.notebookSessionRoot,
               dataRoot: session.dataRoot,
+              ...this.fileEvidenceLocation(session),
               runtimeRoot: session.runtimeRoot,
               protectedDirs: [
                 getAppClaudeConfigDir(this.options.configRoot),
@@ -518,11 +548,13 @@ class NotebookExecutionOwner {
               })
               return session
                 .execute({
+                  runId,
                   code: request.code,
                   kind: 'repl',
                   cwd: session.cwd,
                   notebookSessionRoot: session.notebookSessionRoot,
                   dataRoot: session.dataRoot,
+                  ...this.fileEvidenceLocation(session),
                   runtimeRoot: session.runtimeRoot,
                   protectedDirs: [getAppClaudeConfigDir(this.options.configRoot)],
                   timeoutMs: request.timeoutMs,
@@ -559,7 +591,8 @@ class NotebookExecutionOwner {
       traceback: result.traceback,
       outputs: result.outputs,
       ...(result.truncated ? { truncated: true } : {}),
-      workingFiles: result.workingFiles
+      workingFiles: result.workingFiles,
+      fileEvidence: result.fileEvidence
     }
   }
 
@@ -596,16 +629,24 @@ class NotebookExecutionOwner {
       session,
       runningRun,
       invoke: async () => {
-        const workingFileObservation = await startWorkingFileObservation(session)
+        const workingFileObservation = await startWorkingFileObservation({
+          dataRoot: session.dataRoot,
+          notebookSessionRoot: session.notebookSessionRoot,
+          ...this.fileEvidenceLocation(session),
+          runId,
+          signal
+        })
         let workingFiles: NotebookWorkingFile[] = []
+        let fileEvidence: NotebookRunFileEvidence | undefined
         const blockedMutation = detectManagedRuntimeMutation({
           source: request.command,
           surface: this.options.platform === 'win32' ? 'powershell' : 'bash',
           runtimeRoot: session.runtimeRoot,
           cwd: session.cwd
         })
-        const shellResult = await (
-          blockedMutation
+        let shellResult: NotebookShellResult | undefined
+        try {
+          shellResult = await (blockedMutation
             ? Promise.resolve<NotebookShellResult>({
                 stdout: '',
                 stderr: `MANAGED_RUNTIME_MUTATION_BLOCKED: ${blockedMutation.message}`,
@@ -618,10 +659,20 @@ class NotebookExecutionOwner {
                 runtimeRoot: session.runtimeRoot,
                 timeoutMs: request.timeoutMs,
                 signal
-              })
-        ).finally(async () => {
-          workingFiles = await workingFileObservation.finish()
-        })
+              }))
+        } finally {
+          const observation = await workingFileObservation.finish(
+            shellResult === undefined ||
+              signal?.aborted ||
+              shellResult.cancelled ||
+              shellResult.exitCode === null
+              ? AbortSignal.abort()
+              : signal
+          )
+          workingFiles = observation.workingFiles
+          fileEvidence = observation.fileEvidence
+        }
+        if (!shellResult) throw new Error('Notebook shell execution completed without a result.')
         const status: NotebookRunStatus = shellResult.cancelled
           ? 'cancelled'
           : shellResult.exitCode === 0
@@ -647,6 +698,7 @@ class NotebookExecutionOwner {
           outputs,
           truncated: shellResult.truncated,
           workingFiles,
+          fileEvidence,
           exitCode: shellResult.exitCode
         }
       }
