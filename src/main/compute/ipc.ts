@@ -46,6 +46,7 @@ import { dispatchJob } from './job-dispatcher'
 import { EnabledComputeHostsRegistry, enabledComputeHostsRegistry } from './enabled-hosts-registry'
 import { deleteComputeHost, type DeleteComputeHostOptions } from './compute-host-deletion-owner'
 import { getJobHarvestDir } from './harvest-engine'
+import { SessionCacheOwner } from './session-cache-owner'
 import { workspaceRelativePath } from './workspace-path'
 import type { PermissionGrantRegistry } from '../permission-grants/registry'
 import {
@@ -228,7 +229,8 @@ const createComputeHandlers = (
   >,
   permissionGrantRegistry?: PermissionGrantRegistry,
   hostLifecycle?: ComputeHostLifecycle,
-  authenticationDependencies?: ComputeAuthenticationDependencies
+  authenticationDependencies?: ComputeAuthenticationDependencies,
+  sessionCacheOwner?: SessionCacheOwner
 ): ComputeHandlers => {
   const permissionGrants = permissionGrantRegistry
     ? createComputePermissionGrantAdapter(permissionGrantRegistry, legacyComputeGrants)
@@ -344,10 +346,19 @@ const createComputeHandlers = (
       jobRepository,
       artifactResolver,
       storageRoot,
+      sessionCacheOwner,
       concurrencyManager,
       connectionBroker,
       credentialVault
     })
+  const listHostNames = async (): Promise<Map<string, string>> => {
+    try {
+      const hosts = await repository.list()
+      return new Map(hosts.map((host) => [host.providerId, host.displayName]))
+    } catch {
+      return new Map()
+    }
+  }
 
   const createHostWithLifecycle = <Request extends { sshAlias: string }>(
     request: Request,
@@ -461,8 +472,7 @@ const createComputeHandlers = (
       broker.finishSessionDeletion(sessionId, retained),
     jobsList: async (filter) => {
       if (!jobRepository || !storageRoot) return []
-      const hosts = await repository.list()
-      const hostNameMap = new Map(hosts.map((h) => [h.providerId, h.displayName]))
+      const hostNameMap = await listHostNames()
       const jobs =
         'nonTerminal' in filter
           ? await jobRepository.findNonTerminal()
@@ -475,8 +485,7 @@ const createComputeHandlers = (
     },
     jobsPendingNotification: async (filter) => {
       if (!jobRepository || !storageRoot) return []
-      const hosts = await repository.list()
-      const hostNameMap = new Map(hosts.map((h) => [h.providerId, h.displayName]))
+      const hostNameMap = await listHostNames()
       const jobs =
         typeof filter === 'string'
           ? await jobRepository.findPendingNotifications(filter)
@@ -504,13 +513,7 @@ const createComputeHandlers = (
           log.warn('compute analysis transition broadcast failed', errorLogFields(error))
         }
       }
-      const hostNameMap = new Map<string, string>()
-      try {
-        const hosts = await repository.list()
-        for (const host of hosts) hostNameMap.set(host.providerId, host.displayName)
-      } catch {
-        // The transition is already durable; provider IDs are valid summary fallbacks.
-      }
+      const hostNameMap = await listHostNames()
       return Promise.all(
         jobs.map((job) =>
           toJobSummary(job, hostNameMap.get(job.provider_id) ?? job.provider_id, storageRoot)
@@ -563,6 +566,7 @@ type ComputeIpcModule = {
   jobRepository: ComputeJobRepository
   hostRepository: ComputeHostRepository
   enabledComputeHostsRegistry: EnabledComputeHostsRegistry
+  sessionCacheOwner: SessionCacheOwner
 }
 
 // Constructs the shared Compute module without installing an Electron transport. Keeping this seam
@@ -587,6 +591,7 @@ const createComputeIpcModule = (
 ): ComputeIpcModule => {
   const storageRoot = resolveStorageRoot()
   const dataRoot = resolveDataRoot()
+  const sessionCacheOwner = new SessionCacheOwner(dataRoot)
   void repository
     .cleanupOrphanCredentials?.()
     .catch((error) => log.warn('orphan Compute Credential cleanup failed', errorLogFields(error)))
@@ -607,7 +612,9 @@ const createComputeIpcModule = (
     dataRoot,
     taskNotifications,
     permissionGrantRegistry,
-    hostLifecycle
+    hostLifecycle,
+    undefined,
+    sessionCacheOwner
   )
   const jobDeletionOwner = createComputeJobDeletionOwner({
     jobRepository,
@@ -623,7 +630,8 @@ const createComputeIpcModule = (
     jobDeletionOwner,
     jobRepository,
     hostRepository: repository,
-    enabledComputeHostsRegistry
+    enabledComputeHostsRegistry,
+    sessionCacheOwner
   }
 }
 

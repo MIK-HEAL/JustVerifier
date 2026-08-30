@@ -477,11 +477,13 @@ describe('compute handlers', () => {
 
     const decision = await approvalBroker.requestWithContext(
       {
+        operation: 'call_command',
         provider_id: current.providerId,
         provider_name: current.displayName,
         shape: current.shape ?? 'direct_ssh',
         intent: 'call_command',
-        command_preview: 'hostname'
+        command_preview: 'hostname',
+        command_full: 'hostname'
       },
       {
         sessionId: 'session-1',
@@ -599,6 +601,7 @@ describe('compute handlers', () => {
     )
     const broker = approvalBrokerFrom(computeHandlers.computeService)
     const request = {
+      operation: 'call_command' as const,
       provider_id: 'ssh:biowulf',
       provider_name: 'biowulf',
       shape: 'direct_ssh' as const,
@@ -609,7 +612,7 @@ describe('compute handlers', () => {
     const context = {
       sessionId: 'session-1',
       projectId: 'project-1',
-      operation: 'call_command',
+      operation: 'call_command' as const,
       ownerId: 'host-1'
     }
 
@@ -879,6 +882,25 @@ describe('compute handlers — jobsList', () => {
     )
 
     const result = await handlers.jobsList({ sessionId: 'sess-1' })
+    expect(result[0]!.display_name).toBe('ssh:biowulf')
+  })
+
+  it('keeps the Job feed available when the Host catalog cannot be decoded', async () => {
+    const findBySession = vi.fn().mockResolvedValue([makeJob()])
+    const handlers = createComputeHandlers(
+      mockRepository({ list: vi.fn().mockRejectedValue(new Error('unsupported Host row')) }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockJobRepository({ findBySession }),
+      undefined,
+      undefined,
+      '/tmp/test-storage'
+    )
+
+    const result = await handlers.jobsList({ sessionId: 'sess-1' })
+
     expect(result[0]!.display_name).toBe('ssh:biowulf')
   })
 })
@@ -1993,6 +2015,25 @@ describe('compute handlers — jobsPendingNotification', () => {
     expect(result[0]!.display_name).toBe('ssh:biowulf')
   })
 
+  it('keeps notification recovery available when the Host catalog cannot be decoded', async () => {
+    const findPendingNotifications = vi.fn().mockResolvedValue([makeJob()])
+    const handlers = createComputeHandlers(
+      mockRepository({ list: vi.fn().mockRejectedValue(new Error('unsupported Host row')) }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockJobRepo({ findPendingNotifications }),
+      undefined,
+      undefined,
+      storageRoot
+    )
+
+    const result = await handlers.jobsPendingNotification('sess-1')
+
+    expect(result[0]!.display_name).toBe('ssh:biowulf')
+  })
+
   it('persists an analysis transition and returns the updated Job summaries', async () => {
     const request = {
       sessionId: 'sess-1',
@@ -2269,6 +2310,7 @@ describe('installComputeIpcHandlers', () => {
       settleAuthorization: vi.fn(() => Promise.resolve())
     })
     const request = {
+      operation: 'call_command' as const,
       provider_id: 'ssh:biowulf',
       provider_name: 'biowulf',
       shape: 'direct_ssh' as const,
@@ -2279,7 +2321,7 @@ describe('installComputeIpcHandlers', () => {
     const context = {
       sessionId: 'session-1',
       projectId: 'project-1',
-      operation: 'call_command',
+      operation: 'call_command' as const,
       ownerId: 'host-1'
     }
 
@@ -2341,6 +2383,7 @@ describe('installComputeIpcHandlers', () => {
       }
     })
     const decision = broker.request({
+      operation: 'call_command',
       provider_id: 'ssh:biowulf',
       provider_name: 'biowulf',
       shape: 'direct_ssh',
@@ -2387,6 +2430,7 @@ describe('installComputeIpcHandlers', () => {
       }
     })
     const decision = broker.request({
+      operation: 'call_command',
       provider_id: 'ssh:biowulf',
       provider_name: 'biowulf',
       shape: 'direct_ssh',
