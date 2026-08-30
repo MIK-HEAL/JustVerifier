@@ -765,7 +765,7 @@ describe('ComputeRemoteOperationOwner.download (os-downloads)', () => {
   it('downloads a file to os-downloads and returns LocalFile', async () => {
     const runner = makeFakeRunner({
       exitCode: 0,
-      stdout: '1024',
+      stdout: 'f 1024',
       stderr: '',
       truncated: false,
       timedOut: false
@@ -795,10 +795,75 @@ describe('ComputeRemoteOperationOwner.download (os-downloads)', () => {
     expect(await readdir(tmpDir)).toEqual(['data.csv'])
   })
 
+  it('rejects a truncated OS download whose local size is smaller than the pre-transfer stat', async () => {
+    const runner = makeFakeRunner({
+      exitCode: 0,
+      stdout: 'f 10',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const { repo } = makeRepo()
+    const scpRunner: ScpRunner = {
+      copy: vi.fn(async (_bin, args) => {
+        const localPath = args[args.length - 1] as string
+        await writeFile(localPath, 'short')
+        return { exitCode: 0, stderr: '', timedOut: false }
+      })
+    }
+    const service = makeOwner(runner, repo, undefined, scpRunner, tmpDir)
+
+    const error = await service
+      .download('ssh:biowulf', '/remote/data.csv', { kind: 'os-downloads' })
+      .catch((cause) => cause)
+
+    expect(error.remoteFsError).toMatchObject({
+      remoteKind: 'not_a_file',
+      detail: expect.stringMatching(/changed during transfer/i)
+    })
+    expect(await readdir(tmpDir)).toEqual([])
+  })
+
+  it('classifies a rejected post-transfer stat as a connection failure', async () => {
+    const run = vi
+      .fn<SshRunner['run']>()
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: 'f 10',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })
+      .mockRejectedValueOnce(new ComputeConnectionError('authentication_failed'))
+    const runner: SshRunner = { run }
+    const { repo } = makeRepo()
+    const scpRunner: ScpRunner = {
+      copy: vi.fn(async (_bin, args) => {
+        const localPath = args[args.length - 1] as string
+        await writeFile(localPath, 'downloaded')
+        return { exitCode: 0, stderr: '', timedOut: false }
+      })
+    }
+    const service = makeOwner(runner, repo, undefined, scpRunner, tmpDir)
+
+    const error = await service
+      .download('ssh:biowulf', '/remote/data.csv', { kind: 'os-downloads' })
+      .catch((cause) => cause)
+
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(error.remoteFsError).toEqual({
+      detail: 'Authentication failed. Verify the username and password.',
+      remoteKind: 'connection',
+      retry_after_user_action: true,
+      authenticationCode: 'authentication_failed'
+    })
+    expect(await readdir(tmpDir)).toEqual([])
+  })
+
   it('renames colliding file with (1) suffix', async () => {
     const runner = makeFakeRunner({
       exitCode: 0,
-      stdout: '100',
+      stdout: 'f 10',
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1038,6 +1103,34 @@ describe('ComputeRemoteOperationOwner.download (artifact)', () => {
     expect(err.remoteFsError?.remoteKind).toBe('not_a_file')
   })
 
+  it('throws not_found when the remote file disappeared before transfer', async () => {
+    const runner: SshRunner = {
+      run: vi.fn(async (_target, command) => ({
+        exitCode: 0,
+        stdout: command.includes("echo 'm 0'") ? 'm 0' : '? 0',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      }))
+    }
+    const { repo } = makeRepo()
+    const scpRunner = defaultScpRunner()
+    const service = makeOwner(runner, repo, undefined, scpRunner, tmpDir)
+
+    const err = await service
+      .download('ssh:biowulf', '/remote/disappeared.csv', {
+        kind: 'artifact',
+        projectId: 'proj-1'
+      })
+      .catch((e) => e)
+
+    expect(err.remoteFsError).toMatchObject({
+      remoteKind: 'not_found',
+      detail: expect.stringMatching(/not found/i)
+    })
+    expect(scpRunner.copy).not.toHaveBeenCalled()
+  })
+
   it('throws not_a_file if post-transfer re-stat detects size growth', async () => {
     // Pre-transfer stat: 100 bytes; post-transfer actual file: 200 bytes (growth detected)
     const runner = makeFakeRunner({
@@ -1062,6 +1155,38 @@ describe('ComputeRemoteOperationOwner.download (artifact)', () => {
       .download('ssh:biowulf', '/remote/growing.csv', { kind: 'artifact', projectId: 'proj-1' })
       .catch((e) => e)
     expect(err.remoteFsError?.remoteKind).toBe('not_a_file')
+  })
+
+  it('rejects a truncated artifact whose local size is smaller than the pre-transfer stat', async () => {
+    const runner = makeFakeRunner({
+      exitCode: 0,
+      stdout: 'f 10',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const { repo } = makeRepo()
+    const scpRunner: ScpRunner = {
+      copy: vi.fn(async (_bin, args) => {
+        const localPath = args[args.length - 1] as string
+        await writeFile(localPath, 'short')
+        return { exitCode: 0, stderr: '', timedOut: false }
+      })
+    }
+    const service = makeOwner(runner, repo, undefined, scpRunner, tmpDir)
+
+    const error = await service
+      .download('ssh:biowulf', '/remote/data.csv', {
+        kind: 'artifact',
+        projectId: 'proj-1'
+      })
+      .catch((cause) => cause)
+
+    expect(error.remoteFsError).toMatchObject({
+      remoteKind: 'not_a_file',
+      detail: expect.stringMatching(/changed during transfer/i)
+    })
+    expect(await readdir(tmpDir)).toEqual([])
   })
 })
 
@@ -1092,7 +1217,13 @@ describe('ComputeRemoteOperationOwner.download (session-cache)', () => {
       }
     })
     const acquire = vi.fn(async () => ({
-      run: vi.fn(),
+      run: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: 'f 7',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })),
       upload: vi.fn(),
       download
     }))
@@ -1121,10 +1252,9 @@ describe('ComputeRemoteOperationOwner.download (session-cache)', () => {
   })
 
   it('downloads to session cache and returns LocalFile when approved', async () => {
-    // Stat not needed for session-cache; runner is used only for stat on other paths.
     const runner = makeFakeRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: 'f 7',
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1150,10 +1280,48 @@ describe('ComputeRemoteOperationOwner.download (session-cache)', () => {
     expect(result.mimeType).toBe('text/csv')
   })
 
+  it('rejects a session-cache download when the remote size changes during transfer', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: 'f 7',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        stdout: 'f 6',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })
+    const runner: SshRunner = { run }
+    const { repo } = makeRepo()
+    const scpRunner: ScpRunner = {
+      copy: vi.fn(async (_bin, args) => {
+        const localPath = args[args.length - 1] as string
+        await writeFile(localPath, 'content')
+        return { exitCode: 0, stderr: '', timedOut: false }
+      })
+    }
+    const service = makeOwner(runner, repo, makeApprovalBroker('once'), scpRunner, tmpDir)
+
+    const error = await service
+      .download('ssh:biowulf', '/remote/results.csv', { kind: 'session-cache' })
+      .catch((cause) => cause)
+
+    expect(error.remoteFsError).toMatchObject({
+      remoteKind: 'not_a_file',
+      detail: expect.stringMatching(/changed during transfer/i)
+    })
+  })
+
   it('throws download_denied when broker denies session-cache download', async () => {
     const runner = makeFakeRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: 'f 4',
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1173,7 +1341,7 @@ describe('ComputeRemoteOperationOwner.download (session-cache)', () => {
 
     const runner = makeFakeRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: 'f 4',
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1208,7 +1376,7 @@ describe('ComputeRemoteOperationOwner.download (session-cache)', () => {
   it('uses requestWithContext when session/project context is supplied', async () => {
     const runner = makeFakeRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: 'f 4',
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1242,7 +1410,7 @@ describe('ComputeRemoteOperationOwner.download (session-cache)', () => {
   it('does NOT trigger approval for os-downloads', async () => {
     const runner = makeFakeRunner({
       exitCode: 0,
-      stdout: '100',
+      stdout: 'f 100',
       stderr: '',
       truncated: false,
       timedOut: false
