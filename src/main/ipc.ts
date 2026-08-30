@@ -322,6 +322,10 @@ import {
   withDataRootWrite
 } from './storage/migration-state'
 import { normalizeLegacyDataPaths } from './storage/normalize-legacy-paths'
+import { DataRootCleanupJournal } from './storage/data-root-cleanup'
+import { deleteSources } from './storage/data-migration'
+import { removeMicromambaCacheForRoot } from './notebook/micromamba-cache'
+import { removeNotebookWorkloadCache } from './notebook/notebook-workload-cache-paths'
 import { createDelegatedActivityProjection, detectActiveSessions } from './storage/detect-active'
 import {
   computeDefaultDataRoot,
@@ -493,6 +497,26 @@ const createApplicationModules = async (
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
   initDataRoot(storedSettings.dataRoot)
+  const dataRootCleanupJournal = new DataRootCleanupJournal(resolveConfigRoot())
+  try {
+    const cleanup = await dataRootCleanupJournal.recover(
+      resolveDataRoot(),
+      deleteSources,
+      (sourceRoot) => {
+        const runtimeRoot = join(sourceRoot, 'runtime')
+        const workloadRemoved = removeNotebookWorkloadCache(runtimeRoot)
+        const micromambaRemoved = removeMicromambaCacheForRoot(runtimeRoot)
+        return workloadRemoved && micromambaRemoved
+      }
+    )
+    if (cleanup.pending) {
+      storageLog.warn('old data root cleanup remains pending', {
+        cleanupFailureCount: cleanup.failureCount
+      })
+    }
+  } catch (error) {
+    storageLog.warn('old data root cleanup recovery failed', diagnosticErrorFields(error))
+  }
   const notificationInbox = createNotificationInboxController({
     headless,
     repository: new NotificationInboxDbRepository(() => getProjectDbClient(resolveStorageRoot())),
@@ -3229,7 +3253,8 @@ const createApplicationModules = async (
     prepareDataRootHandoff: async (target, confirmedInterruption) => {
       const readiness = await durableDataRootHandoffGate(target, confirmedInterruption)
       return readiness.completed && readiness.reaped
-    }
+    },
+    cleanupJournal: dataRootCleanupJournal
   })
   declareElectronAdapter('storage', () =>
     registerStorageIpcHandlers(

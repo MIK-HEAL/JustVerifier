@@ -19,7 +19,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const diskSpace = vi.hoisted(() => ({
   availableBytes: undefined as number | undefined,
-  hardLinksSupported: true
+  hardLinksSupported: true,
+  statErrorPath: undefined as string | undefined
 }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -40,11 +41,18 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     return actual.link(...args)
   }) as typeof actual.link
 
-  return { ...actual, link, statfs }
+  const stat = vi.fn(async (...args: Parameters<typeof actual.stat>) => {
+    if (String(args[0]) === diskSpace.statErrorPath) {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    }
+    return actual.stat(...args)
+  }) as typeof actual.stat
+
+  return { ...actual, link, stat, statfs }
 })
 
 import type { MigrationProgress } from '../../shared/storage'
-import { copyAndVerify, deleteSources } from './data-migration'
+import { copyAndVerify, deleteSources, validateMigrationSourceLinks } from './data-migration'
 
 let from: string
 let to: string
@@ -57,6 +65,7 @@ beforeEach(async () => {
 afterEach(async () => {
   diskSpace.availableBytes = undefined
   diskSpace.hardLinksSupported = true
+  diskSpace.statErrorPath = undefined
   await rm(from, { recursive: true, force: true })
   await rm(to, { recursive: true, force: true })
 })
@@ -77,6 +86,54 @@ const exists = async (path: string): Promise<boolean> => {
     return false
   }
 }
+
+describe('validateMigrationSourceLinks', () => {
+  it('rejects an absolute target text inside the source even when an intermediate link escapes', async () => {
+    const artifacts = join(from, 'artifacts')
+    const outside = join(to, 'outside')
+    await mkdir(artifacts, { recursive: true })
+    await mkdir(outside, { recursive: true })
+    await symlink(
+      outside,
+      join(artifacts, 'alias'),
+      process.platform === 'win32' ? 'junction' : 'dir'
+    )
+    await symlink(
+      join(artifacts, 'alias'),
+      join(artifacts, 'absolute-link'),
+      process.platform === 'win32' ? 'junction' : 'dir'
+    )
+
+    await expect(validateMigrationSourceLinks(from, ['artifacts'])).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        error: expect.stringMatching(/absolute symbolic link.*current data folder/i)
+      })
+    )
+  })
+
+  it('rejects a missing absolute target whose existing parent resolves inside the source', async () => {
+    const artifacts = join(from, 'artifacts')
+    const internalParent = join(from, 'internal-parent')
+    const outsideAlias = join(to, 'source-alias')
+    await mkdir(artifacts, { recursive: true })
+    await mkdir(internalParent)
+    await mkdir(to, { recursive: true })
+    await symlink(internalParent, outsideAlias, process.platform === 'win32' ? 'junction' : 'dir')
+    await symlink(
+      join(outsideAlias, 'missing-target'),
+      join(artifacts, 'absolute-link'),
+      process.platform === 'win32' ? 'junction' : 'dir'
+    )
+
+    await expect(validateMigrationSourceLinks(from, ['artifacts'])).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        error: expect.stringMatching(/absolute symbolic link.*current data folder/i)
+      })
+    )
+  })
+})
 
 describe('copyAndVerify', () => {
   it('copies dirs, verifies them, and leaves sources intact', async () => {
@@ -393,6 +450,22 @@ describe('copyAndVerify', () => {
     expect(await readFile(join(to, 'artifacts', 'a.txt'), 'utf8')).toBe('hello artifacts')
   })
 
+  it('treats a missing source root as an empty migration', async () => {
+    await rm(from, { recursive: true })
+
+    const result = await copyAndVerify({
+      from,
+      to,
+      dirs: ['artifacts', 'uploads'],
+      signal: new AbortController().signal,
+      onProgress: () => {}
+    })
+
+    expect(result).toEqual({ ok: true })
+    expect(await exists(join(to, 'artifacts'))).toBe(false)
+    expect(await exists(join(to, 'uploads'))).toBe(false)
+  })
+
   // Symlink creation needs privilege on Windows, so skip there.
   it.skipIf(process.platform === 'win32')(
     'preserves an inner symlink by recreating it as a link at the destination (conda cache support)',
@@ -531,6 +604,19 @@ describe('deleteSources', () => {
     expect(await exists(join(from, 'artifacts'))).toBe(false)
     expect(await exists(join(from, 'uploads'))).toBe(false)
     expect(progress.every((p) => p.phase === 'delete')).toBe(true)
+  })
+
+  it('reports a source probe error instead of treating the directory as absent', async () => {
+    await seedFixture()
+    const uploadsDir = join(from, 'uploads')
+    diskSpace.statErrorPath = uploadsDir
+
+    const result = await deleteSources(from, ['artifacts', 'uploads'])
+
+    expect(result.deleted).toEqual(['artifacts'])
+    expect(result.failed).toEqual([{ dir: 'uploads', error: 'permission denied' }])
+    diskSpace.statErrorPath = undefined
+    await expect(readFile(join(uploadsDir, 'b.txt'), 'utf8')).resolves.toBe('hello uploads')
   })
 
   it('records a per-dir failure in `failed` without throwing, and still deletes the rest', async () => {

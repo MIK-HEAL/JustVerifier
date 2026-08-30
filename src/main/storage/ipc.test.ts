@@ -40,6 +40,10 @@ vi.mock('electron', () => ({
   }
 }))
 
+vi.mock('./remote-data-root', () => ({
+  inspectWindowsStoragePath: () => ({ isRemote: false, supportsHardLinks: true })
+}))
+
 const { initDataRoot } = await import('../storage-root')
 const { createStorageCommandOwner } = await import('./command-owner')
 const { registerStorageIpcHandlers } = await import('./ipc')
@@ -54,6 +58,7 @@ const {
 const { clearApplicationShutdownTrigger, currentApplicationShutdownTrigger } =
   await import('../application-shutdown-trigger')
 const { readMigrationMarker, writeMigrationMarker } = await import('./migration-marker')
+const { DataRootCleanupJournal } = await import('./data-root-cleanup')
 
 // Writes the verified staging marker a completed copy phase would leave, so commit/discard gates pass.
 const seedVerifiedMarker = async (targetDir: string, source: string): Promise<void> => {
@@ -123,6 +128,7 @@ const fakeDeps = (overrides: Partial<FakeDeps> = {}): FakeDeps => ({
   cleanupRuntimeCache: vi.fn(() => true),
   prepareDataRootHandoff: vi.fn().mockResolvedValue(true),
   validateNewDataRoot: vi.fn().mockResolvedValue({ ok: true }),
+  cleanupJournal: new DataRootCleanupJournal(join(currentParent, 'config')),
   relaunch: vi.fn(),
   ...overrides
 })
@@ -186,6 +192,28 @@ describe('storage IPC handlers', () => {
     expect(deps.notebook.shutdownAll).toHaveBeenCalledOnce()
     expect(deps.prepareDataRootHandoff).toHaveBeenCalledWith({ surface: 'electron-renderer' }, true)
     expect(deps.relaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not mutate the old runtime after cleanup is durably deferred', async () => {
+    class DeferredCleanupJournal extends DataRootCleanupJournal {
+      override async markCommitted(expectedToken: string): Promise<boolean> {
+        await super.markCommitted(expectedToken)
+        return true
+      }
+    }
+
+    initDataRoot(dataRoot)
+    const cleanupRuntimeCache = vi.fn(() => true)
+    const cleanupJournal = new DeferredCleanupJournal(join(currentParent, 'config'))
+    const deps = fakeDeps({ cleanupRuntimeCache, cleanupJournal })
+    const owner = createStorageCommandOwner(deps)
+
+    await expect(owner.migrate({ parent: targetParent })).resolves.toEqual({ ok: true })
+    cleanupRuntimeCache.mockClear()
+    await expect(owner.commitAndRelaunch({ parent: targetParent })).resolves.toEqual({ ok: true })
+
+    expect(cleanupRuntimeCache).not.toHaveBeenCalled()
+    await expect(cleanupJournal.hasPending()).resolves.toBe(true)
   })
 
   it('refuses a recovered commit when the source changed after verification', async () => {
@@ -336,7 +364,8 @@ describe('storage IPC handlers', () => {
       defaultDataRoot: join('/home/user', 'OpenScience'),
       defaultParent: '/home/user',
       dataRootMissing: false,
-      legacyDataMovePrompt: false
+      legacyDataMovePrompt: false,
+      cleanupPending: false
     })
     expect(status).not.toHaveProperty('usage')
     expect(status).not.toHaveProperty('availableBytes')
@@ -1381,6 +1410,40 @@ describe('storage IPC handlers', () => {
     expect(existsSync(target)).toBe(false)
   })
 
+  it('allows a later migration while cleanup from an earlier move remains queued', async () => {
+    initDataRoot(target)
+    await mkdir(target)
+    const alternateParent = await mkdtemp(join(tmpdir(), 'ds-storage-ipc-alternate-'))
+    const alternateTarget = dataRootFor(alternateParent)
+    const cleanupJournal = new DataRootCleanupJournal(join(currentParent, 'config'))
+    await cleanupJournal.stage({
+      token: 'pending-cleanup',
+      source: dataRoot,
+      target,
+      dirs: ['artifacts'],
+      createdAt: 1
+    })
+    const runDataRootMigration = vi.fn<NonNullable<FakeDeps['runDataRootMigration']>>(
+      async (_deps, parent, options) => {
+        await mkdir(alternateTarget)
+        options.onVerified?.({ token: 'next-migration', target: dataRootFor(parent) })
+        return { ok: true }
+      }
+    )
+    const deps = fakeDeps({ cleanupJournal, runDataRootMigration })
+    registerStorageIpcHandlers(deps)
+
+    try {
+      await expect(invoke('storage:migrate', { parent: alternateParent })).resolves.toEqual({
+        ok: true
+      })
+      expect(runDataRootMigration).toHaveBeenCalledOnce()
+      await expect(cleanupJournal.hasPending()).resolves.toBe(true)
+    } finally {
+      await rm(alternateParent, { recursive: true, force: true })
+    }
+  })
+
   it('discard lifts the write-gate after a staged copy is thrown away', async () => {
     initDataRoot(dataRoot)
     registerStorageIpcHandlers(fakeDeps())
@@ -1501,8 +1564,10 @@ describe('storage IPC handlers', () => {
     await expect(first).resolves.toEqual({ ok: true })
   })
 
-  it('rejects commit during copying without clearing the write gate', async () => {
+  it('rejects a pointer-only switch while a migration copy is in flight', async () => {
     initDataRoot(dataRoot)
+    const alternateParent = await mkdtemp(join(tmpdir(), 'ds-storage-ipc-alternate-'))
+    await mkdir(join(dataRootFor(alternateParent), 'artifacts'), { recursive: true })
     let releaseDisconnect: (() => void) | undefined
     const deps = fakeDeps({
       runtime: {
@@ -1517,8 +1582,144 @@ describe('storage IPC handlers', () => {
     })
     registerStorageIpcHandlers(deps)
 
+    try {
+      const migratePromise = invoke('storage:migrate', { parent: targetParent })
+      await tick()
+
+      await expect(
+        invoke('storage:set-data-root-and-relaunch', { parent: alternateParent })
+      ).resolves.toEqual({ ok: false, error: 'A data-root change is already in progress.' })
+      expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+      expect(deps.relaunch).not.toHaveBeenCalled()
+
+      releaseDisconnect?.()
+      await migratePromise
+    } finally {
+      releaseDisconnect?.()
+      await rm(alternateParent, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a pointer-only switch while a verified copy awaits resolution', async () => {
+    initDataRoot(dataRoot)
+    const alternateParent = await mkdtemp(join(tmpdir(), 'ds-storage-ipc-alternate-'))
+    await mkdir(join(dataRootFor(alternateParent), 'artifacts'), { recursive: true })
+    const deps = fakeDeps()
+    registerStorageIpcHandlers(deps)
+
+    try {
+      await invoke('storage:migrate', { parent: targetParent })
+
+      await expect(
+        invoke('storage:set-data-root-and-relaunch', { parent: alternateParent })
+      ).resolves.toEqual({
+        ok: false,
+        error: 'A data-root change is already in progress.'
+      })
+      expect(deps.settingsService.setDataRoot).not.toHaveBeenCalled()
+      expect(deps.relaunch).not.toHaveBeenCalled()
+    } finally {
+      await rm(alternateParent, { recursive: true, force: true })
+    }
+  })
+
+  it('allows a pointer-only switch while cleanup from an earlier move remains queued', async () => {
+    initDataRoot(target)
+    await mkdir(target)
+    const alternateParent = await mkdtemp(join(tmpdir(), 'ds-storage-ipc-alternate-'))
+    await mkdir(join(dataRootFor(alternateParent), 'artifacts'), { recursive: true })
+    const cleanupJournal = new DataRootCleanupJournal(join(currentParent, 'config'))
+    await cleanupJournal.stage({
+      token: 'pending-cleanup',
+      source: dataRoot,
+      target,
+      dirs: ['artifacts'],
+      createdAt: 1
+    })
+    const deps = fakeDeps({ cleanupJournal })
+    registerStorageIpcHandlers(deps)
+
+    try {
+      await expect(
+        invoke('storage:set-data-root-and-relaunch', { parent: alternateParent })
+      ).resolves.toEqual({ ok: true })
+      expect(deps.settingsService.setDataRoot).toHaveBeenCalledWith(dataRootFor(alternateParent), {
+        completeOnboarding: false
+      })
+      expect(deps.relaunch).toHaveBeenCalledOnce()
+      await expect(cleanupJournal.hasPending()).resolves.toBe(true)
+    } finally {
+      await rm(alternateParent, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a pointer-only switch while a migration commit is in progress', async () => {
+    initDataRoot(dataRoot)
+    const alternateParent = await mkdtemp(join(tmpdir(), 'ds-storage-ipc-alternate-'))
+    await mkdir(join(dataRootFor(alternateParent), 'artifacts'), { recursive: true })
+    let releaseCommit: (() => void) | undefined
+    let markCommitStarted: (() => void) | undefined
+    const commitStarted = new Promise<void>((resolve) => {
+      markCommitStarted = resolve
+    })
+    let setDataRootCalls = 0
+    const deps = fakeDeps({
+      settingsService: {
+        setDataRoot: vi.fn(async () => {
+          setDataRootCalls += 1
+          if (setDataRootCalls === 1) {
+            markCommitStarted?.()
+            await new Promise<void>((resolve) => {
+              releaseCommit = resolve
+            })
+          }
+        }),
+        dismissLegacyDataMovePrompt: vi.fn().mockResolvedValue(undefined),
+        getStoredSettings: vi.fn().mockResolvedValue({})
+      }
+    })
+    registerStorageIpcHandlers(deps)
+
+    try {
+      await invoke('storage:migrate', { parent: targetParent })
+      const commitPromise = invoke('storage:commit-and-relaunch', { parent: targetParent })
+      await commitStarted
+
+      await expect(
+        invoke('storage:set-data-root-and-relaunch', { parent: alternateParent })
+      ).resolves.toEqual({ ok: false, error: 'A data-root change is already in progress.' })
+      expect(deps.settingsService.setDataRoot).toHaveBeenCalledTimes(1)
+
+      releaseCommit?.()
+      await commitPromise
+    } finally {
+      releaseCommit?.()
+      await rm(alternateParent, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects commit during copying without clearing the write gate', async () => {
+    initDataRoot(dataRoot)
+    let releaseDisconnect: (() => void) | undefined
+    let markDisconnectStarted: (() => void) | undefined
+    const disconnectStarted = new Promise<void>((resolve) => {
+      markDisconnectStarted = resolve
+    })
+    const deps = fakeDeps({
+      runtime: {
+        disconnect: vi.fn(() => {
+          markDisconnectStarted?.()
+          return new Promise<void>((resolve) => {
+            releaseDisconnect = resolve
+          })
+        }),
+        shutdownForQuit: vi.fn().mockResolvedValue(undefined)
+      }
+    })
+    registerStorageIpcHandlers(deps)
+
     const migratePromise = invoke('storage:migrate', { parent: targetParent })
-    await tick()
+    await disconnectStarted
     const commitOutcome = await invoke('storage:commit-and-relaunch', { parent: targetParent })
     const pendingAfterCommit = isMigrationPending()
 
@@ -1619,6 +1820,25 @@ describe('storage IPC handlers', () => {
       kind: 'move',
       dataRoot: target
     })
+  })
+
+  it('inspects and switches to a replacement when the configured data root is missing', async () => {
+    initDataRoot(dataRoot)
+    await rm(dataRoot, { recursive: true })
+    const deps = fakeDeps()
+    registerStorageIpcHandlers(deps)
+
+    await expect(invoke('storage:inspect-data-root', { parent: targetParent })).resolves.toEqual({
+      kind: 'move',
+      dataRoot: target
+    })
+    await expect(
+      invoke('storage:set-data-root-and-relaunch', { parent: targetParent })
+    ).resolves.toEqual({ ok: true })
+    expect(deps.settingsService.setDataRoot).toHaveBeenCalledWith(target, {
+      completeOnboarding: false
+    })
+    expect(deps.relaunch).toHaveBeenCalledTimes(1)
   })
 
   it('inspect-data-root returns adopt when the derived target already holds our data', async () => {
