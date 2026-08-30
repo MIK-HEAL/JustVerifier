@@ -75,6 +75,7 @@ describe('describePermissionNotification', () => {
       describePermissionNotification(permissionRequest('Run command'), 'Plot the curve')
     ).toEqual({
       title: 'Approval needed',
+      genericBody: 'A task needs your approval. Open the app to review it.',
       body: '"Plot the curve" needs your approval: Run command',
       attention: true
     })
@@ -83,6 +84,7 @@ describe('describePermissionNotification', () => {
   it('falls back to a generic body when no prompt was tracked', () => {
     expect(describePermissionNotification(permissionRequest('Edit results.csv'))).toEqual({
       title: 'Approval needed',
+      genericBody: 'A task needs your approval. Open the app to review it.',
       body: 'The agent needs your approval: Edit results.csv',
       attention: true
     })
@@ -108,6 +110,7 @@ describe('describeConnectorApprovalNotification', () => {
       )
     ).toEqual({
       title: 'Approval needed',
+      genericBody: 'A task needs your approval. Open the app to review it.',
       body: '"Plot the curve" needs your approval: pubchem search compound',
       attention: true
     })
@@ -116,6 +119,7 @@ describe('describeConnectorApprovalNotification', () => {
   it('falls back to a generic body without a tracked prompt', () => {
     expect(describeConnectorApprovalNotification({ connector: 'zinc', method: 'search' })).toEqual({
       title: 'Approval needed',
+      genericBody: 'A task needs your approval. Open the app to review it.',
       body: 'The agent needs your approval: zinc search',
       attention: true
     })
@@ -126,6 +130,7 @@ describe('describeTaskNotification', () => {
   it('names the task from the prompt snippet when a turn completes', () => {
     expect(describeTaskNotification(stopEvent('end_turn'), 'Plot the curve')).toEqual({
       title: 'Task completed',
+      genericBody: 'A task completed. Open the app to view it.',
       body: 'The agent finished responding to "Plot the curve".'
     })
   })
@@ -133,6 +138,7 @@ describe('describeTaskNotification', () => {
   it('falls back to a generic body when no prompt was tracked', () => {
     expect(describeTaskNotification(stopEvent('end_turn'))).toEqual({
       title: 'Task completed',
+      genericBody: 'A task completed. Open the app to view it.',
       body: 'The agent finished responding.'
     })
   })
@@ -144,6 +150,7 @@ describe('describeTaskNotification', () => {
   it('explains a max_tokens stop in plain language', () => {
     expect(describeTaskNotification(stopEvent('max_tokens'), 'Plot the curve')).toEqual({
       title: 'Task needs attention',
+      genericBody: 'A task needs attention. Open the app for details.',
       body: '"Plot the curve" stopped early — the answer hit the model\'s length limit.'
     })
   })
@@ -151,6 +158,7 @@ describe('describeTaskNotification', () => {
   it('explains a max_turn_requests stop as waiting for the user', () => {
     expect(describeTaskNotification(stopEvent('max_turn_requests'), 'Plot the curve')).toEqual({
       title: 'Task needs attention',
+      genericBody: 'A task needs attention. Open the app for details.',
       body: '"Plot the curve" paused — send a message to keep it going.'
     })
   })
@@ -158,6 +166,7 @@ describe('describeTaskNotification', () => {
   it('explains a refusal without jargon', () => {
     expect(describeTaskNotification(stopEvent('refusal'), 'Plot the curve')).toEqual({
       title: 'Task needs attention',
+      genericBody: 'A task needs attention. Open the app for details.',
       body: '"Plot the curve" was declined by the agent.'
     })
     expect(describeTaskNotification(stopEvent('refusal'))?.body).toBe(
@@ -168,6 +177,7 @@ describe('describeTaskNotification', () => {
   it('does not misreport an unknown stop reason as success', () => {
     expect(describeTaskNotification(stopEvent('budget_exceeded'), 'Plot the curve')).toEqual({
       title: 'Task needs attention',
+      genericBody: 'A task needs attention. Open the app for details.',
       body: '"Plot the curve" finished without a clean completion status (budget exceeded).'
     })
     expect(describeTaskNotification(stopEvent('budget_exceeded'))?.body).toBe(
@@ -189,6 +199,7 @@ describe('describeTaskNotification', () => {
 
     expect(describeTaskNotification(event, 'Plot the curve')).toEqual({
       title: 'Task needs attention',
+      genericBody: 'A task needs attention. Open the app for details.',
       body: '"Plot the curve" finished without a clean completion status.'
     })
   })
@@ -219,7 +230,9 @@ describe('describeTaskNotification', () => {
   it('includes the error text when a turn fails', () => {
     expect(describeTaskNotification(errorEvent('Rate limit reached'), 'Plot the curve')).toEqual({
       title: 'Task failed',
-      body: '"Plot the curve" failed: Rate limit reached'
+      body: '"Plot the curve" failed: Rate limit reached',
+      genericBody: 'A task failed. Open the app for details.',
+      alwaysGeneric: true
     })
   })
 
@@ -264,6 +277,7 @@ describe('describeTaskNotification', () => {
 // Drives the service with injected gates so each filtering rule is pinned independently.
 const createService = (overrides: {
   isEnabled?: () => Promise<boolean>
+  showContent?: () => Promise<boolean>
   isAppFocused?: () => boolean
   show?: (request: TaskNotificationRequest) => void
   onDeliveryError?: (error: unknown) => void
@@ -289,6 +303,7 @@ const createService = (overrides: {
   const inboxErrors: unknown[] = []
   const deps: TaskNotificationServiceDeps = {
     isEnabled: overrides.isEnabled ?? (() => Promise.resolve(true)),
+    showContent: overrides.showContent ?? (() => Promise.resolve(true)),
     isAppFocused: overrides.isAppFocused ?? (() => false),
     show: overrides.show ?? ((request) => shown.push(request)),
     onDeliveryError: overrides.onDeliveryError ?? ((error) => deliveryErrors.push(error)),
@@ -333,6 +348,70 @@ describe('TaskNotificationService', () => {
       body: '智能体已完成对"绘制曲线"的回复。'
     })
     expect(inbox.record).toHaveBeenCalledWith(expect.objectContaining({ title: 'Task completed' }))
+  })
+
+  it('keeps prompt text and provider errors out of native notifications by default', async () => {
+    const shown: TaskNotificationRequest[] = []
+    const service = new TaskNotificationService({
+      isEnabled: async () => true,
+      isAppFocused: () => false,
+      translate: (key) => key,
+      show: (request) => shown.push(request)
+    })
+
+    service.trackPrompt({ sessionId: 'session-1', text: 'Secret research prompt' })
+    await service.handleRuntimeEvent(stopEvent('end_turn'))
+    service.trackPrompt({ sessionId: 'session-1', text: 'Another secret prompt' })
+    await service.handleRuntimeEvent(errorEvent('Provider leaked request details'))
+
+    expect(shown.map(({ title, body }) => ({ title, body }))).toEqual([
+      { title: 'Task completed', body: 'A task completed. Open the app to view it.' },
+      { title: 'Task failed', body: 'A task failed. Open the app for details.' }
+    ])
+  })
+
+  it('localizes privacy-safe native bodies independently of localized titles', async () => {
+    const { service, shown } = createService({
+      showContent: async () => false,
+      translate: (key, options) => translateNativeMessage('zh-Hans', key, options)
+    })
+
+    service.trackPrompt({ sessionId: 'session-1', text: '敏感提示词' })
+    await service.handleRuntimeEvent({ ...stopEvent('end_turn'), id: 'event-2' })
+
+    service.trackPrompt({ sessionId: 'session-1', text: '另一个敏感提示词' })
+    await service.handlePermissionRequest(permissionRequest('运行命令'))
+    await service.handleRuntimeEvent(elicitationEvent('pending'))
+    await service.handlePlanApproval({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: 'plan-version-1',
+      summary: '敏感计划'
+    })
+    await service.handleRuntimeEvent(stopEvent('max_tokens'))
+
+    expect(shown.map(({ title, body }) => ({ title, body }))).toEqual([
+      { title: '任务已完成', body: '任务已完成。打开应用即可查看。' },
+      { title: '需要批准', body: '任务需要您的批准。打开应用进行查看。' },
+      { title: '需要回复', body: '任务需要您的回复。打开应用以继续。' },
+      { title: '计划需要批准', body: '计划已准备好等待批准。打开应用进行查看。' },
+      { title: '任务需要注意', body: '任务需要注意。打开应用查看详细信息。' }
+    ])
+  })
+
+  it('keeps localized provider failures generic even when detailed content is enabled', async () => {
+    const { service, shown } = createService({
+      showContent: async () => true,
+      translate: (key, options) => translateNativeMessage('zh-Hans', key, options)
+    })
+
+    service.trackPrompt({ sessionId: 'session-1', text: '敏感提示词' })
+    await service.handleRuntimeEvent(errorEvent('敏感 provider 错误'))
+
+    expect(shown[0]).toMatchObject({
+      title: '任务失败',
+      body: '任务失败。打开应用查看详细信息。'
+    })
   })
 
   it('notifies on completion using the tracked prompt as the task name', async () => {
@@ -653,7 +732,7 @@ describe('TaskNotificationService', () => {
     await service.handleRuntimeEvent(errorEvent('process killed'))
 
     expect(shown).toHaveLength(1)
-    expect(shown[0]?.body).toBe('"Plot the curve" failed: process killed')
+    expect(shown[0]?.body).toBe('A task failed. Open the app for details.')
   })
 
   it('swallows delivery errors and reports them instead of rejecting', async () => {
@@ -843,9 +922,7 @@ describe('TaskNotificationService', () => {
 
     service.trackPrompt({ sessionId: 'session-1', text: 'Plot the curve' })
     const handling = service.handleRuntimeEvent(stopEvent('end_turn'))
-    await Promise.resolve()
-
-    expect(shown).toHaveLength(1)
+    await vi.waitFor(() => expect(shown).toHaveLength(1))
 
     finishInbox?.()
     await handling
