@@ -427,6 +427,7 @@ describe('preload bridge — public surface inventory', () => {
       'remoteAccess.disable',
       'remoteAccess.getSnapshot',
       'remoteAccess.onChanged',
+      'remoteAccess.probe',
       'remoteAccess.reject',
       'remoteAccess.revokeBrowser',
       'remoteAccess.setMode',

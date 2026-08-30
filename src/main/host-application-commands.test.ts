@@ -101,6 +101,7 @@ const createDependencies = (): HostApplicationCommandDependencies => ({
   remoteAccess: {
     snapshot: vi.fn(() => remoteSnapshot),
     detect: vi.fn(async () => remoteSnapshot),
+    probe: vi.fn(async () => remoteSnapshot),
     setMode: vi.fn(async () => remoteSnapshot),
     disable: vi.fn(async () => remoteSnapshot),
     approve: vi.fn(async () => remoteSnapshot),
@@ -184,7 +185,7 @@ const commandByName = (name: string): ApplicationCommand<string, readonly unknow
 }
 
 describe('Host application commands', () => {
-  it('defines the exact 54 request channels in their existing capability groups', () => {
+  it('defines the exact 55 request channels in their existing capability groups', () => {
     const expected = RENDERER_CONTRACT_GROUPS.filter(({ capability }) =>
       HOST_CAPABILITIES.includes(capability as (typeof HOST_CAPABILITIES)[number])
     ).map(({ capability, contracts }) => {
@@ -202,7 +203,7 @@ describe('Host application commands', () => {
       }
     })
 
-    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(54)
+    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(55)
     expect(
       hostApplicationCommandGroups.map(({ name, commands }) => ({
         capability: name,
@@ -218,7 +219,7 @@ describe('Host application commands', () => {
       {} as HostApplicationCommandDependencies
     )
 
-    expect(router.dispatcher.commandNames()).toHaveLength(54)
+    expect(router.dispatcher.commandNames()).toHaveLength(55)
     installation.uninstall()
     expect(router.dispatcher.commandNames()).toEqual([])
   })
@@ -303,6 +304,7 @@ describe('Host application commands', () => {
       invocation([{ requestId: 'pair-1', decision: 'once' }])
     )
     await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.detect, invocation([]))
+    await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.probe, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.disable, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.remoteAccess.getSnapshot, invocation([]))
     await router.dispatcher.invoke(
@@ -391,6 +393,8 @@ describe('Host application commands', () => {
       true,
       true
     )
+    expect(dependencies.remoteAccess.detect).toHaveBeenCalledOnce()
+    expect(dependencies.remoteAccess.probe).toHaveBeenCalledOnce()
     expect(dependencies.remoteAccess.reject).toHaveBeenCalledWith('pair-2', true, true)
     expect(dependencies.remoteAccess.revoke).toHaveBeenCalledWith('browser-1', true, true)
     expect(dependencies.remoteAccess.setMode).toHaveBeenCalledWith('remoteit')
@@ -488,7 +492,7 @@ describe('Host application commands', () => {
         .filter((channel): channel is string => channel !== null)
     )
 
-    expect(localOnlyChannels).toHaveLength(28)
+    expect(localOnlyChannels).toHaveLength(29)
     for (const channel of localOnlyChannels) {
       await expect(
         router.dispatcher.invoke(
@@ -524,6 +528,28 @@ describe('Host application commands', () => {
     expect(dependencies.logs.getStatus).not.toHaveBeenCalled()
     expect(dependencies.logs.openFile).not.toHaveBeenCalled()
     expect(dependencies.logs.revealInFolder).not.toHaveBeenCalled()
+  })
+
+  it('keeps the read-only Remote Access probe available only to local callers', async () => {
+    const dependencies = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerHostApplicationCommands(router.registrar, dependencies)
+    const localCaller = createWebCallerContext('local-browser')
+    const remoteCaller = createWebCallerContext('remote-browser', { location: 'remote' })
+
+    await expect(
+      router.dispatcher.invoke(
+        hostApplicationCommands.remoteAccess.probe,
+        invocation([], localCaller)
+      )
+    ).resolves.toBe(remoteSnapshot)
+    await expect(
+      router.dispatcher.invoke(
+        hostApplicationCommands.remoteAccess.probe,
+        invocation([], remoteCaller)
+      )
+    ).rejects.toThrow('Channel only available from the local app: remote-access:probe')
+    expect(dependencies.remoteAccess.probe).toHaveBeenCalledOnce()
   })
 
   it('preserves the five-state Remote Access authority and freshness matrix', async () => {
@@ -584,7 +610,14 @@ describe('Host application commands', () => {
         invocation([], currentManager)
       )
     ).rejects.toThrow('This action must be approved from the Open Science desktop app.')
+    await expect(
+      router.dispatcher.invoke(
+        hostApplicationCommands.remoteAccess.probe,
+        invocation([], currentManager)
+      )
+    ).rejects.toThrow('Channel only available from the local app: remote-access:probe')
     expect(dependencies.remoteAccess.detect).not.toHaveBeenCalled()
+    expect(dependencies.remoteAccess.probe).not.toHaveBeenCalled()
   })
 
   it('rejects malformed Remote Access arguments before entering an owner', async () => {
@@ -594,6 +627,7 @@ describe('Host application commands', () => {
     const cases: Array<readonly [string, readonly unknown[]]> = [
       ['remote-access:approve', [undefined]],
       ['remote-access:detect', [{}]],
+      ['remote-access:probe', [{}]],
       ['remote-access:disable', [{}]],
       ['remote-access:get-snapshot', [{}]],
       ['remote-access:reject', [undefined]],
@@ -609,6 +643,7 @@ describe('Host application commands', () => {
 
     expect(dependencies.remoteAccess.approve).not.toHaveBeenCalled()
     expect(dependencies.remoteAccess.detect).not.toHaveBeenCalled()
+    expect(dependencies.remoteAccess.probe).not.toHaveBeenCalled()
     expect(dependencies.remoteAccess.disable).not.toHaveBeenCalled()
     expect(dependencies.remoteAccess.snapshot).not.toHaveBeenCalled()
     expect(dependencies.remoteAccess.reject).not.toHaveBeenCalled()
