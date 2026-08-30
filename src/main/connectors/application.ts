@@ -102,7 +102,8 @@ const createConnectorApplication = (
       if (!hasUsableCustomMcpCredentials(server)) throw new Error('credential_unavailable')
       await mcpClientManager.authenticate(toCustomMcpConfig(server))
     },
-    (serverId) => mcpClientManager.cancelAuthentication(serverId)
+    (serverId) => mcpClientManager.cancelAuthentication(serverId),
+    (serverId) => mcpClientManager.close(serverId)
   )
 
   const connectorApprovals =

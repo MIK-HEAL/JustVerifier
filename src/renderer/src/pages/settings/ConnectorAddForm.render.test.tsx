@@ -122,6 +122,32 @@ describe('ConnectorAddForm (local command)', () => {
     expect(document.activeElement).toBe(radios[1])
   })
 
+  it('does not let hidden local environment errors block remote submission', async () => {
+    act(() => {
+      root.render(<ConnectorAddForm initialTransport="local" onDone={vi.fn()} onCancel={vi.fn()} />)
+    })
+
+    setValue('Display name', 'Remote after local')
+    openAdvancedSettings()
+    setValue('Environment variables', 'missing-equals')
+    const remote = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+    ).find((radio) => radio.textContent?.trim() === 'Remote server')
+    act(() => remote?.click())
+    setValue('Server URL', 'https://mcp.example.test')
+    checkTrust()
+
+    expect(addButton()?.disabled).toBe(false)
+    await act(async () => addButton()?.click())
+    expect(useSettingsStore.getState().addCustomServer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: 'Remote after local',
+        transport: 'streamable_http',
+        url: 'https://mcp.example.test'
+      })
+    )
+  })
+
   it('adds a stdio server with the default npx command, then calls onDone', async () => {
     const onDone = vi.fn()
     act(() => {
@@ -777,6 +803,77 @@ describe('ConnectorAddForm (edit)', () => {
       .calls[0][0]
     expect(call).not.toHaveProperty('name')
     expect(onDone).toHaveBeenCalled()
+  })
+
+  it('shows saved environment names and can explicitly clear them', async () => {
+    const updateCustomServer = vi.fn().mockResolvedValue(undefined)
+    useSettingsStore.setState({ ...createInitialSettingsState(), updateCustomServer })
+    act(() => {
+      root.render(
+        <ConnectorAddForm
+          editServer={{
+            ...editServer,
+            hasEnv: true,
+            environmentNames: ['API_TOKEN', 'ORG_ID']
+          }}
+          onDone={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      )
+    })
+
+    openAdvancedSettings()
+    expect(document.body.textContent).toContain('API_TOKEN, ORG_ID')
+    selectOption('Environment variable action', 'Clear saved variables')
+
+    const save = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Save changes'
+    )
+    await act(async () => save?.click())
+
+    expect(updateCustomServer).toHaveBeenCalledWith(expect.objectContaining({ env: {} }))
+  })
+
+  it('preserves named environment variables when their encrypted values are unavailable', async () => {
+    const updateCustomServer = vi.fn().mockResolvedValue(undefined)
+    useSettingsStore.setState({ ...createInitialSettingsState(), updateCustomServer })
+    act(() => {
+      root.render(
+        <ConnectorAddForm
+          editServer={{
+            ...editServer,
+            hasEnv: false,
+            environmentNames: ['API_TOKEN']
+          }}
+          onDone={vi.fn()}
+          onCancel={vi.fn()}
+        />
+      )
+    })
+
+    openAdvancedSettings()
+    expect(document.body.textContent).toContain('API_TOKEN')
+    const save = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Save changes'
+    )
+    await act(async () => save?.click())
+
+    const request = updateCustomServer.mock.calls[0]?.[0]
+    expect(request).not.toHaveProperty('env')
+  })
+
+  it('reports malformed environment lines instead of silently dropping them', () => {
+    act(() => {
+      root.render(<ConnectorAddForm initialTransport="local" onDone={vi.fn()} onCancel={vi.fn()} />)
+    })
+
+    setValue('Display name', 'Memory')
+    openAdvancedSettings()
+    setValue('Environment variables', 'GOOD=value\nBROKEN')
+    checkTrust()
+
+    expect(document.body.textContent).toContain('Line 2: use KEY=VALUE.')
+    expect(addButton()?.disabled).toBe(true)
   })
 
   it('keeps a legacy Connector editable when its name matches another stored ID', () => {

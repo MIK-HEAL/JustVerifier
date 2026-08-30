@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import { delimiter } from 'node:path'
+import type { Writable } from 'node:stream'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -13,11 +14,25 @@ import type { CustomMcpServerConfig } from './mcp-client-manager'
 import { OAuthCallbackServer, type PersistentOAuthClientProvider } from './oauth-client'
 import { EXTRA_PATH_DIRS } from '../settings/shell-path'
 
-const { netFetch } = vi.hoisted(() => ({ netFetch: vi.fn() }))
+const { netFetch, stderrWarn } = vi.hoisted(() => ({
+  netFetch: vi.fn(),
+  stderrWarn: vi.fn()
+}))
 
 vi.mock('electron', () => ({ net: { fetch: netFetch } }))
+vi.mock('../logger', () => ({
+  createLogger: () => ({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: stderrWarn,
+    error: vi.fn()
+  })
+}))
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  stderrWarn.mockClear()
+})
 
 // Builds an in-memory MCP server with one echo tool and one always-erroring tool, and an
 // injectable createClient that links a fresh Client to it via InMemoryTransport — no process
@@ -604,6 +619,122 @@ describe('buildTransport', () => {
 
     expect(pathDirs).toEqual(expect.arrayContaining(EXTRA_PATH_DIRS))
     expect(childEnv?.CUSTOM_API_KEY).toBe('configured-secret')
+  })
+
+  it('pipes, redacts, and bounds custom stdio stderr before logging it', () => {
+    const configuredSecret = 'configured-secret-value'
+    const transport = buildTransport({
+      id: 'srv-stdio',
+      name: 'stdio-server',
+      transport: 'stdio',
+      command: 'npx',
+      env: { CUSTOM_API_KEY: configuredSecret }
+    }) as StdioClientTransport
+    const stderr = transport.stderr as Writable | null
+
+    expect(stderr).not.toBeNull()
+    stderr?.write(
+      `configured=${configuredSecret} Authorization: Bearer generic-secret-value\n${'x'.repeat(8_192)}\n`
+    )
+    for (let index = 0; index < 80; index += 1) stderr?.write(`${'y'.repeat(1_024)}\n`)
+
+    const serialized = JSON.stringify(stderrWarn.mock.calls)
+    expect(serialized).not.toContain(configuredSecret)
+    expect(serialized).not.toContain('generic-secret-value')
+    expect(stderrWarn.mock.calls.length).toBeLessThan(80)
+    expect(stderrWarn.mock.calls).toContainEqual([
+      'custom MCP server stderr truncated',
+      expect.objectContaining({ serverId: 'srv-stdio' })
+    ])
+    expect(
+      stderrWarn.mock.calls
+        .filter(([message]) => message === 'custom MCP server stderr')
+        .every(([, fields]) => String((fields as { line?: unknown }).line ?? '').length <= 4_096)
+    ).toBe(true)
+  })
+
+  it('redacts configured multiline values before logging stdio stderr lines', () => {
+    const configuredSecret = 'alpha-private-material\nomega-private-material'
+    const transport = buildTransport({
+      id: 'srv-stdio',
+      name: 'stdio-server',
+      transport: 'stdio',
+      command: 'npx',
+      env: { PRIVATE_MATERIAL: configuredSecret }
+    }) as StdioClientTransport
+    const stderr = transport.stderr as Writable | null
+
+    stderr?.write('alpha-private-material\n')
+    stderr?.write('omega-private-material\n')
+
+    const serialized = JSON.stringify(stderrWarn.mock.calls)
+    expect(serialized).not.toContain('alpha-private-material')
+    expect(serialized).not.toContain('omega-private-material')
+  })
+
+  it('does not release a multiline secret prefix when later stderr interrupts the value', () => {
+    const transport = buildTransport({
+      id: 'srv-stdio',
+      name: 'stdio-server',
+      transport: 'stdio',
+      command: 'npx',
+      env: { PRIVATE_MATERIAL: 'alpha-private-material\nomega-private-material' }
+    }) as StdioClientTransport
+    const stderr = transport.stderr as Writable | null
+
+    stderr?.write('alpha-private-material\n')
+    stderr?.write('unrelated diagnostic\n')
+
+    const serialized = JSON.stringify(stderrWarn.mock.calls)
+    expect(serialized).not.toContain('alpha-private-material')
+    expect(serialized).toContain('unrelated diagnostic')
+  })
+
+  it('redacts newline-escaped representations of configured multiline values', () => {
+    const transport = buildTransport({
+      id: 'srv-stdio',
+      name: 'stdio-server',
+      transport: 'stdio',
+      command: 'npx',
+      env: { PRIVATE_MATERIAL: 'alpha-private-material\nomega-private-material' }
+    }) as StdioClientTransport
+    const stderr = transport.stderr as Writable | null
+
+    stderr?.write('alpha-private-material\\nomega-private-material\n')
+
+    const serialized = JSON.stringify(stderrWarn.mock.calls)
+    expect(serialized).not.toContain('alpha-private-material')
+    expect(serialized).not.toContain('omega-private-material')
+  })
+
+  it('bounds stderr redaction work for configured secrets sharing a long prefix', () => {
+    const sharedPrefix = 'a'.repeat(4_096)
+    const env = Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [
+        `SECRET_${index}`,
+        `${sharedPrefix}${index.toString().padStart(2, '0')}`
+      ])
+    )
+    const transport = buildTransport({
+      id: 'srv-stdio-prefix-stress',
+      name: 'stdio-prefix-stress',
+      transport: 'stdio',
+      command: 'npx',
+      env
+    }) as StdioClientTransport
+    const stderr = transport.stderr as Writable | null
+
+    const startedAt = performance.now()
+    stderr?.write(`${sharedPrefix.repeat(4)}\n`)
+    const elapsedMs = performance.now() - startedAt
+
+    expect(elapsedMs).toBeLessThan(500)
+    const serialized = JSON.stringify(stderrWarn.mock.calls)
+    expect(serialized).not.toContain(sharedPrefix)
+    expect(stderrWarn.mock.calls).toContainEqual([
+      'custom MCP server stderr redaction budget exceeded',
+      expect.objectContaining({ serverId: 'srv-stdio-prefix-stress' })
+    ])
   })
 
   it('keeps an explicitly configured stdio PATH ahead of the augmented directories', () => {

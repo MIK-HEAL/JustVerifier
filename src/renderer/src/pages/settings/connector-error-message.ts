@@ -51,6 +51,14 @@ export const localizeConnectorError = (message: string, t: TFunction): string =>
     case 'args appears to contain a credential.':
       return t('args appears to contain a credential.')
     default:
+      if (
+        /^(?:Connector|OAuth).+ must not exceed \d+ (?:characters|entries|bytes)\.$/u.test(message)
+      ) {
+        return t('Connector configuration exceeds the allowed size.')
+      }
+      if (/^Custom Connector limit of \d+ reached\.$/u.test(message)) {
+        return t('The maximum number of custom Connectors has been reached.')
+      }
       return message
   }
 }
