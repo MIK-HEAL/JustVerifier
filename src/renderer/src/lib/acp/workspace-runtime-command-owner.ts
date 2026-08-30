@@ -48,6 +48,8 @@ import { validateImageAnnotationSourcesBeforeSend } from '../../pages/workspace/
 import { VISION_MODEL_NOT_CONFIGURED_MESSAGE } from '../../../../shared/run-error-classification'
 type SendWorkspaceMessageIntent = {
   sessionId?: string
+  // Optional durable caller identity for restart-safe application-owned prompts.
+  messageId?: string
   branchSourceSessionId?: string
   branchSourceMessageId?: string
   text: string
@@ -724,7 +726,40 @@ const sendWorkspaceMessage = async (
 
   if (input.sessionId) {
     const sessionId = input.sessionId
-    const session = useSessionStore.getState().sessions.find((item) => item.id === sessionId)
+    let session = useSessionStore.getState().sessions.find((item) => item.id === sessionId)
+    const stableMessageId = input.messageId?.trim()
+    if (input.messageId !== undefined && !stableMessageId) return undefined
+    let existingStableMessage = stableMessageId
+      ? session?.messages.find((message) => message.id === stableMessageId)
+      : undefined
+    const graphStableMessage = stableMessageId
+      ? session?.conversationGraph?.messages.find((message) => message.id === stableMessageId)
+      : undefined
+    if (!existingStableMessage && graphStableMessage && session) {
+      if (graphStableMessage.role !== 'user' || graphStableMessage.content !== content) {
+        return undefined
+      }
+      useSessionStore
+        .getState()
+        .activateMessageBranch(sessionId, graphStableMessage.introducedOnBranchId)
+      session = useSessionStore.getState().sessions.find((item) => item.id === sessionId)
+      existingStableMessage = session?.messages.find((message) => message.id === stableMessageId)
+      if (!existingStableMessage) return undefined
+    }
+    let rearmExistingStableMessage = false
+    if (existingStableMessage) {
+      if (existingStableMessage.role !== 'user' || existingStableMessage.content !== content) {
+        return undefined
+      }
+      const hasResponse = session?.messages.some(
+        (message) =>
+          message.role === 'agent' && message.responseToMessageId === existingStableMessage.id
+      )
+      if (hasResponse || session?.activeRun?.promptMessageId === existingStableMessage.id) {
+        return { sessionId, messageId: existingStableMessage.id }
+      }
+      rearmExistingStableMessage = true
+    }
     if (input.requireExistingSession && !session) return undefined
     if (!canAdmitExistingWorkspacePrompt(runtime.state, input)) return undefined
     const projectId = input.projectId ?? session?.projectId
@@ -801,6 +836,7 @@ const sendWorkspaceMessage = async (
       replay: {
         descriptor: input.historyReplayDescriptor,
         cutMessageId: input.truncateFromMessageId,
+        excludeMessageId: rearmExistingStableMessage ? existingStableMessage?.id : undefined,
         force: input.forceHistoryReplay,
         includeResumeFallback: Boolean(input.forcedSkillIds?.length)
       },
@@ -855,6 +891,8 @@ const sendWorkspaceMessage = async (
     }
     const appended = useSessionStore.getState().appendUserMessage({
       sessionId,
+      messageId: stableMessageId,
+      rearmExisting: rearmExistingStableMessage,
       content,
       attachments: promptAttachments,
       annotations,
@@ -875,6 +913,19 @@ const sendWorkspaceMessage = async (
       preserveSelection: input.preserveSelection
     })
     if (!appended) return undefined
+    if (stableMessageId) {
+      const durableSession = useSessionStore
+        .getState()
+        .sessions.find((candidate) => candidate.id === sessionId)
+      if (!durableSession) return undefined
+      try {
+        await saveSessionInOrder(toPersistedSession(durableSession))
+      } catch (error) {
+        useSessionStore.getState().failRun(sessionId, errorMessage(error))
+        return undefined
+      }
+      if (!ownsPrompt(sessionId, appended.messageId)) return undefined
+    }
     const replay = prepared.replay()
     const continuation = input.planContinuation
       ? {
