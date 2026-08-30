@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CloseConfirmModal } from '@/components/CloseConfirmModal'
+import { ActionToast } from '@/components/ActionToast'
 import { ConnectorAuthToast } from '@/components/ConnectorAuthToast'
 import { DataRootMissingDialog } from '@/components/DataRootMissingDialog'
 import { ErrorNotice } from '@/components/error-notice'
@@ -138,6 +139,25 @@ const ApplicationPresentationHost = (): React.JSX.Element => {
       onRetry={sessions.retryWrites}
     />
   ) : null
+  const quitPersistenceAlert = startup.quitPersistence.notice ? (
+    <SessionPersistenceAlert
+      title={t('Quit was canceled')}
+      message={
+        startup.quitPersistence.notice.reason === 'conflict'
+          ? t('A conversation changed elsewhere and could not be saved safely.')
+          : t('One or more conversations could not be saved.')
+      }
+      onDismiss={startup.quitPersistence.dismissNotice}
+      onRetry={() => {
+        sessions.retryWrites()
+        if (startup.quitPersistence.notice?.reason === 'conflict') {
+          startup.quitPersistence.dismissNotice()
+          return
+        }
+        void startup.quitPersistence.retryPersistence().catch(() => undefined)
+      }}
+    />
+  ) : null
 
   return (
     <>
@@ -162,7 +182,7 @@ const ApplicationPresentationHost = (): React.JSX.Element => {
             message={sessions.loadError}
             onRetry={sessions.retryLoad}
           />
-        ) : writeErrorAlert ? (
+        ) : startup.quitPersistence.notice ? null : writeErrorAlert ? (
           writeErrorAlert
         ) : sessions.loadWarning ? (
           <SessionPersistenceAlert
@@ -172,7 +192,9 @@ const ApplicationPresentationHost = (): React.JSX.Element => {
             onDismiss={sessions.dismissLoadWarning}
           />
         ) : null}
-        {sessions.catalogRecovery.kind !== 'ready' ? writeErrorAlert : null}
+        {sessions.catalogRecovery.kind !== 'ready' && !startup.quitPersistence.notice
+          ? writeErrorAlert
+          : null}
         <WorkspaceAgentRuntimeProvider>
           <JobAnalysisRuntimeBridge enabled={sessions.isReady} />
           <WorkspaceMessageQueueProvider>
@@ -203,7 +225,19 @@ const ApplicationPresentationHost = (): React.JSX.Element => {
         <StorageCleanupToast />
         <NotificationLiveToast />
         <PermissionUndoSnackbar allowsArchiveShortcut={events.allowsArchiveUndoShortcut} />
+        {events.notification.unavailableToken !== undefined ? (
+          <ActionToast
+            key={events.notification.unavailableToken}
+            title={t('This session was deleted or is unavailable.')}
+            dismissLabel={t('Close')}
+            onDismiss={events.notification.dismissUnavailable}
+            autoDismissMs={6000}
+            className="top-44"
+            testId="notification-target-unavailable-toast"
+          />
+        ) : null}
       </div>
+      {quitPersistenceAlert}
       <WebEventRecoveryDialog
         active={activePresentation === 'webEventRecovery'}
         phase={events.webEventConnectionPhase}

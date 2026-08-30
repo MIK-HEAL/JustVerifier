@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import type {
+  SessionPersistenceFlushAbortedEvent,
   SessionPersistenceFlushRequest,
   SessionPersistenceFlushResponse
 } from '../../../shared/session-persistence-flush'
@@ -20,6 +21,12 @@ type QuitPersistenceFlushDeps = {
   flushPreviewPersistence: () => Promise<void>
   acknowledge: (response: SessionPersistenceFlushResponse) => void
 }
+
+type QuitPersistenceFlushProjection = Readonly<{
+  notice: SessionPersistenceFlushAbortedEvent | undefined
+  dismissNotice: () => void
+  retryPersistence: () => Promise<void>
+}>
 
 export const completeQuitPersistenceFlush = async (
   request: SessionPersistenceFlushRequest,
@@ -41,7 +48,16 @@ export const completeQuitPersistenceFlush = async (
   if (failure !== undefined) throw failure
 }
 
-export const useQuitPersistenceFlush = (): void => {
+export const useQuitPersistenceFlush = (): QuitPersistenceFlushProjection => {
+  const [notice, setNotice] = useState<SessionPersistenceFlushAbortedEvent>()
+  const dismissNotice = useCallback(() => setNotice(undefined), [])
+  const retryPersistence = useCallback(async (): Promise<void> => {
+    await drainWorkspaceRuntimeEventsForPersistence()
+    await flushSessionPersistence()
+    await flushPreviewPersistence()
+    setNotice(undefined)
+  }, [])
+
   useEffect(() => {
     const onFlushAborted = window.api.sessions?.onFlushAborted
     const onFlushRequest = window.api.sessions?.onFlushRequest
@@ -49,7 +65,10 @@ export const useQuitPersistenceFlush = (): void => {
       window.api.sessions?.sendFlushResponse ?? window.api.storage?.ackDataRootHandoffFlush
     if (!onFlushRequest || !sendFlushResponse) return
 
-    const removeFlushAborted = onFlushAborted?.(resumeAutoReviewsAfterQuitAbort)
+    const removeFlushAborted = onFlushAborted?.((event) => {
+      resumeAutoReviewsAfterQuitAbort()
+      if (event) setNotice(event)
+    })
     const removeFlushRequest = onFlushRequest((request) => {
       void (async () => {
         if (request.targetLifecycleClientId) {
@@ -70,4 +89,8 @@ export const useQuitPersistenceFlush = (): void => {
       removeFlushRequest()
     }
   }, [])
+
+  return { notice, dismissNotice, retryPersistence }
 }
+
+export type { QuitPersistenceFlushProjection }

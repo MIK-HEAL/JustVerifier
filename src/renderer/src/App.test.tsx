@@ -1619,6 +1619,91 @@ describe('App startup routing', () => {
     expect(mocks.openSessionById).toHaveBeenCalledWith('s-3', 'notification')
   })
 
+  it('explains when a desktop-notification target is no longer available', async () => {
+    mocks.settings.isLoaded = true
+    mocks.notifications.peekPendingOpenSession.mockResolvedValue({ sessionId: 's-gone', token: 4 })
+    mocks.notifications.takePendingOpenSession.mockResolvedValue({ sessionId: 's-gone', token: 4 })
+
+    await render()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(mocks.notifications.takePendingOpenSession).toHaveBeenCalledWith(4)
+    expect(mocks.openSessionById).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('This session was deleted or is unavailable.')
+  })
+
+  it('explains a quit canceled by a Session persistence conflict and offers retry', async () => {
+    let notifyFlushAborted: (event: { reason: 'conflict' }) => void = () => undefined
+    ;(
+      window.api as unknown as {
+        sessions: {
+          onFlushAborted: (listener: typeof notifyFlushAborted) => () => void
+          onFlushRequest: (listener: (request: { requestId: string }) => void) => () => void
+          sendFlushResponse: (response: { requestId: string; status: string }) => void
+        }
+      }
+    ).sessions = {
+      onFlushAborted: (listener) => {
+        notifyFlushAborted = listener
+        return () => undefined
+      },
+      onFlushRequest: () => () => undefined,
+      sendFlushResponse: vi.fn()
+    }
+    mocks.settings.isLoaded = true
+
+    await render()
+    act(() => notifyFlushAborted({ reason: 'conflict' }))
+
+    expect(container.textContent).toContain('Quit was canceled')
+    expect(container.textContent).toContain(
+      'A conversation changed elsewhere and could not be saved safely.'
+    )
+
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="session-persistence-retry"]'
+    )
+    act(() => retry?.click())
+    expect(mocks.sessionPersistence.retryWrites).toHaveBeenCalledOnce()
+    expect(container.textContent).not.toContain('Quit was canceled')
+  })
+
+  it('keeps quit recovery controls interactive while Settings covers the base presentation', async () => {
+    let notifyFlushAborted: (event: { reason: 'renderer-failed' }) => void = () => undefined
+    ;(
+      window.api as unknown as {
+        sessions: {
+          onFlushAborted: (listener: typeof notifyFlushAborted) => () => void
+          onFlushRequest: (listener: (request: { requestId: string }) => void) => () => void
+          sendFlushResponse: (response: { requestId: string; status: string }) => void
+        }
+      }
+    ).sessions = {
+      onFlushAborted: (listener) => {
+        notifyFlushAborted = listener
+        return () => undefined
+      },
+      onFlushRequest: () => () => undefined,
+      sendFlushResponse: vi.fn()
+    }
+    mocks.settings.isLoaded = true
+    mocks.settings.isSettingsOpen = true
+    mocks.sessionPersistence.loadError = 'selected conversation unavailable'
+
+    await render()
+    act(() => notifyFlushAborted({ reason: 'renderer-failed' }))
+
+    const alert = Array.from(
+      container.querySelectorAll('[data-testid="session-persistence-alert"]')
+    ).find((candidate) => candidate.textContent?.includes('Quit was canceled'))
+    expect(alert?.textContent).toContain('Quit was canceled')
+    expect(alert?.closest('[inert]')).toBeNull()
+    expect(alert?.closest('[aria-hidden="true"]')).toBeNull()
+    expect(alert?.classList.contains('z-toast')).toBe(true)
+  })
+
   it('does not let a later notification peek override navigation while an earlier peek is pending', async () => {
     const target = { sessionId: 's-3', token: 3 }
     let pending: typeof target | null = target
