@@ -1469,6 +1469,7 @@ export type DeviceCredentialView = {
   displayName: string
   kind: DeviceCredentialKind
   status: 'stored' | 'connected' | 'disconnected'
+  needsSecret: boolean
   resourceUri?: string
   transport?: DeviceOAuthTransport
   oauth?: DeviceOAuthRegistration
