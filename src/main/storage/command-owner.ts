@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -31,7 +30,7 @@ import { exportRuntimeLocks } from '../notebook/runtime-relocation'
 import { removeMicromambaCacheForRoot } from '../notebook/micromamba-cache'
 import { removeNotebookWorkloadCache } from '../notebook/notebook-workload-cache-paths'
 import { detectActiveSessions } from './detect-active'
-import { isDataRootMissing } from './path-presence'
+import { hasAnyExistingPath, isDataRootMissing } from './path-presence'
 import {
   beginMigration,
   beginMigrationPreparation,
@@ -50,7 +49,7 @@ import {
 import { readMigrationMarker } from './migration-marker'
 import { availableBytes, computeStorageUsage } from './usage'
 import { broadcastToRenderers } from '../renderer-broadcast'
-import { RELOCATABLE_DATA_DIRS } from './data-directories'
+import { DATA_ROOT_DIRS, RELOCATABLE_DATA_DIRS } from './data-directories'
 import { createLogger, diagnosticErrorFields, type Logger } from '../logger'
 import { startDiagnosticOperation } from '../diagnostics/operation'
 import { markApplicationShutdownTrigger } from '../application-shutdown-trigger'
@@ -116,6 +115,7 @@ type StorageCommandOwnerDeps = {
   ) => void
   notifyDataRootHandoffAborted?: () => void
   cleanupJournal?: DataRootCleanupJournal
+  hasAnyExistingPath?: typeof hasAnyExistingPath
 }
 
 type StorageParentRequest = Readonly<{ parent: string }>
@@ -189,7 +189,10 @@ const createStorageCommandOwner = (deps: StorageCommandOwnerDeps) => {
     }
   }
 
-  const getStatus = async (): Promise<StorageStatus> => {
+  const getStatusSnapshot = async (): Promise<{
+    status: StorageStatus
+    canAutoSelectDataDrive: boolean
+  }> => {
     const dataRoot = resolveDataRoot()
     // Only an explicitly-configured-but-now-gone root counts as "missing"; a fresh install's unset
     // dataRoot (default `~/OpenScience` not created yet) is normal and must never nag the user.
@@ -198,6 +201,9 @@ const createStorageCommandOwner = (deps: StorageCommandOwnerDeps) => {
     // unset (using the default), that default resolved to the config root itself, and real user data
     // lives there. Offer the one-time "move to the visible OpenScience folder" prompt until answered.
     let legacyDataMovePrompt = false
+    // Fail closed: only the same main-owned filesystem/settings snapshot that identifies an empty,
+    // unconfigured root may authorize onboarding's pointer-only default-drive selection.
+    let canAutoSelectDataDrive = false
     const cleanupPending = await cleanupJournal.hasPending().catch(() => true)
     try {
       const storedSettings = await deps.settingsService.getStoredSettings()
@@ -209,26 +215,39 @@ const createStorageCommandOwner = (deps: StorageCommandOwnerDeps) => {
 
       const configRoot = resolveConfigRoot()
       const legacyInPlace = !storedSettings.dataRoot && samePath(dataRoot, configRoot)
-      const hasUserData = RELOCATABLE_DATA_DIRS.some((dir) => existsSync(join(configRoot, dir)))
+      const hasUserData = await (deps.hasAnyExistingPath ?? hasAnyExistingPath)(
+        RELOCATABLE_DATA_DIRS.map((dir) => join(configRoot, dir))
+      )
       legacyDataMovePrompt =
         legacyInPlace && hasUserData && storedSettings.legacyDataMovePromptDismissedAt === undefined
+      // Include runtime/: unlike legacy detection, onboarding must not pointer-switch away from a
+      // managed environment that was prepared before an interrupted setup resumed.
+      const currentRootHasData = await (deps.hasAnyExistingPath ?? hasAnyExistingPath)(
+        DATA_ROOT_DIRS.map((dir) => join(dataRoot, dir))
+      )
+      canAutoSelectDataDrive = !storedSettings.dataRoot && !currentRootHasData && !dataRootMissing
     } catch (err) {
       logger.warn('data root status detection failed', diagnosticErrorFields(err))
     }
 
     return {
-      dataRoot,
-      isDefault: samePath(dataRoot, computeDefaultDataRoot()),
-      defaultDataRoot: computeDefaultDataRoot(),
-      defaultParent: defaultDataParent(),
-      dataRootMissing,
-      legacyDataMovePrompt,
-      cleanupPending
+      status: {
+        dataRoot,
+        isDefault: samePath(dataRoot, computeDefaultDataRoot()),
+        defaultDataRoot: computeDefaultDataRoot(),
+        defaultParent: defaultDataParent(),
+        dataRootMissing,
+        legacyDataMovePrompt,
+        cleanupPending
+      },
+      canAutoSelectDataDrive
     }
   }
 
+  const getStatus = async (): Promise<StorageStatus> => (await getStatusSnapshot()).status
+
   const getInfo = async (): Promise<StorageInfo> => {
-    const status = await getStatus()
+    const { status, canAutoSelectDataDrive } = await getStatusSnapshot()
     let available = 0
     try {
       available = await availableBytes(status.dataRoot)
@@ -238,6 +257,7 @@ const createStorageCommandOwner = (deps: StorageCommandOwnerDeps) => {
 
     return {
       ...status,
+      canAutoSelectDataDrive,
       usage: await computeStorageUsage(status.dataRoot),
       availableBytes: available
     }
@@ -799,6 +819,13 @@ const createStorageCommandOwner = (deps: StorageCommandOwnerDeps) => {
       if (typeof request?.parent !== 'string') throw new Error('The selected folder is not usable.')
       dataRoot = dataRootForPicked(request.parent)
       const result = await classifyDataRootImpl(request.parent, resolveDataRoot())
+      if (result.kind === 'move') {
+        return {
+          ...result,
+          dataRoot,
+          targetWasAbsent: await isDataRootMissing(dataRoot)
+        }
+      }
       return { ...result, dataRoot }
     } catch (err) {
       logger.warn('data root inspection boundary failed', diagnosticErrorFields(err))

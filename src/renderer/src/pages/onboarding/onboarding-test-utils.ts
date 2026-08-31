@@ -85,6 +85,7 @@ const storageInfo = (overrides: Partial<StorageInfo> = {}): StorageInfo => ({
   dataRootMissing: false,
   legacyDataMovePrompt: false,
   cleanupPending: false,
+  canAutoSelectDataDrive: false,
   usage: { categories: [], totalBytes: 0 },
   availableBytes: 500_000_000_000,
   ...overrides
@@ -187,6 +188,10 @@ const resetOnboardingStores = (): {
 
 const stubWindowApi = (): void => {
   ;(window as unknown as { api: unknown }).api = {
+    platform: 'darwin',
+    localFs: {
+      listDrives: vi.fn().mockResolvedValue([])
+    },
     storage: {
       getInfo: vi.fn().mockResolvedValue(storageInfo()),
       pickDirectory: vi.fn().mockResolvedValue(null),
