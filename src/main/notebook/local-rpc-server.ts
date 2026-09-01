@@ -2868,7 +2868,7 @@ class NotebookLocalRpcServer {
           signal
         )
       } finally {
-        lease.close()
+        await lease.close()
         leases.delete(lease)
         this.inputRunLeaseIds.delete(lease)
         if (leases.size === 0) this.activeInputRunLeases.delete(sessionId)

@@ -2773,7 +2773,10 @@ describe('workspace agent message sending', () => {
 
     expect(acquire).toHaveBeenCalledWith(
       expect.objectContaining({
-        path: 'artifact-version:project-1/transport-session-1/artifact-1/deleted-version'
+        source: 'artifact',
+        projectId: 'project-1',
+        fileId: 'artifact-1',
+        versionId: 'deleted-version'
       })
     )
     expect(sendPrompt).not.toHaveBeenCalled()
@@ -4623,7 +4626,7 @@ describe('workspace agent message sending', () => {
     const finalizedHistory = createAttachment({
       id: 'legacy-upload-1',
       sessionId: 'source-session',
-      path: 'upload-version:project-1/source-session/legacy-version-1',
+      path: 'upload-version:project-1/source-session/legacy-upload-1/legacy-version-1',
       mimeType: 'image/png',
       versionId: 'legacy-version-1',
       versionNumber: 1
@@ -4722,7 +4725,7 @@ describe('workspace agent message sending', () => {
     const finalizedHistory = createAttachment({
       id: stagedHistory.id,
       sessionId: 'source-session',
-      path: 'upload-version:project-1/source-session/history-version-1',
+      path: 'upload-version:project-1/source-session/history-upload-1/history-version-1',
       mimeType: 'image/png',
       versionId: 'history-version-1',
       versionNumber: 1
@@ -4783,7 +4786,7 @@ describe('workspace agent message sending', () => {
     const finalizedHistory = createAttachment({
       id: stagedHistory.id,
       sessionId: 'source-session',
-      path: 'upload-version:project-1/source-session/history-version-1',
+      path: 'upload-version:project-1/source-session/history-upload-1/history-version-1',
       mimeType: 'image/png',
       versionId: 'history-version-1',
       versionNumber: 1
@@ -4853,7 +4856,7 @@ describe('workspace agent message sending', () => {
     const attachment = createAttachment()
     const finalizedAttachment = createAttachment({
       sessionId: 'branched-runtime-session',
-      path: 'upload-version:project-1/branched-runtime-session/upload-version-1',
+      path: 'upload-version:project-1/branched-runtime-session/upload-1/upload-version-1',
       versionId: 'upload-version-1',
       versionNumber: 1
     })
@@ -4941,7 +4944,7 @@ describe('workspace agent message sending', () => {
     const attachment = createAttachment()
     const finalizedAttachment = createAttachment({
       sessionId: 'branched-runtime-session',
-      path: 'upload-version:project-1/branched-runtime-session/upload-version-1',
+      path: 'upload-version:project-1/branched-runtime-session/upload-1/upload-version-1',
       versionId: 'upload-version-1',
       versionNumber: 1
     })
@@ -9174,7 +9177,7 @@ describe('resendEditedWorkspaceMessage', () => {
       expect.objectContaining({
         id: 'upload-source',
         versionId: 'upload-version-source',
-        path: 'upload-version:default-project/source-session/upload-version-source'
+        path: 'upload-version:default-project/source-session/upload-source/upload-version-source'
       })
     ])
     expect(runtime.sendPrompt.mock.calls[0]?.[6]).toBeUndefined()
@@ -9763,7 +9766,7 @@ describe('resendEditedWorkspaceMessage', () => {
     expect(runtime.sendPrompt.mock.calls[0]?.[6]).toEqual([
       expect.objectContaining({
         id: 'upload-1',
-        path: 'upload-version:project-1/source-session/upload-version-1'
+        path: 'upload-version:project-1/source-session/upload-1/upload-version-1'
       })
     ])
   })
@@ -10008,7 +10011,14 @@ describe('edit resend reply streaming', () => {
       })
     ).rejects.toThrow('An annotated image is no longer available')
 
-    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ path: annotation.source.path }))
+    expect(acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: 'artifact',
+        projectId: 'default-project',
+        fileId: 'artifact-1',
+        versionId: 'deleted-version'
+      })
+    )
     expect(runtime.resetSessionContext).not.toHaveBeenCalled()
     expect(runtime.sendPrompt).not.toHaveBeenCalled()
     expect(useSessionStore.getState().sessions[0]?.messages).toEqual(messagesBefore)

@@ -1140,35 +1140,90 @@ describe('production delegated-work composition', () => {
   it('blocks only new child admission when the Session delegation policy is deny', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-policy-'))
     const harness = await createCompositionHarness(root, 'codex')
-    harness.replaceDurable({ ...harness.durable(), delegationPolicy: 'deny' })
+    try {
+      harness.replaceDurable({ ...harness.durable(), delegationPolicy: 'deny' })
 
-    await expect(
-      harness.composition.host.delegate(
+      await expect(
+        harness.composition.host.delegate(
+          harness.caller,
+          { task: 'blocked child', name: 'blocked child' },
+          { wait: false }
+        )
+      ).rejects.toMatchObject({
+        code: 'admission_rejection',
+        message: expect.stringMatching(/delegation is disabled/i)
+      })
+      expect(harness.execution.reservationCounts()).toEqual([])
+
+      harness.replaceDurable({ ...harness.durable(), delegationPolicy: 'allow' })
+      const admitted = await harness.composition.host.delegate(
         harness.caller,
-        { task: 'blocked child', name: 'blocked child' },
+        { task: 'existing child', name: 'existing child' },
         { wait: false }
       )
-    ).rejects.toMatchObject({
-      code: 'admission_rejection',
-      message: expect.stringMatching(/delegation is disabled/i)
-    })
-    expect(harness.execution.reservationCounts()).toEqual([])
+      expect(admitted).toMatchObject({
+        kind: 'receipts',
+        children: [{ name: 'existing child' }]
+      })
 
-    harness.replaceDurable({ ...harness.durable(), delegationPolicy: 'allow' })
-    const admitted = await harness.composition.host.delegate(
-      harness.caller,
-      { task: 'existing child', name: 'existing child' },
-      { wait: false }
+      harness.replaceDurable({ ...harness.durable(), delegationPolicy: 'deny' })
+      await expect(harness.composition.host.children(harness.caller)).resolves.toEqual([
+        expect.objectContaining({ name: 'existing child' })
+      ])
+    } finally {
+      await harness.composition.root.stopAll()
+    }
+  })
+
+  it('waits for pending workspace preparation before stopAll resolves', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-pending-preparation-'))
+    const inputPath = join(root, 'input.txt')
+    await writeFile(inputPath, 'immutable input\n', 'utf8')
+    const inputResolutionStarted = Promise.withResolvers<void>()
+    const releaseInputResolution = Promise.withResolvers<void>()
+    let inputResolutionCount = 0
+    const harness = await createCompositionHarness(
+      root,
+      'codex',
+      undefined,
+      undefined,
+      {},
+      [],
+      undefined,
+      undefined,
+      async (identity) => {
+        if (identity !== 'upload-version:stopping-input') throw new Error('unknown input')
+        inputResolutionCount += 1
+        if (inputResolutionCount === 1) return { path: inputPath, filename: 'input.txt' }
+        inputResolutionStarted.resolve()
+        await releaseInputResolution.promise
+        return { path: inputPath, filename: 'input.txt' }
+      }
     )
-    expect(admitted).toMatchObject({
-      kind: 'receipts',
-      children: [{ name: 'existing child' }]
-    })
+    const delegated = harness.composition.host.delegate(
+      harness.caller,
+      {
+        task: 'pending workspace preparation',
+        name: 'pending workspace preparation',
+        inputs: ['upload-version:stopping-input']
+      },
+      { wait: true }
+    )
+    await inputResolutionStarted.promise
 
-    harness.replaceDurable({ ...harness.durable(), delegationPolicy: 'deny' })
-    await expect(harness.composition.host.children(harness.caller)).resolves.toEqual([
-      expect.objectContaining({ name: 'existing child' })
-    ])
+    let stopped = false
+    const stopping = harness.composition.root.stopAll().then(() => {
+      stopped = true
+    })
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(stopped).toBe(false)
+    } finally {
+      releaseInputResolution.resolve()
+      await stopping
+      await delegated.catch(() => undefined)
+      await harness.composition.root.deleteSession(harness.session.id)
+    }
   })
 
   it('rechecks authoritative delegation policy inside durable child admission', async () => {
@@ -2710,6 +2765,12 @@ describe('production delegated-work composition', () => {
       provenance: {
         finalizeRun: async (
           request: Parameters<ArtifactProvenanceRepository['finalizeRun']>[0]
+        ) => {
+          await ownership.validateFinalizationOwnership(request)
+          return versionsByRun.get(request.artifactRunId) ?? []
+        },
+        activateFinalizedRun: async (
+          request: Parameters<ArtifactProvenanceRepository['activateFinalizedRun']>[0]
         ) => {
           await ownership.validateFinalizationOwnership(request)
           return versionsByRun.get(request.artifactRunId) ?? []

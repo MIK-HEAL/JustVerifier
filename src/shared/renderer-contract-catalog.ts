@@ -71,6 +71,16 @@ import type {
   SaveSessionArtifactsResult
 } from './file-save'
 import type {
+  ManagedFileVersionCancelDiffRequest,
+  ManagedFileVersionDiffRequest,
+  ManagedFileVersionDiffResult,
+  ManagedFileVersionInspectRequest,
+  ManagedFileVersionInspectResult,
+  ManagedFileVersionIpcResult,
+  ManagedFileVersionSaveTextEditRequest,
+  SaveTextEditResult
+} from './managed-file-versions'
+import type {
   ContributionTemplateExportResult,
   SpecialistPackageReportSaveResult,
   SpecialistExportPreview,
@@ -1026,6 +1036,26 @@ export const RENDERER_API_CONTRACT = Object.freeze({
     'logs:reveal-in-folder',
     LOCAL
   ]),
+  'managedFileVersions.cancelDiff': callable<
+    (
+      request: ManagedFileVersionCancelDiffRequest
+    ) => Promise<ManagedFileVersionIpcResult<{ cancelled: boolean }>>
+  >()('managed-file-versions', ['managed-file-versions:cancel-diff', ELECTRON]),
+  'managedFileVersions.diffText': callable<
+    (
+      request: ManagedFileVersionDiffRequest
+    ) => Promise<ManagedFileVersionIpcResult<ManagedFileVersionDiffResult>>
+  >()('managed-file-versions', ['managed-file-versions:diff-text', ELECTRON]),
+  'managedFileVersions.inspect': callable<
+    (
+      request: ManagedFileVersionInspectRequest
+    ) => Promise<ManagedFileVersionIpcResult<ManagedFileVersionInspectResult>>
+  >()('managed-file-versions', ['managed-file-versions:inspect', ELECTRON]),
+  'managedFileVersions.saveTextEdit': callable<
+    (
+      request: ManagedFileVersionSaveTextEditRequest
+    ) => Promise<ManagedFileVersionIpcResult<SaveTextEditResult>>
+  >()('managed-file-versions', ['managed-file-versions:save-text-edit', ELECTRON]),
   'memory.clearAll': callable<() => Promise<MemorySnapshot>>()('memory', [
     'memory:clear-all',
     WEB,
@@ -2295,6 +2325,7 @@ const RENDERER_CAPABILITY_ORDER = Object.freeze([
   'local-fs',
   'memory',
   'logs',
+  'managed-file-versions',
   'network',
   'notebook',
   'notebook-environment',

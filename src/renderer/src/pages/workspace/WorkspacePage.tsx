@@ -154,7 +154,6 @@ const WorkspacePage = ({
   const previewOpenRequestVersion = usePreviewWorkbenchStore((state) => state.openRequestVersion)
   const activePreviewItemId = usePreviewWorkbenchStore((state) => state.activeItemId)
   const fileDialogItem = usePreviewWorkbenchStore((state) => state.fileDialogItem)
-  const closeFileDialog = usePreviewWorkbenchStore((state) => state.closeFileDialog)
   const togglePreviewPanel = usePreviewWorkbenchStore((state) => state.togglePanel)
   const projectFormDialog = useProjectFormDialog()
   const [projectFileCount, setProjectFileCount] = useState<{
@@ -601,6 +600,7 @@ const WorkspacePage = ({
     changeComposerDraftDoc(
       appendArtifactMention(draftDoc, {
         id: file.id,
+        sourceFileId: file.sourceFileId,
         name: file.name,
         path: file.path,
         source: file.source,
@@ -1290,7 +1290,8 @@ const WorkspacePage = ({
             ? fileDialogItem
             : undefined
         }
-        onClose={closeFileDialog}
+        onClose={usePreviewWorkbenchStore.getState().closeFileDialog}
+        onItemChange={usePreviewWorkbenchStore.getState().openFileDialog}
         {...previewAnnotations}
         onPdfContextError={setAttachmentError}
       />
