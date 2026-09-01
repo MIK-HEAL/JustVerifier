@@ -31,8 +31,10 @@ import {
   type AcpSteerFollowUpResult,
   type AcpResumeSessionRequest,
   type AcpRevokePermissionGrantRequest,
+  type AcpRuntimeState,
   type AcpSetPermissionProfileRequest,
-  type AcpStateSnapshot
+  type AcpStateSnapshot,
+  type AcpStateUpdate
 } from '../../shared/acp'
 import type { GrantedLocalRoot } from '../../shared/local-fs'
 import { isCodexSubscriptionProviderId, type AgentFrameworkId } from '../../shared/settings'
@@ -159,7 +161,7 @@ import {
 } from './runtime-plan-composition'
 
 export type AcpRuntimeCallbacks = {
-  onStateChanged?: (state: AcpStateSnapshot) => void
+  onStateChanged?: (state: AcpStateUpdate) => void
   onEvent?: (event: AcpRuntimeEvent) => void
   onPermissionRequest?: (request: AcpPermissionRequest) => void
   onPermissionSettled?: (requestId: string, state: AcpPermissionSettlementState) => void
@@ -745,6 +747,10 @@ class AcpRuntime {
   // Returns an immutable renderer-facing view of connection and session state.
   getSnapshot(): AcpStateSnapshot {
     return this.publication.getSnapshot()
+  }
+
+  getState(): AcpRuntimeState {
+    return this.publication.getState()
   }
 
   captureBackend(): AcpBackendGenerationView {
