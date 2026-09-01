@@ -987,6 +987,10 @@ const createApplicationModules = async (
   const delegatedActivity = createDelegatedActivityProjection()
   const getActiveDelegatedSessions = (): { projectId: string; sessionId: string }[] =>
     delegatedActivity.getActiveDelegatedSessions()
+  const getActiveSideChatSessions = (): { projectId: string; sessionId: string }[] =>
+    (sideChatOwnerRef.current?.list().chats ?? [])
+      .filter((chat) => chat.running)
+      .map((chat) => ({ projectId: chat.projectId, sessionId: chat.parentSessionId }))
 
   const sessionPersistenceCoordinator = new SessionPersistenceCoordinator(
     sessionRepository,
@@ -1151,6 +1155,7 @@ const createApplicationModules = async (
       runtime: {
         getActivePromptSessions: () => runtimeRef.current?.getActivePromptSessions() ?? []
       },
+      sideChat: { getActivePromptSessions: getActiveSideChatSessions },
       delegated: { getActiveDelegatedSessions },
       notebook: {
         getActiveNotebookSessions: () =>
@@ -3043,15 +3048,23 @@ const createApplicationModules = async (
       }
     },
     notebook: notebookService,
+    sideChat: {
+      shutdown: () => sideChatRuntime.shutdown(),
+      suspendAll: (options) => sideChatRuntime.suspendAll(options)
+    },
     log: createLogger('shutdown')
   })
   const durableBackendHandoffGate = createDurableInstallGate(
-    () => shutdownCoordinator.runForUpdateGate(UPDATE_SHUTDOWN_BUDGET_MS),
+    () =>
+      shutdownCoordinator.runForUpdateGate(UPDATE_SHUTDOWN_BUDGET_MS, {
+        holdSideChatAdmission: true
+      }),
     () => confirmRendererDurability()
   )
   const detectResearchBlockers = (): UpdateBlocker[] => {
     const blockers: UpdateBlocker[] = detectActiveSessions({
       runtime: { getActivePromptSessions: () => runtime.getQuitBlockingPromptSessions() },
+      sideChat: { getActivePromptSessions: getActiveSideChatSessions },
       delegated: { getActiveDelegatedSessions },
       notebook: notebookService
     }).map((session) => session.kind)
@@ -3065,7 +3078,10 @@ const createApplicationModules = async (
     createDurableInstallGate(
       createDataRootResearchSafeInstallGate(
         detectResearchBlockers,
-        () => shutdownCoordinator.runForUpdateGate(UPDATE_SHUTDOWN_BUDGET_MS),
+        () =>
+          shutdownCoordinator.runForUpdateGate(UPDATE_SHUTDOWN_BUDGET_MS, {
+            holdSideChatAdmission: true
+          }),
         confirmedInterruption
       ),
       async () => {
@@ -3081,14 +3097,21 @@ const createApplicationModules = async (
   // Construct update handling only after its backend-shutdown gate exists. The in-place strategy owns
   // this immutable dependency from construction; the manifest fallback ignores it because it does not
   // quit the running app to install.
+  const abortUpdateHandoff = (): void => {
+    try {
+      sideChatRuntime.resumeAfterHandoff()
+    } finally {
+      notifyRendererDurabilityAborted()
+    }
+  }
   const updateStrategy = createUpdateStrategy(process.platform, {
     translate,
     installGate: createActiveResearchSafeInstallGate(
       detectResearchBlockers,
       durableBackendHandoffGate,
-      () => isMigrationInProgress() || isMigrationPending(),
-      notifyRendererDurabilityAborted
-    )
+      () => isMigrationInProgress() || isMigrationPending()
+    ),
+    releaseInstallHandoff: abortUpdateHandoff
   })
   const updateCommandOwner = createUpdateCommandOwner(updateStrategy)
   let stopUpdateScheduler: (() => void) | undefined
@@ -3579,6 +3602,7 @@ const createApplicationModules = async (
     runtime,
     notebook: notebookService,
     getActivePromptSessions: () => runtime.getActivePromptSessions(),
+    getActiveSideChatSessions,
     getActiveDelegatedSessions,
     hasActiveReviewerWork: () => reviewerModelRuntimeShutdown?.hasActiveWork() ?? false,
     settingsService,
@@ -3586,14 +3610,24 @@ const createApplicationModules = async (
     acknowledgeWebRendererFlush: webSessionPersistenceFlush.acknowledge,
     notifyDataRootHandoffAborted: () => {
       try {
-        notifyRendererDurabilityAborted()
+        sideChatRuntime.resumeAfterHandoff()
       } finally {
-        webSessionPersistenceFlush.notifyAborted()
+        try {
+          notifyRendererDurabilityAborted()
+        } finally {
+          webSessionPersistenceFlush.notifyAborted()
+        }
       }
     },
     prepareDataRootHandoff: async (target, confirmedInterruption) => {
-      const readiness = await durableDataRootHandoffGate(target, confirmedInterruption)
-      return readiness.completed && readiness.reaped
+      let prepared = false
+      try {
+        const readiness = await durableDataRootHandoffGate(target, confirmedInterruption)
+        prepared = readiness.completed && readiness.reaped
+        return prepared
+      } finally {
+        if (!prepared) sideChatRuntime.resumeAfterHandoff()
+      }
     },
     cleanupJournal: dataRootCleanupJournal
   })
@@ -3603,6 +3637,7 @@ const createApplicationModules = async (
         runtime,
         notebook: notebookService,
         getActivePromptSessions: () => runtime.getActivePromptSessions(),
+        getActiveSideChatSessions,
         getActiveDelegatedSessions,
         hasActiveReviewerWork: () => reviewerModelRuntimeShutdown?.hasActiveWork() ?? false,
         settingsService
@@ -4028,8 +4063,9 @@ const createApplicationModules = async (
     }
   }
 
-  // The shared coordinator remains the sole ACP + Notebook teardown owner. Register command routing
-  // after it so reverse disposal removes adapters, then the router, before any underlying owner stops.
+  // The shared coordinator remains the sole ACP + Notebook teardown owner.
+  // It also coordinates Side Chat suspension/shutdown. Register command routing after it so reverse
+  // disposal removes adapters, then the router, before any underlying owner stops.
   await modules.add({ shutdownCoordinator }, ({ shutdownCoordinator: coordinator }) => ({
     name: 'backend-shutdown-coordinator',
     capability: undefined,
@@ -4082,6 +4118,7 @@ const createApplicationModules = async (
     detectActiveSessions: () =>
       detectActiveSessions({
         runtime: { getActivePromptSessions: () => runtime.getQuitBlockingPromptSessions() },
+        sideChat: { getActivePromptSessions: getActiveSideChatSessions },
         delegated: { getActiveDelegatedSessions },
         notebook: notebookService
       }),
