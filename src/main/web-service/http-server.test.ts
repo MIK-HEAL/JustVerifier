@@ -1251,6 +1251,7 @@ describe('startWebHttpServer', () => {
         level: 'info',
         sessionId: 'session-1',
         kind: 'message',
+        role: 'assistant',
         text: 'Hi'
       }
     ])
@@ -1275,6 +1276,7 @@ describe('startWebHttpServer', () => {
             level: 'info',
             sessionId: 'session-1',
             kind: 'message',
+            role: 'assistant',
             text: 'Hi'
           }
         },
@@ -1339,6 +1341,7 @@ describe('startWebHttpServer', () => {
         level: 'info',
         sessionId: 'session-1',
         kind: 'message',
+        role: 'assistant',
         text: 'Backlogged event'
       }
     ])
@@ -1364,6 +1367,7 @@ describe('startWebHttpServer', () => {
         level: 'info',
         sessionId: 'session-1',
         kind: 'message',
+        role: 'assistant',
         text: 'x'.repeat(17 * 1024 * 1024)
       }
     ])
@@ -1417,6 +1421,7 @@ describe('startWebHttpServer', () => {
         level: 'info',
         sessionId: 'desktop-session',
         kind: 'message',
+        role: 'assistant',
         text: 'Private desktop Session detail'
       }
     ])
@@ -1863,6 +1868,7 @@ describe('startWebHttpServer', () => {
         level: 'info',
         sessionId: 'task-session',
         kind: 'message',
+        role: 'assistant',
         text: 'Task output'
       }
     ])
@@ -1894,6 +1900,7 @@ describe('startWebHttpServer', () => {
           level: 'info',
           sessionId: 'task-session',
           kind: 'message',
+          role: 'assistant',
           text: 'Task output'
         }
       },
