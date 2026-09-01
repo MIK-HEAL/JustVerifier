@@ -217,6 +217,7 @@ import {
   createConversationExportService,
   registerConversationExportIpcHandler
 } from './session-persistence/conversation-export'
+import { SessionProjectionDiagnostics } from './session-persistence/projection-diagnostics'
 import { createProjectFilesHandlers, registerProjectFilesIpcHandlers } from './project-files/ipc'
 import { createManagedFileIndexRepository } from './project-files/repository'
 import {
@@ -1015,6 +1016,13 @@ const createApplicationModules = async (
         session,
         originClientId: MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID
       })
+    },
+    (session) => {
+      // Re-enabling Delegation invalidates the last admission rejection, so the Subagent
+      // availability notice disappears instead of waiting for the next successful delegation.
+      if (session.delegationPolicy === 'allow') {
+        delegatedWorkRef.current?.root.clearUnavailableReason?.(session.id)
+      }
     }
   )
   const sessionPdfContextOwner = new SessionPdfContextOwner({
@@ -1228,6 +1236,7 @@ const createApplicationModules = async (
     sessionLoader: sessionPersistenceCoordinator
   })
   const loadAllSessions = (): Promise<LoadAllSessionsResult> => sessionCatalogHydration.loadAll()
+  const sessionProjectionDiagnostics = new SessionProjectionDiagnostics()
   const ensureSessionProjection = async (): Promise<{
     result?: LoadAllSessionsResult
     sessions: SessionSummary[]
@@ -1257,11 +1266,7 @@ const createApplicationModules = async (
       return {
         sessions: projection.sessions,
         manifest: projection.result?.manifest ?? (await sessionRepository.loadManifest()),
-        diagnostics: projection.result?.diagnostics ?? {
-          isComplete: true,
-          warnings: [],
-          isProjectDeletionRecoveryComplete: true
-        }
+        diagnostics: sessionProjectionDiagnostics.resolve(projection.result?.diagnostics)
       }
     },
     loadUsage: async () => {
