@@ -88,7 +88,8 @@ describe('session persistence IPC handlers', () => {
       delete: vi.fn().mockResolvedValue(undefined),
       createDeletionIntent: vi.fn().mockResolvedValue(undefined),
       deleteDeletionIntent: vi.fn().mockResolvedValue(undefined),
-      listDeletionIntents: vi.fn().mockResolvedValue(['project-a'])
+      listDeletionIntents: vi.fn().mockResolvedValue(['project-a']),
+      listDeletionCleanupProjects: vi.fn().mockResolvedValue([{ projectId: 'project-a' }])
     }
     const sessions: ProjectSessionDeletion = {
       deleteProjectSessions: vi.fn(async (projectId: string) => {
@@ -151,7 +152,7 @@ describe('session persistence IPC handlers', () => {
       expectedArchivedAt: null
     })
     await repository.deleteSession(session.projectId, session.id)
-    await repository.saveManifest({ lastProjectId: session.projectId, lastSessionId: session.id })
+    await repository.saveManifest({ lastSessionId: session.id })
 
     expect(waitForProjectOperations.mock.calls).toEqual([
       [[session.projectId]],
@@ -353,11 +354,8 @@ describe('session persistence IPC handlers', () => {
     // Reviews are retained for Artifact Provenance after the session transcript is deleted.
     expect(reviewRepository.deleteReviewsForSession).not.toHaveBeenCalled()
 
-    await handlers.saveManifest({ lastProjectId: 'project-a', lastSessionId: 'session-1' })
-    expect(repository.saveManifest).toHaveBeenCalledWith({
-      lastProjectId: 'project-a',
-      lastSessionId: 'session-1'
-    })
+    await handlers.saveManifest({ lastSessionId: 'session-1' })
+    expect(repository.saveManifest).toHaveBeenCalledWith({ lastSessionId: 'session-1' })
   })
 
   it('does not forward Main-owned specialist save authority from renderer IPC', async () => {
@@ -666,7 +664,7 @@ describe('session persistence IPC handlers', () => {
       archived: true,
       expectedArchivedAt: null
     }
-    const manifestRequest = { lastProjectId: 'project-a', lastSessionId: 'session-1' }
+    const manifestRequest = { lastSessionId: 'session-1' }
     const event = { sender: { id: 2 } }
     await expect(ipcHandlers.get('sessions:load-all')?.()).resolves.toBe(loadResult)
     await expect(ipcHandlers.get('sessions:load-one')?.(event, deleteRequest)).resolves.toBe(
