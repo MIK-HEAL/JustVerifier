@@ -513,6 +513,9 @@ const createApplicationModules = async (
   const webSessionPersistenceFlush = createWebSessionPersistenceFlush(applicationEvents)
   // One settings service backs both the settings IPC and the ACP spawn config (single source of truth).
   const specialistPackageSkillAdapter = new UserSkillSpecialistPackageAdapter(resolveStorageRoot())
+  const specialistPackageRecovery = {
+    current: undefined as (<T>(operation: () => Promise<T>) => Promise<T>) | undefined
+  }
   const settingsRepository = new SettingsRepository(
     settingsStore ?? resolveStorageRoot(),
     (operation) => specialistPackageSkillAdapter.runMutationExclusive(operation)
@@ -628,6 +631,8 @@ const createApplicationModules = async (
         await networkProxyRuntime.apply(settings)
         await notebookNetworkSandbox.updateParentProxy()
       },
+      withUserSkillRecoveryBarrier: (operation) =>
+        specialistPackageRecovery.current?.(operation) ?? operation(),
       applyNotebookNetwork: async (settings) => notebookNetworkSandbox.applySettings(settings),
       validatePackageMirror: async (settings) => {
         await resolveNotebookTrustBundle(settings.caBundle)
@@ -660,8 +665,6 @@ const createApplicationModules = async (
     }
   }
   const storedSettings = await settingsService.getStoredSettings()
-  await settingsService.migrateAgentHomeSkillIdentities()
-  composition.phase('agent-home-skill-identity-migration')
   const storageLog = createLogger('storage')
   await networkProxyRuntime.apply(storedSettings.networkProxy)
   // Prime the data-root cache from settings before any data repository is constructed below. A change
@@ -1445,7 +1448,11 @@ const createApplicationModules = async (
     protectedSpecialistIds: ['reviewer'],
     protectedSpecialistNames: ['Reviewer']
   })
-  const specialistService = new SpecialistService(specialistRepository, builtinRegistry)
+  const specialistService = new SpecialistService(
+    specialistRepository,
+    builtinRegistry,
+    (operation) => specialistPackageRecovery.current?.(operation) ?? operation()
+  )
   const marketplaceRepository = new MarketplaceRepository(resolveStorageRoot())
   const marketplaceOperationCoordinator = new MarketplaceOperationCoordinator()
   await specialistService.ensureBuiltinCatalogReady()
@@ -1465,11 +1472,14 @@ const createApplicationModules = async (
     applicationEvents
   )
   const tagCleanupLog = createLogger('tags:cleanup')
+  const removeResourceTagsOrThrow = async (
+    resources: Parameters<TagService['removeResources']>[0]
+  ): Promise<void> => tagService.removeResources(resources)
   const removeResourceTags = async (
     resources: Parameters<TagService['removeResources']>[0]
   ): Promise<void> => {
     try {
-      await tagService.removeResources(resources)
+      await removeResourceTagsOrThrow(resources)
     } catch (error) {
       tagCleanupLog.warn('resource deletion Tag cleanup failed', { error, resources })
     }
@@ -1543,7 +1553,7 @@ const createApplicationModules = async (
       }
     },
     onResourcesDeleted: (specialistId, skillIds) =>
-      removeResourceTags([
+      removeResourceTagsOrThrow([
         { resourceType: 'catalog.specialist', resourceId: specialistId },
         ...skillIds.map((resourceId) => ({
           resourceType: 'catalog.skill' as const,
@@ -1555,6 +1565,10 @@ const createApplicationModules = async (
       void runtime.requestSkillsReload()
     }
   })
+  specialistPackageRecovery.current = (operation) =>
+    specialistPackageService.withRecoveryBarrier(operation)
+  await settingsService.migrateAgentHomeSkillIdentities()
+  composition.phase('agent-home-skill-identity-migration')
   const marketplaceService = new MarketplaceService({
     repository: marketplaceRepository,
     operationCoordinator: marketplaceOperationCoordinator,
@@ -2573,6 +2587,8 @@ const createApplicationModules = async (
       (await settingsRepository.getSettings()).connectors?.pendingCustomServerDeletionIds ?? []
     await reconcilePendingCustomServerDeletions(permissionGrantRegistry, {
       pendingCustomServerDeletionIds,
+      removeTagsForConnector: (serverId) =>
+        removeResourceTagsOrThrow([{ resourceType: 'catalog.connector', resourceId: serverId }]),
       completeCustomServerDeletion: (serverId) =>
         settingsRepository.completeCustomServerDeletion(serverId)
     })
@@ -2581,7 +2597,7 @@ const createApplicationModules = async (
     recoverPendingCustomServerDeletions()
       .catch((error) =>
         permissionGrantsLog.error(
-          'pending Connector permission cleanup failed',
+          'pending Connector relationship cleanup failed',
           errorLogFields(error)
         )
       )
@@ -3218,7 +3234,7 @@ const createApplicationModules = async (
       pruneCustomServerPermissions: (serverId) =>
         permissionGrantRegistry.prune({ kind: 'mcp_server', serverId }).then(() => undefined),
       removeTagsForConnector: (resourceId) =>
-        removeResourceTags([{ resourceType: 'catalog.connector', resourceId }]),
+        removeResourceTagsOrThrow([{ resourceType: 'catalog.connector', resourceId }]),
       beginCustomServerSecurityChange: (serverId) =>
         connectorService.beginCustomServerSecurityChange(serverId),
       clearCustomServerFailure: (serverId) => connectorService.clearCustomServerFailure(serverId),
