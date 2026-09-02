@@ -2910,7 +2910,6 @@ describe('startWebHttpServer', () => {
       `http://127.0.0.1:${server.port}/rpc/${encodeURIComponent(channel)}`
     const bootstrapUrl = `http://127.0.0.1:${server.port}/api/bootstrap`
 
-    expect(REMOTE_LOCAL_ONLY_RPC_CHANNELS).toContain('runtime:set-selection')
     for (const channel of [
       'settings:login-isolated-claude',
       'settings:login-isolated-claude-browser',
@@ -3033,7 +3032,6 @@ describe('startWebHttpServer', () => {
       'runtime:set-agent-environment-creation-enabled',
       'runtime:set-environment-enabled',
       'runtime:set-install-authorized',
-      'runtime:set-selection',
       'runtime:unregister-interpreter'
     ])
     expect(
@@ -3044,8 +3042,7 @@ describe('startWebHttpServer', () => {
       'runtime:get-enablement',
       'runtime:list-environments',
       'runtime:list-package-counts',
-      'runtime:list-packages',
-      'runtime:survey'
+      'runtime:list-packages'
     ])
   })
 

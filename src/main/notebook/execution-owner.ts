@@ -355,7 +355,6 @@ class NotebookExecutionOwner {
       agentFrameId: runAgentFrameId(session, request.provenanceContext),
       text: { stdout: '', stderr: '', traceback: '', plain: [] },
       outputs: [],
-      artifacts: [],
       workingFiles: [],
       inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
     }
@@ -582,7 +581,6 @@ class NotebookExecutionOwner {
       agentFrameId: runAgentFrameId(session, request.provenanceContext),
       text: { stdout: '', stderr: '', traceback: '', plain: [] },
       outputs: [],
-      artifacts: [],
       workingFiles: [],
       inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
     }
@@ -818,7 +816,6 @@ class NotebookExecutionOwner {
       agentFrameId: runAgentFrameId(session, request.provenanceContext),
       text: { stdout: '', stderr: '', traceback: '', plain: [] },
       outputs: [],
-      artifacts: [],
       workingFiles: [],
       inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
     }
