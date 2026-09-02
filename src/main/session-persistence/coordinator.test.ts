@@ -365,6 +365,96 @@ const createProjectReconciliationSnapshot = (): ArtifactProjectReconciliationSna
   ({}) as ArtifactProjectReconciliationSnapshot
 
 describe('SessionPersistenceCoordinator', () => {
+  it('rejects a retry when any requested native Artifact run remains unresolved', async () => {
+    const session = createSession()
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn().mockResolvedValue({ status: 'found', session })
+    })
+    const artifactStorage = {
+      prepareProjectReconciliation: vi
+        .fn()
+        .mockResolvedValue(createProjectReconciliationSnapshot()),
+      reconcileSession: vi.fn().mockResolvedValue({
+        recoveredMessageArtifacts: [
+          { messageId: 'message-1', artifacts: [createRecoveredArtifact()] }
+        ],
+        nativeFinalizationRunIds: ['run-1', 'run-2'],
+        unresolvedNativeFinalizationRunIds: ['run-2']
+      })
+    }
+    const coordinator = new SessionPersistenceCoordinator(
+      repository,
+      createFileIndex(),
+      undefined,
+      undefined,
+      undefined,
+      artifactStorage
+    )
+
+    await expect(
+      coordinator.retryArtifactFinalization({
+        projectId: session.projectId,
+        sessionId: session.id,
+        messageId: 'message-1',
+        pendingPaths: [
+          '/artifacts/storage-session/.pending/run-1/a.txt',
+          '/artifacts/storage-session/.pending/run-2/b.txt'
+        ]
+      })
+    ).rejects.toThrow(/remains unresolved/u)
+  })
+
+  it('scopes an explicit Artifact retry so an unrelated native run cannot block it', async () => {
+    const session = createSession()
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn().mockResolvedValue({ status: 'found', session })
+    })
+    const reconcileSession = vi.fn(
+      async (
+        _projectId: string,
+        _sessionId: string,
+        _session: PersistedChatSession,
+        options?: { artifactRunIds?: string[] }
+      ) => {
+        if (!options?.artifactRunIds?.includes('run-legacy')) {
+          throw new Error('unrelated native recovery failed')
+        }
+        return {
+          recoveredMessageArtifacts: [],
+          nativeFinalizationRunIds: [],
+          unresolvedNativeFinalizationRunIds: []
+        }
+      }
+    )
+    const artifactStorage = {
+      prepareProjectReconciliation: vi
+        .fn()
+        .mockResolvedValue(createProjectReconciliationSnapshot()),
+      reconcileSession
+    }
+    const coordinator = new SessionPersistenceCoordinator(
+      repository,
+      createFileIndex(),
+      undefined,
+      undefined,
+      undefined,
+      artifactStorage
+    )
+    const request = {
+      projectId: session.projectId,
+      sessionId: session.id,
+      messageId: 'message-1',
+      pendingPaths: ['/artifacts/storage-session/.pending/run-legacy/result.txt']
+    }
+
+    await expect(coordinator.retryArtifactFinalization(request)).resolves.toBeUndefined()
+    expect(reconcileSession).toHaveBeenCalledWith(session.projectId, session.id, session, {
+      removeOrphanStaging: false,
+      artifactRunIds: ['run-legacy']
+    })
+    expect(artifactStorage.prepareProjectReconciliation).not.toHaveBeenCalled()
+  })
+
   it('resolves Message membership from the durable active Branch', async () => {
     const prompt = (id: string, createdAt: number): PersistedChatMessage => ({
       id,
