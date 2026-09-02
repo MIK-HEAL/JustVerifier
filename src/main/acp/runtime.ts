@@ -631,7 +631,8 @@ class AcpRuntime {
       reload: {
         disconnect: () => this.disconnect(false),
         resume: (request) => this.resumeSession(request)
-      }
+      },
+      onPromptEnded: (sessionId, turnToken) => this.nativeFollowUp.releaseTurn(sessionId, turnToken)
     })
     this.contextCompactionWorkflow = prompt.contextCompactionWorkflow
     this.promptTurnWorkflow = prompt.promptTurnWorkflow
@@ -674,6 +675,7 @@ class AcpRuntime {
     const lifecycle = composeAcpRuntimeLifecycleOwners(options, base, session, {
       connect: (request) => this.connect(request),
       disconnect: (emitClosedStatus) => this.disconnect(emitClosedStatus),
+      clearPromptResources: () => this.nativeFollowUp.clear(),
       openAgentConnection: (attempt, onFrameworkResolved) =>
         this.openAgentConnection(attempt, onFrameworkResolved)
     })
@@ -687,7 +689,9 @@ class AcpRuntime {
       lifecycle,
       {
         clearUserChoiceProvenanceForSession: (sessionId) =>
-          this.clearUserChoiceProvenanceForSession(sessionId)
+          this.clearUserChoiceProvenanceForSession(sessionId),
+        releasePromptResourcesForSession: (sessionId) =>
+          this.nativeFollowUp.releaseSession(sessionId)
       }
     )
     this.providerSessionCreator = providerSessions.providerSessionCreator
@@ -1431,7 +1435,8 @@ class AcpRuntime {
       ...(prepared.imageSources ? { imageSources: prepared.imageSources } : {}),
       historyImageCount: prepared.historyImageCount,
       ...(livePrompt?.kind === 'prompt' ? { signal: livePrompt.signal } : {}),
-      ...(imageCompatibility ? { imageCompatibility } : {})
+      ...(imageCompatibility ? { imageCompatibility } : {}),
+      close: prepared.close
     })
   }
 
