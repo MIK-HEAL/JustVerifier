@@ -3680,8 +3680,6 @@ const createApplicationModules = async (
     )
   )
   const artifactHandlers = createArtifactHandlers(artifactRepository, artifactRunRegistry, {
-    getActiveArtifactRunIds: () =>
-      runtimeRef.current ? runtimeRef.current.getActiveArtifactRunIds() : [],
     provenance: artifactProvenanceRepository,
     openLatestManagedFile: (request) =>
       managedFileVersionService.openLatest({
@@ -3703,7 +3701,6 @@ const createApplicationModules = async (
     registerArtifactIpcHandlers(
       artifactRepository,
       artifactRunRegistry,
-      () => (runtimeRef.current ? runtimeRef.current.getActiveArtifactRunIds() : []),
       artifactProvenanceRepository,
       (projectId, sessionId, mutation) =>
         sessionPersistenceCoordinator.runSessionMutation(projectId, sessionId, mutation),
