@@ -23,7 +23,7 @@ import { relativeTimeParts } from '@/lib/format-relative-time'
 import { sessionWaitReasonLabelKeys } from '@/lib/session-wait-reason-labels'
 import { cn } from '@/lib/utils'
 import { useComputeStore } from '@/stores/compute-store'
-import { useNavigationStore } from '@/stores/navigation-store'
+import { openNotificationProject, useNavigationStore } from '@/stores/navigation-store'
 import { useNotificationInboxStore } from '@/stores/notification-inbox-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useSessionStore } from '@/stores/session-store'
@@ -317,10 +317,12 @@ const NotificationBellContent = ({
 
     try {
       if (item.sessionId) {
-        useNavigationStore.getState().openSessionById(item.sessionId, 'notification')
+        const opened = useNavigationStore.getState().openSessionById(item.sessionId, 'notification')
+        if (!opened) return
         setOpen(false)
       } else if (item.projectId) {
-        useNavigationStore.getState().openProject(item.projectId, 'notification')
+        const opened = await openNotificationProject(item.projectId)
+        if (!opened) return
         setOpen(false)
       } else if (replayedApproval) {
         setOpen(false)

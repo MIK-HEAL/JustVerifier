@@ -11,7 +11,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { useNavigationStore } from '@/stores/navigation-store'
+import { openNotificationProject, useNavigationStore } from '@/stores/navigation-store'
 import { useNotificationInboxStore } from '@/stores/notification-inbox-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useSessionStore } from '@/stores/session-store'
@@ -192,12 +192,15 @@ const NotificationLiveToastContent = (): React.JSX.Element | null => {
   if (!notice) return null
 
   const { notification, projectName, sessionTitle, detailPreview } = notice.lead
-  const openLead = (): void => {
+  const openLead = async (): Promise<void> => {
+    let opened = true
     try {
       if (notification.sessionId) {
-        useNavigationStore.getState().openSessionById(notification.sessionId, 'notification')
+        opened = useNavigationStore
+          .getState()
+          .openSessionById(notification.sessionId, 'notification')
       } else if (notification.projectId) {
-        useNavigationStore.getState().openProject(notification.projectId, 'notification')
+        opened = await openNotificationProject(notification.projectId)
       } else {
         openVisibleNotificationCenter()
       }
@@ -205,6 +208,7 @@ const NotificationLiveToastContent = (): React.JSX.Element | null => {
       // Keep the durable inbox entry unread when its target cannot be opened.
       return
     }
+    if (!opened) return
     if (notification.readAt === undefined) {
       runNotificationTask(() => markRead([notification.id]))
     }
