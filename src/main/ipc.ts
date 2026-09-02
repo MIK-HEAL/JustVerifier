@@ -360,6 +360,13 @@ import {
 } from './storage/migration-state'
 import { normalizeLegacyDataPaths } from './storage/normalize-legacy-paths'
 import { DataRootCleanupJournal } from './storage/data-root-cleanup'
+import {
+  markManagedProjectWorkspacesRetained,
+  markManagedWorkspaceRetained,
+  reconcileProvisionalManagedWorkspaces,
+  restoreManagedProjectWorkspacesActive,
+  restoreManagedWorkspaceActive
+} from './storage/managed-workspace-ownership'
 import { deleteSources } from './storage/data-migration'
 import { removeMicromambaCacheForRoot } from './notebook/micromamba-cache'
 import { removeNotebookWorkloadCache } from './notebook/notebook-workload-cache-paths'
@@ -996,6 +1003,7 @@ const createApplicationModules = async (
       .filter((chat) => chat.running)
       .map((chat) => ({ projectId: chat.projectId, sessionId: chat.parentSessionId }))
 
+  const managedWorkspaceRecoveryCutoff = Date.now()
   const sessionPersistenceCoordinator = new SessionPersistenceCoordinator(
     sessionRepository,
     projectFilesRepository,
@@ -1031,6 +1039,14 @@ const createApplicationModules = async (
       if (session.delegationPolicy === 'allow') {
         delegatedWorkRef.current?.root.clearUnavailableReason?.(session.id)
       }
+    },
+    {
+      reconcileProvisional: (sessions) =>
+        reconcileProvisionalManagedWorkspaces(sessions, managedWorkspaceRecoveryCutoff),
+      markProjectRetained: markManagedProjectWorkspacesRetained,
+      restoreProjectActive: restoreManagedProjectWorkspacesActive,
+      markRetained: markManagedWorkspaceRetained,
+      restoreActive: restoreManagedWorkspaceActive
     }
   )
   const sessionPdfContextOwner = new SessionPdfContextOwner({
