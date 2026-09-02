@@ -4048,6 +4048,314 @@ describe('notebook runtime service', () => {
     expect(shutdowns).toBe(0)
   })
 
+  it('restarts only the requested R environment without restarting the session executor', async () => {
+    const root = await createStorageRoot()
+    let restarts = 0
+    const terminated: Array<['python' | 'r' | 'repl', string]> = []
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true }),
+        restart: async () => {
+          restarts += 1
+        },
+        terminate: async (kind, environment) => {
+          terminated.push([kind, environment])
+        }
+      })
+    })
+    const request = { sessionId: 'session-1', workspaceCwd: root }
+    await service.execute({ ...request, language: 'python', code: 'python_state = 1' })
+    await service.execute({ ...request, language: 'r', code: 'r_state <- 1' })
+
+    const restarted = await service.restart({
+      ...request,
+      language: 'r',
+      environment: DEFAULT_R_ENV
+    })
+
+    expect(restarts).toBe(0)
+    expect(terminated).toEqual([['r', DEFAULT_R_ENV]])
+    expect(restarted.environments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ processKey: `python:${DEFAULT_PY_ENV}`, status: 'idle' }),
+        expect.objectContaining({ processKey: `r:${DEFAULT_R_ENV}`, status: 'idle' })
+      ])
+    )
+    for (const malformedTarget of [{ language: 'r' as const }, { environment: DEFAULT_R_ENV }]) {
+      await expect(
+        service.restart({
+          ...request,
+          ...malformedTarget
+        } as never)
+      ).rejects.toThrow('language and environment must be provided together')
+    }
+    expect(restarts).toBe(0)
+    expect(terminated).toEqual([['r', DEFAULT_R_ENV]])
+  })
+
+  it('persists default Python idle after reload when a targeted restart recovers a coarse error', async () => {
+    const root = await createStorageRoot()
+    const request = { sessionId: 'session-1', workspaceCwd: root }
+    const executorFactory = (): NotebookSessionExecutor => ({
+      execute: async (execution): Promise<NotebookExecutionResult> => ({
+        status: 'completed',
+        stdout: '',
+        stderr: '',
+        traceback: '',
+        cwdAfter: execution.cwd,
+        outputs: []
+      }),
+      shutdown: async () => ({ reaped: true }),
+      restart: async () => {
+        throw new Error('restart failed')
+      },
+      terminate: async () => undefined
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory
+    })
+    await service.execute({ ...request, code: '1' })
+    await expect(service.restart(request)).rejects.toThrow('restart failed')
+
+    const reloadedService = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory
+    })
+    const restarted = await reloadedService.restart({
+      ...request,
+      language: 'python',
+      environment: DEFAULT_PY_ENV
+    })
+    expect(restarted.kernelStatus).toBe('idle')
+
+    const verifiedService = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory
+    })
+    expect((await verifiedService.state(request)).kernelStatus).toBe('idle')
+  })
+
+  it('preserves durable termination when targeted restart cleanup fails', async () => {
+    const root = await createStorageRoot()
+    const request = { sessionId: 'session-1', workspaceCwd: root }
+    let lifecycle!: NotebookExecutorLifecycleCallbacks
+    const firstService = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: (_sessionId, callbacks) => {
+        lifecycle = callbacks
+        return {
+          execute: async (execution): Promise<NotebookExecutionResult> => ({
+            status: 'completed',
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: execution.cwd,
+            outputs: []
+          }),
+          shutdown: async () => ({ reaped: true })
+        }
+      }
+    })
+    await firstService.execute({ ...request, code: '1' })
+    await lifecycle.onTerminated('python', DEFAULT_PY_ENV)
+
+    const repository = new NotebookRunRepository(root)
+    vi.spyOn(repository, 'clearKernelTermination').mockRejectedValueOnce(
+      new Error('could not clear durable termination')
+    )
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({
+        execute: async (execution): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: execution.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true }),
+        terminate: async () => undefined
+      })
+    })
+
+    await expect(
+      service.restart({ ...request, language: 'python', environment: DEFAULT_PY_ENV })
+    ).rejects.toThrow('could not clear durable termination')
+    expect((await service.state(request)).kernelStatus).toBe('terminated')
+  })
+
+  it('persists a targeted default Python restart failure across reload', async () => {
+    const root = await createStorageRoot()
+    const request = { sessionId: 'session-1', workspaceCwd: root }
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (execution): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: execution.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true }),
+        terminate: async () => {
+          throw new Error('targeted restart failed')
+        }
+      })
+    })
+    await service.execute({ ...request, code: '1' })
+
+    await expect(
+      service.restart({ ...request, language: 'python', environment: DEFAULT_PY_ENV })
+    ).rejects.toThrow('targeted restart failed')
+    expect((await service.state(request)).kernelStatus).toBe('error')
+
+    const reloadedService = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (execution): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: execution.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    expect((await reloadedService.state(request)).kernelStatus).toBe('error')
+  })
+
+  it('holds later executions until targeted restart persistence completes', async () => {
+    const root = await createStorageRoot()
+    const request = { sessionId: 'session-1', workspaceCwd: root }
+    const repository = new NotebookRunRepository(root)
+    const secondExecutionStarted = createDeferred<void>()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({
+        execute: async (execution): Promise<NotebookExecutionResult> => {
+          if (execution.code === '2') secondExecutionStarted.resolve()
+          return {
+            status: 'completed',
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: execution.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true }),
+        terminate: async () => undefined
+      })
+    })
+    await service.execute({ ...request, code: '1' })
+
+    const persistenceGate = createDeferred<void>()
+    const updateKernelStatus = repository.updateKernelStatus.bind(repository)
+    let holdNextIdle = true
+    const persistenceStarted = createDeferred<void>()
+    vi.spyOn(repository, 'updateKernelStatus').mockImplementation(async (update) => {
+      if (holdNextIdle && update.status === 'idle') {
+        holdNextIdle = false
+        persistenceStarted.resolve()
+        await persistenceGate.promise
+      }
+      return updateKernelStatus(update)
+    })
+
+    const restarting = service.restart({
+      ...request,
+      language: 'python',
+      environment: DEFAULT_PY_ENV
+    })
+    await persistenceStarted.promise
+    const nextExecution = service.execute({ ...request, code: '2' })
+
+    try {
+      const startedBeforePersistence = await Promise.race([
+        secondExecutionStarted.promise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 20))
+      ])
+      expect(startedBeforePersistence).toBe(false)
+    } finally {
+      persistenceGate.resolve()
+      await Promise.allSettled([restarting, nextExecution])
+    }
+  })
+
+  it('does not create a live environment entry for a dormant targeted restart', async () => {
+    const root = await createStorageRoot()
+    const request = { sessionId: 'session-1', workspaceCwd: root }
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (execution): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: execution.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true }),
+        terminate: async () => undefined
+      })
+    })
+
+    const settled = await service.restart({
+      ...request,
+      language: 'python',
+      environment: DEFAULT_PY_ENV
+    })
+
+    expect(settled.kernelStatus).toBe('idle')
+    expect(settled.environments).toEqual([])
+  })
+
   it('reports a restarting kernel status while restart() is in flight, then settles to idle', async () => {
     const root = await createStorageRoot()
     let releaseRestart: (() => void) | undefined

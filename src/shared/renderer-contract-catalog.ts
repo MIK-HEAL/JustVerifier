@@ -168,6 +168,7 @@ import type {
   NotebookLanguage,
   NotebookNamespaceRequest,
   NotebookNamespaceSnapshot,
+  NotebookRestartRequest,
   NotebookRunSummary,
   NotebookSessionReference,
   NotebookSessionRequest,
@@ -1163,7 +1164,7 @@ export const RENDERER_API_CONTRACT = Object.freeze({
     (request: ReadArtifactPreviewRequest) => Promise<ArtifactPreviewResult>
   >()('notebook', ['notebook:read-input-preview']),
   'notebook.restart': callable<
-    (request: NotebookSessionRequest) => Promise<NotebookSessionState>
+    (request: NotebookRestartRequest) => Promise<NotebookSessionState>
   >()('notebook', ['notebook:restart']),
   'notebook.runCell': callable<(request: RunNotebookCellRequest) => Promise<NotebookRunSummary>>()(
     'notebook',

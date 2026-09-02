@@ -18,6 +18,7 @@ import type {
   NotebookLanguage,
   NotebookNamespaceRequest,
   NotebookNamespaceSnapshot,
+  NotebookRestartRequest,
   NotebookRunSummary,
   RequestNotebookNetworkAccessRequest,
   RequestNotebookNetworkAccessResult,
@@ -31,7 +32,8 @@ import {
   isNotebookRunCursor,
   NOTEBOOK_STATE_HISTORY_FRAME_ID_LIMIT_BYTES,
   NOTEBOOK_STATE_HISTORY_PAGE_LIMIT,
-  NOTEBOOK_STATE_TARGET_RUN_LIMIT
+  NOTEBOOK_STATE_TARGET_RUN_LIMIT,
+  parseNotebookLanguage
 } from '../../shared/notebook'
 import type {
   ManageEnvironmentsRequest,
@@ -1046,15 +1048,89 @@ class NotebookRuntimeService {
     return saveIpynbAll(files, undefined, this.options.translate)
   }
 
-  // Replaces the interpreter process while preserving cells and durable run history. Prefers the
-  // executor's own in-place restart (keeps the same instance, e.g. NotebookKernelExecutor tears down
-  // and lazily respawns its loops) and only shuts down + recreates for executors that don't support it.
-  // Reports 'restarting' for the duration. A successful restart clears stale termination evidence and
-  // settles to 'idle'; a failed restart keeps that evidence and reports 'error' for kernels that were
-  // not already known to be terminated.
-  async restart(request: NotebookSessionRequest): Promise<NotebookSessionState> {
+  // Replaces one exact language/environment interpreter when a target is present. Omitting the target
+  // preserves the historical session-wide restart for callers that intentionally restart every loop.
+  // Both paths preserve cells and durable run history, report 'restarting' for affected kernels, and
+  // clear only the termination evidence covered by the restart.
+  async restart(request: NotebookRestartRequest): Promise<NotebookSessionState> {
     return this.sessionLifecycle.runProjectOperation(request, async () => {
+      const hasLanguage = request.language !== undefined
+      const hasEnvironment = request.environment !== undefined
+      if (hasLanguage !== hasEnvironment) {
+        throw new Error('Notebook restart language and environment must be provided together.')
+      }
+
+      let target: { language: NotebookLanguage; environment: string } | undefined
+      if (request.language !== undefined && request.environment !== undefined) {
+        const language = parseNotebookLanguage(request.language)
+        if (!request.environment.trim()) {
+          throw new Error('Notebook restart environment must not be empty.')
+        }
+        target = {
+          language,
+          environment: resolveEnvName(language, request.environment)
+        }
+      }
+
       const session = await this.sessionLifecycle.ensure(request)
+
+      if (target) {
+        const { language, environment } = target
+        const processKey = dataProcessKey(language, environment)
+        const isDefaultPython = processKey === dataProcessKey('python', DEFAULT_PY_ENV)
+        const restoredKernelStatus = session.restoredKernelStatus()
+        const statusBeforeRestart =
+          session.kernelStatus(processKey) ??
+          (isDefaultPython && restoredKernelStatus !== 'idle' ? restoredKernelStatus : undefined)
+        const wasDurablyTerminated = session.hasDurableKernelTermination(processKey)
+        const hasTargetState = statusBeforeRestart !== undefined || wasDurablyTerminated
+
+        if (hasTargetState) {
+          session.setKernelStatus(processKey, 'restarting')
+          this.sessionLifecycle.notifyChanged(session)
+        }
+
+        const restartTransition = (async (): Promise<void> => {
+          try {
+            await session.drainExecution(processKey)
+            await session.terminateExecutor(language, environment)
+            if (hasTargetState) {
+              await this.sessionLifecycle.persistKernelStatus(session, 'idle', processKey)
+            }
+            session.clearKernelTerminated(processKey)
+            this.environmentOperations.clearRestartRecommendations([processKey])
+          } catch (error) {
+            if (hasTargetState) {
+              const failureStatus =
+                statusBeforeRestart === 'terminated' || wasDurablyTerminated
+                  ? 'terminated'
+                  : 'error'
+              try {
+                if (failureStatus === 'terminated' || isDefaultPython) {
+                  await this.sessionLifecycle.persistKernelStatus(
+                    session,
+                    failureStatus,
+                    processKey
+                  )
+                } else {
+                  session.setKernelStatus(processKey, failureStatus)
+                }
+              } catch {
+                // Keep the original restart failure while retaining the best available live state.
+                session.setKernelStatus(processKey, failureStatus)
+              }
+            }
+            this.sessionLifecycle.notifyChanged(session)
+            throw error
+          }
+        })()
+        session.blockKernelExecutionUntil(processKey, restartTransition)
+        await restartTransition
+
+        this.sessionLifecycle.notifyChanged(session)
+        await this.runTerminalization.reconcilePending(session)
+        return this.sessionReadModel.state(session)
+      }
 
       // A restart respawns fresh loops, so any pending R-restart recommendation for this session's envs
       // is cleared. Snapshot the keys before teardown drops them from kernelStatuses.
