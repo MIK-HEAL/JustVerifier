@@ -93,6 +93,7 @@ const createRunner = (overrides: TaskRunnerOverrides = {}): TaskRunner => {
         throw new Error('Unexpected Compute preference update.')
       }
     },
+    runWithLifecycleContext: (operation) => operation(),
     createId: () => 'generated-id',
     now: () => 1,
     ...overrides,
@@ -751,7 +752,9 @@ describe('TaskRunner', () => {
         resumeSession: async (request) => ({ sessionId: request.sessionId }),
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async () => undefined
+        prompt: async (_request, observer) => {
+          await observer?.onPromptAdmitted?.()
+        }
       }
     })
 
@@ -1304,7 +1307,9 @@ describe('TaskRunner', () => {
         resumeSession: async (request) => ({ sessionId: request.sessionId }),
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async () => undefined
+        prompt: async (_request, observer) => {
+          await observer?.onPromptAdmitted?.()
+        }
       },
       reviewer: { review },
       createId: () => ids.shift() ?? 'generated-id'
@@ -1659,6 +1664,228 @@ describe('TaskRunner', () => {
     }
   })
 
+  it('does not persist a Task turn when ACP rejects admission for an active desktop turn', async () => {
+    const existing: PersistedChatSession = {
+      ...session,
+      status: 'running',
+      messages: [
+        {
+          id: 'desktop-prompt',
+          role: 'user',
+          content: 'Desktop prompt',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      activeRun: { promptMessageId: 'desktop-prompt', startedAt: 1 }
+    }
+    const save = vi.fn(async () => undefined)
+    const runner = createRunner({
+      sessions: { list: async () => [existing], save },
+      agent: {
+        withSessionAvailable: async (_projectId, _sessionId, operation) => operation(),
+        listAttachedSessionIds: async () => [existing.id],
+        createSession: async () => ({ sessionId: 'unused' }),
+        resumeSession: async (request) => ({ sessionId: request.sessionId }),
+        setPermissionProfile: async () => undefined,
+        cancelPrompt: async () => undefined,
+        prompt: async () => {
+          throw new Error('An ACP interaction is already running for this session')
+        }
+      }
+    })
+
+    const started = await runner.startRun({
+      project: project.id,
+      sessionId: existing.id,
+      prompt: 'Task API prompt'
+    })
+    const failed = await runner.waitForRun(started.id)
+
+    expect(save).not.toHaveBeenCalled()
+    expect(failed).toMatchObject({
+      status: 'failed',
+      error: 'An ACP interaction is already running for this session'
+    })
+  })
+
+  it('persists detached provider rebinding without a Task turn when admission rejects', async () => {
+    const existing: PersistedChatSession = {
+      ...session,
+      revision: 1,
+      providerSessionId: 'provider-session-old',
+      providerContinuityToken: 'continuity-old',
+      messages: []
+    }
+    let durableSession = structuredClone(existing)
+    const save = vi.fn(async (candidate: PersistedChatSession) => {
+      durableSession = {
+        ...structuredClone(candidate),
+        revision: (candidate.revision ?? 0) + 1
+      }
+      return structuredClone(durableSession)
+    })
+    const runner = createRunner({
+      sessions: { list: async () => [structuredClone(durableSession)], save },
+      agent: {
+        withSessionAvailable: async (_projectId, _sessionId, operation) => operation(),
+        listAttachedSessionIds: async () => [],
+        createSession: async () => ({ sessionId: 'unused' }),
+        resumeSession: async () => ({
+          sessionId: existing.id,
+          frameworkId: 'opencode',
+          backendId: 'opencode:provider-new',
+          providerSessionId: 'provider-session-new',
+          providerContinuityToken: 'continuity-new',
+          contextReset: true
+        }),
+        setPermissionProfile: async () => undefined,
+        cancelPrompt: async () => undefined,
+        prompt: async () => {
+          throw new Error('An ACP interaction is already running for this session')
+        }
+      }
+    })
+
+    const started = await runner.startRun({
+      project: project.id,
+      sessionId: existing.id,
+      prompt: 'Task API prompt'
+    })
+    const failed = await runner.waitForRun(started.id)
+
+    expect(save).toHaveBeenCalledOnce()
+    expect(durableSession).toMatchObject({
+      status: existing.status,
+      messages: existing.messages,
+      providerSessionId: 'provider-session-new',
+      providerContinuityToken: 'continuity-new',
+      agentFrameworkId: 'opencode',
+      agentBackendId: 'opencode:provider-new',
+      pendingHistoryReplay: { kind: 'all' }
+    })
+    expect(durableSession).not.toHaveProperty('activeRun')
+    expect(failed).toMatchObject({
+      status: 'failed',
+      error: 'An ACP interaction is already running for this session'
+    })
+  })
+
+  it('cleans up an admitted Task turn when Session persistence commits before rejecting', async () => {
+    let durableSession: PersistedChatSession = {
+      ...session,
+      revision: 1,
+      messages: []
+    }
+    const save = vi.fn(async (candidate: PersistedChatSession) => {
+      if (candidate.revision !== durableSession.revision) {
+        throw new Error('Session revision conflict')
+      }
+      durableSession = {
+        ...structuredClone(candidate),
+        revision: (candidate.revision ?? 0) + 1
+      }
+      throw new Error('index unavailable after durable commit')
+    })
+    const runner = createRunner({
+      sessions: { list: async () => [structuredClone(durableSession)], save },
+      agent: {
+        withSessionAvailable: async (_projectId, _sessionId, operation) => operation(),
+        listAttachedSessionIds: async () => [durableSession.id],
+        createSession: async () => ({ sessionId: 'unused' }),
+        resumeSession: async (request) => ({ sessionId: request.sessionId }),
+        setPermissionProfile: async () => undefined,
+        cancelPrompt: async () => undefined,
+        prompt: async (_request, observer) => {
+          await observer?.onPromptAdmitted?.()
+        }
+      }
+    })
+
+    const started = await runner.startRun({
+      project: project.id,
+      sessionId: durableSession.id,
+      prompt: 'Task API prompt'
+    })
+    const failed = await runner.waitForRun(started.id)
+
+    expect(save).toHaveBeenCalledTimes(2)
+    expect(durableSession).toMatchObject({
+      status: 'error',
+      activeRun: undefined,
+      error: 'index unavailable after durable commit'
+    })
+    expect(failed).toMatchObject({
+      status: 'failed',
+      error: 'index unavailable after durable commit'
+    })
+  })
+
+  it('rebases an admitted Task turn onto concurrent Session metadata edits', async () => {
+    let durableSession: PersistedChatSession = {
+      ...session,
+      revision: 1,
+      messages: []
+    }
+    const list = vi.fn(async () => [structuredClone(durableSession)])
+    const save = vi.fn(async (candidate: PersistedChatSession) => {
+      if (candidate.revision !== durableSession.revision) {
+        throw new Error('Session revision conflict')
+      }
+      durableSession = {
+        ...structuredClone(candidate),
+        revision: (candidate.revision ?? 0) + 1
+      }
+      return structuredClone(durableSession)
+    })
+    const runner = createRunner({
+      sessions: { list, save },
+      agent: {
+        withSessionAvailable: async (_projectId, _sessionId, operation) => operation(),
+        listAttachedSessionIds: async () => [durableSession.id],
+        createSession: async () => ({ sessionId: 'unused' }),
+        resumeSession: async (request) => ({ sessionId: request.sessionId }),
+        setPermissionProfile: async () => undefined,
+        cancelPrompt: async () => undefined,
+        prompt: async (_request, observer) => {
+          durableSession = {
+            ...durableSession,
+            title: 'Renamed concurrently',
+            description: 'Keep this edit',
+            revision: 2,
+            updatedAt: 3
+          }
+          await observer?.onPromptAdmitted?.()
+        }
+      },
+      createId: (() => {
+        const ids = ['task-user', 'task-run', 'unused-agent']
+        return () => ids.shift() ?? 'generated-id'
+      })()
+    })
+
+    const started = await runner.startRun({
+      project: project.id,
+      sessionId: durableSession.id,
+      prompt: 'Task API prompt'
+    })
+    const completed = await runner.waitForRun(started.id)
+
+    expect(completed.status).toBe('completed')
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(durableSession).toMatchObject({
+      title: 'Renamed concurrently',
+      description: 'Keep this edit'
+    })
+    expect(durableSession.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'task-user', content: 'Task API prompt' })
+      ])
+    )
+  })
+
   it('rejects a new authored turn while a restored Plan awaits approval', async () => {
     const existing: PersistedChatSession = {
       ...session,
@@ -1796,7 +2023,8 @@ describe('TaskRunner', () => {
         },
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async (request) => {
+        prompt: async (request, observer) => {
+          await observer?.onPromptAdmitted?.()
           prompts.push(request)
         }
       },
@@ -1841,8 +2069,10 @@ describe('TaskRunner', () => {
     ])
     const promptRuntimeSegmentId = prompts[0]?.provenanceContext.runtimeSegmentId
     expect(
-      savedSessions[0]?.conversationGraph?.runtimeSegments.some(
-        ({ id }) => id === promptRuntimeSegmentId
+      savedSessions.some(
+        (saved) =>
+          saved.activeRun?.promptMessageId === 'new-user' &&
+          saved.conversationGraph?.runtimeSegments.some(({ id }) => id === promptRuntimeSegmentId)
       )
     ).toBe(true)
   })
@@ -1868,7 +2098,9 @@ describe('TaskRunner', () => {
         resumeSession,
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async () => undefined
+        prompt: async (_request, observer) => {
+          await observer?.onPromptAdmitted?.()
+        }
       },
       createId: () => ids.shift() ?? 'generated-id'
     })
@@ -1917,7 +2149,9 @@ describe('TaskRunner', () => {
         resumeSession,
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async () => undefined
+        prompt: async (_request, observer) => {
+          await observer?.onPromptAdmitted?.()
+        }
       },
       createId: () => ids.shift() ?? 'generated-id'
     })
@@ -2002,7 +2236,8 @@ describe('TaskRunner', () => {
         }),
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async (request) => {
+        prompt: async (request, observer) => {
+          await observer?.onPromptAdmitted?.()
           prompts.push(request)
         }
       },
@@ -2025,14 +2260,15 @@ describe('TaskRunner', () => {
       })
     ])
     expect(prompts[0]?.historyPreamble).not.toContain('Delete the duplicates')
-    expect(saved[0]).not.toHaveProperty('resumeRecovery')
-    expect(saved[0].pendingHistoryReplay).toEqual({
+    const admitted = saved.find(({ activeRun }) => activeRun?.promptMessageId === 'new-user')
+    expect(admitted).not.toHaveProperty('resumeRecovery')
+    expect(admitted?.pendingHistoryReplay).toEqual({
       kind: 'before-message',
       messageId: 'interrupted-user'
     })
     expect(saved.at(-1)).not.toHaveProperty('pendingHistoryReplay')
     expect(
-      saved[0]?.messages.filter((message) => message.content === 'Delete the duplicates')
+      admitted?.messages.filter((message) => message.content === 'Delete the duplicates')
     ).toHaveLength(1)
   })
 
@@ -2078,7 +2314,8 @@ describe('TaskRunner', () => {
         resumeSession: async () => ({ sessionId: 'unused' }),
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async (request) => {
+        prompt: async (request, observer) => {
+          await observer?.onPromptAdmitted?.()
           prompts.push(request)
         }
       },
@@ -2146,7 +2383,8 @@ describe('TaskRunner', () => {
         resumeSession: async () => ({ sessionId: 'unused' }),
         setPermissionProfile: async () => undefined,
         cancelPrompt: async () => undefined,
-        prompt: async (request) => {
+        prompt: async (request, observer) => {
+          await observer?.onPromptAdmitted?.()
           prompts.push(request)
           throw new Error('provider rejected prompt')
         }

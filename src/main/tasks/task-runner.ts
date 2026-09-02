@@ -1,6 +1,7 @@
 import { constants } from 'node:fs'
 import { access, realpath, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 
 import type { AcpRuntimeEvent, AgentTurnProvenanceContext } from '../../shared/acp'
 import { ComputeHostPreferenceValidationError } from '../../shared/compute'
@@ -131,6 +132,7 @@ type TaskAgentPromptRequest = {
 }
 
 type TaskAgentPromptObserver = {
+  onPromptAdmitted?: () => Promise<AgentTurnProvenanceContext | undefined>
   onProviderPromptAccepted?: () => void
 }
 
@@ -178,6 +180,7 @@ type TaskRunnerDependencies = {
   specialists: TaskSpecialistPort
   reviewer: TaskReviewerPort
   computePreferences: TaskComputePreferencePort
+  runWithLifecycleContext<Result>(operation: () => Result): Result
   createId: () => string
   now: () => number
 }
@@ -365,6 +368,57 @@ const createUserMessage = (
   createdAt: now,
   updatedAt: now
 })
+
+const rebaseTaskTurnOntoLatestSession = (
+  latest: PersistedChatSession,
+  prepared: PersistedChatSession,
+  contextReset: boolean
+): PersistedChatSession => {
+  const activeRun = prepared.activeRun
+  const promptMessageId = activeRun?.promptMessageId
+  const userMessage = prepared.messages.find((message) => message.id === promptMessageId)
+  if (!activeRun || !userMessage) {
+    throw new Error('Task prompt admission is missing its prepared user message.')
+  }
+
+  let rebased: PersistedChatSession = {
+    ...latest,
+    cwd: prepared.cwd,
+    status: 'running',
+    permissionProfile: prepared.permissionProfile,
+    autoReviewEnabled: prepared.autoReviewEnabled,
+    delegationPolicy: prepared.delegationPolicy,
+    specialistId: prepared.specialistId,
+    agentFrameworkId: prepared.agentFrameworkId,
+    agentBackendId: prepared.agentBackendId,
+    providerSessionId: prepared.providerSessionId,
+    providerContinuityToken: prepared.providerContinuityToken,
+    agentConfiguration: prepared.agentConfiguration,
+    messages: [...latest.messages.filter((message) => message.id !== userMessage.id), userMessage],
+    activeRun,
+    error: undefined,
+    updatedAt: prepared.updatedAt
+  }
+  delete rebased.resumeRecovery
+
+  const currentGraph = materializeSessionConversationGraph(latest).conversationGraph
+  const graphWithRuntime = ensureConversationRuntimeSegment(currentGraph, {
+    id: `runtime-segment-${promptMessageId}`,
+    frameworkId: rebased.agentFrameworkId ?? 'claude-code',
+    providerId: rebased.agentConfiguration?.providerId,
+    backendId: rebased.agentBackendId,
+    model: rebased.agentModel,
+    startedAt: activeRun.startedAt,
+    forceNew: contextReset
+  })
+  if (graphWithRuntime.runtimeSegments.length !== currentGraph.runtimeSegments.length) {
+    rebased = materializeSessionConversationGraph({
+      ...rebased,
+      conversationGraph: graphWithRuntime
+    })
+  }
+  return rebased
+}
 
 const toPersistedArtifact = (
   artifact: ArtifactFile,
@@ -862,7 +916,8 @@ class TaskRunner {
       prompt,
       prepared.historyPreamble,
       prepared.contextReset,
-      prepared.resumeFallback
+      prepared.resumeFallback,
+      prepared.persistOnPromptAdmission
     ).finally(() => this.releaseSession(session.id, runId))
     return cloneRun(run)
   }
@@ -939,6 +994,7 @@ class TaskRunner {
     userMessageId: string
   ): Promise<{
     session: PersistedChatSession
+    persistOnPromptAdmission: boolean
     historyPreamble?: string
     contextReset?: boolean
     resumeFallback?: TaskAgentPromptRequest['resumeFallback']
@@ -1015,6 +1071,40 @@ class TaskRunner {
         ...(request.cwd ? { cwd: request.cwd } : {}),
         ...(specialistId ? { specialistId } : {})
       })
+    }
+
+    if (existing) {
+      const cwd = sessionInfo.cwd ?? existing.cwd
+      const agentFrameworkId = sessionInfo.frameworkId ?? existing.agentFrameworkId
+      const agentBackendId = sessionInfo.backendId ?? existing.agentBackendId
+      const providerSessionId = sessionInfo.providerSessionId ?? existing.providerSessionId
+      const providerContinuityToken = sessionInfo.providerContinuityToken
+      const agentConfiguration = sessionInfo.agentConfiguration ?? existing.agentConfiguration
+      const persistedPermissionProfile = request.permissionProfile ?? existing.permissionProfile
+      const needsHistoryReplay = sessionInfo.contextReset === true && !existing.pendingHistoryReplay
+      const setupChanged =
+        cwd !== existing.cwd ||
+        persistedPermissionProfile !== existing.permissionProfile ||
+        agentFrameworkId !== existing.agentFrameworkId ||
+        agentBackendId !== existing.agentBackendId ||
+        providerSessionId !== existing.providerSessionId ||
+        providerContinuityToken !== existing.providerContinuityToken ||
+        !isDeepStrictEqual(agentConfiguration, existing.agentConfiguration) ||
+        needsHistoryReplay
+      if (setupChanged) {
+        existing = await this.dependencies.sessions.save({
+          ...existing,
+          cwd,
+          permissionProfile: persistedPermissionProfile,
+          agentFrameworkId,
+          agentBackendId,
+          providerSessionId,
+          providerContinuityToken,
+          agentConfiguration,
+          ...(needsHistoryReplay ? { pendingHistoryReplay: { kind: 'all' } } : {}),
+          updatedAt: now
+        })
+      }
     }
 
     const userMessage = createUserMessage(userMessageId, prompt, now, request.turnIntent)
@@ -1099,12 +1189,16 @@ class TaskRunner {
       }
     }
 
-    const committedSession = await this.dependencies.sessions.save(sessionToCommit)
+    const persistOnPromptAdmission = existing !== undefined
+    const committedSession = persistOnPromptAdmission
+      ? sessionToCommit
+      : await this.dependencies.sessions.save(sessionToCommit)
     const previousHistoryPreamble = existing
       ? createHistoryPreamble(selectTaskHistoryMessages(existing))
       : undefined
     return {
       session: committedSession,
+      persistOnPromptAdmission,
       historyPreamble: contextReset ? previousHistoryPreamble : undefined,
       contextReset,
       resumeFallback:
@@ -1114,6 +1208,16 @@ class TaskRunner {
     }
   }
 
+  private withLifecycleSessionAvailable<Result>(
+    projectId: string,
+    sessionId: string,
+    operation: () => Promise<Result>
+  ): Promise<Result> {
+    return this.dependencies.runWithLifecycleContext(() =>
+      this.dependencies.agent.withSessionAvailable(projectId, sessionId, operation)
+    )
+  }
+
   private async executeRun(
     run: MutableTaskRun,
     session: PersistedChatSession,
@@ -1121,10 +1225,15 @@ class TaskRunner {
     prompt: string,
     historyPreamble?: string,
     contextReset?: boolean,
-    resumeFallback?: TaskAgentPromptRequest['resumeFallback']
+    resumeFallback?: TaskAgentPromptRequest['resumeFallback'],
+    persistOnPromptAdmission = false
   ): Promise<void> {
     let promptError: unknown
+    let admissionPersistenceError: unknown
     let cancellationAtPromptFailure: MutableTaskRun['cancellation'] = undefined
+    let admittedSession: PersistedChatSession | undefined = persistOnPromptAdmission
+      ? undefined
+      : session
     try {
       this.publishProgress(run, 'prompt-dispatched')
       const promptMessageId = session.activeRun!.promptMessageId
@@ -1145,6 +1254,40 @@ class TaskRunner {
           ...(resumeFallback ? { resumeFallback } : {})
         },
         {
+          ...(persistOnPromptAdmission
+            ? {
+                onPromptAdmitted: async () => {
+                  return this.withLifecycleSessionAvailable(run.projectId, session.id, async () => {
+                    const latestSession = (await this.dependencies.sessions.list()).find(
+                      (candidate) => candidate.id === session.id
+                    )
+                    if (!latestSession || latestSession.projectId !== run.projectId) {
+                      throw new Error(`Session not found for Task prompt admission: ${session.id}`)
+                    }
+                    const sessionToSave = rebaseTaskTurnOntoLatestSession(
+                      latestSession,
+                      session,
+                      contextReset === true
+                    )
+                    // Once the durable save starts it may commit the Session before a derived
+                    // projection rejects. Retain the admitted aggregate so failure cleanup can
+                    // clear that partially committed active run.
+                    admittedSession = sessionToSave
+                    try {
+                      const saved = await this.dependencies.sessions.save(sessionToSave)
+                      admittedSession = saved
+                      return getActiveConversationContext(
+                        materializeSessionConversationGraph(saved).conversationGraph,
+                        promptMessageId
+                      )
+                    } catch (error) {
+                      admissionPersistenceError = error
+                      throw error
+                    }
+                  })
+                }
+              }
+            : {}),
           onProviderPromptAccepted: () => {
             if (run.status !== 'running' || run.providerAccepted) return
             run.providerAccepted = true
@@ -1157,8 +1300,59 @@ class TaskRunner {
       cancellationAtPromptFailure = run.cancellation
     }
 
+    if (admissionPersistenceError !== undefined) {
+      await this.withLifecycleSessionAvailable(run.projectId, session.id, async () => {
+        const latestSession = (await this.dependencies.sessions.list()).find(
+          (candidate) => candidate.id === session.id && candidate.projectId === run.projectId
+        )
+        if (latestSession?.activeRun?.promptMessageId !== run.promptMessageId) return
+        await this.failRun(run, latestSession, undefined, admissionPersistenceError)
+      }).catch(() => undefined)
+      if (run.status === 'running') {
+        await this.failRun(run, session, undefined, admissionPersistenceError, false)
+      }
+      run.eventAccumulator = undefined
+      return
+    }
+
+    if (!admittedSession) {
+      const cancellation = run.cancellation
+      if (cancellation) await cancellation.dispatch.catch(() => undefined)
+      if (cancellationAtPromptFailure?.accepted === true) {
+        run.status = 'cancelled'
+        run.attention = undefined
+        const cancelledAt = this.dependencies.now()
+        run.completedAt = cancelledAt
+        run.cancelledAt = cancelledAt
+        this.stopHeartbeat(run)
+        this.publishProgress(run, 'cancelled')
+      } else {
+        await this.failRun(
+          run,
+          session,
+          undefined,
+          promptError ?? new Error('Task Agent prompt completed without admission.'),
+          false
+        )
+      }
+      run.eventAccumulator = undefined
+      return
+    }
+
+    const sessionAtAdmission = admittedSession
+    return this.dependencies.runWithLifecycleContext(() =>
+      this.finalizeAdmittedRun(run, sessionAtAdmission, promptError, cancellationAtPromptFailure)
+    )
+  }
+
+  private async finalizeAdmittedRun(
+    run: MutableTaskRun,
+    admittedSession: PersistedChatSession,
+    promptError: unknown,
+    cancellationAtPromptFailure: MutableTaskRun['cancellation']
+  ): Promise<void> {
     const acceptedSession =
-      promptError === undefined ? consumePendingHistoryReplay(session) : session
+      promptError === undefined ? consumePendingHistoryReplay(admittedSession) : admittedSession
 
     let completed: CompletedTaskSession | undefined
     let completionError: unknown
@@ -1240,7 +1434,8 @@ class TaskRunner {
     run: MutableTaskRun,
     session: PersistedChatSession,
     completed: CompletedTaskSession | undefined,
-    failure: unknown
+    failure: unknown,
+    persistSession = true
   ): Promise<void> {
     const runtimeError = run.eventAccumulator?.runtimeError
     const message = runtimeError?.text?.trim() || toErrorMessage(failure)
@@ -1260,7 +1455,7 @@ class TaskRunner {
     run.completedAt = this.dependencies.now()
     this.stopHeartbeat(run)
     this.publishProgress(run, 'failed')
-    await this.dependencies.sessions.save(failed).catch(() => undefined)
+    if (persistSession) await this.dependencies.sessions.save(failed).catch(() => undefined)
   }
 
   private async completeSession(
