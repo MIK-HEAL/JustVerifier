@@ -6044,6 +6044,7 @@ describe('branchInNewSession', () => {
               autoReviewEnabled: true,
               memoryEnabled: false,
               enabledComputeHosts: ['ssh:build'],
+              computeConcurrencyLimit: 2,
               filesRevision: 7,
               artifacts: [
                 {
@@ -6109,6 +6110,7 @@ describe('branchInNewSession', () => {
       delegationPolicy: 'deny',
       memoryEnabled: false,
       enabledComputeHosts: ['ssh:build'],
+      computeConcurrencyLimit: 2,
       branchSource: {
         sessionId: 'source-session',
         agentFrameId: sourceFrame?.id,
@@ -7207,6 +7209,7 @@ describe('truncateSessionFromMessage', () => {
         ...toPersistedSession(source),
         enabledComputeHosts: ['ssh:lab', 'ssh:available'],
         selectedComputeHosts: ['ssh:lab'],
+        computeConcurrencyLimit: 2,
         updatedAt: source.updatedAt + 1
       },
       mode: 'compute-host-access-authority'
@@ -7215,7 +7218,8 @@ describe('truncateSessionFromMessage', () => {
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
       title: 'Newer local title',
       enabledComputeHosts: ['ssh:lab', 'ssh:available'],
-      selectedComputeHosts: ['ssh:lab']
+      selectedComputeHosts: ['ssh:lab'],
+      computeConcurrencyLimit: 2
     })
   })
 })

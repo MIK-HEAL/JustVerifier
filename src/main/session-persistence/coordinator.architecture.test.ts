@@ -453,6 +453,7 @@ describe('Session persistence coordinator architecture', () => {
         'saveSideChatProjection',
         'sessionMetadataSnapshot',
         'sessionProjectId',
+        'setSessionComputeConcurrencyLimit',
         'setSessionDelegationPolicy',
         'setSessionDeletionHandlers',
         'setSessionEnabledComputeHosts',
@@ -673,6 +674,7 @@ describe('Session persistence coordinator architecture', () => {
         'saveSession',
         'saveSessionSpecialistBinding',
         'saveSideChatProjection',
+        'setSessionComputeConcurrencyLimit',
         'setSessionDelegationPolicy',
         'setSessionEnabledComputeHosts',
         'updateArchive'
@@ -873,6 +875,7 @@ describe('Session persistence coordinator architecture', () => {
         'saveSession',
         'saveSessionSpecialistBinding',
         'sessionProjectId',
+        'setComputeConcurrencyLimit',
         'setDelegationPolicy',
         'setEnabledComputeHosts'
       ].sort()
@@ -962,6 +965,7 @@ describe('Session persistence coordinator architecture', () => {
       saveSideChatProjection: ['sideChatOwner.saveProjection'],
       sessionMetadataSnapshot: ['stateOwner.metadataSnapshot'],
       sessionProjectId: ['stateOwner.sessionProjectId'],
+      setSessionComputeConcurrencyLimit: ['stateOwner.setComputeConcurrencyLimit'],
       setSessionDelegationPolicy: ['stateOwner.setDelegationPolicy'],
       setSessionEnabledComputeHosts: ['stateOwner.setEnabledComputeHosts'],
       readChildren: ['delegatedWorkOwner.readChildren'],
