@@ -96,18 +96,27 @@ export type DataRootInspection =
       kind: 'recover'
       dataRoot: string
       recoveryStatus: DataRootRecoveryStatus
+      // Free bytes on the filesystem that contains the candidate data root. This is advisory: the
+      // migration's scan performs the authoritative preflight immediately before copying.
+      targetAvailableBytes?: number
       error?: string
     }
   | {
       kind: 'move'
       dataRoot: string
       targetWasAbsent?: boolean
+      // Free bytes on the filesystem that contains the candidate data root. This is advisory: the
+      // migration's scan performs the authoritative preflight immediately before copying.
+      targetAvailableBytes?: number
       recoveryStatus?: never
       error?: string
     }
   | {
       kind: Exclude<DataRootKind, 'recover' | 'move'>
       dataRoot: string
+      // Free bytes on the filesystem that contains the candidate data root. This is advisory: the
+      // migration's scan performs the authoritative preflight immediately before copying.
+      targetAvailableBytes?: number
       recoveryStatus?: never
       error?: string
     }

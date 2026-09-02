@@ -1189,10 +1189,9 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   'notebookEnv.provision': callable<
     (lang: NotebookLanguage, operationId?: string) => Promise<void>
   >()('notebook-environment', ['notebook-env:provision', LOCAL]),
-  'notebookEnv.repair': callable<(lang: NotebookLanguage, operationId?: string) => Promise<void>>()(
-    'notebook-environment',
-    ['notebook-env:repair', LOCAL]
-  ),
+  'notebookEnv.repair': callable<
+    (lang: NotebookLanguage, runtimeIdentity: string, operationId?: string) => Promise<void>
+  >()('notebook-environment', ['notebook-env:repair', LOCAL]),
   'notifications.getSnapshot': callable<() => Promise<NotificationInboxSnapshot>>()(
     'notifications',
     ['notifications:get-snapshot']

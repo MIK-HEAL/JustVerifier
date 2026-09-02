@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  addRepairRequired,
   DEFAULT_ENV_VERSION,
   DEFAULT_PY_ENV,
   DEFAULT_R_ENV,
@@ -2327,6 +2328,28 @@ describe('DefaultRuntimeProvisioner prefix-block self-guard (startup gate path)'
     expect(runArgv).toHaveBeenCalled()
   })
 
+  it.each([
+    ['python', DEFAULT_PY_ENV, readReadyMarker, pythonBin],
+    ['r', DEFAULT_R_ENV, readRReadyMarker, rBin]
+  ] as const)(
+    'removes the %s ready marker when repaired binding finalization fails',
+    async (language, environment, readMarker, interpreterFor) => {
+      const root = makeRoot()
+      const provisioner = new DefaultRuntimeProvisioner(makeDeps(root))
+
+      await expect(
+        provisioner.repair(language, () => {}, {
+          onVerified: () => {
+            throw new Error('binding persist failed')
+          }
+        })
+      ).rejects.toThrow('binding persist failed')
+
+      expect(readMarker(root)).toBeUndefined()
+      expect(existsSync(interpreterFor(envPrefix(root, environment)))).toBe(true)
+    }
+  )
+
   const BOOT_A = '11111111-1111-4111-8111-111111111111'
   const BOOT_B = '22222222-2222-4222-8222-222222222222'
   // Writes a {spawning} sidecar with a chosen boot_id, deterministically (recordSpawnIntentSync would
@@ -2610,13 +2633,24 @@ describe('DefaultRuntimeProvisioner prefix-block self-guard (startup gate path)'
 
   it('status() reports a recovery-blocked default prefix', () => {
     const root = makeRoot()
-    const blocked = new Set([envPrefix(root, DEFAULT_PY_ENV)])
-    const provisioner = new DefaultRuntimeProvisioner(
-      makeDeps(root, { isPrefixBlocked: (p) => blocked.has(p) })
-    )
+    const platform: NodeJS.Platform = process.platform === 'win32' ? 'linux' : 'win32'
+    const blockedPrefix = envPrefix(root, DEFAULT_PY_ENV, platform)
+    const isPrefixBlocked = vi.fn((prefix: string) => prefix === blockedPrefix)
+    const provisioner = new DefaultRuntimeProvisioner(makeDeps(root, { platform, isPrefixBlocked }))
     const status = provisioner.status()
     expect(status.pythonRecoveryBlocked).toBe(true)
     expect(status.rRecoveryBlocked).toBe(false)
+    expect(isPrefixBlocked).toHaveBeenCalledWith(blockedPrefix)
+  })
+
+  it('status() reports a durable repair marker after a failed explicit reinstall', () => {
+    const root = makeRoot()
+    addRepairRequired(root, DEFAULT_PY_ENV, 'protected-identity-change')
+
+    const status = new DefaultRuntimeProvisioner(makeDeps(root)).status()
+
+    expect(status.pythonRecoveryBlocked).toBe(true)
+    expect(status.rRecoveryBlocked).not.toBe(true)
   })
 
   it('a corrupt journal Reset moves the journal aside BEFORE deleting the prefix (never delete-then-fail)', async () => {

@@ -87,7 +87,7 @@ import type {
 import type { NotebookRuntimeSettings } from '../settings/capabilities'
 import { NotebookRecoveryCoordinator } from './recovery-coordinator'
 import { managedNotebookWorkingCache } from './windows-micromamba-working-cache'
-import { NotebookRuntimeRepairOwner } from './runtime-repair'
+import { NotebookRuntimeRepairOwner, type ExplicitRuntimeRepairTarget } from './runtime-repair'
 import { NotebookRuntimeRepairPolicy } from './runtime-repair-policy'
 import { NotebookEnvironmentOperations, type DefaultEnvProvisioner } from './environment-operations'
 import type { MicromambaRunner } from './windows-micromamba-runner'
@@ -142,7 +142,8 @@ import {
 // The default stays outside CN mirror routing when no explicit locale is injected.
 const DEFAULT_LOCALE = 'en-US'
 
-const EMPTY_NOTEBOOK_RUNTIME_SETTINGS: Pick<NotebookRuntimeSettings, 'getSnapshot'> = {
+const EMPTY_NOTEBOOK_RUNTIME_SETTINGS: Pick<NotebookRuntimeSettings, 'getSnapshot'> &
+  Partial<Pick<NotebookRuntimeSettings, 'setEnvironmentEnabled'>> = {
   getSnapshot: async (language) => ({
     language,
     runtimeEnablement: { enabled: {}, installAuthorized: {} },
@@ -197,7 +198,8 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
   getPackageMirror?: () => PackageMirror | undefined | Promise<PackageMirror | undefined>
   // Stable, detached Settings capability used by runtime discovery and binding policy. Production
   // injects this named capability; isolated tests may omit it and receive a fail-safe empty policy.
-  notebookRuntimeSettings?: Pick<NotebookRuntimeSettings, 'getSnapshot'>
+  notebookRuntimeSettings?: Pick<NotebookRuntimeSettings, 'getSnapshot'> &
+    Partial<Pick<NotebookRuntimeSettings, 'setEnvironmentEnabled'>>
   // Discovers the interpreters available for a language (app-managed + user-own). Injectable so tests
   // don't spawn real interpreters; production defaults to environment-discovery over the runtime root.
   discoverRuntimes?: (language: NotebookLanguage) => Promise<DiscoveredInterpreter[]>
@@ -377,6 +379,7 @@ class NotebookRuntimeService {
     | 'refreshAfterPackageMutation'
   >
   private disposalPromise: Promise<{ reaped: boolean }> | undefined
+  private environmentStartupBarrier: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
     const defaultProjectId = resolveProjectId(options)
@@ -410,6 +413,7 @@ class NotebookRuntimeService {
       runtimeSettings,
       repairPolicy: this.repairPolicy,
       discoverRuntimes: options.discoverRuntimes,
+      waitForEnvironmentStartup: () => this.environmentStartupBarrier,
       platform: options.platform
     })
     this.dependencyAnalyzer =
@@ -479,7 +483,9 @@ class NotebookRuntimeService {
       bindings: this.runtimeBindingOwner,
       environmentOperations: this.environmentOperations,
       sessions: () => this.sessions.values(),
-      findSession: (sessionId) => this.sessions.get(this.sessionLifecycle.rootLane(sessionId)),
+      isCurrentSession: (session) => this.sessions.get(session.lane) === session,
+      clearKernelTermination: (session, processKey) =>
+        this.sessionLifecycle.clearPersistedKernelTermination(session, processKey),
       notifyChanged: (session) => this.sessionLifecycle.notifyChanged(session)
     })
     this.environmentManagement = new NotebookEnvironmentManagementOwner({
@@ -615,6 +621,10 @@ class NotebookRuntimeService {
   // main/ipc.ts alongside the env gate, after this service exists), mirroring the resolver setters.
   setEnvironmentManager(manager: NotebookEnvironmentManager): void {
     this.environmentManagement.setManager(manager)
+  }
+
+  setEnvironmentStartupBarrier(barrier: Promise<void>): void {
+    this.environmentStartupBarrier = barrier
   }
 
   // Wires the (serialized) default-env provisioner used to build default-python/default-r on demand.
@@ -1335,11 +1345,38 @@ class NotebookRuntimeService {
     this.recoveryCoordinator.clearRuntimeBlock(runtimeId)
   }
 
+  async prepareRuntimeRepair(
+    language: NotebookLanguage,
+    target: ExplicitRuntimeRepairTarget
+  ): Promise<void> {
+    const environment = this.defaultEnvNameFor(language)
+    let binding: InternalRuntimeBinding | undefined
+    if (target.kind === 'default-environment') {
+      if (target.environmentName !== environment) {
+        throw new Error(
+          `The selected runtime is no longer the app-managed ${language} default. Recheck runtimes and try again.`
+        )
+      }
+      if (
+        !this.isDefaultEnvRecoveryBlocked(language) &&
+        !this.repairPolicy.requirement(language, environment).required
+      ) {
+        throw new Error(
+          `The selected runtime is no longer the app-managed ${language} default. Recheck runtimes and try again.`
+        )
+      }
+    } else {
+      binding = await this.runtimeBindingOwner.requireManagedDefault(language, target.runtimeId)
+    }
+    await this.runtimeRepair.prepareExplicitRepair(language, binding)
+  }
+
   // Called only after the explicit UI Runtime Reset has rebuilt and verified the managed default env.
   // This is deliberately separate from managePackages(): an ordinary install may clear an
   // interrupted-install marker, but it must never release a protected-identity quarantine.
   async completeRuntimeRepair(language: NotebookLanguage): Promise<void> {
-    await this.runtimeRepair.completeExplicitRepair(language)
+    const replacement = await this.runtimeBindingOwner.requireManagedDefault(language)
+    await this.runtimeRepair.completeExplicitRepair(language, replacement)
   }
 
   // Releases ONE prefix from the global corrupt-journal write barrier. Called by a force Reset (via the

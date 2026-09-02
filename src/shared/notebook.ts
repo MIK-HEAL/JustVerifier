@@ -91,15 +91,19 @@ const languageAndOptionalOperationId = parsedArgs(
   z.union([z.tuple([notebookLanguageSchema]), z.tuple([notebookLanguageSchema, z.string()])])
 )
 
+const repairArgs = parsedArgs(
+  z.union([
+    z.tuple([notebookLanguageSchema, z.string().min(1)]),
+    z.tuple([notebookLanguageSchema, z.string().min(1), z.string()])
+  ])
+)
+
 export const notebookEnvironmentApplicationCommandContracts = Object.freeze({
   provision: defineApplicationCommandContract(
     languageAndOptionalOperationId,
     validationCodec(z.undefined())
   ),
-  repair: defineApplicationCommandContract(
-    languageAndOptionalOperationId,
-    validationCodec(z.undefined())
-  ),
+  repair: defineApplicationCommandContract(repairArgs, validationCodec(z.undefined())),
   cancel: defineApplicationCommandContract(
     parsedArgs(z.union([z.tuple([]), z.tuple([notebookLanguageSchema])])),
     validationCodec(z.undefined())

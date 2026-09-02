@@ -1352,7 +1352,10 @@ const createApplicationModules = async (
     home: dirname(dirname(provisioningRoot)),
     resourcesPath: process.resourcesPath
   })
-  const notebookRuntimeSettings: Pick<NotebookRuntimeSettings, 'getSnapshot'> = {
+  const notebookRuntimeSettings: Pick<
+    NotebookRuntimeSettings,
+    'getSnapshot' | 'setEnvironmentEnabled'
+  > = {
     getSnapshot: async (language) => {
       const [runtimeSelection, runtimeEnablement, manualInterpreters, packageMirror] =
         await Promise.all([
@@ -1368,7 +1371,9 @@ const createApplicationModules = async (
         manualInterpreters,
         packageMirror
       }
-    }
+    },
+    setEnvironmentEnabled: (language, envId, enabled) =>
+      settingsService.setEnvironmentEnabled(language, envId, enabled)
   }
   const notebookApplication = await modules.add(
     {
@@ -3583,13 +3588,18 @@ const createApplicationModules = async (
     projectProgress: broadcastNotebookEnvProgress,
     waitForRecovery,
     assertProvisionAllowed,
+    onRepairStarting: (language, target) => notebookService.prepareRuntimeRepair(language, target),
     onRepairCompleted: (language) => notebookService.completeRuntimeRepair(language)
   })
   // Always register the handlers (serialized is undefined when the provisioner could not be built).
   // Start maintenance only after all four Electron channels exist, preserving the previous startup
   // ordering while construction remains application-owned and single-instance.
   declareElectronAdapter('notebook-environment', () => {
-    installNotebookEnvironmentSurface(notebookEnvironmentLifecycle, registerNotebookEnvIpcHandlers)
+    const startup = installNotebookEnvironmentSurface(
+      notebookEnvironmentLifecycle,
+      registerNotebookEnvIpcHandlers
+    )
+    notebookService.setEnvironmentStartupBarrier(startup)
   })
   if (provisioner && serialized) {
     // Back the notebook service's manage_environments tool with the same provisioner that owns the env

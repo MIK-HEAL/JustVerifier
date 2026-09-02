@@ -29,6 +29,7 @@ export type SettingsPreferencesSnapshot = {
 
 export type SetDataRootOptions = Readonly<{
   completeOnboarding?: boolean
+  previousDataRoot?: string
 }>
 
 export interface SettingsPreferences {
