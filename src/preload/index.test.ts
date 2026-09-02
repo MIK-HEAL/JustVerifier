@@ -1039,6 +1039,21 @@ describe('preload bridge — core renderer contract catalog', () => {
     expect(invokeMock).toHaveBeenCalledWith('sessions:save-session', { id: 'session-1' })
   })
 
+  it('restores a details-conflict rejection from the Session edit IPC outcome', async () => {
+    invokeMock.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        code: 'session-details-conflict',
+        message: 'Session details changed elsewhere. Reopen the editor and try again.'
+      }
+    })
+
+    await expect(api.sessions.editDetails(sampleEditSessionDetails)).rejects.toMatchObject({
+      code: 'session-details-conflict'
+    })
+    expect(invokeMock).toHaveBeenCalledWith('sessions:edit-details', sampleEditSessionDetails)
+  })
+
   it('returns null without IPC when native upload path extraction fails', async () => {
     const file = { name: 'clipboard.csv' } as File
     getPathForFileMock.mockReturnValue('')
@@ -1165,6 +1180,8 @@ const sampleDeleteSession = { projectId: 'p-1', sessionId: 's-1' }
 const sampleEditSessionDetails = {
   projectId: 'p-1',
   sessionId: 's-1',
+  expectedTitle: 'Original',
+  expectedDescription: 'Original description',
   title: 'Edited',
   description: 'Description'
 }
