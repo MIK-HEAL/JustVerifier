@@ -390,7 +390,6 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
           'Where Open Science stores your projects, artifacts, and other app data on this device.'
         )}
         aria-label={t('Data location')}
-        separated={storageRepairActive}
         action={
           info !== null && !isEditing ? (
             <Button type="button" variant="outline" onClick={() => setWarnOpen(true)}>
@@ -580,7 +579,6 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
           title={t('Disk usage')}
           description={scanTime ? t('Last scanned {{time}}', { time: scanTime }) : undefined}
           aria-label={t('Disk usage')}
-          separated
           action={
             info ? (
               <Button

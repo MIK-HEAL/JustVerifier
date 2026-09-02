@@ -497,7 +497,6 @@ const RuntimesPanel = ({
                 title={label}
                 icon={icon}
                 aria-label={t('{{label}} runtime', { label })}
-                separated
                 action={
                   <TooltipProvider>
                     <Tooltip>
