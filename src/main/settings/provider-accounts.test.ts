@@ -188,6 +188,43 @@ describe('ProviderAccountsModule', () => {
     }
   )
 
+  it.each([
+    ['gateway.example/v1', 'Base URL must be a valid HTTP or HTTPS URL.'],
+    ['ftp://gateway.example/v1', 'Base URL must be a valid HTTP or HTTPS URL.'],
+    [
+      'https://user:password@gateway.example/v1',
+      'Remove credentials from the Base URL and use the API key field.'
+    ],
+    [
+      'https://gateway.example/v1?api_key=secret-key',
+      'Remove credentials from the Base URL and use the API key field.'
+    ],
+    [
+      'https://gateway.example/v1?tenant=lab',
+      'Base URL must not include query parameters or fragments.'
+    ],
+    [
+      'https://gateway.example/v1#fragment',
+      'Base URL must not include query parameters or fragments.'
+    ]
+  ])(
+    'rejects an unsafe custom provider Base URL before persistence: %s',
+    async (baseUrl, error) => {
+      await expect(
+        module.upsertProvider({
+          type: 'custom',
+          name: 'Lab gateway',
+          baseUrl,
+          model: 'lab-model',
+          key: 'secret-key',
+          apiEndpoints: ['openai']
+        })
+      ).rejects.toThrow(error)
+
+      expect((await repository.getSettings()).providers).toEqual([])
+    }
+  )
+
   it('rejects an oversized unsaved validation draft before provider probing', async () => {
     await expect(
       module.validateProvider({
