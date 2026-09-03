@@ -574,6 +574,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.replayPendingConnectorApprovals',
       'settings.replayPendingConnectorCredentialRequests',
       'settings.replayPendingSkillImportApprovals',
+      'settings.resolveSkillDocument',
       'settings.respondConnectorApproval',
       'settings.respondConnectorCredentialRequest',
       'settings.respondSkillImportApproval',
