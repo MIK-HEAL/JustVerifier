@@ -101,6 +101,7 @@ import type {
   CreatePasswordComputeHostResult,
   ResetPasswordComputeHostRequest,
   ResetPasswordComputeHostResult,
+  SetComputeJobRemoteCleanupRequest,
   ChangeComputeHostAuthenticationRequest,
   ChangeComputeHostAuthenticationResult,
   DeleteComputeHostRequest,
@@ -879,6 +880,9 @@ export const RENDERER_API_CONTRACT = Object.freeze({
     'compute',
     ['compute:jobs:cancel']
   ),
+  'compute.jobsSetRemoteCleanup': callable<
+    (request: SetComputeJobRemoteCleanupRequest) => Promise<void>
+  >()('compute', ['compute:jobs:set-remote-cleanup', LOCAL]),
   'compute.jobsMarkConsumed': callable<(sessionId: string, jobIds: string[]) => Promise<void>>()(
     'compute',
     ['compute:jobs:mark-consumed']

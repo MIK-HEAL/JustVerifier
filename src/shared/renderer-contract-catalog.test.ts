@@ -253,7 +253,7 @@ describe('renderer contract catalog', () => {
     const compute = RENDERER_CONTRACT_CATALOG.filter(({ publicPath }) =>
       publicPath.startsWith('compute.')
     )
-    expect(compute).toHaveLength(36)
+    expect(compute).toHaveLength(37)
     expect(
       compute
         .filter(({ surfaceInstallation }) => surfaceInstallation.remoteWeb === 'rejecting-stub')
@@ -262,6 +262,7 @@ describe('renderer contract catalog', () => {
       'compute.changeAuthentication',
       'compute.createPassword',
       'compute.download',
+      'compute.jobsSetRemoteCleanup',
       'compute.passwordCapability',
       'compute.resetPassword',
       'compute.revealInFolder'

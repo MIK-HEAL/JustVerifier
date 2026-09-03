@@ -513,7 +513,7 @@ describe('Compute service architecture', () => {
     const computeContracts = RENDERER_CONTRACT_CATALOG.filter(
       ({ channel }) => channel?.startsWith('compute:') === true
     )
-    expect(computeContracts).toHaveLength(36)
+    expect(computeContracts).toHaveLength(37)
     const remoteRestricted = computeContracts.filter(
       ({ surfaceInstallation }) => surfaceInstallation.remoteWeb === 'rejecting-stub'
     )
@@ -521,6 +521,7 @@ describe('Compute service architecture', () => {
       'compute:change-authentication',
       'compute:create-password',
       'compute:download',
+      'compute:jobs:set-remote-cleanup',
       'compute:password-capability',
       'compute:reset-password',
       'compute:reveal-in-folder'
