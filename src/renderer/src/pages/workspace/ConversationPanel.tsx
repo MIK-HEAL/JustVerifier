@@ -1552,6 +1552,7 @@ const ConversationPanel = ({
                                 ? [
                                     {
                                       sourceKind: binding.sourceKind,
+                                      sourceFileId: binding.sourceFileId,
                                       sourceVersionId: binding.sourceVersionId
                                     }
                                   ]
