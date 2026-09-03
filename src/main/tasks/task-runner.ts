@@ -47,6 +47,7 @@ import type {
   TaskApiErrorCode,
   TaskProject,
   TaskRun,
+  TaskRunStatus,
   TaskRunIdentity,
   TaskRunProgressEvent,
   TaskRunProgressPhase,
@@ -54,7 +55,12 @@ import type {
   TaskSessionSummary,
   UpdateTaskProjectRequest
 } from '../../shared/task-api'
+import { ArchiveAvailabilityError, archiveAvailabilityMessage } from '../archive/availability-error'
 import { toErrorMessage } from '../error-message'
+import { createLogger } from '../logger'
+import type { TaskRunJournal, TaskRunJournalEntry } from './task-run-journal'
+
+const log = createLogger('task-runner')
 
 type TaskProjectPort = {
   list(): Promise<Project[]>
@@ -181,6 +187,7 @@ type TaskRunnerDependencies = {
   reviewer: TaskReviewerPort
   computePreferences: TaskComputePreferencePort
   runWithLifecycleContext<Result>(operation: () => Result): Result
+  runJournal?: TaskRunJournal
   createId: () => string
   now: () => number
 }
@@ -205,6 +212,17 @@ type MutableTaskRun = TaskRun & {
   progressPhase: TaskRunProgressPhase
   providerAccepted: boolean
   firstVisibleOutput: boolean
+  terminalStatus?: Exclude<TaskRunStatus, 'running'>
+  sessionCommitBarrier?: Promise<void>
+  sessionCommit?: {
+    status: Exclude<TaskRunStatus, 'running'>
+    completedAt: number
+    output?: string
+    error?: string
+    failureCode?: TaskRun['failureCode']
+    artifacts: ArtifactFile[]
+    attention?: TaskRun['attention']
+  }
   heartbeatTimer?: ReturnType<typeof setTimeout>
   reviewAbortController?: AbortController
   cancellation?: {
@@ -230,8 +248,9 @@ class PartialTaskCompletionError extends Error {
 }
 
 const MAX_RETAINED_RUNS = 200
+const PROCESS_RESTARTED_MESSAGE = 'Run interrupted because Open Science restarted.'
 const TASK_RUN_HEARTBEAT_INTERVAL_MS = 10_000
-export const TASK_REVIEW_DISPOSAL_BUDGET_MS = 1000
+export const TASK_RUN_DISPOSAL_BUDGET_MS = 1000
 const VISIBLE_PROVIDER_EVENT_KINDS = new Set<AcpRuntimeEvent['kind']>([
   'message',
   'thought',
@@ -342,11 +361,48 @@ const cloneRun = (run: MutableTaskRun): TaskRun => ({
   completedAt: run.completedAt,
   output: run.output,
   error: run.error,
+  failureCode: run.failureCode,
   artifacts: [...run.artifacts],
   attention: run.attention,
   review: run.review,
   preferredComputeHostIds: [...run.preferredComputeHostIds]
 })
+
+const cloneRunForJournal = (run: MutableTaskRun): TaskRunJournalEntry => {
+  const sessionCommit = run.sessionCommit
+  return {
+    ...cloneRun(run),
+    status: run.terminalStatus ?? run.status,
+    promptMessageId: run.promptMessageId,
+    ...(sessionCommit
+      ? {
+          sessionCommitStatus: sessionCommit.status,
+          completedAt: sessionCommit.completedAt,
+          ...(sessionCommit.status === 'cancelled'
+            ? { cancelledAt: sessionCommit.completedAt }
+            : {}),
+          output: sessionCommit.output,
+          error: sessionCommit.error,
+          failureCode: sessionCommit.failureCode,
+          artifacts: [...sessionCommit.artifacts],
+          attention: sessionCommit.attention
+        }
+      : {})
+  }
+}
+
+const sessionOwnsTaskRunPrompt = (
+  session: PersistedChatSession,
+  run: Pick<TaskRunJournalEntry, 'id' | 'sessionId' | 'projectId' | 'promptMessageId'>
+): boolean =>
+  run.promptMessageId !== undefined &&
+  session.id === run.sessionId &&
+  session.projectId === run.projectId &&
+  (session.activeRun?.promptMessageId === run.promptMessageId ||
+    (session.status === 'error' &&
+      session.activeRun === undefined &&
+      session.resumeRecovery?.cause === 'app-restart' &&
+      session.resumeRecovery.promptMessageId === run.promptMessageId))
 
 const createTitle = (prompt: string): string => {
   const normalized = prompt.trim().replace(/\s+/g, ' ')
@@ -486,6 +542,8 @@ const summarizeSession = (session: PersistedChatSession): TaskSessionSummary => 
   autoReviewEnabled: session.autoReviewEnabled === true,
   specialistId: session.specialistId,
   delegationPolicy: session.delegationPolicy === 'deny' ? 'deny' : 'allow',
+  pinned: session.pinned === true,
+  archivedAt: session.archivedAt,
   createdAt: session.createdAt,
   updatedAt: session.updatedAt,
   output: [...session.messages].reverse().find((message) => message.role === 'agent')?.content,
@@ -566,6 +624,8 @@ class TaskRunner {
   private readonly activeRunBySession = new Map<string, string>()
   private readonly progressListeners = new Set<(event: TaskRunProgressEvent) => void>()
   private readonly unsubscribeEvents: () => void
+  private initialization: Promise<void> | undefined
+  private journalWriteTail = Promise.resolve()
   private disposed = false
   private disposal: Promise<void> | undefined
 
@@ -573,6 +633,11 @@ class TaskRunner {
     this.unsubscribeEvents = dependencies.runtimeEvents.subscribe((event) =>
       this.captureEvent(event)
     )
+  }
+
+  initialize(): Promise<void> {
+    if (!this.initialization) this.initialization = this.restoreRuns()
+    return this.initialization
   }
 
   dispose(): Promise<void> {
@@ -587,13 +652,16 @@ class TaskRunner {
       activeReviewCompletions.push(run.completion)
     }
     this.progressListeners.clear()
-    const settleReviews = Promise.allSettled(activeReviewCompletions).then(() => undefined)
+    const settleBackgroundWork = Promise.allSettled([
+      ...activeReviewCompletions,
+      this.journalWriteTail
+    ]).then(() => undefined)
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, TASK_REVIEW_DISPOSAL_BUDGET_MS)
+      timer = setTimeout(resolve, TASK_RUN_DISPOSAL_BUDGET_MS)
       timer.unref?.()
     })
-    this.disposal = Promise.race([settleReviews, deadline]).finally(() => {
+    this.disposal = Promise.race([settleBackgroundWork, deadline]).finally(() => {
       if (timer) clearTimeout(timer)
     })
     return this.disposal
@@ -607,7 +675,7 @@ class TaskRunner {
   resolveActiveRun(sessionId: string, promptMessageId?: string): TaskRunIdentity | undefined {
     const runId = this.activeRunBySession.get(sessionId)
     const run = runId ? this.runs.get(runId) : undefined
-    if (!run || run.status !== 'running') return undefined
+    if (!run || run.status !== 'running' || run.terminalStatus) return undefined
     if (promptMessageId !== undefined && promptMessageId !== run.promptMessageId) return undefined
     return { runId: run.id, sessionId: run.sessionId, projectId: run.projectId }
   }
@@ -759,6 +827,7 @@ class TaskRunner {
   }
 
   async startRun(request: StartTaskRunRequest): Promise<TaskRun> {
+    await this.initialize()
     if (!request || typeof request !== 'object') {
       throw new TaskRunnerError('invalid_request', 'Run request must be an object.')
     }
@@ -819,12 +888,18 @@ class TaskRunner {
     let normalizedRequest: StartTaskRunRequest = cwd === undefined ? request : { ...request, cwd }
 
     const project = await this.resolveProject(request.project)
+    if (project.archivedAt !== undefined) {
+      throw new TaskRunnerError('project_archived', archiveAvailabilityMessage('project-archived'))
+    }
     const sessions = await this.dependencies.sessions.list()
     const existing = request.sessionId
       ? sessions.find((session) => session.id === request.sessionId)
       : undefined
     if (request.sessionId && !existing) {
       throw new TaskRunnerError('session_not_found', `Session not found: ${request.sessionId}`)
+    }
+    if (existing?.archivedAt !== undefined) {
+      throw new TaskRunnerError('session_archived', archiveAvailabilityMessage('session-archived'))
     }
     if (existing && existing.projectId !== project.id) {
       throw new TaskRunnerError(
@@ -853,59 +928,106 @@ class TaskRunner {
     const userMessageId = this.dependencies.createId()
     const runId = this.dependencies.createId()
     if (existing) this.reserveSession(existing.id, runId)
-    let prepared: Awaited<ReturnType<TaskRunner['prepareSession']>>
+    type PreparedSession = Awaited<ReturnType<TaskRunner['prepareSession']>>
+    let accepted: { prepared: PreparedSession; session: PersistedChatSession; run: MutableTaskRun }
     try {
       const prepare = (
         requestForPreparation = normalizedRequest
       ): ReturnType<TaskRunner['prepareSession']> =>
         this.prepareSession(project, existing, requestForPreparation, prompt, userMessageId)
+      const acceptPrepared = async (prepared: PreparedSession): Promise<typeof accepted> => {
+        let session = prepared.session
+        this.reserveSession(session.id, runId)
+        const run = {
+          id: runId,
+          sessionId: session.id,
+          projectId: project.id,
+          cwd: session.cwd,
+          status: 'running' as const,
+          startedAt: this.dependencies.now(),
+          artifacts: [],
+          preferredComputeHostIds: [
+            ...(session.selectedComputeHosts ?? session.enabledComputeHosts ?? [])
+          ],
+          eventAccumulator: createTaskRunEventAccumulator(),
+          promptMessageId: session.activeRun!.promptMessageId,
+          progressPhase: 'accepted' as const,
+          providerAccepted: false,
+          firstVisibleOutput: false,
+          completion: Promise.resolve()
+        } satisfies MutableTaskRun
+
+        this.pruneRuns()
+        this.runs.set(runId, run)
+        try {
+          await this.persistRuns()
+        } catch (error) {
+          this.runs.delete(runId)
+          this.releaseSession(session.id, runId)
+          await this.dependencies.sessions
+            .save({
+              ...session,
+              status: 'error',
+              activeRun: undefined,
+              error: 'Task Run identity could not be persisted.',
+              updatedAt: this.dependencies.now()
+            })
+            .catch(() => undefined)
+          throw error
+        }
+        if (prepared.persistBeforeRunStart) {
+          try {
+            session = await this.dependencies.sessions.save(session)
+          } catch (error) {
+            await this.failUnpublishedRunAfterSessionSave(run, error)
+            this.releaseSession(session.id, runId)
+            throw error
+          }
+          run.cwd = session.cwd
+          run.preferredComputeHostIds = [
+            ...(session.selectedComputeHosts ?? session.enabledComputeHosts ?? [])
+          ]
+          try {
+            await this.persistRuns()
+          } catch (error) {
+            await this.failUnpublishedRunAfterSessionSave(run, error)
+            this.releaseSession(session.id, runId)
+            throw error
+          }
+        }
+        return { prepared, session, run }
+      }
       if (existing) {
-        prepared = await this.dependencies.agent.withSessionAvailable(
+        accepted = await this.dependencies.agent.withSessionAvailable(
           project.id,
           existing.id,
-          prepare
+          async () => acceptPrepared(await prepare())
         )
       } else if (request.computeHostIds !== undefined) {
-        prepared = await this.dependencies.computePreferences.withReservation(
+        accepted = await this.dependencies.computePreferences.withReservation(
           request.computeHostIds,
           async (computeHostIds) => {
             normalizedRequest = { ...normalizedRequest, computeHostIds }
-            return prepare(normalizedRequest)
+            return acceptPrepared(await prepare(normalizedRequest))
           }
         )
       } else {
-        prepared = await prepare()
+        accepted = await acceptPrepared(await prepare())
       }
-      this.reserveSession(prepared.session.id, runId)
     } catch (error) {
       if (existing) this.releaseSession(existing.id, runId)
       if (error instanceof ComputeHostPreferenceValidationError) {
         throw new TaskRunnerError('invalid_request', error.message)
       }
+      if (error instanceof ArchiveAvailabilityError) {
+        throw new TaskRunnerError(
+          error.code === 'project-archived' ? 'project_archived' : 'session_archived',
+          error.message
+        )
+      }
       throw error
     }
-    const session = prepared.session
-    const run = {
-      id: runId,
-      sessionId: session.id,
-      projectId: project.id,
-      cwd: session.cwd,
-      status: 'running' as const,
-      startedAt: this.dependencies.now(),
-      artifacts: [],
-      preferredComputeHostIds: [
-        ...(session.selectedComputeHosts ?? session.enabledComputeHosts ?? [])
-      ],
-      eventAccumulator: createTaskRunEventAccumulator(),
-      promptMessageId: session.activeRun!.promptMessageId,
-      progressPhase: 'accepted' as const,
-      providerAccepted: false,
-      firstVisibleOutput: false,
-      completion: Promise.resolve()
-    } satisfies MutableTaskRun
-
-    this.pruneRuns()
-    this.runs.set(runId, run)
+    const { prepared, session, run } = accepted
     this.publishProgress(run, 'accepted')
     this.publishProgress(run, 'session-ready')
     this.scheduleHeartbeat(run)
@@ -939,7 +1061,10 @@ class TaskRunner {
     const run = this.runs.get(runId)
     if (!run) throw new TaskRunnerError('run_not_found', `Run not found: ${runId}`)
     if (run.status !== 'running') return cloneRun(run)
-
+    if (run.terminalStatus) {
+      await run.completion
+      return cloneRun(run)
+    }
     const existingCancellation = run.cancellation
     if (existingCancellation) {
       await existingCancellation.dispatch
@@ -954,8 +1079,21 @@ class TaskRunner {
     }
     run.cancellation = cancellation
     cancellation.dispatch = Promise.resolve()
-      .then(() => this.dependencies.agent.cancelPrompt(run.sessionId))
-      .then(() => {
+      .then(async () => {
+        const sessionCommitBarrier = run.sessionCommitBarrier
+        if (sessionCommitBarrier) await sessionCommitBarrier
+        await this.dependencies.agent.cancelPrompt(run.sessionId)
+      })
+      .then(async () => {
+        if (run.sessionCommit && run.sessionCommit.status !== 'failed') {
+          const cancelledAt = this.dependencies.now()
+          await this.persistSessionCommit(run, {
+            ...run.sessionCommit,
+            status: 'cancelled',
+            completedAt: cancelledAt,
+            attention: undefined
+          })
+        }
         run.reviewAbortController?.abort()
         cancellation.accepted = true
       })
@@ -970,6 +1108,76 @@ class TaskRunner {
     await cancellation.dispatch
     await run.completion
     return cloneRun(run)
+  }
+
+  private async failUnpublishedRunAfterSessionSave(
+    run: MutableTaskRun,
+    failure: unknown
+  ): Promise<void> {
+    const message = toErrorMessage(failure)
+    run.progressPhase = 'failed'
+    run.error = message
+    run.completedAt = this.dependencies.now()
+    run.attention = undefined
+    run.eventAccumulator = undefined
+    try {
+      await this.persistSessionCommit(
+        run,
+        {
+          status: 'failed',
+          completedAt: run.completedAt,
+          error: message,
+          artifacts: [...run.artifacts]
+        },
+        false
+      )
+    } catch (error) {
+      log.error('Failed to stage a Task Run after its Session save reported an error.', {
+        error: toErrorMessage(error),
+        runId: run.id
+      })
+    }
+
+    let session: PersistedChatSession | undefined
+    try {
+      session = (await this.dependencies.sessions.list()).find((candidate) =>
+        sessionOwnsTaskRunPrompt(candidate, run)
+      )
+    } catch (error) {
+      log.error('Failed to verify a Session after its save reported an error.', {
+        error: toErrorMessage(error),
+        runId: run.id
+      })
+      run.status = 'failed'
+      await this.persistRunsBestEffort()
+      return
+    }
+    if (!session) {
+      run.sessionCommit = undefined
+      run.status = 'failed'
+      await this.persistRunsBestEffort()
+      return
+    }
+    try {
+      await this.dependencies.sessions.save({
+        ...session,
+        status: 'error',
+        activeRun: undefined,
+        taskRunCommitId: run.id,
+        error: message,
+        updatedAt: this.dependencies.now()
+      })
+    } catch (error) {
+      log.error('Failed to reconcile a Session after its save reported an error.', {
+        error: toErrorMessage(error),
+        runId: run.id
+      })
+      run.status = 'failed'
+      await this.persistRunsBestEffort()
+      return
+    }
+    run.status = 'failed'
+    await this.persistRunsBestEffort()
   }
 
   private reserveSession(sessionId: string, runId: string): void {
@@ -995,6 +1203,7 @@ class TaskRunner {
   ): Promise<{
     session: PersistedChatSession
     persistOnPromptAdmission: boolean
+    persistBeforeRunStart: boolean
     historyPreamble?: string
     contextReset?: boolean
     resumeFallback?: TaskAgentPromptRequest['resumeFallback']
@@ -1190,15 +1399,13 @@ class TaskRunner {
     }
 
     const persistOnPromptAdmission = existing !== undefined
-    const committedSession = persistOnPromptAdmission
-      ? sessionToCommit
-      : await this.dependencies.sessions.save(sessionToCommit)
     const previousHistoryPreamble = existing
       ? createHistoryPreamble(selectTaskHistoryMessages(existing))
       : undefined
     return {
-      session: committedSession,
+      session: sessionToCommit,
       persistOnPromptAdmission,
+      persistBeforeRunStart: existing === undefined,
       historyPreamble: contextReset ? previousHistoryPreamble : undefined,
       contextReset,
       resumeFallback:
@@ -1319,13 +1526,14 @@ class TaskRunner {
       const cancellation = run.cancellation
       if (cancellation) await cancellation.dispatch.catch(() => undefined)
       if (cancellationAtPromptFailure?.accepted === true) {
-        run.status = 'cancelled'
         run.attention = undefined
         const cancelledAt = this.dependencies.now()
         run.completedAt = cancelledAt
         run.cancelledAt = cancelledAt
         this.stopHeartbeat(run)
-        this.publishProgress(run, 'cancelled')
+        await this.persistTerminalRun(run, 'cancelled').finally(() =>
+          this.publishProgress(run, run.status === 'failed' ? 'failed' : 'cancelled')
+        )
       } else {
         await this.failRun(
           run,
@@ -1377,6 +1585,42 @@ class TaskRunner {
       return
     }
 
+    const sessionCommitCancellation = run.cancellation
+    if (sessionCommitCancellation) {
+      await sessionCommitCancellation.dispatch.catch(() => undefined)
+    }
+    const sessionCommitStatus =
+      sessionCommitCancellation?.accepted === true ? 'cancelled' : 'completed'
+    completed!.session = { ...completed!.session, taskRunCommitId: run.id }
+    const sessionCommitAt = this.dependencies.now()
+    const sessionCommit: NonNullable<MutableTaskRun['sessionCommit']> = {
+      status: sessionCommitStatus,
+      completedAt: sessionCommitAt,
+      output: completed!.output,
+      artifacts: completed!.artifacts,
+      attention: sessionCommitStatus === 'completed' ? run.attention : undefined
+    }
+    this.stopHeartbeat(run)
+    let releaseSessionCommitBarrier: (() => void) | undefined
+    const sessionCommitBarrier = new Promise<void>((resolve) => {
+      releaseSessionCommitBarrier = resolve
+    })
+    run.sessionCommitBarrier = sessionCommitBarrier
+    try {
+      await this.persistSessionCommit(run, sessionCommit)
+    } catch (error) {
+      const persistenceMessage = 'Task Run terminal state could not be persisted.'
+      log.error(persistenceMessage, { error: toErrorMessage(error), runId: run.id })
+      await this.failRun(run, acceptedSession, completed, new Error(persistenceMessage))
+      run.eventAccumulator = undefined
+      return
+    } finally {
+      if (run.sessionCommitBarrier === sessionCommitBarrier) {
+        run.sessionCommitBarrier = undefined
+      }
+      releaseSessionCommitBarrier?.()
+    }
+
     try {
       await this.dependencies.sessions.save(completed!.session)
     } catch (error) {
@@ -1420,14 +1664,16 @@ class TaskRunner {
     if (terminalCancellation) await terminalCancellation.dispatch.catch(() => undefined)
     const terminalCancellationAccepted = terminalCancellation?.accepted === true
     if (terminalCancellationAccepted) run.attention = undefined
-    run.status = terminalCancellationAccepted ? 'cancelled' : 'completed'
+    const terminalStatus = terminalCancellationAccepted ? 'cancelled' : 'completed'
     run.output = completed!.output
     run.artifacts = completed!.artifacts
     const completedAt = this.dependencies.now()
     run.completedAt = completedAt
     if (terminalCancellationAccepted) run.cancelledAt = completedAt
     this.stopHeartbeat(run)
-    this.publishProgress(run, terminalCancellationAccepted ? 'cancelled' : 'completed')
+    await this.persistTerminalRun(run, terminalStatus).finally(() =>
+      this.publishProgress(run, run.status === 'failed' ? 'failed' : terminalStatus)
+    )
   }
 
   private async failRun(
@@ -1443,19 +1689,55 @@ class TaskRunner {
       ...(completed?.session ?? session),
       status: 'error',
       activeRun: undefined,
+      taskRunCommitId: run.id,
       error: message,
       ...(runtimeError?.providerError ? { errorReportable: false } : {}),
       updatedAt: this.dependencies.now()
     }
-    run.status = 'failed'
     run.attention = undefined
     run.error = message
     run.output = completed?.output
     run.artifacts = completed?.artifacts ?? []
     run.completedAt = this.dependencies.now()
     this.stopHeartbeat(run)
-    this.publishProgress(run, 'failed')
-    if (persistSession) await this.dependencies.sessions.save(failed).catch(() => undefined)
+    if (persistSession) {
+      const failedCommit: NonNullable<MutableTaskRun['sessionCommit']> = {
+        status: 'failed',
+        completedAt: run.completedAt,
+        output: run.output,
+        error: run.error,
+        failureCode: run.failureCode,
+        artifacts: run.artifacts,
+        attention: undefined
+      }
+      let releaseSessionCommitBarrier: (() => void) | undefined
+      const sessionCommitBarrier = new Promise<void>((resolve) => {
+        releaseSessionCommitBarrier = resolve
+      })
+      run.sessionCommitBarrier = sessionCommitBarrier
+      try {
+        await this.persistSessionCommit(run, failedCommit, false)
+      } catch (error) {
+        const persistenceMessage = 'Task Run terminal state could not be persisted.'
+        run.error = `${run.error}\n\n${persistenceMessage}`
+        log.error(persistenceMessage, { error: toErrorMessage(error), runId: run.id })
+        try {
+          await this.persistTerminalRun(run, 'failed').finally(() =>
+            this.publishProgress(run, 'failed')
+          )
+        } finally {
+          await this.dependencies.sessions.save(failed).catch(() => undefined)
+        }
+        return
+      } finally {
+        if (run.sessionCommitBarrier === sessionCommitBarrier) {
+          run.sessionCommitBarrier = undefined
+        }
+        releaseSessionCommitBarrier?.()
+      }
+      await this.dependencies.sessions.save(failed).catch(() => undefined)
+    }
+    await this.persistTerminalRun(run, 'failed').finally(() => this.publishProgress(run, 'failed'))
   }
 
   private async completeSession(
@@ -1563,7 +1845,8 @@ class TaskRunner {
   private captureEvent(event: AcpRuntimeEvent): void {
     if (!event.sessionId) return
     for (const run of this.runs.values()) {
-      if (run.status !== 'running' || run.sessionId !== event.sessionId) continue
+      if (run.status !== 'running' || run.terminalStatus || run.sessionId !== event.sessionId)
+        continue
       if (event.promptMessageId !== undefined && event.promptMessageId !== run.promptMessageId) {
         continue
       }
@@ -1573,6 +1856,7 @@ class TaskRunner {
           event.planProjection.lifecycle === 'awaiting_approval'
             ? { kind: 'plan-approval', plan: event.planProjection }
             : undefined
+        void this.persistRunsBestEffort()
       }
       if (
         run.providerAccepted &&
@@ -1637,6 +1921,194 @@ class TaskRunner {
     for (const run of completed) {
       this.runs.delete(run.id)
       if (this.runs.size < MAX_RETAINED_RUNS) return
+    }
+  }
+
+  private async restoreRuns(): Promise<void> {
+    const journal = this.dependencies.runJournal
+    if (!journal) return
+    const loadedRuns = await journal.load()
+    const storedRuns = loadedRuns.slice(-MAX_RETAINED_RUNS)
+    const sessions = storedRuns.some(
+      (run) => (run.status === 'running' || run.status === 'failed') && run.promptMessageId
+    )
+      ? await this.dependencies.sessions.list()
+      : []
+    const interrupted: MutableTaskRun[] = []
+    const terminalSessionRepairs: MutableTaskRun[] = []
+    let normalized = false
+    for (const stored of storedRuns) {
+      const snapshot = structuredClone(stored)
+      let interruptedSession: PersistedChatSession | undefined
+      let recoveryCommit: MutableTaskRun['sessionCommit']
+      if (snapshot.status === 'running') {
+        const committedSession = snapshot.promptMessageId
+          ? sessions.find(
+              (session) =>
+                session.id === snapshot.sessionId &&
+                session.activeRun?.promptMessageId !== snapshot.promptMessageId &&
+                session.taskRunCommitId === snapshot.id &&
+                session.status === (snapshot.sessionCommitStatus === 'failed' ? 'error' : 'idle')
+            )
+          : undefined
+        if (snapshot.sessionCommitStatus && committedSession) {
+          snapshot.status = snapshot.sessionCommitStatus
+          if (snapshot.status !== 'completed') snapshot.attention = undefined
+        } else {
+          snapshot.failureCode = 'process_restarted'
+          snapshot.error = PROCESS_RESTARTED_MESSAGE
+          snapshot.completedAt = this.dependencies.now()
+          snapshot.attention = undefined
+          interruptedSession = sessions.find((session) =>
+            sessionOwnsTaskRunPrompt(session, snapshot)
+          )
+          if (interruptedSession) {
+            recoveryCommit = {
+              status: 'failed',
+              completedAt: snapshot.completedAt,
+              output: snapshot.output,
+              error: snapshot.error,
+              failureCode: snapshot.failureCode,
+              artifacts: [...snapshot.artifacts]
+            }
+          } else {
+            snapshot.status = 'failed'
+          }
+        }
+        normalized = true
+      }
+      const run: MutableTaskRun = {
+        ...snapshot,
+        ...(recoveryCommit ? { sessionCommit: recoveryCommit } : {}),
+        completion: Promise.resolve(),
+        promptMessageId: snapshot.promptMessageId ?? '',
+        progressPhase: snapshot.status === 'running' ? 'failed' : snapshot.status,
+        providerAccepted: false,
+        firstVisibleOutput: true
+      }
+      this.runs.set(run.id, run)
+      if (interruptedSession) interrupted.push(run)
+      if (
+        snapshot.status === 'failed' &&
+        sessions.some(
+          (session) =>
+            session.taskRunCommitId !== snapshot.id && sessionOwnsTaskRunPrompt(session, snapshot)
+        )
+      ) {
+        terminalSessionRepairs.push(run)
+      }
+    }
+    if (
+      !normalized &&
+      loadedRuns.length === storedRuns.length &&
+      terminalSessionRepairs.length === 0
+    ) {
+      return
+    }
+
+    // Stage interrupted failures before committing their Session projection. A restart during this
+    // reconciliation can then retry the exact prompt, while a committed Session witness promotes the
+    // staged failure on the next restore.
+    if (normalized || loadedRuns.length !== storedRuns.length) await this.persistRuns()
+    if (interrupted.length === 0 && terminalSessionRepairs.length === 0) return
+
+    const currentSessions = await this.dependencies.sessions.list()
+    for (const run of interrupted) {
+      const current = currentSessions.find((session) => sessionOwnsTaskRunPrompt(session, run))
+      if (!current) {
+        run.sessionCommit = undefined
+        run.status = 'failed'
+        continue
+      }
+      await this.dependencies.sessions.save({
+        ...current,
+        status: 'error',
+        activeRun: undefined,
+        taskRunCommitId: run.id,
+        error: current.error ?? PROCESS_RESTARTED_MESSAGE,
+        updatedAt: this.dependencies.now()
+      })
+      run.status = 'failed'
+    }
+    for (const run of terminalSessionRepairs) {
+      const current = currentSessions.find(
+        (session) => session.taskRunCommitId !== run.id && sessionOwnsTaskRunPrompt(session, run)
+      )
+      if (!current) continue
+      await this.dependencies.sessions.save({
+        ...current,
+        status: 'error',
+        activeRun: undefined,
+        taskRunCommitId: run.id,
+        error: current.error ?? run.error ?? PROCESS_RESTARTED_MESSAGE,
+        updatedAt: this.dependencies.now()
+      })
+    }
+    if (interrupted.length > 0) await this.persistRuns()
+  }
+
+  private persistRuns(): Promise<void> {
+    const journal = this.dependencies.runJournal
+    if (!journal) return Promise.resolve()
+    const write = this.journalWriteTail.then(() =>
+      journal.replace([...this.runs.values()].map(cloneRunForJournal))
+    )
+    this.journalWriteTail = write.catch(() => undefined)
+    return write
+  }
+
+  private async persistRunsBestEffort(): Promise<void> {
+    try {
+      await this.persistRuns()
+    } catch (error) {
+      log.error('Failed to persist Task Run state.', { error: toErrorMessage(error) })
+    }
+  }
+
+  private persistSessionCommit(
+    run: MutableTaskRun,
+    commit: NonNullable<MutableTaskRun['sessionCommit']>,
+    rollbackToPrevious = true
+  ): Promise<void> {
+    const journal = this.dependencies.runJournal
+    const previous = run.sessionCommit
+    if (!journal) {
+      run.sessionCommit = commit
+      return Promise.resolve()
+    }
+    const write = this.journalWriteTail.then(async () => {
+      run.sessionCommit = commit
+      try {
+        await journal.replace([...this.runs.values()].map(cloneRunForJournal))
+      } catch (error) {
+        run.sessionCommit = rollbackToPrevious ? previous : undefined
+        throw error
+      }
+    })
+    this.journalWriteTail = write.catch(() => undefined)
+    return write
+  }
+
+  private async persistTerminalRun(
+    run: MutableTaskRun,
+    status: Exclude<TaskRunStatus, 'running'>
+  ): Promise<void> {
+    run.terminalStatus = status
+    try {
+      await this.persistRuns()
+      run.status = status
+    } catch (error) {
+      const persistenceMessage = 'Task Run terminal state could not be persisted.'
+      run.status = 'failed'
+      run.terminalStatus = 'failed'
+      run.sessionCommit = undefined
+      run.attention = undefined
+      run.cancelledAt = undefined
+      run.error = run.error ? `${run.error}\n\n${persistenceMessage}` : persistenceMessage
+      log.error(persistenceMessage, { error: toErrorMessage(error), runId: run.id })
+      await this.persistRuns()
+    } finally {
+      run.terminalStatus = undefined
     }
   }
 
