@@ -3519,6 +3519,328 @@ describe('workspace runtime events', () => {
     expect(session.messages[1].artifactIds).toEqual(['transport-session-1:message-1:result.txt'])
     expect(session.error).toBeUndefined()
   })
+
+  it('does not re-finalize an artifact event that the durable Session already applied', async () => {
+    const finalizedArtifact = createArtifactFile({
+      id: 'transport-session-1:message-1:result.txt',
+      sessionId: 'transport-session-1',
+      messageId: 'message-1',
+      runId: undefined,
+      path: '/Users/example/.open-science/artifacts/default-project/transport-session-1/message-1/result.txt',
+      fileUrl:
+        'file:///Users/example/.open-science/artifacts/default-project/transport-session-1/message-1/result.txt'
+    })
+    const finalizeRunArtifacts = vi
+      .fn()
+      .mockResolvedValueOnce([finalizedArtifact])
+      .mockRejectedValueOnce(new Error('Artifact run claim not found: artifact-claim-expired'))
+    const saveSession = vi.fn().mockResolvedValue(undefined)
+    const artifactEvent = createEvent({
+      id: 'artifact-event-expired-claim',
+      kind: 'artifact',
+      runId: 'run-expired-claim',
+      artifactSessionId: 'artifact-session-1',
+      artifactClaimId: 'artifact-claim-expired',
+      artifacts: [createArtifactFile({ runId: 'run-expired-claim' })]
+    })
+
+    await applyWorkspaceRuntimeEvent(createEvent({ id: 'stop-before-finalize', kind: 'stop' }))
+    await applyWorkspaceRuntimeEvent(artifactEvent, { finalizeRunArtifacts, saveSession })
+    useSessionStore
+      .getState()
+      .recordArtifactError(
+        'transport-session-1',
+        'Artifact run claim not found: artifact-claim-expired',
+        true
+      )
+    await applyWorkspaceRuntimeEvent(artifactEvent, { finalizeRunArtifacts, saveSession })
+
+    expect(finalizeRunArtifacts).toHaveBeenCalledOnce()
+    expect(useSessionStore.getState().sessions[0].error).toBeUndefined()
+  })
+
+  it('finalizes sibling artifact events independently', async () => {
+    useSessionStore.getState().appendAgentMessageChunk({
+      sessionId: 'transport-session-1',
+      streamId: 'run-with-sibling-claims',
+      eventId: 'agent-before-sibling-claims',
+      content: 'Saved both results.'
+    })
+    await applyWorkspaceRuntimeEvent(
+      createEvent({ id: 'stop-before-sibling-claims', kind: 'stop' })
+    )
+
+    const messageId = useSessionStore.getState().sessions[0].messages[1].id
+    const firstFinalizedArtifact = createArtifactFile({
+      id: `transport-session-1:${messageId}:first.txt`,
+      sessionId: 'transport-session-1',
+      messageId,
+      runId: undefined,
+      name: 'first.txt',
+      path: `/Users/example/.open-science/artifacts/default-project/transport-session-1/${messageId}/first.txt`
+    })
+    const secondFinalizedArtifact = createArtifactFile({
+      id: `transport-session-1:${messageId}:second.txt`,
+      sessionId: 'transport-session-1',
+      messageId,
+      runId: undefined,
+      name: 'second.txt',
+      path: `/Users/example/.open-science/artifacts/default-project/transport-session-1/${messageId}/second.txt`
+    })
+    const finalizeRunArtifacts = vi
+      .fn()
+      .mockResolvedValueOnce([firstFinalizedArtifact])
+      .mockResolvedValueOnce([firstFinalizedArtifact, secondFinalizedArtifact])
+    const dependencies = {
+      finalizeRunArtifacts,
+      saveSession: vi.fn().mockResolvedValue(undefined)
+    }
+
+    useSessionStore.getState().attachRunArtifacts({
+      sessionId: 'transport-session-1',
+      runId: 'run-with-sibling-claims',
+      eventId: 'first-artifact-event',
+      artifacts: [createArtifactFile({ name: 'first.txt' })]
+    })
+    useSessionStore.getState().attachRunArtifacts({
+      sessionId: 'transport-session-1',
+      runId: 'run-with-sibling-claims',
+      eventId: 'second-artifact-event',
+      artifacts: [createArtifactFile({ name: 'second.txt' })]
+    })
+    await applyWorkspaceRuntimeEvent(
+      createEvent({
+        id: 'first-artifact-event',
+        kind: 'artifact',
+        runId: 'run-with-sibling-claims',
+        artifactClaimId: 'first-claim',
+        artifacts: [createArtifactFile({ name: 'first.txt' })]
+      }),
+      dependencies
+    )
+    await applyWorkspaceRuntimeEvent(
+      createEvent({
+        id: 'second-artifact-event',
+        kind: 'artifact',
+        runId: 'run-with-sibling-claims',
+        artifactClaimId: 'second-claim',
+        artifacts: [createArtifactFile({ name: 'second.txt' })]
+      }),
+      dependencies
+    )
+
+    expect(finalizeRunArtifacts).toHaveBeenCalledTimes(2)
+    expect(useSessionStore.getState().sessions[0].messages[1].artifactIds).toEqual([
+      firstFinalizedArtifact.id,
+      secondFinalizedArtifact.id
+    ])
+  })
+
+  it('does not treat an immutable native provenance path as finalized', async () => {
+    const nativePendingArtifact = createArtifactFile({
+      id: 'native-version-1',
+      artifactId: 'native-artifact-1',
+      versionId: 'native-version-1',
+      versionNumber: 1,
+      path: '/Users/example/.open-science/managed/native-version-1/result.txt'
+    })
+    useSessionStore.getState().attachRunArtifacts({
+      sessionId: 'transport-session-1',
+      runId: 'run-native-pending',
+      eventId: 'native-pending-event',
+      artifacts: [nativePendingArtifact]
+    })
+    useSessionStore.getState().attachRunArtifacts({
+      sessionId: 'transport-session-1',
+      runId: 'run-native-pending',
+      eventId: 'unrelated-native-pending-event',
+      artifacts: [
+        createArtifactFile({
+          id: 'unrelated-native-version',
+          artifactId: 'unrelated-native-artifact',
+          versionId: 'unrelated-native-version',
+          name: 'unrelated.txt',
+          path: '/Users/example/.open-science/managed/unrelated-native-version/unrelated.txt'
+        })
+      ]
+    })
+    await applyWorkspaceRuntimeEvent(createEvent({ id: 'stop-before-native-replay', kind: 'stop' }))
+    useSessionStore
+      .getState()
+      .recordArtifactError(
+        'transport-session-1',
+        'current claim failed',
+        true,
+        'native-pending-event'
+      )
+    const messageId = useSessionStore.getState().sessions[0].messages[1].id
+    const finalizedArtifact = {
+      ...nativePendingArtifact,
+      messageId
+    }
+    const operationOrder: string[] = []
+    const finalizeRunArtifacts = vi.fn().mockResolvedValue([finalizedArtifact])
+    const reconcilePendingArtifacts = vi.fn().mockImplementation(async () => {
+      operationOrder.push('reconcile')
+      return [finalizedArtifact]
+    })
+    const saveSession = vi.fn().mockImplementation(async () => {
+      operationOrder.push('save')
+    })
+
+    await applyWorkspaceRuntimeEvent(
+      createEvent({
+        id: 'native-pending-event',
+        kind: 'artifact',
+        runId: 'run-native-pending',
+        artifactClaimId: 'native-pending-claim',
+        artifacts: [nativePendingArtifact]
+      }),
+      {
+        finalizeRunArtifacts,
+        reconcilePendingArtifacts,
+        saveSession
+      }
+    )
+
+    expect(operationOrder).toEqual(['save', 'reconcile'])
+    expect(reconcilePendingArtifacts).toHaveBeenCalledOnce()
+    expect(finalizeRunArtifacts).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions[0].error).toBeUndefined()
+  })
+
+  it('does not clear an artifact error owned by another event', async () => {
+    const finalizedArtifact = createArtifactFile({
+      id: 'transport-session-1:message-1:result.txt',
+      sessionId: 'transport-session-1',
+      messageId: 'message-1',
+      runId: undefined,
+      path: '/Users/example/.open-science/artifacts/default-project/transport-session-1/message-1/result.txt'
+    })
+    const artifactEvent = createEvent({
+      id: 'replayed-finalized-event',
+      kind: 'artifact',
+      runId: 'run-finalized',
+      artifactClaimId: 'expired-finalized-claim',
+      artifacts: [createArtifactFile({ runId: 'run-finalized' })]
+    })
+    const finalizeRunArtifacts = vi.fn().mockResolvedValue([finalizedArtifact])
+    const dependencies = {
+      finalizeRunArtifacts,
+      saveSession: vi.fn().mockResolvedValue(undefined)
+    }
+
+    await applyWorkspaceRuntimeEvent(createEvent({ id: 'stop-before-owned-error', kind: 'stop' }))
+    await applyWorkspaceRuntimeEvent(artifactEvent, dependencies)
+    useSessionStore
+      .getState()
+      .recordArtifactError(
+        'transport-session-1',
+        'current claim failed',
+        true,
+        'replayed-finalized-event'
+      )
+    useSessionStore
+      .getState()
+      .recordArtifactError(
+        'transport-session-1',
+        'sibling claim failed',
+        true,
+        'sibling-artifact-event'
+      )
+    useSessionStore.getState().recordArtifactError('transport-session-1', 'generic retry failed')
+
+    await applyWorkspaceRuntimeEvent(artifactEvent, dependencies)
+
+    expect(finalizeRunArtifacts).toHaveBeenCalledOnce()
+    expect(useSessionStore.getState().sessions[0].error).toContain('generic retry failed')
+    expect(useSessionStore.getState().sessions[0].artifactErrorEventIds).toEqual([
+      'sibling-artifact-event'
+    ])
+  })
+
+  it('records native artifact reconciliation failures for retry', async () => {
+    const nativePendingArtifact = createArtifactFile({
+      id: 'native-version-reconcile-failure',
+      artifactId: 'native-artifact-reconcile-failure',
+      versionId: 'native-version-reconcile-failure',
+      versionNumber: 1,
+      path: '/Users/example/.open-science/managed/native-version-reconcile-failure/result.txt'
+    })
+    useSessionStore.getState().attachRunArtifacts({
+      sessionId: 'transport-session-1',
+      runId: 'run-native-reconcile-failure',
+      eventId: 'native-reconcile-failure-event',
+      artifacts: [nativePendingArtifact]
+    })
+    await applyWorkspaceRuntimeEvent(
+      createEvent({ id: 'stop-before-native-reconcile-failure', kind: 'stop' })
+    )
+
+    await expect(
+      applyWorkspaceRuntimeEvent(
+        createEvent({
+          id: 'native-reconcile-failure-event',
+          kind: 'artifact',
+          runId: 'run-native-reconcile-failure',
+          artifactClaimId: 'native-reconcile-failure-claim',
+          artifacts: [nativePendingArtifact]
+        }),
+        {
+          reconcilePendingArtifacts: vi.fn().mockRejectedValue(new Error('reconcile failed')),
+          saveSession: vi.fn().mockResolvedValue(undefined)
+        }
+      )
+    ).rejects.toThrow('reconcile failed')
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'error',
+      error: expect.stringContaining('Generated file finalization failed')
+    })
+  })
+
+  it('rejects incomplete native artifact reconciliation results', async () => {
+    const nativePendingArtifact = createArtifactFile({
+      id: 'native-version-incomplete',
+      artifactId: 'native-artifact-incomplete',
+      versionId: 'native-version-incomplete',
+      versionNumber: 1,
+      path: '/Users/example/.open-science/managed/native-version-incomplete/result.txt'
+    })
+    useSessionStore.getState().attachRunArtifacts({
+      sessionId: 'transport-session-1',
+      runId: 'run-native-incomplete',
+      eventId: 'native-incomplete-event',
+      artifacts: [nativePendingArtifact]
+    })
+    await applyWorkspaceRuntimeEvent(
+      createEvent({ id: 'stop-before-native-incomplete', kind: 'stop' })
+    )
+
+    await expect(
+      applyWorkspaceRuntimeEvent(
+        createEvent({
+          id: 'native-incomplete-event',
+          kind: 'artifact',
+          runId: 'run-native-incomplete',
+          artifactClaimId: 'native-incomplete-claim',
+          artifacts: [nativePendingArtifact]
+        }),
+        {
+          reconcilePendingArtifacts: vi.fn().mockResolvedValue([]),
+          finalizeRunArtifacts: vi
+            .fn()
+            .mockRejectedValue(new Error('Artifact run claim not found: native-incomplete-claim')),
+          saveSession: vi.fn().mockResolvedValue(undefined)
+        }
+      )
+    ).rejects.toThrow('Artifact reconciliation did not resolve all native Versions.')
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'error',
+      artifactErrorEventIds: ['native-incomplete-event']
+    })
+  })
 })
 
 describe('loop guard: suppressNextAutoReview', () => {

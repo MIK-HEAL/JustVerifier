@@ -802,6 +802,9 @@ export type PersistedChatSession = {
   // unknown ACP-layer failure. Resolved once when the run fails and persisted so the "Report error"
   // gate survives a reload. Absent on older files — treated as reportable (the prior behavior).
   errorReportable?: boolean
+  // Identifies the artifact runtime event that owns the current finalization error. Historical
+  // Sessions omit it and retain the conservative replay-clearing behavior.
+  artifactErrorEventIds?: string[]
   artifacts?: PersistedArtifact[]
   // Incremented only when finalized file metadata changes; text streaming leaves it untouched.
   filesRevision?: number
@@ -4214,6 +4217,10 @@ const sanitizeSession = (
   if (error) sanitized.error = error
   // Only meaningful alongside an error; persisted only when explicitly false (absent = reportable).
   if (error && session.errorReportable === false) sanitized.errorReportable = false
+  const artifactErrorEventIds = [...new Set(asStringArray(session.artifactErrorEventIds))]
+  if (error?.startsWith('Generated file finalization') && artifactErrorEventIds.length > 0) {
+    sanitized.artifactErrorEventIds = artifactErrorEventIds
+  }
   if (agentFrameworkId && AGENT_FRAMEWORK_IDS.has(agentFrameworkId)) {
     sanitized.agentFrameworkId = agentFrameworkId
   }
