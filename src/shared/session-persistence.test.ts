@@ -354,6 +354,109 @@ describe('conversation graph materialization diagnostics', () => {
     })
   })
 
+  it('quarantines a persisted graph with a semantically invalid Message response target', () => {
+    const messages: PersistedChatMessage[] = [
+      {
+        id: 'prompt-message',
+        role: 'user',
+        content: 'Persist me',
+        status: 'complete',
+        eventIds: [],
+        createdAt: 1,
+        updatedAt: 1
+      },
+      {
+        id: 'response-message',
+        role: 'agent',
+        content: 'Done',
+        status: 'complete',
+        eventIds: [],
+        responseToMessageId: 'missing-prompt',
+        createdAt: 2,
+        updatedAt: 2
+      }
+    ]
+    const conversationGraph = createLinearConversationGraph({
+      sessionId: 'session-1',
+      messages,
+      createdAt: 1,
+      updatedAt: 2
+    })
+
+    expect(
+      decodeSessionFile({
+        version: SESSION_FILE_VERSION,
+        session: {
+          ...createSessionWithActivity(undefined),
+          messages,
+          conversationGraph
+        }
+      })
+    ).toEqual({ status: 'invalid' })
+  })
+
+  it('normalizes a historical routed user Message that responds to itself', () => {
+    const messages: PersistedChatMessage[] = [
+      {
+        id: 'routed-message',
+        role: 'user',
+        content: 'Apply the reviewer correction',
+        status: 'complete',
+        eventIds: ['application-event'],
+        responseToMessageId: 'routed-message',
+        createdAt: 1,
+        updatedAt: 1
+      }
+    ]
+    const conversationGraph = createLinearConversationGraph({
+      sessionId: 'session-1',
+      messages,
+      createdAt: 1,
+      updatedAt: 1
+    })
+
+    const decoded = decodeSessionFile({
+      version: SESSION_FILE_VERSION,
+      session: {
+        ...createSessionWithActivity(undefined),
+        messages,
+        conversationGraph
+      }
+    })
+
+    expect(decoded.status).toBe('ok')
+    if (decoded.status !== 'ok') return
+    expect(decoded.session.messages[0].responseToMessageId).toBeUndefined()
+    expect(decoded.session.conversationGraph?.messages[0].responseToMessageId).toBeUndefined()
+  })
+
+  it('normalizes the same historical routed user self-link in a flat Session', () => {
+    const decoded = decodeSessionFile({
+      version: SESSION_FILE_VERSION,
+      session: {
+        ...createSessionWithActivity(undefined),
+        messages: [
+          {
+            id: 'routed-message',
+            role: 'user',
+            content: 'Apply the reviewer correction',
+            status: 'complete',
+            eventIds: ['application-event'],
+            responseToMessageId: 'routed-message',
+            createdAt: 1,
+            updatedAt: 1
+          }
+        ]
+      }
+    })
+
+    expect(decoded.status).toBe('ok')
+    if (decoded.status !== 'ok') return
+    expect(decoded.session.messages[0].responseToMessageId).toBeUndefined()
+    expect(decoded.session.conversationGraph?.messages[0].responseToMessageId).toBeUndefined()
+    expect(() => createSessionFile(decoded.session)).not.toThrow()
+  })
+
   it('writes a canonical graph while retaining flat messages as the active projection', () => {
     const session: PersistedChatSession = {
       id: 'session-1',
@@ -3690,7 +3793,8 @@ describe('normalizeSessionFile with activities', () => {
           {
             ...abandonedResponse,
             agentFrameId: graph.rootFrameId,
-            introducedOnBranchId: abandonedBranchId
+            introducedOnBranchId: abandonedBranchId,
+            parentMessageId: prompt.id
           }
         ]
       },
