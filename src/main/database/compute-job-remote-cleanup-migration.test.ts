@@ -67,9 +67,9 @@ describe('Compute Job remote cleanup migration', () => {
     )`)
 
     await expect(migrateApplicationDatabase(client, { databasePath })).resolves.toMatchObject({
-      applied: ['0026_compute_job_remote_cleanup'],
+      applied: ['0026_compute_job_remote_cleanup', '0027_project_session_defaults'],
       from: '0025_managed_file_version_foundation',
-      to: '0026_compute_job_remote_cleanup'
+      to: '0027_project_session_defaults'
     })
     await expect(
       client.$queryRawUnsafe<Array<{ remoteCleanupDisposition: string }>>(

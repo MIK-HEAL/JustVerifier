@@ -35,6 +35,24 @@ const taskCallerContext = (): ReturnType<typeof expect.objectContaining> =>
     actionOrigin: 'automation'
   })
 
+const taskSettings = {
+  claude: {},
+  opencode: {},
+  codebuddy: {},
+  codex: {},
+  claudeManaged: false,
+  opencodeManaged: false,
+  codebuddyManaged: false,
+  codexManaged: false,
+  providers: [],
+  agentFrameworkId: 'claude-code',
+  agentFrameworks: [],
+  reasoningEffort: 'default',
+  notificationsEnabled: true,
+  conversationSkillImportEnabled: true,
+  appIconVariant: 'light'
+}
+
 type TaskAgentMock = {
   [Method in Exclude<keyof TaskAgentPort, 'withSessionAvailable'>]: MockedFunction<
     TaskAgentPort[Method]
@@ -51,6 +69,7 @@ const createAgent = (overrides: Partial<TaskAgentMock> = {}): TaskAgentMock => (
     sessionId: request.sessionId
   })),
   setPermissionProfile: vi.fn<TaskAgentPort['setPermissionProfile']>(async () => undefined),
+  setMemoryEnabled: vi.fn<TaskAgentPort['setMemoryEnabled']>(async () => undefined),
   prompt: vi.fn<TaskAgentPort['prompt']>(async () => undefined),
   cancelPrompt: vi.fn<TaskAgentPort['cancelPrompt']>(async () => undefined),
   ...overrides
@@ -64,6 +83,7 @@ const commandsFrom = (
     commandNames: () => [],
     invoke: async (channel, invocation) => {
       const args = [...invocation.args]
+      if (channel === 'settings:get-settings') return taskSettings
       try {
         const result = await invoke(channel, invocation.callerContext, args)
         if (channel === 'sessions:load-all') {
@@ -217,6 +237,79 @@ const createComputePreferenceHarness = (
 }
 
 describe('HeadlessTaskApi adapter', () => {
+  it('routes Project Session defaults through the Task-only persistence command', async () => {
+    const invoke = vi.fn(
+      async (channel: string, _callerContext: CallerContext, args: unknown[]) => {
+        if (channel === 'projects:list') return [project]
+        if (channel === 'projects:update-session-defaults') {
+          return { ...project, ...(args[0] as object), updatedAt: 2 }
+        }
+        throw new Error(`Unexpected Task command: ${channel}`)
+      }
+    )
+    const api = new HeadlessTaskApi({ commands: commandsFrom(invoke), agent: createAgent() })
+
+    await api.updateProjectSessionDefaults(project.id, {
+      expectedUpdatedAt: project.updatedAt,
+      patch: { memoryEnabled: false }
+    })
+
+    expect(invoke).toHaveBeenCalledWith('projects:update-session-defaults', taskCallerContext(), [
+      {
+        id: project.id,
+        expectedUpdatedAt: project.updatedAt,
+        sessionDefaults: { memoryEnabled: false }
+      }
+    ])
+  })
+
+  it('routes Session configuration updates through the Task-only atomic command', async () => {
+    const existing: PersistedChatSession = {
+      id: 'session-config',
+      projectId: project.id,
+      title: 'Configurable Session',
+      cwd: '/workspace',
+      status: 'idle',
+      revision: 4,
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    let durable = existing
+    const invoke = vi.fn(
+      async (channel: string, _callerContext: CallerContext, args: unknown[]) => {
+        if (channel === 'sessions:load-all') {
+          return { sessions: [durable], manifest: { version: 1 } }
+        }
+        if (channel === 'sessions:update-configuration') {
+          durable = { ...(args[0] as PersistedChatSession), revision: 5 }
+          return durable
+        }
+        throw new Error(`Unexpected Task command: ${channel}`)
+      }
+    )
+    const api = new HeadlessTaskApi({ commands: commandsFrom(invoke), agent: createAgent() })
+
+    await expect(
+      api.updateSessionConfiguration(existing.id, {
+        expectedRevision: 4,
+        memoryEnabled: false,
+        delegationPolicy: 'deny'
+      })
+    ).resolves.toMatchObject({
+      revision: 5,
+      persisted: { memoryEnabled: false, delegationPolicy: 'deny' }
+    })
+    expect(invoke).toHaveBeenCalledWith('sessions:update-configuration', taskCallerContext(), [
+      expect.objectContaining({
+        id: existing.id,
+        memoryEnabled: false,
+        delegationPolicy: 'deny'
+      }),
+      4
+    ])
+  })
+
   it('creates a new Session when persistence and Task share one Compute preference owner', async () => {
     const durableSessions = new Map<string, PersistedChatSession>()
     const registry = new EnabledComputeHostsRegistry()
@@ -854,6 +947,7 @@ describe('HeadlessTaskApi adapter', () => {
       cwd: '/workspace/attached',
       status: 'idle',
       permissionProfile: 'ask',
+      memoryEnabled: false,
       messages: [],
       createdAt: 1,
       updatedAt: 1
@@ -904,6 +998,7 @@ describe('HeadlessTaskApi adapter', () => {
 
     expect(agent.listAttachedSessionIds).toHaveBeenCalledOnce()
     expect(agent.setPermissionProfile).toHaveBeenCalledWith(existing.id, 'auto')
+    expect(agent.setMemoryEnabled).toHaveBeenCalledWith(existing.id, false)
     expect(agent.prompt).toHaveBeenCalledWith(
       {
         sessionId: existing.id,

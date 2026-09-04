@@ -177,6 +177,7 @@ const createDependencies = () => {
     settleTaskCompletion: vi.fn(async () => session),
     failTaskRun: vi.fn(async () => session),
     setDelegationPolicy: vi.fn(async () => session),
+    updateSessionConfiguration: vi.fn(async () => session),
     deleteSession: vi.fn(async (): Promise<SessionDeletionResult> => ({
       status: 'deleted',
       runtimeDetached: true
@@ -247,6 +248,7 @@ const WRAPPED_COMMAND_KEYS = [
   'projectCreate',
   'projectDelete',
   'projectUpdate',
+  'projectUpdateSessionDefaults',
   'sessionDelete',
   'sessionEditDetails',
   'sessionExportConversation',
@@ -262,6 +264,7 @@ const WRAPPED_COMMAND_KEYS = [
   'sessionSettleTaskCompletion',
   'sessionFailTaskRun',
   'sessionSetDelegationPolicy',
+  'sessionUpdateConfiguration',
   'sessionUnlinkPdfContext',
   'uploadStageLocalFile',
   'uploadStageLocalPath'
@@ -325,6 +328,7 @@ describe('Data and content application commands', () => {
         'projects:list-deletion-cleanup',
         'projects:retry-deletion-cleanup',
         'projects:update',
+        'projects:update-session-defaults',
         'sessions:delete-session',
         'sessions:edit-details',
         'sessions:export-conversation',
@@ -342,6 +346,7 @@ describe('Data and content application commands', () => {
         'sessions:settle-task-completion',
         'sessions:fail-task-run',
         'sessions:set-delegation-policy',
+        'sessions:update-configuration',
         'uploads:abort-transfer',
         'uploads:append-transfer',
         'uploads:begin-transfer',
@@ -1068,6 +1073,98 @@ describe('Data and content application commands', () => {
         ] as const)
       )
     ).rejects.toMatchObject({ code: 'invalid-command-result' })
+  })
+
+  it('allows only Task automation to atomically update authoritative Session configuration', async () => {
+    const router = createApplicationCommandRouter()
+    const deps = createDependencies()
+    registerDataContentApplicationCommands(router.registrar, deps.dependencies)
+    const configured = {
+      ...deps.session,
+      revision: 5,
+      memoryEnabled: false,
+      delegationPolicy: 'deny' as const,
+      enabledComputeHosts: ['ssh:alpha'],
+      selectedComputeHosts: ['ssh:alpha']
+    }
+    deps.sessions.updateSessionConfiguration.mockResolvedValueOnce(configured)
+
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionUpdateConfiguration,
+        invocation([configured, 4] as const, createTaskCallerContext())
+      )
+    ).resolves.toEqual(configured)
+    expect(deps.sessions.updateSessionConfiguration).toHaveBeenCalledWith(configured, 4)
+    expect(deps.events.publish).toHaveBeenCalledWith('session:updated', {
+      session: configured,
+      originClientId: 'web:headless-task-api'
+    })
+
+    for (const rejectedCaller of [electronCaller, callerContext, remoteCaller]) {
+      await expect(
+        router.dispatcher.invoke(
+          dataContentApplicationCommands.sessionUpdateConfiguration,
+          invocation([configured, 5] as const, rejectedCaller)
+        )
+      ).rejects.toThrow(
+        'Channel only available from Task automation: sessions:update-configuration'
+      )
+    }
+    expect(deps.sessions.updateSessionConfiguration).toHaveBeenCalledOnce()
+  })
+
+  it('keeps Project Session defaults behind the Task-only validated command', async () => {
+    const router = createApplicationCommandRouter()
+    const deps = createDependencies()
+    registerDataContentApplicationCommands(router.registrar, deps.dependencies)
+    const request = {
+      id: deps.project.id,
+      expectedUpdatedAt: deps.project.updatedAt,
+      sessionDefaults: { memoryEnabled: false }
+    }
+
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.projectUpdate,
+        invocation([request] as const)
+      )
+    ).rejects.toThrow(
+      'Project Session defaults must be changed through the Task configuration API.'
+    )
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.projectUpdateSessionDefaults,
+        invocation([request] as const, callerContext)
+      )
+    ).rejects.toThrow(
+      'Channel only available from Task automation: projects:update-session-defaults'
+    )
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.projectUpdateSessionDefaults,
+        invocation([request] as const, createTaskCallerContext())
+      )
+    ).resolves.toBe(deps.project)
+    expect(deps.projects.update).toHaveBeenCalledOnce()
+    expect(deps.projects.update).toHaveBeenCalledWith(request)
+  })
+
+  it('preserves configuration revision conflicts across the Task command boundary', async () => {
+    const router = createApplicationCommandRouter()
+    const deps = createDependencies()
+    deps.sessions.updateSessionConfiguration.mockRejectedValueOnce(
+      new SessionRevisionConflictError(4, 5)
+    )
+    registerDataContentApplicationCommands(router.registrar, deps.dependencies)
+
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionUpdateConfiguration,
+        invocation([{ ...deps.session, revision: 4 }, 4] as const, createTaskCallerContext())
+      )
+    ).rejects.toMatchObject({ code: 'session-revision-conflict' })
+    expect(deps.events.publish).not.toHaveBeenCalled()
   })
 
   it('sanitizes the complete authoritative Session result instead of passing malformed fields', async () => {

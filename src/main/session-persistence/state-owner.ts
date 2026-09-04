@@ -7,6 +7,7 @@ import {
   materializeSessionConversationGraph,
   normalizeDelegationPolicy,
   sanitizeSessionRuntimeContext,
+  SessionConfigurationBusyError,
   sessionRevision,
   type DelegationPolicy,
   type PersistedChatMessage,
@@ -469,6 +470,48 @@ class SessionPersistenceStateOwner {
     const persisted = await saveSessionWithRevision(this.options.repository, durableSession)
     this.recordSession(persisted)
     this.options.notifyDelegationPolicyUpdated?.(persisted)
+    return persisted
+  }
+
+  async updateSessionConfiguration(
+    session: PersistedChatSession,
+    expectedRevision: number
+  ): Promise<PersistedChatSession> {
+    this.options.assertMutable(session.projectId, session.id, 'mutate')
+    const loaded = await loadAuthority(this.options.repository, session.projectId, session.id)
+    if (loaded.status !== 'found') {
+      throw new Error(`Cannot update configuration for a ${loaded.status} Session.`)
+    }
+    if (
+      loaded.session.activeRun ||
+      (loaded.session.status !== 'idle' && loaded.session.status !== 'error')
+    ) {
+      throw new SessionConfigurationBusyError(session.id)
+    }
+    const durableSession: PersistedChatSession = {
+      ...loaded.session,
+      agentConfiguration: session.agentConfiguration,
+      permissionProfile: session.permissionProfile,
+      autoReviewEnabled: session.autoReviewEnabled,
+      memoryEnabled: session.memoryEnabled,
+      delegationPolicy: session.delegationPolicy,
+      enabledComputeHosts: session.enabledComputeHosts
+        ? [...session.enabledComputeHosts]
+        : undefined,
+      selectedComputeHosts: session.selectedComputeHosts
+        ? [...session.selectedComputeHosts]
+        : undefined,
+      updatedAt: Math.max(loaded.session.updatedAt + 1, session.updatedAt)
+    }
+    const persisted = await saveSessionWithRevision(
+      this.options.repository,
+      durableSession,
+      expectedRevision
+    )
+    this.recordSession(persisted)
+    if (persisted.delegationPolicy !== loaded.session.delegationPolicy) {
+      this.options.notifyDelegationPolicyUpdated?.(persisted)
+    }
     return persisted
   }
 
