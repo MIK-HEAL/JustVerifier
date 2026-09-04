@@ -17,7 +17,7 @@ import type {
   FinalizeRunArtifactsRequest,
   FinalizeRunArtifactsResult
 } from '../../shared/artifacts'
-import { ARTIFACT_OWNERSHIP_PERSISTENCE_RACE, artifactCreatedAtMs } from '../../shared/artifacts'
+import { artifactCreatedAtMs } from '../../shared/artifacts'
 import { DEFAULT_PERMISSION_PROFILE } from '../../shared/permission-profiles'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
@@ -34,11 +34,14 @@ import type { AgentFrameworkId, SessionAgentConfiguration } from '../../shared/s
 import {
   materializeSessionConversationGraph,
   type DelegationPolicy,
+  type FailTaskSessionRunRequest,
   type PersistedArtifact,
   type PersistedChatMessage,
   type PersistedChatSession,
   type PersistedMessageImage,
-  type PersistedToolActivity
+  type PersistedToolActivity,
+  type SettleTaskSessionCompletionRequest,
+  type StageTaskSessionCompletionRequest
 } from '../../shared/session-persistence'
 import type {
   AcquiredTaskArtifact,
@@ -71,6 +74,9 @@ type TaskProjectPort = {
 type TaskSessionPort = {
   list(): Promise<PersistedChatSession[]>
   save(session: PersistedChatSession): Promise<PersistedChatSession>
+  stageCompletion(request: StageTaskSessionCompletionRequest): Promise<PersistedChatSession>
+  settleCompletion(request: SettleTaskSessionCompletionRequest): Promise<PersistedChatSession>
+  failRun(request: FailTaskSessionRunRequest): Promise<PersistedChatSession>
   setDelegationPolicy(projectId: string, sessionId: string, policy: DelegationPolicy): Promise<void>
 }
 
@@ -235,6 +241,8 @@ type CompletedTaskSession = {
   session: PersistedChatSession
   output: string
   artifacts: ArtifactFile[]
+  persistedArtifacts: PersistedArtifact[]
+  messageId?: string
 }
 
 class PartialTaskCompletionError extends Error {
@@ -1077,9 +1085,11 @@ class TaskRunner {
       accepted: false,
       dispatch: Promise.resolve()
     }
+    const queuedJournalWrites = this.journalWriteTail
     run.cancellation = cancellation
     cancellation.dispatch = Promise.resolve()
       .then(async () => {
+        await queuedJournalWrites
         const sessionCommitBarrier = run.sessionCommitBarrier
         if (sessionCommitBarrier) await sessionCommitBarrier
         await this.dependencies.agent.cancelPrompt(run.sessionId)
@@ -1565,7 +1575,11 @@ class TaskRunner {
     let completed: CompletedTaskSession | undefined
     let completionError: unknown
     try {
-      completed = await this.completeSession(acceptedSession, run.eventAccumulator!)
+      completed = await this.completeSession(
+        acceptedSession,
+        run.eventAccumulator!,
+        promptError === undefined
+      )
     } catch (error) {
       if (error instanceof PartialTaskCompletionError) {
         completed = error.completion
@@ -1622,7 +1636,15 @@ class TaskRunner {
     }
 
     try {
-      await this.dependencies.sessions.save(completed!.session)
+      completed!.session = await this.dependencies.sessions.settleCompletion({
+        projectId: completed!.session.projectId,
+        sessionId: completed!.session.id,
+        promptMessageId: run.promptMessageId,
+        taskRunCommitId: run.id,
+        messageId: completed!.messageId,
+        artifacts: completed!.persistedArtifacts,
+        updatedAt: this.dependencies.now()
+      })
     } catch (error) {
       await this.failRun(run, acceptedSession, completed, error)
       run.eventAccumulator = undefined
@@ -1685,11 +1707,13 @@ class TaskRunner {
   ): Promise<void> {
     const runtimeError = run.eventAccumulator?.runtimeError
     const message = runtimeError?.text?.trim() || toErrorMessage(failure)
-    const failed: PersistedChatSession = {
-      ...(completed?.session ?? session),
-      status: 'error',
-      activeRun: undefined,
+    const failedSessionRequest: FailTaskSessionRunRequest = {
+      projectId: session.projectId,
+      sessionId: session.id,
+      promptMessageId: run.promptMessageId,
       taskRunCommitId: run.id,
+      messageId: completed?.messageId,
+      artifacts: completed?.persistedArtifacts ?? [],
       error: message,
       ...(runtimeError?.providerError ? { errorReportable: false } : {}),
       updatedAt: this.dependencies.now()
@@ -1726,7 +1750,7 @@ class TaskRunner {
             this.publishProgress(run, 'failed')
           )
         } finally {
-          await this.dependencies.sessions.save(failed).catch(() => undefined)
+          await this.dependencies.sessions.failRun(failedSessionRequest).catch(() => undefined)
         }
         return
       } finally {
@@ -1735,14 +1759,15 @@ class TaskRunner {
         }
         releaseSessionCommitBarrier?.()
       }
-      await this.dependencies.sessions.save(failed).catch(() => undefined)
+      await this.dependencies.sessions.failRun(failedSessionRequest).catch(() => undefined)
     }
     await this.persistTerminalRun(run, 'failed').finally(() => this.publishProgress(run, 'failed'))
   }
 
   private async completeSession(
     session: PersistedChatSession,
-    accumulator: TaskRunEventAccumulator
+    accumulator: TaskRunEventAccumulator,
+    clearPendingHistoryReplay: boolean
   ): Promise<CompletedTaskSession> {
     const now = this.dependencies.now()
     const output =
@@ -1774,6 +1799,18 @@ class TaskRunner {
       updatedAt: now
     }
     const activities = createTaskRunActivities(accumulator, now)
+    const hasAssistantMessage = Boolean(
+      output || images.length || accumulator.artifactClaimIds.length
+    )
+    const stagedSession = await this.dependencies.sessions.stageCompletion({
+      projectId: session.projectId,
+      sessionId: session.id,
+      promptMessageId: session.activeRun!.promptMessageId,
+      message: hasAssistantMessage ? assistantMessage : undefined,
+      activities,
+      ...(clearPendingHistoryReplay ? { clearPendingHistoryReplay: true } : {}),
+      updatedAt: now
+    })
     const finalizedArtifacts: ArtifactFile[] = []
     const buildCompletion = (): CompletedTaskSession => {
       const uniqueArtifacts = [
@@ -1782,57 +1819,23 @@ class TaskRunner {
       const persistedArtifacts = uniqueArtifacts.map((artifact) =>
         toPersistedArtifact(artifact, assistantMessage.createdAt)
       )
-      const linkedAssistantMessage: PersistedChatMessage = {
-        ...assistantMessage,
-        artifactIds: uniqueArtifacts.length
-          ? uniqueArtifacts.map((artifact) => artifact.id)
-          : undefined
-      }
-      const hasAssistantMessage = Boolean(output || images.length || persistedArtifacts.length)
-
       return {
         output,
         artifacts: uniqueArtifacts,
-        session: {
-          ...session,
-          status: 'idle',
-          activeRun: undefined,
-          messages: hasAssistantMessage
-            ? [...session.messages, linkedAssistantMessage]
-            : session.messages,
-          activities: [...(session.activities ?? []), ...activities],
-          artifacts: [...(session.artifacts ?? []), ...persistedArtifacts],
-          filesRevision:
-            persistedArtifacts.length > 0
-              ? (session.filesRevision ?? 0) + 1
-              : session.filesRevision,
-          updatedAt: now
-        }
+        persistedArtifacts,
+        messageId: hasAssistantMessage ? assistantMessageId : undefined,
+        session: stagedSession
       }
     }
-    let ownershipSessionPersisted = false
     for (const artifactClaimId of accumulator.artifactClaimIds) {
       try {
         const request = {
           claimId: artifactClaimId,
           messageId: assistantMessageId
         }
-        let result = await this.dependencies.artifacts.finalizeRun(request)
+        const result = await this.dependencies.artifacts.finalizeRun(request)
         if (!result.ok) {
-          if (result.code !== ARTIFACT_OWNERSHIP_PERSISTENCE_RACE) {
-            throw new Error(result.message)
-          }
-          if (!ownershipSessionPersisted) {
-            await this.dependencies.sessions.save({
-              ...session,
-              messages: [...session.messages, assistantMessage],
-              activities: [...(session.activities ?? []), ...activities],
-              updatedAt: now
-            })
-            ownershipSessionPersisted = true
-          }
-          result = await this.dependencies.artifacts.finalizeRun(request)
-          if (!result.ok) throw new Error(result.message)
+          throw new Error(result.message)
         }
         finalizedArtifacts.push(...result.artifacts)
       } catch (error) {

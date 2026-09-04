@@ -9,6 +9,9 @@ import {
   type PersistedSideChatRelay,
   type SaveSessionOptions,
   type SaveSessionManifestRequest,
+  type FailTaskSessionRunRequest,
+  type SettleTaskSessionCompletionRequest,
+  type StageTaskSessionCompletionRequest,
   type UpdateSessionArchiveRequest,
   type SessionRuntimeContext,
   type SessionLoadFailure,
@@ -578,6 +581,24 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
   ): Promise<SessionRuntimeContext> {
     return this.operationScheduler.runSession(command.projectId, command.sessionId, () =>
       this.stateOwner.patchRuntimeContext(command)
+    )
+  }
+
+  stageTaskCompletion(command: StageTaskSessionCompletionRequest): Promise<PersistedChatSession> {
+    return this.operationScheduler.runSession(command.projectId, command.sessionId, () =>
+      this.stateOwner.stageTaskCompletion(command)
+    )
+  }
+
+  settleTaskCompletion(command: SettleTaskSessionCompletionRequest): Promise<PersistedChatSession> {
+    return this.operationScheduler.runSession(command.projectId, command.sessionId, () =>
+      this.stateOwner.settleTaskCompletion(command)
+    )
+  }
+
+  failTaskRun(command: FailTaskSessionRunRequest): Promise<PersistedChatSession> {
+    return this.operationScheduler.runSession(command.projectId, command.sessionId, () =>
+      this.stateOwner.failTaskRun(command)
     )
   }
 

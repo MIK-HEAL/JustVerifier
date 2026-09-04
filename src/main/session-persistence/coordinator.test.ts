@@ -455,6 +455,208 @@ describe('SessionPersistenceCoordinator', () => {
     expect(artifactStorage.prepareProjectReconciliation).not.toHaveBeenCalled()
   })
 
+  it('stages and settles Task completion from current authority without replacing concurrent state', async () => {
+    const prompt: PersistedChatMessage = {
+      id: 'task-prompt',
+      role: 'user',
+      content: 'Run the task',
+      status: 'complete',
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const concurrentMessage: PersistedChatMessage = {
+      id: 'concurrent-message',
+      role: 'agent',
+      content: 'Concurrent state',
+      status: 'complete',
+      responseToMessageId: prompt.id,
+      eventIds: ['concurrent-event'],
+      createdAt: 2,
+      updatedAt: 2
+    }
+    let durable = materializeSessionConversationGraph(
+      createSession({
+        revision: 3,
+        status: 'running',
+        errorReportable: false,
+        agentFrameworkId: 'codex',
+        activeRun: { promptMessageId: prompt.id, startedAt: 1 },
+        runtimeContext: { version: 1, revision: 2 },
+        messages: [prompt, concurrentMessage],
+        activities: [
+          {
+            id: 'concurrent-activity',
+            kind: 'tool',
+            title: 'Concurrent tool',
+            promptMessageId: prompt.id,
+            status: 'completed',
+            sortIndex: 2,
+            eventIds: ['concurrent-tool-event'],
+            createdAt: 2,
+            updatedAt: 2
+          }
+        ],
+        artifacts: [{ id: 'concurrent-artifact', kind: 'workspace-file', path: '/concurrent.txt' }]
+      })
+    )
+    const expectedRevisions: number[] = []
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: structuredClone(durable)
+      })),
+      saveSession: vi.fn(async (candidate, expectedRevision) => {
+        const expected = expectedRevision ?? candidate.revision ?? 0
+        expect(expected).toBe(durable.revision)
+        expectedRevisions.push(expected)
+        durable = structuredClone({ ...candidate, revision: expected + 1 })
+        return structuredClone(durable)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(
+      repository,
+      createFileIndex({ syncSession: vi.fn().mockResolvedValue([]) })
+    )
+    const taskMessage: PersistedChatMessage = {
+      id: 'task-answer',
+      role: 'agent',
+      content: 'Finished',
+      status: 'complete',
+      responseToMessageId: prompt.id,
+      eventIds: ['task-event'],
+      createdAt: 4,
+      updatedAt: 4
+    }
+
+    await coordinator.stageTaskCompletion({
+      projectId: durable.projectId,
+      sessionId: durable.id,
+      promptMessageId: prompt.id,
+      message: taskMessage,
+      activities: [
+        {
+          id: 'task-activity',
+          kind: 'tool',
+          title: 'Task tool',
+          promptMessageId: prompt.id,
+          status: 'completed',
+          sortIndex: 4,
+          eventIds: ['task-tool-event'],
+          createdAt: 4,
+          updatedAt: 4
+        }
+      ],
+      updatedAt: 4
+    })
+    await coordinator.settleTaskCompletion({
+      projectId: durable.projectId,
+      sessionId: durable.id,
+      promptMessageId: prompt.id,
+      taskRunCommitId: 'task-run',
+      messageId: taskMessage.id,
+      artifacts: [{ id: 'task-artifact', kind: 'workspace-file', path: '/task.txt' }],
+      updatedAt: 4
+    })
+
+    expect(expectedRevisions).toEqual([3, 4])
+    expect(durable).toMatchObject({
+      revision: 5,
+      status: 'idle',
+      activeRun: undefined,
+      taskRunCommitId: 'task-run'
+    })
+    expect(durable.errorReportable).toBeUndefined()
+    expect(durable.runtimeContext).toEqual({ version: 1, revision: 2 })
+    expect(durable.messages.map(({ id }) => id)).toEqual([
+      prompt.id,
+      concurrentMessage.id,
+      taskMessage.id
+    ])
+    expect(durable.messages.at(-1)?.artifactIds).toEqual(['task-artifact'])
+    expect(
+      durable.conversationGraph?.messages.find(({ id }) => id === taskMessage.id)?.artifactIds
+    ).toEqual(['task-artifact'])
+    expect(durable.activities?.map(({ id }) => id)).toEqual([
+      'concurrent-activity',
+      'task-activity'
+    ])
+    expect(durable.artifacts?.map(({ id }) => id)).toEqual(['concurrent-artifact', 'task-artifact'])
+  })
+
+  it('persists Task failure as a delta against current authority', async () => {
+    const taskMessage: PersistedChatMessage = {
+      id: 'task-answer',
+      role: 'agent',
+      content: 'Partial answer',
+      status: 'complete',
+      responseToMessageId: 'task-prompt',
+      eventIds: [],
+      createdAt: 2,
+      updatedAt: 2
+    }
+    let durable = createSession({
+      revision: 8,
+      status: 'running',
+      activeRun: { promptMessageId: 'task-prompt', startedAt: 1 },
+      runtimeContext: { version: 1, revision: 4 },
+      messages: [
+        {
+          id: 'task-prompt',
+          role: 'user',
+          content: 'Run the task',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        },
+        taskMessage
+      ],
+      artifacts: [{ id: 'concurrent-artifact', kind: 'workspace-file', path: '/concurrent.txt' }]
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (candidate) => {
+        durable = structuredClone({ ...candidate, revision: (candidate.revision ?? 0) + 1 })
+        return durable
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(
+      repository,
+      createFileIndex({ syncSession: vi.fn().mockResolvedValue([]) })
+    )
+
+    await coordinator.failTaskRun({
+      projectId: durable.projectId,
+      sessionId: durable.id,
+      promptMessageId: 'task-prompt',
+      taskRunCommitId: 'task-run',
+      messageId: taskMessage.id,
+      artifacts: [{ id: 'partial-artifact', kind: 'workspace-file', path: '/partial.txt' }],
+      error: 'Provider failed',
+      errorReportable: false,
+      updatedAt: 9
+    })
+
+    expect(durable).toMatchObject({
+      revision: 9,
+      status: 'error',
+      activeRun: undefined,
+      error: 'Provider failed',
+      errorReportable: false,
+      taskRunCommitId: 'task-run',
+      runtimeContext: { version: 1, revision: 4 }
+    })
+    expect(durable.messages.at(-1)?.artifactIds).toEqual(['partial-artifact'])
+    expect(durable.artifacts?.map(({ id }) => id)).toEqual([
+      'concurrent-artifact',
+      'partial-artifact'
+    ])
+  })
+
   it('resolves Message membership from the durable active Branch', async () => {
     const prompt = (id: string, createdAt: number): PersistedChatMessage => ({
       id,

@@ -6,7 +6,6 @@ import { queryObjects } from 'node:v8'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AcpRuntimeEvent } from '../../shared/acp'
-import { ARTIFACT_OWNERSHIP_PERSISTENCE_RACE } from '../../shared/artifacts'
 import { ComputeHostPreferenceValidationError } from '../../shared/compute'
 import type { Project } from '../../shared/projects'
 import { normalizeSessionFile, type PersistedChatSession } from '../../shared/session-persistence'
@@ -54,15 +53,79 @@ const session: PersistedChatSession = {
 class RetainedRunEventPayload {}
 
 type TaskRunnerOverrides = Omit<Partial<TaskRunnerDependencies>, 'sessions'> & {
-  sessions?: Omit<Partial<TaskSessionPort>, 'save'> & {
+  sessions?: Omit<
+    Partial<TaskSessionPort>,
+    'save' | 'stageCompletion' | 'settleCompletion' | 'failRun'
+  > & {
     save?: (session: PersistedChatSession) => Promise<PersistedChatSession | void>
+    stageCompletion?: TaskSessionPort['stageCompletion']
+    settleCompletion?: TaskSessionPort['settleCompletion']
+    failRun?: TaskSessionPort['failRun']
   }
 }
 
 const createRunner = (overrides: TaskRunnerOverrides = {}): TaskRunner => {
+  const sessions = new Map<string, PersistedChatSession>()
+  const save = async (value: PersistedChatSession): Promise<PersistedChatSession> => {
+    const persisted = (await overrides.sessions?.save?.(value)) ?? value
+    sessions.set(persisted.id, structuredClone(persisted))
+    return persisted
+  }
+  const loadSession = (sessionId: string): PersistedChatSession => {
+    const current = sessions.get(sessionId)
+    if (!current) throw new Error(`Missing test Session: ${sessionId}`)
+    return structuredClone(current)
+  }
   const defaultSessions: TaskSessionPort = {
-    list: async () => [],
-    save: async (value) => value,
+    list: async () => {
+      const loaded = (await overrides.sessions?.list?.()) ?? []
+      for (const value of loaded) sessions.set(value.id, structuredClone(value))
+      return loaded
+    },
+    save,
+    stageCompletion: async (request) => {
+      const current = loadSession(request.sessionId)
+      const candidate: PersistedChatSession = {
+        ...current,
+        messages: request.message ? [...current.messages, request.message] : current.messages,
+        activities: [...(current.activities ?? []), ...request.activities],
+        updatedAt: request.updatedAt
+      }
+      if (request.clearPendingHistoryReplay) delete candidate.pendingHistoryReplay
+      return save(candidate)
+    },
+    settleCompletion: async (request) => {
+      const current = loadSession(request.sessionId)
+      const artifactIds = request.artifacts.map(({ id }) => id)
+      return save({
+        ...current,
+        status: 'idle',
+        activeRun: undefined,
+        taskRunCommitId: request.taskRunCommitId,
+        messages: current.messages.map((message) =>
+          message.id === request.messageId && artifactIds.length > 0
+            ? { ...message, artifactIds }
+            : message
+        ),
+        artifacts: [...(current.artifacts ?? []), ...request.artifacts],
+        filesRevision:
+          request.artifacts.length > 0 ? (current.filesRevision ?? 0) + 1 : current.filesRevision,
+        updatedAt: request.updatedAt
+      })
+    },
+    failRun: async (request) => {
+      const current = loadSession(request.sessionId)
+      return save({
+        ...current,
+        status: 'error',
+        activeRun: undefined,
+        taskRunCommitId: request.taskRunCommitId,
+        error: request.error,
+        errorReportable: request.errorReportable,
+        artifacts: [...(current.artifacts ?? []), ...request.artifacts],
+        updatedAt: request.updatedAt
+      })
+    },
     setDelegationPolicy: async () => undefined
   }
   return new TaskRunner({
@@ -102,7 +165,11 @@ const createRunner = (overrides: TaskRunnerOverrides = {}): TaskRunner => {
     sessions: {
       ...defaultSessions,
       ...overrides.sessions,
-      save: async (value) => (await overrides.sessions?.save?.(value)) ?? value
+      list: defaultSessions.list,
+      save,
+      stageCompletion: overrides.sessions?.stageCompletion ?? defaultSessions.stageCompletion,
+      settleCompletion: overrides.sessions?.settleCompletion ?? defaultSessions.settleCompletion,
+      failRun: overrides.sessions?.failRun ?? defaultSessions.failRun
     }
   })
 }
@@ -507,7 +574,7 @@ describe('TaskRunner', () => {
       list: async () => [project],
       create: async (request) => ({ ...project, ...request })
     }
-    const sessions: TaskSessionPort = {
+    const sessions: TaskRunnerOverrides['sessions'] = {
       list: async () => [session],
       save: async (value) => value,
       setDelegationPolicy: async () => undefined
@@ -2678,6 +2745,124 @@ describe('TaskRunner', () => {
     ])
   })
 
+  it('completes against current Session authority after a concurrent writer advances revision', async () => {
+    let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
+    let authoritative: PersistedChatSession = { ...session, revision: 0 }
+    const revisionConflicts: string[] = []
+    const save = async (candidate: PersistedChatSession): Promise<PersistedChatSession> => {
+      const expectedRevision = candidate.revision ?? 0
+      const actualRevision = authoritative.revision ?? 0
+      if (expectedRevision !== actualRevision) {
+        const message = `Session revision conflict: expected ${expectedRevision}, actual ${actualRevision}.`
+        revisionConflicts.push(message)
+        throw new Error(message)
+      }
+      authoritative = structuredClone({ ...candidate, revision: actualRevision + 1 })
+      return structuredClone(authoritative)
+    }
+    const mutateAuthority = (
+      mutation: (latest: PersistedChatSession) => PersistedChatSession
+    ): Promise<PersistedChatSession> => save(mutation(structuredClone(authoritative)))
+    const completionSessions = {
+      stageCompletion: (request: {
+        message?: PersistedChatSession['messages'][number]
+        activities: readonly NonNullable<PersistedChatSession['activities']>[number][]
+        updatedAt: number
+      }) =>
+        mutateAuthority((latest) => ({
+          ...latest,
+          messages: request.message ? [...latest.messages, request.message] : latest.messages,
+          activities: [...(latest.activities ?? []), ...request.activities],
+          updatedAt: request.updatedAt
+        })),
+      settleCompletion: (request: { taskRunCommitId: string; updatedAt: number }) =>
+        mutateAuthority((latest) => ({
+          ...latest,
+          status: 'idle',
+          activeRun: undefined,
+          taskRunCommitId: request.taskRunCommitId,
+          updatedAt: request.updatedAt
+        })),
+      failRun: (request: { taskRunCommitId: string; error: string; updatedAt: number }) =>
+        mutateAuthority((latest) => ({
+          ...latest,
+          status: 'error',
+          activeRun: undefined,
+          taskRunCommitId: request.taskRunCommitId,
+          error: request.error,
+          updatedAt: request.updatedAt
+        }))
+    }
+    const ids = ['task-user', 'task-run', 'task-agent']
+    const runner = createRunner({
+      sessions: {
+        list: async () => [structuredClone(authoritative)],
+        save,
+        ...completionSessions
+      },
+      agent: {
+        withSessionAvailable: async (_projectId, _sessionId, operation) => operation(),
+        listAttachedSessionIds: async () => [session.id],
+        createSession: async () => ({ sessionId: 'unused' }),
+        resumeSession: async (request) => ({ sessionId: request.sessionId }),
+        setPermissionProfile: async () => undefined,
+        cancelPrompt: async () => undefined,
+        prompt: async (_request, observer) => {
+          await observer?.onPromptAdmitted?.()
+          await save({
+            ...authoritative,
+            messages: [
+              ...authoritative.messages,
+              {
+                id: 'concurrent-message',
+                role: 'agent',
+                content: 'Concurrent renderer state',
+                status: 'complete',
+                eventIds: ['concurrent-event'],
+                createdAt: 20,
+                updatedAt: 20
+              }
+            ],
+            updatedAt: 20
+          })
+          emitEvent?.({
+            id: 'task-output-event',
+            timestamp: 21,
+            kind: 'message',
+            level: 'info',
+            sessionId: session.id,
+            role: 'assistant',
+            text: 'Task answer'
+          })
+        }
+      },
+      runtimeEvents: {
+        subscribe: (listener) => {
+          emitEvent = listener
+          return () => undefined
+        }
+      },
+      createId: () => ids.shift() ?? 'generated-id',
+      now: () => 30
+    })
+
+    const started = await runner.startRun({
+      project: project.id,
+      sessionId: session.id,
+      prompt: 'Finish the task.'
+    })
+    const completed = await runner.waitForRun(started.id)
+
+    expect(revisionConflicts).toEqual([])
+    expect(completed.status).toBe('completed')
+    expect(authoritative.taskRunCommitId).toBe(started.id)
+    expect(authoritative.messages.map(({ id }) => id)).toEqual([
+      'task-user',
+      'concurrent-message',
+      'task-agent'
+    ])
+  })
+
   it('settles a run as failed when final session persistence fails', async () => {
     let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
     let saveCount = 0
@@ -2688,7 +2873,9 @@ describe('TaskRunner', () => {
         list: async () => [],
         save: async () => {
           saveCount += 1
-          if (saveCount === 2) throw new Error('Session storage is unavailable')
+        },
+        settleCompletion: async () => {
+          throw new Error('Session storage is unavailable')
         }
       },
       agent: {
@@ -2733,7 +2920,7 @@ describe('TaskRunner', () => {
     expect(progressPhases.at(-1)).toBe('failed')
   })
 
-  it('preserves finalized artifacts when a later claim fails after an ownership retry', async () => {
+  it('preserves finalized artifacts when a later claim fails after ownership staging', async () => {
     let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
     let finalizeAttempts = 0
     const savedSessions: PersistedChatSession[] = []
@@ -2787,13 +2974,6 @@ describe('TaskRunner', () => {
       artifacts: {
         finalizeRun: async (request) => {
           finalizeAttempts += 1
-          if (request.claimId === 'claim-1' && finalizeAttempts === 1) {
-            return {
-              ok: false,
-              code: ARTIFACT_OWNERSHIP_PERSISTENCE_RACE,
-              message: 'The durable projection has not caught up yet.'
-            }
-          }
           if (request.claimId === 'claim-2') {
             throw new Error('compatibility publication failed')
           }
@@ -2833,7 +3013,7 @@ describe('TaskRunner', () => {
       error: 'Provider rejected the request.',
       artifacts: [{ id: 'artifact-partial', name: 'partial-report.md' }]
     })
-    expect(finalizeAttempts).toBe(3)
+    expect(finalizeAttempts).toBe(2)
     expect(savedSessions.at(-1)).toMatchObject({
       status: 'error',
       error: 'Provider rejected the request.',
@@ -3550,7 +3730,7 @@ describe('TaskRunner', () => {
     let durableSession: PersistedChatSession | undefined
     let rejectCommittedSave = true
     let durableRuns: TaskRunJournalEntry[] = []
-    const sessions: TaskSessionPort = {
+    const sessions: NonNullable<TaskRunnerOverrides['sessions']> = {
       list: async () =>
         durableSession ? [normalizeSessionFile(structuredClone(durableSession))!] : [],
       save: async (value) => {
@@ -3616,7 +3796,7 @@ describe('TaskRunner', () => {
     let rejectCommittedSave = true
     let blockCompensation = true
     let durableRuns: TaskRunJournalEntry[] = []
-    const sessions: TaskSessionPort = {
+    const sessions: NonNullable<TaskRunnerOverrides['sessions']> = {
       list: async () =>
         durableSession ? [normalizeSessionFile(structuredClone(durableSession))!] : [],
       save: async (value) => {
@@ -3686,7 +3866,7 @@ describe('TaskRunner', () => {
     let rejectCommittedSave = true
     let rejectCompensationSave = true
     let durableRuns: TaskRunJournalEntry[] = []
-    const sessions: TaskSessionPort = {
+    const sessions: NonNullable<TaskRunnerOverrides['sessions']> = {
       list: async () =>
         durableSession ? [normalizeSessionFile(structuredClone(durableSession))!] : [],
       save: async (value) => {
@@ -3971,7 +4151,7 @@ describe('TaskRunner', () => {
     const reviewGate = new Promise<void>((resolve) => {
       releaseReview = resolve
     })
-    const sessions: TaskSessionPort = {
+    const sessions: NonNullable<TaskRunnerOverrides['sessions']> = {
       list: async () => (durableSession ? [normalizeSessionFile(durableSession)!] : []),
       save: async (value) => {
         const persisted = { ...value, revision: (value.revision ?? 0) + 1 }
@@ -4062,7 +4242,7 @@ describe('TaskRunner', () => {
       releaseTerminalWrite = resolve
     })
     let terminalWriteBlocked = false
-    const sessions: TaskSessionPort = {
+    const sessions: NonNullable<TaskRunnerOverrides['sessions']> = {
       list: async () => (durableSession ? [normalizeSessionFile(durableSession)!] : []),
       save: async (value) => {
         const persisted = { ...value, revision: (value.revision ?? 0) + 1 }

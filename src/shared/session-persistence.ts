@@ -809,6 +809,32 @@ export type PersistedChatSession = {
   updatedAt: number
 }
 
+export type StageTaskSessionCompletionRequest = Readonly<{
+  projectId: string
+  sessionId: string
+  promptMessageId: string
+  message?: PersistedChatMessage
+  activities: readonly PersistedToolActivity[]
+  clearPendingHistoryReplay?: true
+  updatedAt: number
+}>
+
+export type SettleTaskSessionCompletionRequest = Readonly<{
+  projectId: string
+  sessionId: string
+  promptMessageId: string
+  taskRunCommitId: string
+  messageId?: string
+  artifacts: readonly PersistedArtifact[]
+  updatedAt: number
+}>
+
+export type FailTaskSessionRunRequest = SettleTaskSessionCompletionRequest &
+  Readonly<{
+    error: string
+    errorReportable?: false
+  }>
+
 // SQLite-backed startup projection. It intentionally excludes messages, activities, runtime
 // context, and artifact payloads; those remain in Session JSON and load only when opened.
 export type SessionSummary = Readonly<{

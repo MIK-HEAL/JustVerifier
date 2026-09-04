@@ -4104,6 +4104,11 @@ const createApplicationModules = async (
           return context
         },
         editDetails: (request) => sessionDetailsOwner.edit(request),
+        stageTaskCompletion: (request) =>
+          sessionPersistenceCoordinator.stageTaskCompletion(request),
+        settleTaskCompletion: (request) =>
+          sessionPersistenceCoordinator.settleTaskCompletion(request),
+        failTaskRun: (request) => sessionPersistenceCoordinator.failTaskRun(request),
         saveSession: async (session, options, authority) => {
           const result = authority
             ? await sessionPersistenceHandlers.saveSession(session, options, authority)

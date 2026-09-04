@@ -81,6 +81,12 @@ class HeadlessTaskApi {
         save: async (session) => {
           return this.invoke('sessions:save-session', session) as Promise<PersistedChatSession>
         },
+        stageCompletion: (request) =>
+          this.invoke('sessions:stage-task-completion', request) as Promise<PersistedChatSession>,
+        settleCompletion: (request) =>
+          this.invoke('sessions:settle-task-completion', request) as Promise<PersistedChatSession>,
+        failRun: (request) =>
+          this.invoke('sessions:fail-task-run', request) as Promise<PersistedChatSession>,
         setDelegationPolicy: async (projectId, sessionId, policy) => {
           await this.invoke('sessions:set-delegation-policy', projectId, sessionId, policy)
         }

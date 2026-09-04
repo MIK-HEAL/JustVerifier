@@ -13,6 +13,9 @@ import {
   type PersistedChatSession,
   type PersistedSessionStatus,
   type SaveSessionOptions,
+  type FailTaskSessionRunRequest,
+  type SettleTaskSessionCompletionRequest,
+  type StageTaskSessionCompletionRequest,
   type SessionRuntimeContext,
   type SessionRuntimeContextPatch
 } from '../../shared/session-persistence'
@@ -596,6 +599,170 @@ class SessionPersistenceStateOwner {
       },
       { conflictRebaseFields: ['specialistId', 'specialistBindingPending'] }
     )
+  }
+
+  async stageTaskCompletion(
+    command: StageTaskSessionCompletionRequest
+  ): Promise<PersistedChatSession> {
+    const session = await this.loadTaskRunAuthority(command)
+    const messageIds = new Set(session.messages.map(({ id }) => id))
+    const activities = (session.activities ?? []).map((activity) => structuredClone(activity))
+    const activityById = new Map(activities.map((activity) => [activity.id, activity]))
+    for (const activity of command.activities) {
+      const current = activityById.get(activity.id)
+      if (current) {
+        Object.assign(current, structuredClone(activity), {
+          eventIds: [...new Set([...current.eventIds, ...activity.eventIds])],
+          createdAt: Math.min(current.createdAt, activity.createdAt),
+          updatedAt: Math.max(current.updatedAt, activity.updatedAt)
+        })
+      } else {
+        const next = structuredClone(activity)
+        activities.push(next)
+        activityById.set(next.id, next)
+      }
+    }
+    const candidate = materializeSessionConversationGraph({
+      ...session,
+      messages:
+        command.message && !messageIds.has(command.message.id)
+          ? [...session.messages, structuredClone(command.message)]
+          : session.messages,
+      activities,
+      ...(command.clearPendingHistoryReplay ? { pendingHistoryReplay: undefined } : {}),
+      updatedAt: Math.max(session.updatedAt + 1, command.updatedAt)
+    })
+    return this.persistTaskSession(candidate)
+  }
+
+  async settleTaskCompletion(
+    command: SettleTaskSessionCompletionRequest
+  ): Promise<PersistedChatSession> {
+    const session = await this.loadTaskRunAuthority(command)
+    return this.persistTaskTerminalState(session, command, {
+      status: 'idle',
+      error: undefined,
+      errorReportable: undefined
+    })
+  }
+
+  async failTaskRun(command: FailTaskSessionRunRequest): Promise<PersistedChatSession> {
+    const session = await this.loadTaskRunAuthority(command, command.messageId)
+    return this.persistTaskTerminalState(session, command, {
+      status: 'error',
+      error: command.error,
+      errorReportable: command.errorReportable
+    })
+  }
+
+  private async loadTaskRunAuthority(
+    command: {
+      projectId: string
+      sessionId: string
+      promptMessageId: string
+    },
+    settledMessageId?: string
+  ): Promise<PersistedChatSession> {
+    this.options.assertMutable(command.projectId, command.sessionId, 'mutate')
+    const loaded = await loadAuthority(
+      this.options.repository,
+      command.projectId,
+      command.sessionId
+    )
+    if (loaded.status !== 'found') {
+      throw new Error(`Cannot mutate Task completion for a ${loaded.status} Session.`)
+    }
+    const ownsActiveRun = loaded.session.activeRun?.promptMessageId === command.promptMessageId
+    const ownsSettledMessage =
+      loaded.session.activeRun === undefined &&
+      settledMessageId !== undefined &&
+      loaded.session.messages.some(
+        (message) =>
+          message.id === settledMessageId && message.responseToMessageId === command.promptMessageId
+      )
+    if (!ownsActiveRun && !ownsSettledMessage) {
+      throw new Error('Task completion no longer owns the active Session run.')
+    }
+    return loaded.session
+  }
+
+  private async persistTaskTerminalState(
+    session: PersistedChatSession,
+    command: SettleTaskSessionCompletionRequest,
+    terminal: Pick<PersistedChatSession, 'status' | 'error' | 'errorReportable'>
+  ): Promise<PersistedChatSession> {
+    const newArtifacts = command.artifacts.filter(
+      ({ id }) => !session.artifacts?.some((artifact) => artifact.id === id)
+    )
+    const artifactIds = command.artifacts.map(({ id }) => id)
+    const messages = session.messages.map((message) =>
+      message.id === command.messageId && artifactIds.length > 0
+        ? {
+            ...message,
+            artifactIds: [...new Set([...(message.artifactIds ?? []), ...artifactIds])],
+            updatedAt: Math.max(message.updatedAt + 1, command.updatedAt)
+          }
+        : message
+    )
+    if (artifactIds.length > 0 && !messages.some(({ id }) => id === command.messageId)) {
+      throw new Error('Task completion Artifact owner Message is missing.')
+    }
+    const candidate = materializeSessionConversationGraph({
+      ...session,
+      ...terminal,
+      activeRun: undefined,
+      taskRunCommitId: command.taskRunCommitId,
+      messages,
+      artifacts: [
+        ...(session.artifacts ?? []),
+        ...newArtifacts.map((artifact) => structuredClone(artifact))
+      ],
+      filesRevision:
+        newArtifacts.length > 0 ? (session.filesRevision ?? 0) + 1 : session.filesRevision,
+      updatedAt: Math.max(session.updatedAt + 1, command.updatedAt)
+    })
+    const validation = await validateFinalizedArtifactBindings(
+      this.options.provenance,
+      candidate,
+      this.options.log
+    )
+    if (validation.status === 'conflict') throw validation.error
+    const persisted = await this.persistTaskSession(candidate)
+    if (validation.status === 'valid') {
+      this.validatedBindingTopologies.set(
+        `${persisted.projectId}:${persisted.id}`,
+        sessionBindingTopologyHash(persisted)
+      )
+    }
+    await this.options.provenance?.captureFinalizedMessages(persisted)
+    if (artifactIds.length === 0) return persisted
+    let changedSources: ProjectFileSource[]
+    try {
+      changedSources = await this.options.fileIndex.syncSession(persisted)
+    } catch (error) {
+      this.markMetadataIncomplete()
+      this.options.notifyFilesChanged({
+        projectId: persisted.projectId,
+        sources: ['artifact', 'upload'],
+        kind: 'reset'
+      })
+      throw error
+    }
+    if (changedSources.length > 0) {
+      this.options.notifyFilesChanged({
+        projectId: persisted.projectId,
+        sessionId: persisted.id,
+        sources: changedSources,
+        kind: 'upsert'
+      })
+    }
+    return persisted
+  }
+
+  private async persistTaskSession(session: PersistedChatSession): Promise<PersistedChatSession> {
+    const persisted = await saveSessionWithRevision(this.options.repository, session)
+    this.recordSession(persisted)
+    return persisted
   }
 
   private async saveSessionWithAuthority(

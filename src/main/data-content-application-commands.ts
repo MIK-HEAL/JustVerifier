@@ -89,6 +89,15 @@ type PreviewApplicationCommandOwner = Readonly<{
 }>
 
 type SessionApplicationCommandOwner = Omit<SessionPersistenceHandlers, 'deleteSession'> & {
+  stageTaskCompletion(
+    request: SessionPersistence.StageTaskSessionCompletionRequest
+  ): Promise<SessionPersistence.PersistedChatSession>
+  settleTaskCompletion(
+    request: SessionPersistence.SettleTaskSessionCompletionRequest
+  ): Promise<SessionPersistence.PersistedChatSession>
+  failTaskRun(
+    request: SessionPersistence.FailTaskSessionRunRequest
+  ): Promise<SessionPersistence.PersistedChatSession>
   filterPdfContextCandidates(
     request: SessionPersistence.FilterSessionPdfContextCandidatesRequest
   ): Promise<SessionPersistence.FilterSessionPdfContextCandidatesResult>
@@ -335,6 +344,21 @@ const dataContentApplicationCommands = Object.freeze({
     ],
     SessionPersistence.PersistedChatSession
   >('sessions:save-session', SessionPersistence.sessionApplicationCommandContracts.save),
+  sessionStageTaskCompletion: defineApplicationCommand<
+    'sessions:stage-task-completion',
+    readonly [request: SessionPersistence.StageTaskSessionCompletionRequest],
+    SessionPersistence.PersistedChatSession
+  >('sessions:stage-task-completion'),
+  sessionSettleTaskCompletion: defineApplicationCommand<
+    'sessions:settle-task-completion',
+    readonly [request: SessionPersistence.SettleTaskSessionCompletionRequest],
+    SessionPersistence.PersistedChatSession
+  >('sessions:settle-task-completion'),
+  sessionFailTaskRun: defineApplicationCommand<
+    'sessions:fail-task-run',
+    readonly [request: SessionPersistence.FailTaskSessionRunRequest],
+    SessionPersistence.PersistedChatSession
+  >('sessions:fail-task-run'),
   sessionSetDelegationPolicy: defineApplicationCommand<
     'sessions:set-delegation-policy',
     readonly [projectId: string, sessionId: string, policy: SessionPersistence.DelegationPolicy],
@@ -420,6 +444,9 @@ const dataContentApplicationCommandGroups = Object.freeze([
     dataContentApplicationCommands.sessionUpdateArchive,
     dataContentApplicationCommands.sessionUnlinkPdfContext,
     dataContentApplicationCommands.sessionSave,
+    dataContentApplicationCommands.sessionStageTaskCompletion,
+    dataContentApplicationCommands.sessionSettleTaskCompletion,
+    dataContentApplicationCommands.sessionFailTaskRun,
     dataContentApplicationCommands.sessionSetDelegationPolicy
   ] as const),
   defineApplicationCommandGroup('uploads', [
@@ -702,6 +729,39 @@ const registerDataContentApplicationCommands = (
             { session: result.session, originClientId }
           )
           return result.session
+        })
+      },
+      'sessions:stage-task-completion': (invocation) => {
+        const originClientId = invocation.callerContext.lifecycleClientId
+        return dependencies.withDataRootWrite(async () => {
+          const session = await dependencies.sessions.stageTaskCompletion(invocation.args[0])
+          publishLifecycle(dependencies.events, LIFECYCLE_CHANNELS.sessionUpdated, {
+            session,
+            originClientId
+          })
+          return session
+        })
+      },
+      'sessions:settle-task-completion': (invocation) => {
+        const originClientId = invocation.callerContext.lifecycleClientId
+        return dependencies.withDataRootWrite(async () => {
+          const session = await dependencies.sessions.settleTaskCompletion(invocation.args[0])
+          publishLifecycle(dependencies.events, LIFECYCLE_CHANNELS.sessionUpdated, {
+            session,
+            originClientId
+          })
+          return session
+        })
+      },
+      'sessions:fail-task-run': (invocation) => {
+        const originClientId = invocation.callerContext.lifecycleClientId
+        return dependencies.withDataRootWrite(async () => {
+          const session = await dependencies.sessions.failTaskRun(invocation.args[0])
+          publishLifecycle(dependencies.events, LIFECYCLE_CHANNELS.sessionUpdated, {
+            session,
+            originClientId
+          })
+          return session
         })
       },
       'sessions:set-delegation-policy': (invocation) => {

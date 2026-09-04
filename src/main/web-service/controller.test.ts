@@ -10,6 +10,12 @@ const { log } = vi.hoisted(() => ({
 
 vi.mock('../logger', () => ({ createLogger: () => log }))
 
+import type {
+  FailTaskSessionRunRequest,
+  PersistedChatSession,
+  SettleTaskSessionCompletionRequest,
+  StageTaskSessionCompletionRequest
+} from '../../shared/session-persistence'
 import { ApplicationEventHub } from '../application-events'
 import type { ApplicationEventSource } from '../application-events'
 import type { ApplicationCommandComposition } from '../application-command-composition'
@@ -367,7 +373,7 @@ describe('createWebServiceController', () => {
       createdAt: 1,
       updatedAt: 1
     }
-    const sessions: unknown[] = []
+    const sessions: PersistedChatSession[] = []
     const applicationCommands = {
       localWeb: { commandNames: () => [], invoke: vi.fn() },
       remoteWeb: { commandNames: () => [], rejectedCommandNames: () => [], invoke: vi.fn() },
@@ -377,8 +383,46 @@ describe('createWebServiceController', () => {
           if (name === 'projects:list') return [project]
           if (name === 'sessions:load-all') return { sessions, manifest: { version: 1 } }
           if (name === 'sessions:save-session') {
-            sessions.splice(0, sessions.length, invocation.args[0])
-            return invocation.args[0]
+            const durable = invocation.args[0] as PersistedChatSession
+            sessions.splice(0, sessions.length, durable)
+            return durable
+          }
+          if (name === 'sessions:stage-task-completion') {
+            const request = invocation.args[0] as StageTaskSessionCompletionRequest
+            const current = sessions[0]
+            const durable = {
+              ...current,
+              messages: request.message ? [...current.messages, request.message] : current.messages,
+              activities: [...(current.activities ?? []), ...request.activities],
+              updatedAt: request.updatedAt
+            }
+            sessions.splice(0, sessions.length, durable)
+            return durable
+          }
+          if (name === 'sessions:settle-task-completion') {
+            const request = invocation.args[0] as SettleTaskSessionCompletionRequest
+            const durable = {
+              ...sessions[0],
+              status: 'idle' as const,
+              activeRun: undefined,
+              taskRunCommitId: request.taskRunCommitId,
+              updatedAt: request.updatedAt
+            }
+            sessions.splice(0, sessions.length, durable)
+            return durable
+          }
+          if (name === 'sessions:fail-task-run') {
+            const request = invocation.args[0] as FailTaskSessionRunRequest
+            const durable = {
+              ...sessions[0],
+              status: 'error' as const,
+              activeRun: undefined,
+              taskRunCommitId: request.taskRunCommitId,
+              error: request.error,
+              updatedAt: request.updatedAt
+            }
+            sessions.splice(0, sessions.length, durable)
+            return durable
           }
           throw new Error(`Unexpected Task command: ${name}`)
         })
