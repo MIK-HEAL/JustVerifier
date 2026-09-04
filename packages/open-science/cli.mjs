@@ -1603,8 +1603,18 @@ export const runTaskCommand = async (parsed, dependencies = {}) => {
         ? client.events({ signal: abortController.signal })
         : undefined
     await eventStream?.ready
+    // The event stream only renders progress; waitForRun remains authoritative for the final Run
+    // state, so a mid-run stream failure must not fail an otherwise-successful command.
     const eventTask = eventStream
-      ? streamRunEvents(eventStream, runRef, options, deps, abortController.signal)
+      ? streamRunEvents(eventStream, runRef, options, deps, abortController.signal).catch(
+          (error) => {
+            if (abortController.signal.aborted) return
+            const message = error instanceof Error ? error.message : String(error)
+            deps.warn(
+              `Run event stream stopped: ${message} Final Run state will still be read from Open Science.`
+            )
+          }
+        )
       : undefined
     let result
     try {
