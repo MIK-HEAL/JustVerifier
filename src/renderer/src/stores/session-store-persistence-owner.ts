@@ -152,6 +152,7 @@ export type ApplyDurableSessionProjectionInput = {
     | 'compute-host-access-authority'
     | 'delegated-authority'
     | 'session-details-authority'
+    | 'archive-authority'
 }
 
 export type SessionPersistenceActions = {
@@ -185,6 +186,28 @@ export const createInitialSessionState = (): SessionStoreData => ({
   selectedSessionId: undefined,
   streamingMessages: {}
 })
+
+// Activity timestamps include unsaved local edits. Only the durable revision orders archive state;
+// equal versioned snapshots are echoes. Legacy unversioned snapshots retain arrival-order behavior.
+const projectSessionArchiveAuthority = (
+  current: ChatSession,
+  incoming: PersistedChatSession
+): ChatSession => {
+  const currentRevision = sessionRevision(current)
+  const incomingRevision = sessionRevision(incoming)
+  if (
+    incomingRevision < currentRevision ||
+    (currentRevision > 0 && incomingRevision === currentRevision)
+  ) {
+    return current
+  }
+  if (current.archivedAt === incoming.archivedAt && currentRevision === incomingRevision)
+    return current
+  const projected = { ...current, revision: incomingRevision }
+  if (incoming.archivedAt === undefined) delete projected.archivedAt
+  else projected.archivedAt = incoming.archivedAt
+  return projected
+}
 
 // Folds one Session's in-flight streaming entries back into its Message objects. Terminal
 // projections (finish/interrupt/fail) call this first so the final Message content, event ids,
@@ -544,7 +567,7 @@ const projectDelegationPolicyAuthority = (
   if (sessionRevision(authority) < sessionRevision(current)) return undefined
 
   return {
-    ...current,
+    ...projectSessionArchiveAuthority(current, authority),
     revision: sessionRevision(authority),
     delegationPolicy: normalizeDelegationPolicy(authority.delegationPolicy),
     delegationPolicyAuthorityPending: undefined,
@@ -618,13 +641,14 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
       const existing = state.sessions.find((candidate) => candidate.id === session.id)
       if (existing?.contentLoaded === false) {
         const loaded = hydrateSession(session)
+        const archive = projectSessionArchiveAuthority(existing, session)
         const incomingIsNewer = sessionRevision(session) > sessionRevision(existing)
         const hydrated: ChatSession = {
           ...loaded,
           number: existing.number ?? loaded.number,
           title: !incomingIsNewer || existing.unsavedTitle ? existing.title : loaded.title,
           pinned: incomingIsNewer ? loaded.pinned : existing.pinned,
-          archivedAt: incomingIsNewer ? loaded.archivedAt : existing.archivedAt,
+          archivedAt: archive.archivedAt,
           revision: Math.max(existing.revision ?? 0, loaded.revision ?? 0),
           filesRevision: Math.max(existing.filesRevision ?? 0, loaded.filesRevision ?? 0),
           updatedAt: Math.max(existing.updatedAt, loaded.updatedAt),
@@ -659,7 +683,8 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
         const filesAdvanced = (session.filesRevision ?? 0) > (existing.filesRevision ?? 0)
         const fileIdentityMerge =
           sameTimestamp && (session.filesRevision ?? 0) === (existing.filesRevision ?? 0)
-        const archiveChanged = existing.archivedAt !== session.archivedAt
+        const archive = projectSessionArchiveAuthority(existing, session)
+        const archiveChanged = existing.archivedAt !== archive.archivedAt
         const flat = sameTimestamp
           ? mergeDurableUploadProjection(existing.messages, existing.messages, session.messages)
           : { messages: existing.messages, changed: false }
@@ -673,8 +698,6 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
         ) {
           return state
         }
-        const withoutPreviousArchive = { ...existing }
-        delete withoutPreviousArchive.archivedAt
         const artifactsById = new Map(
           [
             ...(existing.artifacts ?? []),
@@ -682,8 +705,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
           ].map((artifact) => [artifact.id, artifact])
         )
         const projected: ChatSession = {
-          ...withoutPreviousArchive,
-          ...(session.archivedAt === undefined ? {} : { archivedAt: session.archivedAt }),
+          ...archive,
           messages: flat.messages,
           ...(runtimeAdvanced || runtimeIdentityMerge
             ? mergePersistedRuntimeIdentityProjection(existing, session, {
@@ -738,6 +760,9 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
           : {}
       const hydratedWithTransientState = {
         ...hydratedSession,
+        archivedAt: existing
+          ? projectSessionArchiveAuthority(existing, session).archivedAt
+          : session.archivedAt,
         ...retainedPlanHistory,
         ...currentPlanProjection,
         ...unsavedLocalTitle
@@ -763,10 +788,21 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
     set((state) => {
       const current = state.sessions.find((candidate) => candidate.id === session.id)
       if (!current) return state
+      const archive = projectSessionArchiveAuthority(current, session)
+
+      if (mode === 'archive-authority') {
+        const projected = archive
+        if (projected === current) return state
+        return {
+          sessions: state.sessions.map((candidate) =>
+            candidate === current ? projected : candidate
+          )
+        } as Partial<State>
+      }
 
       if (mode === 'compute-host-access-authority') {
         const projected: ChatSession = {
-          ...current,
+          ...archive,
           revision: Math.max(sessionRevision(current), sessionRevision(session)),
           enabledComputeHosts: session.enabledComputeHosts && [...session.enabledComputeHosts],
           selectedComputeHosts: session.selectedComputeHosts && [...session.selectedComputeHosts],
@@ -782,7 +818,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
       }
 
       if (mode === 'session-details-authority') {
-        const projected = sessionDetails.projectSessionDetailsAuthority(current, session)
+        const projected = sessionDetails.projectSessionDetailsAuthority(archive, session)
         markExternallyHydratedSession(projected, session)
         return {
           sessions: state.sessions.map((candidate) =>
@@ -811,7 +847,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
           interactionState
         )
         const projected: ChatSession = {
-          ...current,
+          ...archive,
           revision: Math.max(sessionRevision(current), sessionRevision(session)),
           status,
           interactionState,
@@ -862,7 +898,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
               interactionState
             )
         const projected: ChatSession = {
-          ...current,
+          ...archive,
           ...mergeRuntimeConversationAuthority(current, session),
           revision: Math.max(sessionRevision(current), sessionRevision(session)),
           status,
@@ -883,7 +919,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
       if (mode === 'delegated-authority') {
         const authority = mergeDelegatedWorkAuthorityProjection(current, session)
         const projected: ChatSession = {
-          ...current,
+          ...archive,
           ...authority,
           revision: Math.max(sessionRevision(current), sessionRevision(session))
         }
@@ -969,12 +1005,17 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
       projected = sessionDetails.withAcknowledgedUnsavedTitle(
         {
           ...projected,
+          archivedAt: archive.archivedAt,
           // Whole-Session saves and continuation acknowledgements do not own Delegation policy.
           // Keep the last dedicated mutation result even when a later ordinary projection carries
           // a newer Session revision from unrelated running activity.
           delegationPolicy: current.delegationPolicy,
           delegationPolicyAuthorityPending: current.delegationPolicyAuthorityPending,
-          revision: Math.max(sessionRevision(projected), sessionRevision(session))
+          revision: Math.max(
+            sessionRevision(current),
+            sessionRevision(projected),
+            sessionRevision(session)
+          )
         },
         session
       )

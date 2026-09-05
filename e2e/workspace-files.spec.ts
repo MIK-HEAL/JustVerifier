@@ -311,7 +311,8 @@ test.describe('Workspace dividers', () => {
       .last()
       .click()
     const browser = page.getByLabel('Local file browser')
-    await expect(browser.getByRole('list', { name: 'Directory contents' })).toBeVisible()
+    // Wait for the initial Home listing to finish populating the address bar before editing it.
+    await expect(browser.getByLabel('Directory path')).not.toHaveValue('')
     await browser.getByLabel('Directory path').fill(directory)
     await browser.getByLabel('Directory path').press('Enter')
     await browser

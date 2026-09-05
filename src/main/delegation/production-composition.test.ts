@@ -956,8 +956,6 @@ describe('production delegated-work composition', () => {
               window as unknown as ReturnType<AppLifecycleDeps['createMainWindow']>,
             createTray: () => undefined,
             shutdownBackends,
-            holdSettingsInstallAdmission: () => () => undefined,
-            getActiveSettingsInstallId: () => undefined,
             prepareForQuit,
             abortQuitPreparation,
             flushSessionPersistence,
