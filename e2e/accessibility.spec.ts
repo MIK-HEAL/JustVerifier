@@ -26,6 +26,16 @@ test.beforeEach(async ({ app }) => {
   void app
 })
 
+const blockingViolations = (results: AxeResults): AccessibilityScan['violations'] =>
+  results.violations
+    .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
+    .map<AccessibilityScan['violations'][number]>(({ id, impact, help, nodes }) => ({
+      id,
+      impact: impact ?? null,
+      help,
+      nodes: nodes.map(({ html, target }) => ({ html, target }))
+    }))
+
 const scanAccessibility = async (page: Page, surface: AccessibilitySurface): Promise<void> => {
   const axeSource = await readFile(AXE_PATH, 'utf8')
   await page.evaluate(axeSource)
@@ -38,14 +48,7 @@ const scanAccessibility = async (page: Page, surface: AccessibilitySurface): Pro
 
     return axe.run(document, { runOnly: { type: 'tag', values: tags } })
   }, WCAG_TAGS)) as AxeResults
-  const blocking = results.violations
-    .filter((violation) => violation.impact === 'critical' || violation.impact === 'serious')
-    .map<AccessibilityScan['violations'][number]>(({ id, impact, help, nodes }) => ({
-      id,
-      impact: impact ?? null,
-      help,
-      nodes: nodes.map(({ html, target }) => ({ html, target }))
-    }))
+  const blocking = blockingViolations(results)
 
   await test.info().attach(ACCESSIBILITY_SCAN_ATTACHMENT, {
     body: JSON.stringify({ surface, violations: blocking } satisfies AccessibilityScan),
@@ -320,7 +323,9 @@ test('supports the core project journey with keyboard input only', async ({ app 
   if (
     !(await expectKeyboardOutcome(page, 'Send a message with Enter', async () => {
       await expect(
-        page.getByText('Summarize the deterministic fixture.', { exact: true })
+        page
+          .getByLabel('Conversation', { exact: true })
+          .getByText('Summarize the deterministic fixture.', { exact: true })
       ).toBeVisible()
     }))
   )
@@ -376,3 +381,84 @@ test('supports the core project journey with keyboard input only', async ({ app 
   }
   await expect(settingsTrigger).toBeFocused()
 })
+
+for (const width of [375, 767] as const) {
+  for (const theme of ['Light', 'Dark'] as const) {
+    test(`home has named project actions at ${width}px in ${theme}`, async ({ app }) => {
+      const page = await app.completeOnboarding()
+      await setTheme(page, theme)
+      await setViewport(page, width)
+      await waitForFiniteAnimations(page)
+      const surface = `Home (${width}px, ${theme === 'Light' ? 'light' : 'dark'})` as const
+      await scanAccessibility(page, surface)
+      await expectKeyboardOutcome(page, surface, async () => {
+        const action = page.getByRole('button', { name: 'New project', exact: true }).first()
+        await expect(action).toBeVisible()
+        await action.click()
+        await expect(page.getByRole('dialog', { name: 'New project' })).toBeVisible()
+      })
+    })
+  }
+}
+
+for (const theme of ['Light', 'Dark'] as const) {
+  test(`reported text keeps sufficient contrast in ${theme}`, async ({ app }) => {
+    await app.completeOnboarding()
+    const page = await app.configureFakeAgent()
+    await setTheme(page, theme)
+    await createProject(page, `Contrast regression ${theme}`)
+    await page.evaluate(await readFile(AXE_PATH, 'utf8'))
+    const violations: AccessibilityScan['violations'] = []
+
+    const checkContrast = async (target: Locator, label: string): Promise<void> => {
+      await expect(target).toBeVisible()
+      await waitForFiniteAnimations(page)
+      const result = await target.evaluate(async (element) => {
+        const axe = (
+          globalThis as unknown as {
+            axe: { run: (context: Element, options: unknown) => Promise<AxeResults> }
+          }
+        ).axe
+        return axe.run(element, { runOnly: { type: 'rule', values: ['color-contrast'] } })
+      })
+      await test.info().attach(label, {
+        body: JSON.stringify({ violations: result.violations, incomplete: result.incomplete }),
+        contentType: 'application/json'
+      })
+      violations.push(...blockingViolations(result))
+      if (!ACCESSIBILITY_ADVISORY) expect.soft(result.violations, label).toEqual([])
+      expect.soft(result.incomplete, `${label} must be measurable`).toEqual([])
+    }
+
+    for (const width of [1280, 767]) {
+      await setViewport(page, width)
+      await checkContrast(
+        page.getByText('Discover, share, and collaborate on research that matters', {
+          exact: true
+        }),
+        `Empty conversation ${width}px`
+      )
+      await checkContrast(
+        page
+          .getByRole('button', { name: 'Select model', exact: true })
+          .getByText('e2e-model', { exact: true }),
+        `Model ${width}px`
+      )
+    }
+    await page.getByRole('textbox', { name: 'Ask anything' }).fill('Request fixture permission.')
+    await page.getByRole('button', { name: 'Send message' }).click()
+    await page.getByRole('button', { name: 'Deny', exact: true }).click()
+    await expect(page.getByText('Fixture permission denied.', { exact: true })).toBeVisible()
+    await checkContrast(
+      page.getByText('Declined by you: tool', { exact: true }),
+      'Declined tool 767px'
+    )
+    await test.info().attach(ACCESSIBILITY_SCAN_ATTACHMENT, {
+      body: JSON.stringify({
+        surface: theme === 'Light' ? 'Reported text (light)' : 'Reported text (dark)',
+        violations
+      } satisfies AccessibilityScan),
+      contentType: 'application/json'
+    })
+  })
+}
