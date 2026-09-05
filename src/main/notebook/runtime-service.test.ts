@@ -19,7 +19,7 @@ import {
 import { effectiveMirrorAsync, resetAutoMirrorCache } from './mirror-probe'
 import { getNotebookInputRoot } from './input-staging'
 import { getNotebookDataRoot, NotebookRunRepository, getRuntimeRoot } from './repository'
-import { createRootNotebookLane } from './lane-identity'
+import { createFrameNotebookLane, createRootNotebookLane } from './lane-identity'
 import {
   RuntimeOperationJournal,
   operationJournalPath,
@@ -4039,6 +4039,82 @@ describe('notebook runtime service', () => {
     })
 
     expect(reference).toBeNull()
+  })
+
+  describe('N05 project-scoped session references', () => {
+    const states = ['live', 'persisted', 'absent'] as const
+
+    it.each(states.flatMap((p) => states.map((q) => ({ p, q }))))(
+      'keeps a shared session ID scoped to its project (P=$p, Q=$q)',
+      async ({ p, q }) => {
+        const root = await createStorageRoot()
+        const makeService = (): NotebookRuntimeService =>
+          new NotebookRuntimeService({
+            configRoot: root,
+            dataRoot: root,
+            projectId: 'project-p',
+            repository: new NotebookRunRepository(root)
+          })
+        const projects = [
+          { projectId: 'project-p', state: p },
+          { projectId: 'project-q', state: q }
+        ]
+        const writer = makeService()
+        const service = makeService()
+        try {
+          for (const { projectId, state } of projects) {
+            if (state === 'absent') continue
+            const workspaceCwd = join(root, projectId)
+            await mkdir(workspaceCwd)
+            await writer.state({ projectId, sessionId: 'shared-session', workspaceCwd })
+          }
+          await writer.shutdownAll()
+          for (const { projectId, state } of projects) {
+            if (state !== 'live') continue
+            await service.state({
+              projectId,
+              sessionId: 'shared-session',
+              workspaceCwd: join(root, projectId)
+            })
+          }
+
+          // Include the omitted project ID: it must still resolve to the configured default.
+          for (const requestedProjectId of [undefined, 'project-p', 'project-q']) {
+            const projectId = requestedProjectId ?? 'project-p'
+            const state = projectId === 'project-p' ? p : q
+            const reference = await service.getSessionReference({
+              projectId: requestedProjectId,
+              sessionId: 'shared-session',
+              workspaceCwd: join(root, projectId)
+            })
+            const notebookSessionRoot = join(root, 'notebooks', projectId, 'shared-session')
+            expect.soft(reference).toEqual(
+              state === 'absent'
+                ? null
+                : {
+                    projectId,
+                    sessionId: 'shared-session',
+                    workspaceCwd: expect.any(String),
+                    notebookSessionRoot,
+                    dataRoot: join(notebookSessionRoot, 'data'),
+                    runtimeRoot: getRuntimeRoot(root),
+                    runJsonPath: join(notebookSessionRoot, 'run.json')
+                  }
+            )
+            if (reference && state !== 'absent') {
+              // Live references expose the execution cwd; persisted references expose workspaceCwd.
+              // Both must belong to the requested project, regardless of the selected read source.
+              expect
+                .soft([join(root, projectId), join(notebookSessionRoot, 'data')])
+                .toContain(reference.workspaceCwd)
+            }
+          }
+        } finally {
+          await writer.dispose()
+          await service.dispose()
+        }
+      }
+    )
   })
 
   it('rebuilds a session reference from persisted run.json without a live runtime session', async () => {
@@ -8352,6 +8428,7 @@ describe('v4 runtime bindings & agent tools', () => {
       enablement?: RuntimeEnablement
       executions?: NotebookExecutionRequest[]
       terminations?: string[]
+      notebookChanges?: string[]
       terminate?: (kind: 'python' | 'r' | 'repl', env: string) => Promise<void>
       platform?: NodeJS.Platform
       repository?: NotebookRunRepository
@@ -8390,6 +8467,9 @@ describe('v4 runtime bindings & agent tools', () => {
       },
       platform: options.platform,
       environmentManager: options.environmentManager,
+      callbacks: {
+        onNotebookChanged: (reference) => options.notebookChanges?.push(reference.sessionId)
+      },
       installPackagesImpl: options.installPackagesImpl,
       // A fake installer must have a fake inventory refresh too. Mixing the fake installer with a
       // scan of the host's real /usr/bin/python3 makes these tests depend on runner packages.
@@ -8423,6 +8503,423 @@ describe('v4 runtime bindings & agent tools', () => {
       })
     })
   }
+
+  it.each(
+    [
+      { operation: 'bindRuntime', running: false },
+      { operation: 'bindRuntime', running: true },
+      { operation: 'switchRuntime', running: true }
+    ].flatMap((scenario) =>
+      (['before-write', 'after-write', 'unreadable'] as const).map((failurePhase) => ({
+        ...scenario,
+        operation: scenario.operation as 'bindRuntime' | 'switchRuntime',
+        failurePhase
+      }))
+    )
+  )(
+    'N06 reports $failurePhase failure in $operation (running kernel: $running)',
+    async ({ operation, running, failurePhase }) => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const executions: NotebookExecutionRequest[] = []
+      const terminations: string[] = []
+      const notebookChanges: string[] = []
+      const enablement = {
+        enabled: { [userPyA.envId]: true, [userPyB.envId]: true },
+        installAuthorized: {}
+      }
+      const service = bindingService(root, {
+        repository,
+        enablement,
+        executions,
+        terminations,
+        notebookChanges
+      })
+      const request = { projectId: 'default-project', sessionId: 's', workspaceCwd: root }
+      const runJsonPath = join(root, 'notebooks', request.projectId, request.sessionId, 'run.json')
+      const diskBindings = async (): Promise<unknown> =>
+        JSON.parse(await readFile(runJsonPath, 'utf8')).runtimeBindings
+      let restarted: NotebookRuntimeService | undefined
+      try {
+        if (operation === 'switchRuntime') {
+          await expect(
+            service.bindRuntime({ ...request, language: 'python', runtimeId: userPyA.envId })
+          ).resolves.toHaveProperty('bound.runtimeId', userPyA.envId)
+        }
+        if (running) {
+          await expect(service.execute({ ...request, code: '1' })).resolves.toHaveProperty(
+            'status',
+            'completed'
+          )
+        }
+        const before = (await service.state(request)).runtimeBindings
+        const beforeDisk = await diskBindings()
+        const failure = new Error('N06 injected runtime binding write failure')
+        const persistBindings = repository.setRuntimeBindings.bind(repository)
+        const write = vi
+          .spyOn(repository, 'setRuntimeBindings')
+          .mockImplementation(async (...args) => {
+            if (failurePhase === 'after-write') await persistBindings(...args)
+            if (failurePhase === 'unreadable') {
+              vi.spyOn(repository, 'findExisting').mockRejectedValueOnce(
+                new Error('N06 readback failed')
+              )
+            }
+            throw failure
+          })
+        notebookChanges.length = 0
+
+        const operationResult = service[operation]({
+          ...request,
+          language: 'python',
+          runtimeId: userPyB.envId
+        })
+        if (failurePhase === 'unreadable') {
+          await expect(operationResult).rejects.toThrow(/confirm.*stored.*binding/i)
+          return
+        }
+        const result = await operationResult
+        const published = failurePhase === 'after-write'
+
+        expect(write).toHaveBeenCalledTimes(1)
+        expect.soft(result).not.toHaveProperty('bound')
+        expect.soft(result).toMatchObject({
+          ok: false,
+          bindingChanged: published,
+          error: expect.stringContaining(failure.message),
+          target: {
+            selection:
+              published || operation === 'switchRuntime' ? 'explicit-binding' : 'implicit-default',
+            runtimeId: published
+              ? userPyB.envId
+              : operation === 'switchRuntime'
+                ? userPyA.envId
+                : managedPy.envId
+          }
+        })
+        const expected = published
+          ? { python: expect.objectContaining({ runtimeId: userPyB.envId }), r: undefined }
+          : before
+        expect.soft(result.bindings).toEqual(expected)
+        expect.soft((await service.state(request)).runtimeBindings).toEqual(expected)
+        if (published) {
+          expect.soft(await diskBindings()).toMatchObject({ python: { runtimeId: userPyB.envId } })
+        } else {
+          expect.soft(await diskBindings()).toEqual(beforeDisk)
+        }
+        if (running) {
+          expect.soft(result).toHaveProperty('error', expect.stringMatching(/kernel.*stopped/i))
+          expect.soft(notebookChanges).toContain(request.sessionId)
+        }
+        // This is a new repository and owner, not the live service's in-memory projection.
+        restarted = bindingService(root, { enablement, executions })
+        expect.soft((await restarted.state(request)).runtimeBindings).toEqual(expected)
+        await expect(restarted.execute({ ...request, code: '2' })).resolves.toHaveProperty(
+          'status',
+          'completed'
+        )
+        expect
+          .soft(executions.at(-1)?.resolvedInterpreter?.command)
+          .toBe(
+            published
+              ? userPyB.interpreterPath
+              : operation === 'switchRuntime'
+                ? userPyA.interpreterPath
+                : undefined
+          )
+        expect.soft(executions.at(-1)?.environment).toBe(DEFAULT_PY_ENV)
+        // Record the existing teardown boundary separately from the binding commit contract.
+        expect.soft(terminations).toEqual(running ? ['python:default-python'] : [])
+        write.mockRestore()
+      } finally {
+        await restarted?.dispose()
+        await service.dispose()
+      }
+    }
+  )
+
+  it.each(
+    (['bindRuntime', 'switchRuntime'] as const).flatMap((operation) =>
+      [false, true].flatMap((writeFails) =>
+        [false, true].map((childLane) => ({ operation, writeFails, childLane }))
+      )
+    )
+  )(
+    'N06 waits for $operation before dispatch (write fails: $writeFails, child lane: $childLane)',
+    async ({ operation, writeFails, childLane }) => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const executions: NotebookExecutionRequest[] = []
+      const terminations: string[] = []
+      const service = bindingService(root, {
+        repository,
+        executions,
+        terminations,
+        enablement: {
+          enabled: { [userPyA.envId]: true, [userPyB.envId]: true },
+          installAuthorized: {}
+        }
+      })
+      const request = {
+        projectId: 'project-q',
+        sessionId: 'same-session',
+        workspaceCwd: root,
+        ...(childLane
+          ? {
+              provenanceContext: {
+                rootFrameId: 'root-frame-same-session',
+                agentFrameId: 'child',
+                messageBranchId: 'branch',
+                runtimeSegmentId: 'segment',
+                promptMessageId: 'message'
+              }
+            }
+          : {})
+      }
+      const started = createDeferred<void>()
+      const gate = createDeferred<void>()
+      let changing: Promise<unknown> | undefined
+      let executing: Promise<unknown> | undefined
+      try {
+        if (operation === 'switchRuntime') {
+          await service.bindRuntime({ ...request, language: 'python', runtimeId: userPyA.envId })
+        }
+        const cell = await service.execute({ ...request, code: '1' })
+        executions.length = 0
+        const persist = repository.setRuntimeBindings.bind(repository)
+        vi.spyOn(repository, 'setRuntimeBindings').mockImplementationOnce(async (...args) => {
+          started.resolve()
+          await gate.promise
+          if (writeFails) throw new Error('binding commit failed')
+          return persist(...args)
+        })
+        changing = service[operation]({
+          ...request,
+          language: 'python',
+          runtimeId: userPyB.envId
+        })
+        await started.promise
+        expect(terminations).toEqual(['python:default-python'])
+        executing = service.runCell({ ...request, cellId: cell.cellId })
+        // Another project's identical session ID remains executable while this lane is held.
+        await expect(
+          service.execute({
+            projectId: 'other-project',
+            sessionId: request.sessionId,
+            workspaceCwd: root,
+            code: '2'
+          })
+        ).resolves.toHaveProperty('status', 'completed')
+        expect.soft(executions.filter((run) => run.projectId === request.projectId)).toEqual([])
+        gate.resolve()
+        await changing
+        await expect(executing).resolves.toHaveProperty('status', 'completed')
+        const dispatched = executions.filter((run) => run.projectId === request.projectId)
+        expect(dispatched).toHaveLength(1)
+        expect(dispatched[0].resolvedInterpreter?.command).toBe(
+          writeFails
+            ? operation === 'switchRuntime'
+              ? userPyA.interpreterPath
+              : undefined
+            : userPyB.interpreterPath
+        )
+      } finally {
+        gate.resolve()
+        await Promise.allSettled([changing, executing])
+        await service.dispose()
+      }
+    }
+  )
+
+  it('reconciles a failed binding write against its project and child lane, not the root binding', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const service = bindingService(root, {
+      repository,
+      enablement: {
+        enabled: { [userPyA.envId]: true, [userPyB.envId]: true },
+        installAuthorized: {}
+      }
+    })
+    const request = { projectId: 'project-q', sessionId: 's', workspaceCwd: root }
+    const child = {
+      ...request,
+      provenanceContext: {
+        rootFrameId: 'root-frame-s',
+        agentFrameId: 'child',
+        messageBranchId: 'branch',
+        runtimeSegmentId: 'segment',
+        promptMessageId: 'message'
+      }
+    }
+    try {
+      await service.bindRuntime({ ...request, language: 'python', runtimeId: userPyB.envId })
+      await service.bindRuntime({ ...child, language: 'python', runtimeId: userPyA.envId })
+      vi.spyOn(repository, 'setRuntimeBindings').mockRejectedValueOnce(
+        new Error('child write failed')
+      )
+      await expect(
+        service.switchRuntime({ ...child, language: 'python', runtimeId: userPyB.envId })
+      ).resolves.toMatchObject({
+        ok: false,
+        bindingChanged: false,
+        target: { runtimeId: userPyA.envId }
+      })
+      expect((await service.state(child)).runtimeBindings.python?.runtimeId).toBe(userPyA.envId)
+      const fresh = new NotebookRunRepository(root)
+      expect((await fresh.findExisting('project-q', 's'))?.runtimeBindings?.python?.runtimeId).toBe(
+        userPyB.envId
+      )
+      expect(
+        (
+          await fresh.findExisting(
+            'project-q',
+            's',
+            createFrameNotebookLane('project-q', 's', 'child')
+          )
+        )?.runtimeBindings?.python?.runtimeId
+      ).toBe(userPyA.envId)
+    } finally {
+      await service.dispose()
+    }
+  })
+
+  it('publishes bindings after commit and preserves both languages during concurrent selections', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const service = bindingService(root, {
+      repository,
+      discovered: [userPyA, userR],
+      enablement: { enabled: { [userPyA.envId]: true, [userR.envId]: true }, installAuthorized: {} }
+    })
+    const request = { projectId: 'default-project', sessionId: 's', workspaceCwd: root }
+    const started = createDeferred<void>()
+    const gate = createDeferred<void>()
+    const persist = repository.setRuntimeBindings.bind(repository)
+    vi.spyOn(repository, 'setRuntimeBindings').mockImplementationOnce(async (...args) => {
+      started.resolve()
+      await gate.promise
+      return persist(...args)
+    })
+    const python = service.bindRuntime({ ...request, language: 'python', runtimeId: userPyA.envId })
+    const r = service.bindRuntime({ ...request, language: 'r', runtimeId: userR.envId })
+    try {
+      await started.promise
+      expect
+        .soft((await service.listRuntimes(request)).bindings)
+        .toEqual({ python: undefined, r: undefined })
+      gate.resolve()
+      const results = await Promise.all([python, r])
+      expect(results.every((result) => 'bound' in result)).toBe(true)
+      const expected = { python: { runtimeId: userPyA.envId }, r: { runtimeId: userR.envId } }
+      expect((await service.state(request)).runtimeBindings).toMatchObject(expected)
+      expect(
+        (await new NotebookRunRepository(root).findExisting(request.projectId, request.sessionId))
+          ?.runtimeBindings
+      ).toMatchObject(expected)
+    } finally {
+      gate.resolve()
+      await Promise.allSettled([python, r])
+      await service.dispose()
+    }
+  })
+
+  it.each(
+    (['revoke-old', 'revoke-new', 'prepare-repair', 'complete-repair'] as const).flatMap(
+      (mutation) => [false, true].map((childLane) => ({ mutation, childLane }))
+    )
+  )(
+    'N06 serializes $mutation with a published switch (child lane: $childLane)',
+    async ({ mutation, childLane }) => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const enablement = {
+        enabled: { [managedPy.envId]: true, [userPyB.envId]: true },
+        installAuthorized: {}
+      }
+      const service = bindingService(root, { repository, enablement })
+      const request = {
+        projectId: 'project-q',
+        sessionId: 'same-session',
+        workspaceCwd: root,
+        ...(childLane
+          ? {
+              provenanceContext: {
+                rootFrameId: 'root-frame-same-session',
+                agentFrameId: 'child',
+                messageBranchId: 'branch',
+                runtimeSegmentId: 'segment',
+                promptMessageId: 'message'
+              }
+            }
+          : {})
+      }
+      const published = createDeferred<void>()
+      const gate = createDeferred<void>()
+      let switching: Promise<unknown> | undefined
+      let mutating: Promise<unknown> | undefined
+      let restarted: NotebookRuntimeService | undefined
+      try {
+        await service.bindRuntime({ ...request, language: 'python', runtimeId: managedPy.envId })
+        const persist = repository.setRuntimeBindings.bind(repository)
+        vi.spyOn(repository, 'setRuntimeBindings').mockImplementationOnce(async (...args) => {
+          const document = await persist(...args)
+          published.resolve()
+          await gate.promise
+          return document
+        })
+        switching = service.switchRuntime({
+          ...request,
+          language: 'python',
+          runtimeId: userPyB.envId
+        })
+        await published.promise
+        if (mutation.startsWith('revoke')) {
+          const runtimeId = mutation === 'revoke-old' ? managedPy.envId : userPyB.envId
+          enablement.enabled[runtimeId] = false
+          mutating = service.revokeRuntime('python', runtimeId)
+        } else if (mutation === 'prepare-repair') {
+          mutating = service.prepareRuntimeRepair('python', {
+            kind: 'runtime',
+            runtimeId: managedPy.envId
+          })
+        } else {
+          mutating = service.completeRuntimeRepair('python')
+        }
+        // Let the competing public operation enter while publication is held. No wall-clock race.
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        gate.resolve()
+        await expect(switching).resolves.toHaveProperty('bound.runtimeId', userPyB.envId)
+        await mutating
+        const expected = {
+          runtimeId: userPyB.envId,
+          status: mutation === 'revoke-new' ? 'unavailable' : 'active'
+        }
+        expect.soft((await service.state(request)).runtimeBindings.python).toMatchObject(expected)
+        const lane = childLane
+          ? createFrameNotebookLane(request.projectId, request.sessionId, 'child')
+          : createRootNotebookLane(request.projectId, request.sessionId, 'root-frame-same-session')
+        expect
+          .soft(
+            (
+              await new NotebookRunRepository(root).findExisting(
+                request.projectId,
+                request.sessionId,
+                lane
+              )
+            )?.runtimeBindings?.python
+          )
+          .toMatchObject(expected)
+        restarted = bindingService(root, { enablement })
+        expect.soft((await restarted.state(request)).runtimeBindings.python).toMatchObject(expected)
+      } finally {
+        gate.resolve()
+        await Promise.allSettled([switching, mutating])
+        await restarted?.dispose()
+        await service.dispose()
+      }
+    }
+  )
 
   it('prepares a healthy managed Python reinstall by closing explicit and implicit kernels', async () => {
     const root = await createStorageRoot()
