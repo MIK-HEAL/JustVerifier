@@ -96,6 +96,8 @@ describe('startup quit ownership handoff', () => {
             createTray: () => undefined,
             countWindows: () => 0,
             isMigrationInProgress: () => false,
+            holdSettingsInstallAdmission: () => () => undefined,
+            getActiveSettingsInstallId: () => undefined,
             detectActiveSessions: () => [],
             hasActiveReviewerWork: () => false,
             createConfirmClose: () => async () => 'quit',

@@ -960,6 +960,8 @@ describe('production delegated-work composition', () => {
             abortQuitPreparation,
             flushSessionPersistence,
             isMigrationInProgress: () => false,
+            holdSettingsInstallAdmission: () => () => undefined,
+            getActiveSettingsInstallId: () => undefined,
             quit,
             countWindows: () => 1,
             detectActiveSessions: () => [],
