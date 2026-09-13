@@ -1,5 +1,17 @@
 import type { MessageSearchRequest, MessageSearchPage } from './message-search'
 import type {
+  SkillMarketplaceCatalog,
+  SkillMarketplaceCatalogRequest,
+  SkillMarketplaceBatch,
+  SkillMarketplaceBatchRequest,
+  SkillMarketplaceBatchStartResult,
+  SkillMarketplaceDetail,
+  SkillMarketplaceDetailRequest,
+  SkillMarketplaceInstallRequest,
+  SkillMarketplaceInstallResult,
+  SkillMarketplaceResult
+} from './skill-marketplace'
+import type {
   LiteratureExportRecordRequest,
   LiteratureExportRecordResult
 } from './literature-export'
@@ -2003,6 +2015,29 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   ]),
   'settings.getSettings': callable<() => Promise<SettingsSnapshot>>()('settings', [
     'settings:get-settings'
+  ]),
+  'settings.listSkillMarketplace': callable<
+    (
+      request?: SkillMarketplaceCatalogRequest
+    ) => Promise<SkillMarketplaceResult<SkillMarketplaceCatalog>>
+  >()('settings', ['settings:list-skill-marketplace']),
+  'settings.getSkillMarketplaceDetail': callable<
+    (
+      request: SkillMarketplaceDetailRequest
+    ) => Promise<SkillMarketplaceResult<SkillMarketplaceDetail>>
+  >()('settings', ['settings:get-skill-marketplace-detail']),
+  'settings.installSkillMarketplace': callable<
+    (request: SkillMarketplaceInstallRequest) => Promise<SkillMarketplaceInstallResult>
+  >()('settings', ['settings:install-skill-marketplace']),
+  'settings.startSkillMarketplaceBatch': callable<
+    (request: SkillMarketplaceBatchRequest) => Promise<SkillMarketplaceBatchStartResult>
+  >()('settings', ['settings:start-skill-marketplace-batch']),
+  'settings.getSkillMarketplaceBatch': callable<() => Promise<SkillMarketplaceBatch | null>>()(
+    'settings',
+    ['settings:get-skill-marketplace-batch']
+  ),
+  'settings.stopSkillMarketplaceBatch': callable<(id: string) => Promise<boolean>>()('settings', [
+    'settings:stop-skill-marketplace-batch'
   ]),
   'settings.getSkillDetail': callable<(id: string) => Promise<SkillDetailView>>()('settings', [
     'settings:get-skill-detail'

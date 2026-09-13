@@ -261,7 +261,48 @@ describe('renderer argument-shape characterization', () => {
     expect(actualPaths).toEqual(expectedPaths)
   })
 
-  it('keeps Runtime request arguments equivalent across Electron and Web', async () => {
+  it('keeps Skill Marketplace request arguments equivalent across Electron and Web', async () => {
+    for (const [path, channel, args] of [
+      ['settings.listSkillMarketplace', 'settings:list-skill-marketplace', []],
+      [
+        'settings.listSkillMarketplace',
+        'settings:list-skill-marketplace',
+        [{ forceRefresh: true }]
+      ],
+      [
+        'settings.listSkillMarketplace',
+        'settings:list-skill-marketplace',
+        [{ snapshotId: 'a'.repeat(64) }]
+      ],
+      ['settings.getSkillMarketplaceBatch', 'settings:get-skill-marketplace-batch', []],
+      ['settings.stopSkillMarketplaceBatch', 'settings:stop-skill-marketplace-batch', ['batch-id']],
+      [
+        'settings.startSkillMarketplaceBatch',
+        'settings:start-skill-marketplace-batch',
+        [
+          {
+            snapshotId: 'a'.repeat(64),
+            items: [{ id: 'abstract-trimmer', version: '1.1.0', expectedVersion: '1.0.0' }]
+          }
+        ]
+      ],
+      [
+        'settings.getSkillMarketplaceDetail',
+        'settings:get-skill-marketplace-detail',
+        [{ snapshotId: 'a'.repeat(64), id: 'abstract-trimmer' }]
+      ],
+      [
+        'settings.installSkillMarketplace',
+        'settings:install-skill-marketplace',
+        [{ snapshotId: 'a'.repeat(64), id: 'abstract-trimmer', expectedVersion: '1.0.0' }]
+      ]
+    ] as const) {
+      expect(await invokeElectron(electronApi, path, [...args])).toEqual({ channel, args })
+      expect(await invokeWeb(webApi, path, [...args])).toEqual({ channel, args })
+    }
+  })
+
+  it('keeps Runtime package request arguments equivalent across Electron and Web', async () => {
     const cases = [
       {
         path: 'runtime.listPackages',

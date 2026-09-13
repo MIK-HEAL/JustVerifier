@@ -11,6 +11,10 @@ import type {
   UpdateSkillRequest
 } from '../../../shared/settings'
 import type { SettingsService } from '../service'
+import type {
+  SkillMarketplaceInstallRequest,
+  SkillMarketplaceBatchRequest
+} from '../../../shared/skill-marketplace'
 
 type SkillSettingsWorkflowStore = Pick<
   SettingsService,
@@ -22,6 +26,8 @@ type SkillSettingsWorkflowStore = Pick<
   | 'deleteSkill'
   | 'importSkill'
   | 'importSkillZip'
+  | 'installSkillMarketplace'
+  | 'startSkillMarketplaceBatch'
   | 'importSkillZipBatch'
   | 'importAgentHomeSkills'
 >
@@ -82,6 +88,29 @@ class SkillSettingsWorkflows {
 
   async importSkillZip(request: ImportSkillZipRequest): WorkflowResult<'importSkillZip'> {
     return this.afterSkillsChanged(() => this.settings.importSkillZip(request))
+  }
+
+  async installSkillMarketplace(
+    request: SkillMarketplaceInstallRequest
+  ): WorkflowResult<'installSkillMarketplace'> {
+    const result = await this.settings.installSkillMarketplace(request)
+    if (result.ok) {
+      try {
+        // A same-version retry may have recovered a previous runtime refresh failure.
+        this.effects.notifySkillCatalogChanged()
+      } catch {
+        return { ok: true, value: { ...result.value, refreshFailed: true } }
+      }
+    }
+    return result
+  }
+
+  async startSkillMarketplaceBatch(
+    request: SkillMarketplaceBatchRequest
+  ): WorkflowResult<'startSkillMarketplaceBatch'> {
+    return this.settings.startSkillMarketplaceBatch(request, () =>
+      this.effects.notifySkillCatalogChanged()
+    )
   }
 
   async importSkillZipBatch(

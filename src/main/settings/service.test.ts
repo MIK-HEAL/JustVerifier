@@ -35,6 +35,9 @@ import type { Logger } from '../logger'
 import { codexSubscriptionStorageDir } from '../agent-framework/codex'
 import type { SettingsServiceOptions } from './service'
 import { SettingsInstallCoordinator } from './settings-install-coordinator'
+import { SkillMarketplaceService } from '../skills/marketplace-service'
+import { SkillCatalogModule } from './skill-catalog'
+import { marketplaceCatalog } from '../../shared/__fixtures__/skill-marketplace'
 
 // Reversible fake safeStorage so provider keys can be encrypted/decrypted without an OS keychain.
 vi.mock('electron', () => ({
@@ -328,6 +331,206 @@ afterEach(async () => {
   vi.unstubAllEnvs()
   await makeTreeWritable(storageRoot)
   await rm(storageRoot, { recursive: true, force: true })
+})
+
+describe('SettingsService: Marketplace installation projection', () => {
+  it('aborts batch downloads on disposal and never commits a late download', async () => {
+    const pending =
+      Promise.withResolvers<Awaited<ReturnType<SkillMarketplaceService['download']>>>()
+    const retain = vi
+      .spyOn(SkillMarketplaceService.prototype, 'retainSnapshot')
+      .mockReturnValue(vi.fn())
+    const download = vi
+      .spyOn(SkillMarketplaceService.prototype, 'download')
+      .mockReturnValue(pending.promise)
+    const write = vi.spyOn(SkillCatalogModule.prototype, 'installMarketplacePackage')
+    const refresh = vi.spyOn(SkillCatalogModule.prototype, 'refreshMarketplace')
+    try {
+      const service = createService()
+      const request = {
+        snapshotId: 'a'.repeat(64),
+        items: [
+          { id: 'one', version: '1.0.0', expectedVersion: null },
+          { id: 'two', version: '1.0.0', expectedVersion: null }
+        ]
+      }
+      expect(service.startSkillMarketplaceBatch(request, vi.fn()).ok).toBe(true)
+      const signal = download.mock.calls[0][1]!
+      let disposed = false
+      const disposal = service.dispose().then(() => {
+        disposed = true
+      })
+      expect(signal.aborted).toBe(true)
+      await Promise.resolve()
+      expect(disposed).toBe(false)
+      // Even an adapter that ignores cancellation cannot commit after shutdown starts.
+      pending.resolve({
+        ok: true,
+        value: {
+          files: [],
+          receipt: {
+            marketplace: 'openscience-skills',
+            id: 'one',
+            version: '1.0.0',
+            snapshotId: request.snapshotId,
+            revision: 'b'.repeat(64),
+            descriptorSha256: 'c'.repeat(64),
+            artifactSha256: 'd'.repeat(64),
+            contentSha256: 'e'.repeat(64)
+          }
+        }
+      })
+      await disposal
+      expect(download).toHaveBeenCalledTimes(1)
+      expect(write).not.toHaveBeenCalled()
+      expect(refresh).not.toHaveBeenCalled()
+      expect(service.getSkillMarketplaceBatch()?.items.map(({ status }) => status)).toEqual([
+        'stopped',
+        'stopped'
+      ])
+      expect(service.startSkillMarketplaceBatch(request, vi.fn())).toEqual({
+        ok: false,
+        error: 'busy'
+      })
+    } finally {
+      pending.resolve({ ok: false, error: 'network' })
+      retain.mockRestore()
+      download.mockRestore()
+      write.mockRestore()
+      refresh.mockRestore()
+    }
+  })
+
+  it('reports a committed direct installation as successful when runtime refresh fails', async () => {
+    const pkg = {
+      files: [],
+      receipt: {
+        marketplace: 'openscience-skills' as const,
+        id: 'one',
+        version: '1.0.0',
+        snapshotId: 'a'.repeat(64),
+        revision: 'b'.repeat(64),
+        descriptorSha256: 'c'.repeat(64),
+        artifactSha256: 'd'.repeat(64),
+        contentSha256: 'e'.repeat(64)
+      }
+    }
+    const download = vi
+      .spyOn(SkillMarketplaceService.prototype, 'download')
+      .mockResolvedValue({ ok: true, value: pkg })
+    const write = vi
+      .spyOn(SkillCatalogModule.prototype, 'installMarketplacePackage')
+      .mockResolvedValue({ id: 'imported-one', status: 'imported' })
+    const refresh = vi
+      .spyOn(SkillCatalogModule.prototype, 'refreshMarketplace')
+      .mockRejectedValueOnce(new Error('runtime unavailable'))
+      .mockResolvedValue(undefined)
+    try {
+      const service = createService()
+      const request = { snapshotId: pkg.receipt.snapshotId, id: 'one', expectedVersion: null }
+      expect(await service.installSkillMarketplace(request)).toEqual({
+        ok: true,
+        value: { id: 'imported-one', status: 'imported', version: '1.0.0', refreshFailed: true }
+      })
+      write.mockResolvedValueOnce({ id: 'imported-one', status: 'unchanged' })
+      expect(
+        await service.installSkillMarketplace({ ...request, expectedVersion: '1.0.0' })
+      ).toEqual({
+        ok: true,
+        value: { id: 'imported-one', status: 'unchanged', version: '1.0.0' }
+      })
+      expect(refresh).toHaveBeenCalledTimes(2)
+    } finally {
+      download.mockRestore()
+      write.mockRestore()
+      refresh.mockRestore()
+    }
+  })
+
+  it('keeps an admitted queue alive independently of callers and uses verified package writes', async () => {
+    const release = vi.fn()
+    const retain = vi
+      .spyOn(SkillMarketplaceService.prototype, 'retainSnapshot')
+      .mockReturnValue(release)
+    const download = vi.spyOn(SkillMarketplaceService.prototype, 'download')
+    const write = vi
+      .spyOn(SkillCatalogModule.prototype, 'installMarketplacePackage')
+      .mockResolvedValue({ id: 'imported-one', status: 'imported' })
+    const refresh = vi
+      .spyOn(SkillCatalogModule.prototype, 'refreshMarketplace')
+      .mockResolvedValue(undefined)
+    const notify = vi.fn()
+    try {
+      const service = createService()
+      let finish!: (value: Awaited<ReturnType<SkillMarketplaceService['download']>>) => void
+      download.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve
+          })
+      )
+      download.mockResolvedValueOnce({ ok: false, error: 'integrity' })
+      const request = {
+        snapshotId: 'a'.repeat(64),
+        items: [
+          { id: 'one', version: '1.0.0', expectedVersion: null },
+          { id: 'two', version: '1.0.0', expectedVersion: null }
+        ]
+      }
+      expect(service.startSkillMarketplaceBatch(request, notify).ok).toBe(true)
+      expect(service.getSkillMarketplaceBatch()?.items[0].status).toBe('installing')
+      expect(write).not.toHaveBeenCalled()
+      const pkg = {
+        files: [],
+        receipt: {
+          marketplace: 'openscience-skills' as const,
+          id: 'one',
+          version: '1.0.0',
+          snapshotId: request.snapshotId,
+          revision: 'b'.repeat(64),
+          descriptorSha256: 'c'.repeat(64),
+          artifactSha256: 'd'.repeat(64),
+          contentSha256: 'e'.repeat(64)
+        }
+      }
+      finish({ ok: true, value: pkg })
+      await vi.waitFor(() => expect(service.getSkillMarketplaceBatch()?.status).toBe('completed'))
+      expect(write).toHaveBeenCalledExactlyOnceWith(pkg, null)
+      expect(service.getSkillMarketplaceBatch()?.items.map(({ status }) => status)).toEqual([
+        'succeeded',
+        'failed'
+      ])
+      expect(refresh).toHaveBeenCalledOnce()
+      expect(notify).toHaveBeenCalledOnce()
+      expect(release).toHaveBeenCalledOnce()
+    } finally {
+      retain.mockRestore()
+      download.mockRestore()
+      write.mockRestore()
+      refresh.mockRestore()
+    }
+  })
+  it('adds local installation state only after successful catalog verification', async () => {
+    const list = vi.spyOn(SkillMarketplaceService.prototype, 'list')
+    const project = vi.spyOn(SkillCatalogModule.prototype, 'marketplaceInstallations')
+    try {
+      const service = createService()
+      list.mockResolvedValueOnce({ ok: false, error: 'integrity' })
+      expect(await service.listSkillMarketplace()).toEqual({ ok: false, error: 'integrity' })
+      expect(project).not.toHaveBeenCalled()
+      list.mockResolvedValueOnce({ ok: true, value: marketplaceCatalog })
+      project.mockResolvedValueOnce({})
+      expect(await service.listSkillMarketplace()).toEqual({
+        ok: true,
+        value: { ...marketplaceCatalog, installations: {} }
+      })
+      expect(project).toHaveBeenCalledExactlyOnceWith(marketplaceCatalog.entries)
+      expect(marketplaceCatalog).not.toHaveProperty('installations')
+    } finally {
+      list.mockRestore()
+      project.mockRestore()
+    }
+  })
 })
 
 describe('SettingsService: Local Shell runtime', () => {

@@ -1,4 +1,18 @@
 import { homedir } from 'node:os'
+import { z } from 'zod'
+import { MarketplaceInstallConflict } from '../skills/user-skill-repository'
+import { SkillMarketplaceService } from '../skills/marketplace-service'
+import { SkillMarketplaceInstallQueue } from '../skills/marketplace-install-queue'
+import type {
+  SkillMarketplaceCatalog,
+  SkillMarketplaceCatalogRequest,
+  SkillMarketplaceBatchRequest,
+  SkillMarketplaceDetail,
+  SkillMarketplaceDetailRequest,
+  SkillMarketplaceInstallRequest,
+  SkillMarketplaceInstallResult,
+  SkillMarketplaceResult
+} from '../../shared/skill-marketplace'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -263,6 +277,110 @@ export type SettingsServiceOptions = {
 // object shared by the settings IPC handlers and the ACP runtime. Secrets are decrypted here only
 // transiently; nothing that leaves this object (views, spawn config aside) carries plaintext.
 class SettingsService {
+  private readonly skillMarketplace = new SkillMarketplaceService()
+  private readonly skillMarketplaceQueue = new SkillMarketplaceInstallQueue({
+    retainSnapshot: (request) => this.skillMarketplace.retainSnapshot(request),
+    install: (request, signal) => this.performSkillMarketplaceInstall(request, false, signal),
+    refresh: () => this.skills.refreshMarketplace()
+  })
+
+  startSkillMarketplaceBatch(
+    request: SkillMarketplaceBatchRequest,
+    notifyChanged: () => void
+  ): ReturnType<SkillMarketplaceInstallQueue['start']> {
+    return this.skillMarketplaceQueue.start(request, notifyChanged)
+  }
+
+  getSkillMarketplaceBatch(): ReturnType<SkillMarketplaceInstallQueue['get']> {
+    return this.skillMarketplaceQueue.get()
+  }
+
+  stopSkillMarketplaceBatch(id: string): boolean {
+    return this.skillMarketplaceQueue.stop(id)
+  }
+
+  async listSkillMarketplace(
+    request?: SkillMarketplaceCatalogRequest
+  ): Promise<SkillMarketplaceResult<SkillMarketplaceCatalog>> {
+    const result = await this.skillMarketplace.list(request)
+    if (!result.ok) return result
+    return {
+      ok: true,
+      value: {
+        ...result.value,
+        installations: await this.skills.marketplaceInstallations(result.value.entries)
+      }
+    }
+  }
+
+  async getSkillMarketplaceDetail(
+    request: SkillMarketplaceDetailRequest
+  ): Promise<SkillMarketplaceResult<SkillMarketplaceDetail>> {
+    const result = await this.skillMarketplace.detail(request)
+    if (!result.ok) return result
+    return {
+      ok: true,
+      value: {
+        ...result.value,
+        installation: await this.skills.marketplaceInstallation(
+          result.value.entry.id,
+          result.value.entry.version
+        )
+      }
+    }
+  }
+
+  async installSkillMarketplace(
+    request: SkillMarketplaceInstallRequest
+  ): Promise<SkillMarketplaceInstallResult> {
+    return this.performSkillMarketplaceInstall(request, true)
+  }
+
+  private async performSkillMarketplaceInstall(
+    request: SkillMarketplaceInstallRequest,
+    refresh: boolean,
+    signal?: AbortSignal
+  ): Promise<SkillMarketplaceInstallResult> {
+    const parsed = z
+      .strictObject({
+        snapshotId: z.string().regex(/^[a-f0-9]{64}$/),
+        id: z
+          .string()
+          .max(128)
+          .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+        expectedVersion: z.string().max(128).nullable()
+      })
+      .safeParse(request)
+    if (!parsed.success) return { ok: false, error: 'conflict' }
+    const { expectedVersion, ...identity } = parsed.data
+    const downloaded = await this.skillMarketplace.download(identity, signal)
+    if (!downloaded.ok) return downloaded
+    try {
+      signal?.throwIfAborted()
+      const result: {
+        id: string
+        status: 'imported' | 'unchanged' | 'updated'
+        refreshFailed?: boolean
+      } = refresh
+        ? await this.skills.installMarketplace(downloaded.value, expectedVersion)
+        : await this.skills.installMarketplacePackage(downloaded.value, expectedVersion)
+      return {
+        ok: true,
+        value: {
+          id: result.id,
+          status: result.status,
+          version: downloaded.value.receipt.version,
+          ...(result.refreshFailed ? { refreshFailed: true } : {})
+        }
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof MarketplaceInstallConflict ? 'conflict' : 'installation-failed'
+      }
+    }
+  }
+
   private readonly repository: SettingsRepository
   private readonly preferences: SettingsPreferencesModule
   private readonly notebookRuntimeSettings: NotebookRuntimeSettingsModule
@@ -308,6 +426,7 @@ class SettingsService {
 
   async dispose(): Promise<void> {
     const outcomes = await Promise.allSettled([
+      this.skillMarketplaceQueue.dispose(),
       this.providers.dispose(),
       this.runtimeManager.dispose()
     ])
