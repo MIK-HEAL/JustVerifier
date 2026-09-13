@@ -1110,7 +1110,9 @@
           "src/main/specialist/package/electron-adapter.test.ts",
           "src/main/specialist/package/contribution-template.test.ts",
           "src/main/specialist/package/service.test.ts",
-          "src/main/runtime-import-cycle.architecture.test.ts"
+          "src/main/runtime-import-cycle.architecture.test.ts",
+          "src/main/notifications/unread-task-ipc.test.ts",
+          "src/main/notifications/notification-inbox-repository.test.ts"
         ],
         "consumer": [
           "src/main/application-runtime.test.ts",
@@ -1128,7 +1130,11 @@
           "src/renderer/src/stores/specialist-store.test.ts",
           "src/renderer/src/stores/specialist-store.upload.test.ts",
           "src/renderer/src/pages/settings/SpecialistsPanel.render.test.tsx",
-          "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx"
+          "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
+          "src/main/index-startup-order.test.ts",
+          "src/main/app-startup.test.ts",
+          "src/main/app-lifecycle.test.ts",
+          "src/renderer/src/hooks/useUnreadTaskViewSync.test.tsx"
         ]
       },
       "capabilityOverlays": [],
