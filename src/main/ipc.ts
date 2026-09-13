@@ -173,6 +173,7 @@ import { registerWindowIpcHandlers } from './window-ipc'
 import { registerWindowFindIpcHandlers } from './window-find-ipc'
 import { TaskNotificationService } from './notifications/task-notifications'
 import { createNotificationInboxController } from './notifications/notification-inbox-controller'
+import { createConnectorApprovalElectronSurface } from './ipc-surfaces/connector-approvals'
 import { createNotificationElectronSurface } from './ipc-surfaces/notifications'
 import { NotificationInboxDbRepository } from './notifications/notification-inbox-repository'
 import { bindNotificationInboxDeletionRuntime } from './notifications/notification-inbox-runtime'
@@ -417,7 +418,6 @@ import {
   CONNECTOR_TEMPLATE_MAX_BYTES,
   type AppIconPreview,
   type AppIconVariant,
-  type RespondApprovalRequest,
   type SessionAgentConfiguration
 } from '../shared/settings'
 import type { AcpSessionAgentTarget } from '../shared/acp'
@@ -484,7 +484,6 @@ import {
 } from './runtime-electron-wiring'
 import { HostSkillsService, type HostSkillsCatalog } from './skills/host-skills-service'
 import { UserSkillCatalogObserver } from './skills/user-skill-catalog-observer'
-import type { ConversationSkillImportApprovalResponse } from '../shared/settings'
 import type { TaskControlPorts } from './tasks/task-control-ports'
 import type { TaskAgentPort } from './tasks/task-runner'
 import { englishNativeTranslator, type NativeTranslator } from './locale/main-process-messages'
@@ -3124,33 +3123,13 @@ const createApplicationModules = async (
         executionCwd
       )
   )
-  // The renderer's approval card responds here; the broker resolves the held connector call.
-  declareElectronAdapter('connector-approvals', () => {
-    ipcMainHandle('connectors:approval-respond', (_event, request: RespondApprovalRequest) => {
-      approvalBroker.respond(request.id, request.decision)
-    })
-    ipcMainHandle('connectors:approval-replay', (_event, id: unknown) =>
-      typeof id === 'string' ? approvalBroker.getPending(id) : null
+  surfaceAdapters.push(
+    createConnectorApprovalElectronSurface(
+      approvalBroker,
+      credentialRequestBroker,
+      skillImportApprovalBroker
     )
-    ipcMainHandle('connectors:approval-replay-pending', () => approvalBroker.replayPending())
-    ipcMainHandle(
-      'connectors:credential-respond',
-      (_event, request: { id: string; configured: boolean }) =>
-        credentialRequestBroker.respond(request.id, request.configured)
-    )
-    ipcMainHandle('connectors:credential-replay-pending', () =>
-      credentialRequestBroker.replayPending()
-    )
-    ipcMainHandle(
-      'skills:conversation-import-respond',
-      (_event, response: ConversationSkillImportApprovalResponse) => {
-        skillImportApprovalBroker.respond(response)
-      }
-    )
-    ipcMainHandle('skills:conversation-import-replay-pending', () => {
-      skillImportApprovalBroker.replayPending()
-    })
-  })
+  )
 
   const recoverPendingCustomServerDeletions = async (): Promise<void> => {
     const pendingCustomServerDeletionIds =

@@ -1026,13 +1026,15 @@
         "src/main/ipc-surfaces/adapter.ts",
         "src/main/ipc-surfaces/core.ts",
         "src/main/ipc-surfaces/uploads.ts",
-        "src/main/ipc-surfaces/notifications.ts"
+        "src/main/ipc-surfaces/notifications.ts",
+        "src/main/ipc-surfaces/connector-approvals.ts"
       ],
       "interfacePaths": [
         "src/main/ipc-surfaces/adapter.ts",
         "src/main/ipc-surfaces/core.ts",
         "src/main/ipc-surfaces/uploads.ts",
-        "src/main/ipc-surfaces/notifications.ts"
+        "src/main/ipc-surfaces/notifications.ts",
+        "src/main/ipc-surfaces/connector-approvals.ts"
       ],
       "consumerModules": [],
       "testFiles": {
@@ -1040,9 +1042,14 @@
           "src/main/ipc-surfaces/adapter.test.ts",
           "src/main/ipc-surfaces/core.test.ts",
           "src/main/ipc-surfaces/uploads.test.ts",
-          "src/main/ipc-surfaces/notifications.test.ts"
+          "src/main/ipc-surfaces/notifications.test.ts",
+          "src/main/ipc-surfaces/connector-approvals.test.ts"
         ],
         "contract": [
+          "src/main/connectors/approval-broker.test.ts",
+          "src/main/connectors/credential-request-broker.test.ts",
+          "src/main/skills/conversation-import.test.ts",
+          "src/main/settings/integration-application-commands.test.ts",
           "src/main/notifications/notification-inbox-ipc.test.ts",
           "src/main/notifications/electron-wiring.test.ts",
           "src/main/notifications/task-notifications.test.ts",

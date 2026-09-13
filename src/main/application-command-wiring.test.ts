@@ -44,6 +44,29 @@ const dependencyBlock = compact(
 )
 
 describe('production application command wiring', () => {
+  it('installs approval handlers with the shared connector brokers in beforeAcp', () => {
+    const phase = compact(
+      between(
+        ipcSource,
+        'surfaceAdapters = beforeAcpAdapters',
+        'surfaceAdapters = afterAcpAdapters'
+      )
+    )
+    expect(phase).toContain(
+      'surfaceAdapters.push( createConnectorApprovalElectronSurface( approvalBroker, credentialRequestBroker, skillImportApprovalBroker ) )'
+    )
+    expect(occurrences(ipcSource, 'createConnectorApprovalElectronSurface(')).toBe(1)
+    expect(compact(ipcSource)).toContain(
+      'connectorApprovals: approvalBroker, credentialRequests: credentialRequestBroker, skillImportApprovals: skillImportApprovalBroker } = connectorApplication'
+    )
+    const surface = compact(readSource('src/main/ipc-surfaces/connector-approvals.ts'))
+    expect(surface).toContain("createElectronSurfaceAdapter('connector-approvals'")
+    expect(surface).toContain('approvalBroker.respond(request.id, request.decision)')
+    expect(surface).toContain('credentialRequestBroker.respond(request.id, request.configured)')
+    expect(surface).toContain('skillImportApprovalBroker.respond(response)')
+    expect(ipcSource).not.toContain("ipcMainHandle('connectors:approval-respond'")
+  })
+
   it('keeps the upload owner and notification surface in its original installation phase', () => {
     const uploadSurface = compact(readSource('src/main/ipc-surfaces/uploads.ts'))
     expect(uploadSurface).toContain("import { registerUploadIpcHandlers } from '../uploads/ipc'")
