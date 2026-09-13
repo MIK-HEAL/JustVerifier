@@ -1415,6 +1415,116 @@ describe('session persistence repository (per-session files)', () => {
     await expect(lstat(filePath)).resolves.toMatchObject({ size: MAX_PERSISTED_SESSION_BYTES + 1 })
   })
 
+  it.each([false, true])(
+    'retains unresolved temporary evidence in diagnostics (valid primary: %s)',
+    async (hasPrimary) => {
+      const root = await createStorageRoot()
+      const repository = new SessionRepository(root)
+      const session = createSession()
+      const directory = join(root, 'sessions', session.projectId)
+      await mkdir(directory, { recursive: true })
+      if (hasPrimary) await repository.saveSession(session)
+      const temporaryPath = join(
+        directory,
+        `${session.id}.json.${process.pid}-12345678-1234-1234-1234-123456789abc.tmp`
+      )
+      // The writer may still be filling this file; neither parse nor promote it.
+      await writeFile(temporaryPath, '{', 'utf8')
+
+      await expect(
+        repository.loadSessionWithDiagnostics(session.projectId, session.id)
+      ).resolves.toMatchObject({ status: hasPrimary ? 'found' : 'unreadable' })
+      const scan = await repository.loadAllWithDiagnostics()
+      expect(scan.isComplete).toBe(hasPrimary)
+      expect(scan.result.sessions).toHaveLength(hasPrimary ? 1 : 0)
+      expect(scan.warnings ?? []).toEqual(
+        hasPrimary
+          ? []
+          : [
+              {
+                kind: 'unreadable',
+                projectId: session.projectId,
+                fileName: `${session.id}.json`,
+                recovered: false
+              }
+            ]
+      )
+      await expect(readFile(temporaryPath, 'utf8')).resolves.toBe('{')
+    }
+  )
+
+  it.each([
+    'unrelated',
+    '0-12345678-1234-1234-1234-123456789abc',
+    '9007199254740992-12345678-1234-1234-1234-123456789abc'
+  ])(
+    'reports true absence without treating an unrecognized temp suffix as authority: %s',
+    async (suffix) => {
+      const root = await createStorageRoot()
+      const directory = join(root, 'sessions', 'project-a')
+      await mkdir(directory, { recursive: true })
+      await writeFile(join(directory, `session-1.json.${suffix}.tmp`), '{', 'utf8')
+      const repository = new SessionRepository(root)
+      await expect(
+        repository.loadSessionWithDiagnostics('project-a', 'session-1')
+      ).resolves.toEqual({
+        status: 'missing'
+      })
+      await expect(repository.loadAllWithDiagnostics()).resolves.toMatchObject({
+        isComplete: true,
+        result: { sessions: [] }
+      })
+    }
+  )
+
+  it.each(['0', '9007199254740992'])(
+    'preserves supported legacy PID-only temporary evidence: %s',
+    async (suffix) => {
+      const root = await createStorageRoot()
+      const repository = new SessionRepository(root)
+      const saved = await repository.saveSession(createSession())
+      const primary = join(root, 'sessions', saved.projectId, `${saved.id}.json`)
+      await rename(primary, `${primary}.${suffix}.tmp`)
+      await expect(
+        repository.loadSessionWithDiagnostics(saved.projectId, saved.id)
+      ).resolves.toMatchObject({ status: 'found', session: { id: saved.id } })
+      await expect(readFile(primary, 'utf8')).resolves.toContain(saved.id)
+    }
+  )
+
+  it('keeps the primary when explicit deletion cannot remove a recognized temporary file', async () => {
+    const root = await createStorageRoot()
+    const files = new SessionRepository(root)
+    const saved = await files.saveSession(createSession())
+    const primary = join(root, 'sessions', saved.projectId, `${saved.id}.json`)
+    const temporary = `${primary}.${process.pid}-12345678-1234-1234-1234-123456789abc.tmp`
+    await writeFile(temporary, '{', 'utf8')
+    const failure = new Error('injected temporary removal failure')
+    const failing = new SessionRepository(root, {
+      remove: async (path, options) => {
+        if (path === temporary) throw failure
+        await rm(path, options)
+      }
+    })
+    await expect(failing.deleteSession(saved.projectId, saved.id)).rejects.toBe(failure)
+    await expect(readFile(primary, 'utf8')).resolves.toContain(saved.id)
+    await expect(readFile(temporary, 'utf8')).resolves.toBe('{')
+    const unrelated = `${primary}.unrelated.tmp`
+    const otherSession = join(
+      root,
+      'sessions',
+      saved.projectId,
+      `other.json.${process.pid}-12345678-1234-1234-1234-123456789abc.tmp`
+    )
+    await writeFile(unrelated, 'unrelated', 'utf8')
+    await writeFile(otherSession, 'other Session', 'utf8')
+    await files.deleteSession(saved.projectId, saved.id)
+    await expect(readFile(primary, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(temporary, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(unrelated, 'utf8')).resolves.toBe('unrelated')
+    await expect(readFile(otherSession, 'utf8')).resolves.toBe('other Session')
+  })
+
   it('classifies an oversized recovery temp when no primary Session exists', async () => {
     const root = await createStorageRoot()
     const projectDir = join(root, 'sessions', 'project-a')
