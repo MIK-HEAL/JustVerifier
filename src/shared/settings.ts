@@ -1391,6 +1391,7 @@ export type ConversationSkillImportResult = {
     status: 'imported' | 'unchanged' | 'updated'
   }>
   errors?: Array<{ name: string; error: string }>
+  warnings?: string[]
 }
 
 // Search GitHub by keyword, or scan a direct repo reference for skill directories.
