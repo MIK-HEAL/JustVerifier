@@ -595,6 +595,7 @@
     "Added to conversation": "会話に追加されました",
     "Adding host…": "ホストを追加中…",
     "Adding…": "追加中…",
+    "Advanced filters": "詳細フィルター",
     "Advanced settings": "詳細設定",
     "Advanced. Signs in through the browser and stores a separate Claude login in Open Science, completely isolated from your personal Claude profile.": "上級者向け。ブラウザーでサインインし、個人の Claude プロファイルから完全に分離された Claude サインインを Open Science に保存します。",
     "Agent": "エージェント",

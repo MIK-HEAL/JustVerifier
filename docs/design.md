@@ -349,6 +349,7 @@ colors communicate a successful or failed probe/migration result.
 - Workspace shell surfaces use `bg-bg-10`; white workspace surfaces use `bg-bg-000`.
 - Sidebar row hover/active states use `hover:bg-bg-300` and active `bg-bg-300`.
 - Session action menu items use `data-[highlighted]:bg-bg-200 data-[highlighted]:text-text-000`; destructive highlights use `data-[highlighted]:bg-danger-900`.
+- Detached island panel: a narrow auxiliary column that must read as separated from its neighbors while staying visually unified with them (reference: the global-search advanced filter column) keeps the standard white surface — `bg-bg-000`, `rounded-xl`, `shadow-menu`, no border — and sits inside a `bg-bg-200` gutter track with equal margins on all four sides, so the light-gray spacing supplies the separation instead of a contrasting fill. The gutter track is rounded on its left side only (`border-radius: var(--radius-xl) 0 0 var(--radius-xl)`) so it flows into the dialog edge on the right. The island stretches to the full height of its track.
 - Do not use large brand-color surfaces. Deep green is reserved for links, focus, status dots, active states, and primary actions.
 
 ### Shadows
