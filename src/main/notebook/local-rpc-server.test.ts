@@ -469,6 +469,9 @@ describe('notebook local RPC server', () => {
       },
       'failed execution stop propagation'
     ).then(async (response) => ({ status: response.status, body: await response.json() }))
+    // Closing can reject the transport before turn cleanup observes the retained stop failure.
+    // Handle that rejection immediately; assert its outcome below and always finish teardown.
+    void pending.catch(() => undefined)
     let closing: Promise<void> | undefined
     try {
       await started.promise
@@ -492,18 +495,27 @@ describe('notebook local RPC server', () => {
           }
         })
       }
-      if (timing === 'during-close') closing = server.close()
+      if (timing === 'during-close') {
+        closing = server.close()
+        // Exercise the bounded shutdown path deterministically: the pending execution outlives
+        // the HTTP grace window, but its typed stop failure must still reach turn cleanup.
+        await closing
+      }
       const clearing = server.clearArtifactTurnBinding('session-1', 'turn-1')
       const rejected = expect(clearing).rejects.toBe(stopError)
       failStop.resolve()
       await rejected
-      await expect(pending).resolves.toEqual({
-        status: 500,
-        body: { error: stopError.message }
-      })
+      if (timing === 'during-close') {
+        await expect(pending).rejects.toMatchObject({ cause: expect.any(Error) })
+      } else {
+        await expect(pending).resolves.toEqual({
+          status: 500,
+          body: { error: stopError.message }
+        })
+      }
     } finally {
       failStop.resolve()
-      await pending
+      await pending.catch(() => undefined)
       connection.release?.()
       await closing
       await server.close()
