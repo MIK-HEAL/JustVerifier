@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, posix, win32 } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { NotebookBackgroundRunError } from '../../shared/notebook'
+import { NotebookExecutionStopError } from '../../shared/notebook-execution-error'
 import { EnvironmentLeaseManager } from './environment-lease-manager'
 
 import type {
@@ -5259,6 +5260,84 @@ describe('notebook runtime service', () => {
       await expect(pendingAdmission).rejects.toThrow('Shell admission is closed for teardown')
       await expect(shutdown).resolves.toEqual({ sessionId: scope.sessionId, status: 'shutdown' })
       expect(execute).not.toHaveBeenCalled()
+    })
+
+    it('preserves Shell launch cleanup recovery when cancellation was not requested', async () => {
+      const root = await createStorageRoot()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: {
+          execute: async () => ({
+            stdout: '',
+            stderr: 'Shell cleanup could not be confirmed.',
+            exitCode: null,
+            ownedTreeReaped: false,
+            errorCode: 'shell-cleanup-incomplete',
+            recovery: { execution: 'may-have-run', retryAfter: 'cleanup-verified' }
+          })
+        }
+      })
+      const request = { sessionId: 'session-1', workspaceCwd: root, command: 'short-lived' }
+      try {
+        await expect(service.executeShell(request)).resolves.toMatchObject({
+          errorCode: 'shell-cleanup-incomplete',
+          recovery: { execution: 'may-have-run', retryAfter: 'cleanup-verified' }
+        })
+        expect((await service.state(request)).runs[0].status).toBe('failed')
+      } finally {
+        await service.dispose()
+      }
+    })
+
+    it('rejects failed Shell process teardown after cancellation without persisting cancelled', async () => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const started = createDeferred<void>()
+      const cancellation = new AbortController()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository,
+        shellProcess: {
+          execute: async (request) => {
+            await new Promise<void>((resolve) => {
+              if (request.signal?.aborted) resolve()
+              else request.signal?.addEventListener('abort', () => resolve(), { once: true })
+              started.resolve()
+            })
+            return {
+              stdout: '',
+              stderr: 'Shell process cleanup could not be confirmed.',
+              exitCode: null,
+              cancelled: true,
+              errorCode: 'shell-cleanup-incomplete',
+              ownedTreeReaped: false
+            }
+          }
+        }
+      })
+      const scope = { sessionId: 'session-1', workspaceCwd: root }
+      const execution = service.executeShell(
+        { ...scope, command: 'long-running' },
+        cancellation.signal
+      )
+      const outcome = execution.catch((error) => error)
+      try {
+        await started.promise
+        cancellation.abort()
+        const result = await outcome
+        const durable = await repository.findExisting('default-project', scope.sessionId)
+        expect(durable?.runs[0]?.status).toBe('failed')
+        expect(result).toBeInstanceOf(NotebookExecutionStopError)
+      } finally {
+        cancellation.abort()
+        await outcome
+        await service.shutdownAll()
+      }
     })
 
     it('persists running Shell cancellation intent before Stop reaches the process', async () => {
