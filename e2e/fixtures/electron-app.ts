@@ -206,6 +206,7 @@ type ElectronApp = {
     message: string
   } | null>
   completeOnboarding: () => Promise<Page>
+  routeMarketplaceRequests: (origin: string) => Promise<void>
   configureFileBrowserFixture: () => Promise<void>
   configureFakeAgent: () => Promise<Page>
   createTestDirectory: (name: string) => Promise<string>
@@ -1170,6 +1171,22 @@ class ElectronAppHarness implements ElectronApp {
         `Electron fixture cleanup failed; inspect ${this.testRoot}: ${errors.map(String).join('; ')}`
       )
     }
+  }
+
+  // Keep real Chromium redirect handling while replacing external GitHub traffic with a local
+  // HTTP fixture. URL admission still sees the original URL; only the transport destination changes.
+  async routeMarketplaceRequests(origin: string): Promise<void> {
+    await this.runningApplication.evaluate(({ net }, origin) => {
+      const fetch = net.fetch.bind(net)
+      const request = net.request.bind(net)
+      const route = (url: string): string =>
+        url.startsWith(origin + '/') ? url : `${origin}/${encodeURIComponent(url)}`
+      net.fetch = (input, init) => fetch(route(String(input)), init)
+      net.request = (options) =>
+        request(
+          typeof options === 'string' ? route(options) : { ...options, url: route(options.url!) }
+        )
+    }, origin)
   }
 
   private async launch(packagePath?: string, timingName = 'startup-ready'): Promise<void> {
