@@ -672,6 +672,108 @@ gate('NotebookKernelExecutor (fake loop)', () => {
     }
   })
 
+  it('AUDIT: retains each persistent process cwd when another kernel changes the request directory', async () => {
+    cwdDir = await makeDefaultEnvCwd('os-kernel-cwd-evidence-')
+    const request = baseRequest(cwdDir)
+    const firstDir = join(request.dataRoot, 'analysis')
+    const otherDir = join(request.dataRoot, 'other')
+    await mkdir(firstDir, { recursive: true })
+    await mkdir(otherDir, { recursive: true })
+    await stubEnvPython(request.runtimeRoot, 'other')
+    const executor = new NotebookKernelExecutor({
+      pythonBin: python3,
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    try {
+      const changed = await executor.execute({
+        ...request,
+        cwd: request.dataRoot,
+        code: `import os; os.chdir(${JSON.stringify(firstDir)})`
+      })
+      expect(changed.status).toBe('completed')
+      expect(changed.cwdAfter).toBe(realpathSync(firstDir))
+      const other = await executor.execute({
+        ...request,
+        cwd: otherDir,
+        environment: 'other',
+        code: '1'
+      })
+      expect(other.status).toBe('completed')
+      const written = await executor.execute({
+        ...request,
+        cwd: otherDir,
+        code: 'with open("generated.csv", "w") as output: output.write("x,y\\n1,2\\n")'
+      })
+      expect(written.status).toBe('completed')
+      expect(await readFile(join(firstDir, 'generated.csv'), 'utf8')).toBe('x,y\n1,2\n')
+      expect(existsSync(join(otherDir, 'generated.csv'))).toBe(false)
+      expect.soft(written).toHaveProperty('cwdBefore', realpathSync(firstDir))
+      expect(written.workingFiles).toContainEqual(
+        expect.objectContaining({
+          path: resolve(firstDir, 'generated.csv'),
+          relativePath: 'data/analysis/generated.csv'
+        })
+      )
+    } finally {
+      await executor.shutdown()
+    }
+  }, 30_000)
+
+  it('AUDIT: observes producer files in the directory selected by helper initialization', async () => {
+    cwdDir = realpathSync(await makeDefaultEnvCwd('os-kernel-helper-cwd-evidence-'))
+    const request = baseRequest(cwdDir)
+    const producerDir = join(request.dataRoot, 'analysis')
+    await mkdir(producerDir, { recursive: true })
+    await writeFile(join(producerDir, 'input.csv'), '42')
+    await writeFile(join(request.dataRoot, 'input.csv'), 'wrong input')
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) => ({
+        id,
+        language: 'python',
+        source: `import os; os.chdir(${JSON.stringify(producerDir)})\ndef helper_answer():\n    return 42`,
+        exports: ['helper_answer']
+      })
+    })
+    const plan = await helperHost.plan(
+      { id: 'helper-cwd-epoch', processKey: 'python:default-python' },
+      await helperHost.preflight('python', ['cwd-helper'])
+    )
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    try {
+      const result = await executor.execute({
+        ...request,
+        cwd: request.dataRoot,
+        helperModules: plan.injections,
+        language: 'python',
+        runId: 'helper-cwd-run',
+        code: [
+          'with open("input.csv") as source: data = source.read()',
+          'with open("generated.csv", "w") as output: output.write(data)'
+        ].join('\n')
+      })
+      expect(result).toMatchObject({
+        status: 'completed',
+        cwdBefore: realpathSync(request.dataRoot),
+        cwdAfter: realpathSync(producerDir),
+        helperModulesInitialized: ['cwd-helper']
+      })
+      expect(await readFile(join(producerDir, 'generated.csv'), 'utf8')).toBe('42')
+      expect(result.confirmedReadPaths).toEqual(['data/analysis/input.csv'])
+      expect(result.workingFiles).toContainEqual(
+        expect.objectContaining({
+          path: resolve(producerDir, 'generated.csv'),
+          relativePath: 'data/analysis/generated.csv'
+        })
+      )
+    } finally {
+      await executor.shutdown()
+    }
+  }, 30_000)
+
   it('runs a cell, echoes stdout, and reports the working directory', async () => {
     cwdDir = await makeDefaultEnvCwd('os-kernel-exec-')
     const executor = makeExecutor()
@@ -1910,7 +2012,7 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
     }
   })
 
-  it('preserves a sanitized missing dependency diagnostic without dispatching producer code', async () => {
+  it('AUDIT: preserves process cwd and a sanitized diagnostic when helper initialization fails', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-missing-dependency-'))
     const request = baseRequest(cwdDir)
     await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
@@ -1935,8 +2037,18 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
       await helperHost.preflight('python', ['dependency-helper'])
     )
     const sentinel = join(cwdDir, 'missing-dependency-producer-sentinel.txt')
+    const processDir = join(cwdDir, 'analysis')
+    await mkdir(processDir)
 
     try {
+      const changed = await executor.execute({
+        ...request,
+        code: `import os; os.chdir(${JSON.stringify(processDir)})`
+      })
+      expect(changed).toMatchObject({
+        status: 'completed',
+        cwdAfter: realpathSync(processDir)
+      })
       const result = await executor.execute({
         ...request,
         language: 'python',
@@ -1953,6 +2065,8 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
       expect(result.traceback).toContain(
         'Python ModuleNotFoundError: No module named "open_science_definitely_missing_dependency".'
       )
+      expect.soft(result).toHaveProperty('cwdBefore', realpathSync(processDir))
+      expect.soft(result.cwdAfter).toBe(realpathSync(processDir))
       expect(result.traceback).toContain('inspect_packages')
       expect(result.traceback).toContain('manage_packages')
       expect(result.traceback).not.toContain('def dependency_export')
