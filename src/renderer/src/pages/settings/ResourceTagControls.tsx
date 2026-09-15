@@ -1,4 +1,4 @@
-import { Check, Loader2, Plus, Search, Tags, X } from 'lucide-react'
+import { Check, Plus, Search, Tags, X } from 'lucide-react'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -36,9 +36,17 @@ const ResourceTagMenu = ({
   const [localOpen, setLocalOpen] = useState(false)
   const isOpen = open ?? localOpen
   const [activeKey, setActiveKey] = useState<string>()
-  const [pendingKey, setPendingKey] = useState<string>()
-  const pending = useRef(false)
+  const [creating, setCreating] = useState(false)
+  const createPending = useRef(false)
   const interactionVersion = useRef(0)
+  const saveBatch = useRef<
+    | {
+        version: number
+        pending: number
+        operations: Map<string, { failed: boolean }>
+      }
+    | undefined
+  >(undefined)
   const inputRef = useRef<HTMLInputElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const tabDismissal = useRef(false)
@@ -59,8 +67,10 @@ const ResourceTagMenu = ({
   }
   useEffect(() => {
     interactionVersion.current += 1
+    saveBatch.current = undefined
     return () => {
       interactionVersion.current += 1
+      saveBatch.current = undefined
     }
   }, [scope])
   const assignedIds = new Set(
@@ -99,20 +109,41 @@ const ResourceTagMenu = ({
   }, [isOpen, activeId, normalizedQuery])
 
   const activate = async (option: (typeof options)[number]): Promise<void> => {
-    if (pending.current) return
-    pending.current = true
-    setPendingKey(option.key)
+    if (!option.tag) {
+      if (createPending.current) return
+      createPending.current = true
+      setCreating(true)
+    }
     setError(undefined)
     const version = interactionVersion.current
+    // Search edits invalidate completion effects, but do not end the picker's save lifecycle.
+    saveBatch.current ??= { version, pending: 0, operations: new Map() }
+    const batch = saveBatch.current
+    const operation = { failed: false }
+    let operationKey = option.key
+    batch.version = version
+    batch.operations.set(operationKey, operation)
+    batch.pending += 1
     try {
       if (option.tag) {
         await setAssignment({
           ...reference,
           tagId: option.tag.id,
-          assigned: !assignedIds.has(option.tag.id)
+          assigned: !useTagStore
+            .getState()
+            .assignments.some(
+              (assignment) =>
+                assignment.tagId === option.tag?.id &&
+                assignment.resourceType === reference.resourceType &&
+                assignment.resourceId === reference.resourceId
+            )
         })
       } else {
         const tagId = await createTag({ name: query, iconKey: 'tag', colorKey: 'blue' })
+        // A retry after creation succeeds is an assignment of this existing Tag.
+        batch.operations.delete(operationKey)
+        operationKey = `tag:${tagId}`
+        batch.operations.set(operationKey, operation)
         await setAssignment({ ...reference, tagId, assigned: true })
       }
       if (version === interactionVersion.current) {
@@ -120,13 +151,27 @@ const ResourceTagMenu = ({
           setQuery('')
           setActiveKey(undefined)
         }
-        if (!keepOpenOnSelect) changeOpen(false)
       }
     } catch {
-      if (version === interactionVersion.current) setError(t('Could not update Tags.'))
+      operation.failed = true
+      if (saveBatch.current === batch && batch.operations.get(operationKey) === operation) {
+        setError(t('Could not update Tags.'))
+      }
     } finally {
-      pending.current = false
-      setPendingKey(undefined)
+      batch.pending -= 1
+      if (
+        batch.pending === 0 &&
+        ![...batch.operations.values()].some((item) => item.failed) &&
+        saveBatch.current === batch &&
+        batch.version === interactionVersion.current &&
+        !keepOpenOnSelect
+      ) {
+        changeOpen(false)
+      }
+      if (!option.tag) {
+        createPending.current = false
+        setCreating(false)
+      }
     }
   }
 
@@ -223,7 +268,6 @@ const ResourceTagMenu = ({
               role="listbox"
               aria-label={t('Tags')}
               aria-multiselectable="true"
-              aria-busy={Boolean(pendingKey)}
               className="max-h-60 overflow-y-auto overscroll-contain"
             >
               {options.map((option, index) => {
@@ -234,7 +278,7 @@ const ResourceTagMenu = ({
                     id={`${listboxId}-${index}`}
                     role="option"
                     aria-selected={assigned}
-                    aria-disabled={Boolean(pendingKey)}
+                    aria-disabled={!option.tag && creating}
                     data-active={index === activeIndex || undefined}
                     onPointerMove={() => setActiveKey(option.key)}
                     onMouseDown={(event) => event.preventDefault()}
@@ -242,12 +286,7 @@ const ResourceTagMenu = ({
                     className="flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none select-none data-[active]:bg-muted data-[active]:text-foreground active:bg-muted aria-disabled:opacity-50 [@media(pointer:coarse)]:min-h-11"
                   >
                     <span className="flex size-4 shrink-0 items-center justify-center">
-                      {pendingKey === option.key ? (
-                        <Loader2
-                          className="size-3.5 animate-spin motion-reduce:animate-none"
-                          aria-hidden="true"
-                        />
-                      ) : !option.tag ? (
+                      {!option.tag ? (
                         <Plus className="size-4" aria-hidden="true" />
                       ) : assigned ? (
                         <Check className="size-3.5" aria-hidden="true" />
