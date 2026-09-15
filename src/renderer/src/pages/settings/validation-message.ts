@@ -75,8 +75,18 @@ const localizeProviderResourceMessage = (message: string, t: TFunction): string 
 // locale) and a test can pin the language. Known application-generated resource errors are localized;
 // every other `message` passes through verbatim because it can come from the gateway.
 const describeValidation = (result: ValidateProviderResult, t: TFunction): string => {
-  const base = t(CATEGORY_KEYS[result.category])
   const detail = result.message ? localizeProviderResourceMessage(result.message, t) : undefined
+  // A verified endpoint the active framework cannot drive: pair the health outcome with the
+  // route-mismatch message carried on the result. A failed probe keeps its own actionable category
+  // copy below; fixing the endpoint first surfaces the mismatch once the probe succeeds.
+  if (result.ok && result.frameworkIncompatible) {
+    const base = t(
+      'Connection succeeded, but this provider is not usable by the active agent framework.'
+    )
+    return detail ? `${base} ${detail}` : base
+  }
+
+  const base = t(CATEGORY_KEYS[result.category])
 
   // Some gateways return their own actionable auth text; prefer it over the generic HTTP 401/403 copy.
   if (result.category === 'auth' && detail) {

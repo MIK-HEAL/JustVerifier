@@ -14,7 +14,11 @@ import {
   dialogPanelClassName,
   dialogTitleClassName
 } from '@/components/ui/dialog-chrome'
-import { selectFrameworkApiEndpoints, useSettingsStore } from '@/stores/settings-store'
+import {
+  selectFrameworkApiEndpoints,
+  selectFrameworkDisplayName,
+  useSettingsStore
+} from '@/stores/settings-store'
 import type {
   ProviderView,
   ValidateProviderResult,
@@ -113,6 +117,7 @@ const ProvidersPanel = ({
   )
   const agentFrameworkId = useSettingsStore((state) => state.agentFrameworkId)
   const frameworkEndpoints = useSettingsStore(selectFrameworkApiEndpoints)
+  const frameworkName = useSettingsStore(selectFrameworkDisplayName)
   const subagentModel = useSettingsStore((state) => state.subagentModel)
   const reviewerModel = useSettingsStore((state) => state.reviewerModel)
   const sessionDetailsModel = useSettingsStore((state) => state.sessionDetailsModel)
@@ -518,6 +523,7 @@ const ProvidersPanel = ({
           activeModel={activeModel}
           agentFrameworkId={agentFrameworkId}
           frameworkEndpoints={frameworkEndpoints}
+          frameworkName={frameworkName}
           claudeSubscriptionProviderId={claudeSubscriptionProviderId}
           busyProviderId={busyProviderId}
           onEdit={onEditProvider}

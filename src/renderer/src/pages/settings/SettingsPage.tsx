@@ -58,7 +58,11 @@ import { useMemoryStore } from '@/stores/memory-store'
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useProjectStore } from '@/stores/project-store'
 import { useSessionStore } from '@/stores/session-store'
-import { selectFrameworkApiEndpoints, useSettingsStore } from '@/stores/settings-store'
+import {
+  selectActiveAgentFramework,
+  selectFrameworkApiEndpoints,
+  useSettingsStore
+} from '@/stores/settings-store'
 import {
   INITIAL_SETTINGS_ROUTE,
   settingsPanelRoute,
@@ -389,6 +393,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
   const providers = useSettingsStore((state) => state.providers)
   const agentFrameworkId = useSettingsStore((state) => state.agentFrameworkId)
   const frameworkEndpoints = useSettingsStore(selectFrameworkApiEndpoints)
+  const activeFramework = useSettingsStore(selectActiveAgentFramework)
   const customApiEndpoint = defaultCustomApiEndpoint(frameworkEndpoints)
   const opencode = useSettingsStore((state) => state.opencode)
   const isDetectingOpencode = useSettingsStore((state) => state.isDetectingOpencode)
@@ -1935,6 +1940,7 @@ const SettingsPage = forwardRef<SettingsPageHandle, SettingsPageProps>(function 
                           agentFrameworkId === 'claude-code' && modelView.kind === 'create'
                         }
                         defaultCustomApiEndpoint={customApiEndpoint}
+                        framework={activeFramework}
                       />
                       {statusMessage ? (
                         <p
