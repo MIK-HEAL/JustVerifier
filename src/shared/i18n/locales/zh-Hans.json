@@ -5533,9 +5533,7 @@
     "Download the lock bundle to restore packages with a matching interpreter. This does not recreate the full environment.": "下载锁定文件包，使用匹配的解释器恢复软件包。这不会重建完整环境。",
     "Could not select a folder.": "无法选择文件夹。",
     "Select a personal R library": "选择个人 R 包库",
-    "No personal R library detected. Select an existing folder in advanced options.": "未检测到个人 R 包库。请在高级选项中选择现有文件夹。",
     "Advanced options": "高级选项",
-    "Choose an existing personal library visible to this R runtime. No folder will be created.": "选择此 R 运行时可见的现有个人包库。不会创建文件夹。",
     "Choose library folder…": "选择包库文件夹…",
     "Choose another package": "选择其他包",
     "Created when you confirm the import.": "确认导入时创建。",
@@ -5873,6 +5871,9 @@
     "This release would downgrade the Skill or change an existing release. Installation remains blocked.": "此版本会降级技能或更改已发布的版本，安装仍被阻止。",
     "Update existing Skill": "更新现有技能",
     "Update the existing Skill in place. Its identity and Specialist relationships will be preserved.": "原位更新现有技能，保留其标识和专家关联。",
-    "View installed Skill": "查看已安装技能"
+    "View installed Skill": "查看已安装技能",
+    "This folder cannot be used to install packages for this R. Click Recheck and use a detected personal package folder, or use an app-managed R environment.": "此文件夹无法用于安装这个 R 的软件包。请点击“重新检测”并使用检测到的个人软件包文件夹，或使用应用托管的 R 环境。",
+    "If you have already set up a personal package folder in this R, select that folder here.": "如果您已在此 R 中设置了个人软件包文件夹，可在这里选择该文件夹。",
+    "No personal package folder was found for this R. Use an app-managed R environment, or set up a personal package folder in this R and click Recheck.": "未找到此 R 的个人软件包文件夹。可以使用应用托管的 R 环境；如需继续使用此 R，请先在 R 中设置个人软件包文件夹，再点击“重新检测”。"
   }
 }

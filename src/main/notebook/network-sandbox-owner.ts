@@ -340,10 +340,20 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
           privateRoot: homedir(),
           readOnlyRoots: [
             ...invocation.filesystem.readOnlyRoots,
-            ...(invocation.target?.kind === 'wsl2' ? [] : environmentPathRoots(env, this.platform)),
+            ...(invocation.target?.kind === 'wsl2' || this.platform === 'win32'
+              ? []
+              : environmentPathRoots(env, this.platform)),
             ...grantedRoots.map((root) => root.path),
             ...(this.trustBundle ? [this.trustBundle.path] : [])
           ],
+          ...(this.platform === 'win32' && invocation.target?.kind !== 'wsl2'
+            ? {
+                optionalReadOnlyRoots: [
+                  ...(invocation.filesystem.optionalReadOnlyRoots ?? []),
+                  ...environmentPathRoots(env, this.platform)
+                ]
+              }
+            : {}),
           readWriteRoots: [
             ...invocation.filesystem.readWriteRoots,
             commandTempRoot,

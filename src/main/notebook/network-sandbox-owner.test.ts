@@ -168,6 +168,51 @@ afterEach(async () => {
 })
 
 describe('NotebookNetworkSandboxOwner', () => {
+  it('keeps inherited PATH access optional only on native Windows while preserving explicit roots', async () => {
+    const pathRoot = await mkdtemp(join(tmpdir(), 'open-science-path-root-'))
+    fixtureDirectories.push(pathRoot)
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: '/resources',
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: vi.fn(),
+      requestDecision: vi.fn(),
+      platform: process.platform
+    })
+    try {
+      for (const required of [false, true]) {
+        const wrapped = await owner.wrap({
+          executable: process.execPath,
+          args: ['-e', 'console.log(1)'],
+          env: { PATH: pathRoot },
+          cwd: tmpdir(),
+          commandText: 'console.log(1)',
+          sessionId: 'path-test',
+          projectId: 'path-test',
+          runtime: 'repl',
+          filesystem: {
+            readOnlyRoots: required ? [pathRoot] : [],
+            readWriteRoots: [],
+            deniedReadRoots: [],
+            deniedWriteRoots: []
+          }
+        })
+        const request = backend.wrap.mock.calls.at(-1)![0]
+        expect(request.env.PATH).toBe(pathRoot)
+        expect(request.filesystem.readOnlyRoots.includes(pathRoot)).toBe(
+          required || process.platform !== 'win32'
+        )
+        if (process.platform === 'win32') {
+          expect(request.filesystem.optionalReadOnlyRoots).toContain(pathRoot)
+        } else {
+          expect(request.filesystem.optionalReadOnlyRoots).toBeUndefined()
+        }
+        await wrapped.cleanup('exit', { processesTerminated: true })
+      }
+    } finally {
+      await owner.dispose()
+    }
+  })
+
   it.each([false, true])(
     'removes the managed R grant before path replacement (cancelled: %s)',
     async (cancelled) => {

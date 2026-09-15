@@ -5855,9 +5855,7 @@
     "Download the lock bundle to restore packages with a matching interpreter. This does not recreate the full environment.": "Descargue el paquete de archivos de bloqueo para restaurar los paquetes con un intérprete compatible con la versión registrada. Esto no recrea el entorno completo.",
     "Could not select a folder.": "No se pudo seleccionar una carpeta.",
     "Select a personal R library": "Seleccionar una biblioteca personal de R",
-    "No personal R library detected. Select an existing folder in advanced options.": "No se ha detectado ninguna biblioteca personal de R. Seleccione una carpeta existente en las opciones avanzadas.",
     "Advanced options": "Opciones avanzadas",
-    "Choose an existing personal library visible to this R runtime. No folder will be created.": "Seleccione una biblioteca personal existente visible para este entorno de R. No se creará ninguna carpeta.",
     "Choose library folder…": "Seleccionar carpeta de biblioteca…",
     "Choose another package": "Seleccionar otro paquete",
     "Created when you confirm the import.": "Se crea al confirmar la importación.",
@@ -6203,6 +6201,9 @@
     "This release would downgrade the Skill or change an existing release. Installation remains blocked.": "Esta versión supondría una reversión de la habilidad o modificaría una versión existente. La instalación sigue bloqueada.",
     "Update existing Skill": "Actualizar la habilidad existente",
     "Update the existing Skill in place. Its identity and Specialist relationships will be preserved.": "Actualizar la habilidad existente en su ubicación actual. Se conservarán su identidad y sus relaciones con los especialistas.",
-    "View installed Skill": "Ver la habilidad instalada"
+    "View installed Skill": "Ver la habilidad instalada",
+    "This folder cannot be used to install packages for this R. Click Recheck and use a detected personal package folder, or use an app-managed R environment.": "No se pueden instalar paquetes de este R en esta carpeta. Haga clic en «Volver a comprobar» y utilice una carpeta personal de paquetes detectada, o utilice un entorno de R gestionado por la aplicación.",
+    "If you have already set up a personal package folder in this R, select that folder here.": "Si ya ha configurado una carpeta personal de paquetes en este R, selecciónela aquí.",
+    "No personal package folder was found for this R. Use an app-managed R environment, or set up a personal package folder in this R and click Recheck.": "No se ha encontrado ninguna carpeta personal de paquetes para este R. Utilice un entorno de R gestionado por la aplicación, o configure una carpeta personal de paquetes en este R y haga clic en «Volver a comprobar»."
   }
 }

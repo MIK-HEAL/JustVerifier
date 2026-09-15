@@ -431,8 +431,18 @@ const RuntimesPanel = ({
       )
       setEnablement(language, next)
     } catch (e) {
+      const message =
+        e instanceof Error
+          ? e.message
+              .replace(/^Error invoking remote method '[^']*':\s*/, '')
+              .replace(/^Error:\s*/, '')
+          : ''
       setError(
-        e instanceof Error ? e.message : t('Could not change package-install authorization.')
+        message === 'Select an existing personal library visible to this R runtime.'
+          ? t(
+              'This folder cannot be used to install packages for this R. Click Recheck and use a detected personal package folder, or use an app-managed R environment.'
+            )
+          : message || t('Could not change package-install authorization.')
       )
     } finally {
       setBusy(false)
@@ -799,7 +809,7 @@ const RuntimesPanel = ({
                 ) : (
                   <p className="text-muted-foreground">
                     {t(
-                      'No personal R library detected. Select an existing folder in advanced options.'
+                      'No personal package folder was found for this R. Use an app-managed R environment, or set up a personal package folder in this R and click Recheck.'
                     )}
                   </p>
                 )}
@@ -807,7 +817,7 @@ const RuntimesPanel = ({
                   <summary className="cursor-pointer">{t('Advanced options')}</summary>
                   <p className="my-2 text-muted-foreground">
                     {t(
-                      'Choose an existing personal library visible to this R runtime. No folder will be created.'
+                      'If you have already set up a personal package folder in this R, select that folder here.'
                     )}
                   </p>
                   <Button

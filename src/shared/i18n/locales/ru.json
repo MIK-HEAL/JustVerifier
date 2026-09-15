@@ -5991,9 +5991,7 @@
     "Download the lock bundle to restore packages with a matching interpreter. This does not recreate the full environment.": "Скачайте набор файлов фиксации, чтобы восстановить пакеты с соответствующим интерпретатором. Это не воссоздаёт среду целиком.",
     "Could not select a folder.": "Не удалось выбрать папку.",
     "Select a personal R library": "Выбрать личную библиотеку R",
-    "No personal R library detected. Select an existing folder in advanced options.": "Личная библиотека R не обнаружена. Выберите существующую папку в дополнительных параметрах.",
     "Advanced options": "Дополнительные параметры",
-    "Choose an existing personal library visible to this R runtime. No folder will be created.": "Выберите существующую личную библиотеку, доступную этой среде R. Папка не будет создана.",
     "Choose library folder…": "Выбрать папку библиотеки…",
     "Choose another package": "Выбрать другой пакет",
     "Created when you confirm the import.": "Создаётся при подтверждении импорта.",
@@ -6343,6 +6341,9 @@
     "This release would downgrade the Skill or change an existing release. Installation remains blocked.": "Этот выпуск понизит версию навыка или изменит существующий выпуск. Установка остаётся заблокированной.",
     "Update existing Skill": "Обновить существующий навык",
     "Update the existing Skill in place. Its identity and Specialist relationships will be preserved.": "Обновить существующий навык на месте. Его идентичность и связи со специалистами будут сохранены.",
-    "View installed Skill": "Открыть установленный навык"
+    "View installed Skill": "Открыть установленный навык",
+    "This folder cannot be used to install packages for this R. Click Recheck and use a detected personal package folder, or use an app-managed R environment.": "В эту папку нельзя устанавливать пакеты для данной среды R. Нажмите «Повторить проверку» и используйте обнаруженную личную папку пакетов либо среду R, управляемую приложением.",
+    "If you have already set up a personal package folder in this R, select that folder here.": "Если вы уже настроили личную папку пакетов в этой среде R, выберите её здесь.",
+    "No personal package folder was found for this R. Use an app-managed R environment, or set up a personal package folder in this R and click Recheck.": "Личная папка пакетов для данной среды R не найдена. Используйте среду R, управляемую приложением, либо настройте личную папку пакетов в этой среде R и нажмите «Повторить проверку»."
   }
 }

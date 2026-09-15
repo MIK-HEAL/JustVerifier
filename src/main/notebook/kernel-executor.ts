@@ -1028,8 +1028,11 @@ class NotebookKernelExecutor implements NotebookExecutor {
               request.inputRoot ?? '',
               kernelExecutableReadRoot(invocation.executable, kind, this.platform),
               loopPath,
-              ...environmentPathRoots(spawnEnv, this.platform)
+              ...(this.platform === 'win32' ? [] : environmentPathRoots(spawnEnv, this.platform))
             ]),
+            ...(this.platform === 'win32'
+              ? { optionalReadOnlyRoots: environmentPathRoots(spawnEnv, this.platform) }
+              : {}),
             readWriteRoots: presentPaths([
               request.notebookSessionRoot,
               request.cwd,
