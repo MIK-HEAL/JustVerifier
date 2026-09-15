@@ -461,12 +461,16 @@ export function recoverEnrichmentGrid(table, items, captions) {
 // columns in every block. Rebuild their row bands only when every body line is
 // accounted for; model spans must not flatten a measurement into a section.
 export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
+  const sharedTests = recoverSharedClinicalStatistics(table, items, captions, rules)
+  if (sharedTests) return sharedTests
+  const followup = recoverDatedFollowupColumns(table, items, captions, rules)
+  if (followup) return followup
   const quartiles = recoverQuartileComparisonGrid(table, items, captions, rules)
   if (quartiles) return quartiles
 
   const adherence = recoverAdherenceDistributionGrid(table, items, captions)
   if (adherence) return adherence
-  const clinical = recoverClinicalTimepointGrid(table, items, captions)
+  const clinical = recoverClinicalTimepointGrid(table, items, captions, rules)
   if (clinical) return clinical
   const mixed = recoverMixedCohortGrid(table, items, captions)
   if (mixed) return mixed
@@ -530,25 +534,46 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         .join(' ')
         .trim()
     )
-  const compact = (s) => s.replace(/\s/g, '')
-  const timepoint = (s) => /^(?:Baseline|End-?trial|Change|P-value)[a-d*]*$/i.test(compact(s))
+  const compact = (s) => s.replace(/[\s"“”]/g, '')
+  const timepoint = (s) =>
+    /^(?:Baseline|End-?trial|Change|P-value|T[01]|(?:Beginning|End)ofrehabilitation|3monthsafterrehabilitation|Basal\(T1\)|After[123](?:st|nd|rd)NMT\(T[123]\)|Arrival(?:1st|5nd)week\(T[23]\))[a-d*]*$/i.test(
+      compact(s)
+    )
   const groupLabel = (s) => /^(?:Exercise|Control|Total|Pilates|Dance)$/.test(s)
   const countRows = groups.filter((g) => {
     const text = cells(g)
     return (
       /\p{L}/u.test(text[0]) &&
-      text.slice(1).filter((v) => /^(?:\d+(?:[.,]\d+)?\s*\(\d+(?:[.,]\d+)?%?\)|0)$/.test(v))
-        .length >= 2 &&
+      text
+        .slice(1)
+        .filter((v) =>
+          /^(?:\d+(?:[.,]\d+)?\s*\(\d+(?:[.,]\d+)?%?\)|\d+(?:[.,]\d+)?\s*%(?:\s*\(\d+\/\d+\))?|0)$/.test(
+            v
+          )
+        ).length >= 2 &&
       text.slice(1).filter((v) => /^\d/.test(v)).length >= (predicted.length === 4 ? 2 : 3)
     )
   })
   const categorical =
     countRows.length >= 10 &&
-    (groups
-      .slice(0, 3)
-      .some((g) =>
-        /^(?:Variables|Characteristics?|Assessments compared to baseline)$/i.test(cells(g)[0])
+    ((predicted.length === 7 &&
+      groups.slice(0, 4).some((g) => /^p$/i.test(cells(g)[3]) && /^p$/i.test(cells(g)[6])) &&
+      groups
+        .slice(0, 4)
+        .some((g) => cells(g).filter((v) => /\banalysis$/i.test(v)).length === 2)) ||
+      groups.slice(0, 4).some(
+        (g) =>
+          predicted.length === 4 &&
+          /^p$/i.test(cells(g).at(-1)) &&
+          cells(g)
+            .slice(1, 3)
+            .every((v) => /n\s*\(%\)/i.test(v))
       ) ||
+      groups
+        .slice(0, 3)
+        .some((g) =>
+          /^(?:Variables|Characteristics?|Assessments compared to baseline)$/i.test(cells(g)[0])
+        ) ||
       groups.slice(0, 3).some(
         (g) =>
           cells(g)
@@ -605,7 +630,12 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
           .slice(1)
           .filter((v) => /±/.test(v)).length >= 3
     ).length >= 8
-  const minimumValues = paired || (categorical && predicted.length === 4) ? 2 : 3
+  const repeatedTimes = groups.filter((g) => timepoint(cells(g)[0])).length >= 12
+  const sparseMeasures =
+    repeatedTimes &&
+    predicted.length === 5 &&
+    groups.slice(0, 5).some((g) => cells(g).filter((v) => /^F\(p\)$/.test(compact(v))).length === 2)
+  const minimumValues = paired || repeatedTimes || (categorical && predicted.length === 4) ? 2 : 3
   const labelled = categorical || deviation || paired
   const stub = labelled
     ? 0
@@ -615,10 +645,10 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         ? 1
         : -1
   if (stub < 0) return
-  const numeric = (s) => /^[<>≤≥−+-]?(?:\d|\.\d)[\d\s.,()%±*–−+\-/]*[a-d*]*$/.test(compact(s))
+  const numeric = (s) => /^[<>≤≥−+-]?(?:\d|\.\d)[\d\s.,;()%±*–−+\-/]*[a-d*]*$/.test(compact(s))
   const isRecord = (g) =>
     labelled
-      ? /\p{L}/u.test(cells(g)[0]) &&
+      ? Boolean(cells(g)[0]) &&
         cells(g)
           .slice(1)
           .filter((s) => numeric(s) || /^[-–—]$/.test(s)).length >= minimumValues
@@ -646,8 +676,8 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
       (wideSection(g) ||
         (/\p{L}/u.test(cells(g)[0]) &&
           cells(g)
-            .slice(1, stub ? 6 : undefined)
-            .every((s) => !s)))
+            .slice(1, stub ? 6 : categorical ? -1 : undefined)
+            .every((s, c) => !s || (sparseMeasures && [1, 3].includes(c) && numeric(s)))))
   )
   if (firstSection < 0 && labelled) firstSection = firstRecord
   if (firstSection < 0 && /continued/i.test(captions.map((c) => c.lines.join(' ')).join(' ')))
@@ -668,6 +698,19 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
       )
     )
       break
+    if (
+      measures >= 8 &&
+      records.length &&
+      group.every((i) => i.height < body[0][0].height * 0.9) &&
+      rules.some(
+        (r) =>
+          r[1] === r[3] &&
+          r[1] >= records.at(-1)[3] &&
+          r[1] < union(group)[1] &&
+          r[2] - r[0] > (right - left) * 0.9
+      )
+    )
+      break
     const previous = body[body.indexOf(group) - 1]
     if (
       labelled &&
@@ -679,8 +722,8 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         .every(
           (v, n) =>
             !v ||
-            (/^\(\d[\d.,%–-]*\)$/.test(compact(v)) &&
-              /^\d[\d.,]*$/.test(compact(cells(previous)[n + 1]))) ||
+            (/^\(\d[\d.,%/–-]*\)$/.test(compact(v)) &&
+              /^\d[\d.,]*%?$/.test(compact(cells(previous)[n + 1]))) ||
             (deviation &&
               /^\d[\d.,]*$/.test(compact(v)) &&
               /±$/.test(compact(cells(previous)[n + 1])))
@@ -719,7 +762,9 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         values.length < minimumValues ||
         !values.every(
           (s) =>
-            numeric(s) || ((categorical || paired) && /^(?:\(\d[\d.,]*\)|[-–—])$/.test(compact(s)))
+            numeric(s) ||
+            /^[-–—]$/.test(compact(s)) ||
+            ((categorical || paired) && /^(?:\(\d[\d.,]*\)|[-–—])$/.test(compact(s)))
         )
       )
         return
@@ -729,7 +774,9 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         !wideSection(group) &&
         (!/\p{L}/u.test(text[0]) ||
           text[0].length > 100 ||
-          text.slice(1, stub ? 6 : categorical ? -1 : undefined).some(Boolean) ||
+          text
+            .slice(1, stub ? 6 : categorical ? -1 : undefined)
+            .some((v, c) => v && !(sparseMeasures && [1, 3].includes(c) && numeric(v))) ||
           (stub && text.slice(6).some((s) => s && !numeric(s))) ||
           (categorical && text.at(-1) && !numeric(text.at(-1))))
       )
@@ -751,7 +798,19 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
             isRecord(body[body.indexOf(group) + 1]))) &&
         text.slice(1).every((s) => !s) &&
         records.length &&
-        !isRecord(body[body.indexOf(group) - 1]) &&
+        (!isRecord(body[body.indexOf(group) - 1]) ||
+          (categorical &&
+            previous &&
+            cells(previous)[0].length > 30 &&
+            previous.some((i) => col(i) === 0 && i.rect[2] > cuts[1] - i.height * 2) &&
+            group.every(
+              (i) =>
+                Math.abs(
+                  i.rect[0] -
+                    Math.min(...previous.filter((p) => col(p) === 0).map((p) => p.rect[0]))
+                ) <
+                i.height * 1.1
+            ))) &&
         group[0].baseline - body[body.indexOf(group) - 1][0].baseline < group[0].height * 1.6
       ) {
         records.at(-1)[3] = Math.max(records.at(-1)[3], union(group)[3])
@@ -778,7 +837,7 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
     const r = union(unit)
     rows.push([left, r[1], right, r[3]])
   }
-  if ((deviation || categorical) && !unit && heading.length > 1) {
+  if ((deviation || categorical || repeatedTimes) && !unit && heading.length > 1) {
     const parent = heading[0],
       parentRect = union(parent)
     const brackets = rules.filter(
@@ -816,10 +875,14 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         childColumns.length >= 2 &&
         childColumns.at(-1) - childColumns[0] + 1 === childColumns.length &&
         labels.every((i) => childColumns.includes(col(i))) &&
-        Math.abs(Math.min(...covered.map((i) => i.rect[0])) - r[0]) <=
-          Math.max(2, parent[0].height * 0.3) &&
-        Math.abs(Math.max(...covered.map((i) => i.rect[2])) - r[2]) <=
-          Math.max(2, parent[0].height * 0.3) &&
+        !children.some(
+          (i) =>
+            !covered.includes(i) &&
+            (i.rect[0] + i.rect[2]) / 2 > r[0] &&
+            (i.rect[0] + i.rect[2]) / 2 < r[2]
+        ) &&
+        r[0] <= Math.min(...covered.map((i) => i.rect[0])) + 1 &&
+        r[2] >= Math.max(...covered.map((i) => i.rect[2])) - 1 &&
         children.filter((i) => childColumns.includes(col(i))).every((i) => covered.includes(i)) &&
         covered.every((i) => i.rect[0] >= cuts[col(i)] && i.rect[2] <= cuts[col(i) + 1])
       const c = textEdges ? childColumns[0] : cuts.findIndex((x) => x >= r[0] - 12)
@@ -828,6 +891,47 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         ? [{ row: 0, column: c, rowSpan: 1, colSpan: end - c }]
         : []
     })
+    // Some publishers mark parent groups above their title baseline and
+    // individual child columns below it. Require separate inset overlines and
+    // complete child ownership; a full-width table border cannot define a group.
+    const overlineSpans = rules.flatMap((r) => {
+      if (
+        r[1] !== r[3] ||
+        r[1] < parentRect[1] - parent[0].height ||
+        r[1] > parentRect[1] + parent[0].height * 0.2 ||
+        r[2] - r[0] > (right - left) * 0.85
+      )
+        return []
+      const labels = parent.filter((i) => i.rect[0] >= r[0] - 1 && i.rect[2] <= r[2] + 1)
+      const columns = cuts
+        .slice(1)
+        .flatMap((x, c) => ((cuts[c] + x) / 2 >= r[0] && (cuts[c] + x) / 2 <= r[2] ? [c] : []))
+      if (
+        !labels.length ||
+        columns.length < 2 ||
+        labels.some((i, n) => n && i.rect[0] - labels[n - 1].rect[2] > i.height * 1.5) ||
+        columns.some(
+          (c) =>
+            !heading
+              .slice(1)
+              .flat()
+              .some((i) => col(i) === c)
+        ) ||
+        heading
+          .slice(1)
+          .flat()
+          .some((i) => columns.includes(col(i)) && (i.rect[0] < r[0] - 1 || i.rect[2] > r[2] + 1))
+      )
+        return []
+      return [{ row: 0, column: columns[0], rowSpan: 1, colSpan: columns.length }]
+    })
+    if (
+      overlineSpans.length >= 2 &&
+      overlineSpans.every(
+        (s, n) => !n || s.column >= overlineSpans[n - 1].column + overlineSpans[n - 1].colSpan
+      )
+    )
+      parentSpans.splice(0, parentSpans.length, ...overlineSpans)
     if (
       categorical &&
       !parentSpans.length &&
@@ -837,7 +941,7 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
       const split = Math.max(...brackets.map((r) => r[1]))
       rows.splice(0, rows.length, [left, header[1], right, split], [left, split, right, header[3]])
     }
-    if (parentSpans.length >= (categorical ? 1 : 2)) {
+    if (parentSpans.length >= (categorical || repeatedTimes ? 1 : 2)) {
       const split = categorical
         ? Math.max(...brackets.map((r) => r[1]))
         : (parentRect[3] + union(heading[1])[1]) / 2
@@ -855,6 +959,36 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
         )
           spans.push({ row: 0, column: c, rowSpan: 2, colSpan: 1, header: true })
       }
+    }
+  }
+  if (sparseMeasures && heading.length === 3) {
+    const middle = cells(heading[1]),
+      lower = cells(heading[2])
+    if (
+      middle[1] &&
+      middle[3] &&
+      !middle[2] &&
+      !middle[4] &&
+      [2, 4].every((c) => /^F\(p\)$/.test(compact(lower[c]))) &&
+      [1, 3].every((c) =>
+        rules.some(
+          (r) =>
+            r[1] === r[3] &&
+            r[1] > union(heading[1])[3] &&
+            r[1] < union(heading[2])[1] &&
+            heading[2]
+              .filter((i) => col(i) >= c && col(i) < c + 2)
+              .every((i) => i.rect[0] >= r[0] - 1 && i.rect[2] <= r[2] + 1)
+        )
+      )
+    ) {
+      rows.splice(0, rows.length, ...heading.map((g) => [left, union(g)[1], right, union(g)[3]]))
+      for (let n = spans.length - 1; n >= 0; n--) if (spans[n].header) spans.splice(n, 1)
+      spans.push(
+        { row: 0, column: 0, rowSpan: 3, colSpan: 1, header: true },
+        { row: 0, column: 1, rowSpan: 1, colSpan: 4, header: true },
+        ...[1, 3].map((column) => ({ row: 1, column, rowSpan: 1, colSpan: 2, header: true }))
+      )
     }
   }
   const headerCount = rows.length
@@ -900,13 +1034,122 @@ export function recoverAlignedNumericGrid(table, items, captions, rules = []) {
 
 // Wrapped definitions and repeated OR/CI comparisons have left-aligned record
 // labels even when estimates are vertically centered between label lines.
-export function recoverAnchoredStubGrid(table, items, captions) {
+// Repeated child headings and their native brackets establish both the parent
+// groups and the value columns. Complete value baselines anchor hanging stubs.
+function recoverBracketedSummaryGrid(table, items, rules) {
+  const [left, top, right, bottom] = table.cropRect
+  const source = tableSourceItems(items, table.cropRect)
+  if (!source.length) return
+  const height = source.map((i) => i.height).sort((a, b) => a - b)[Math.floor(source.length / 2)]
+  const groups = groupSourceRowsWithScripts(source, height, 0.35)
+  if (!groups) return
+  for (let h = 1; h < Math.min(groups.length, 5); h++) {
+    const leaf = [...groups[h]].sort((a, b) => a.rect[0] - b.rect[0])
+    if (
+      leaf.length < 5 ||
+      leaf.length > 13 ||
+      leaf.length % 2 !== 1 ||
+      !leaf
+        .slice(1)
+        .every((i, n) => /^[A-Za-z]{1,12}$/.test(i.text) && i.text === leaf[1 + (n % 2)].text) ||
+      leaf[1].text === leaf[2].text
+    )
+      continue
+    const columns = table.structure.objects
+      .filter((o) => o.label === 'table column')
+      .sort((a, b) => a.rect[0] - b.rect[0])
+    if (columns.length !== leaf.length) continue
+    const cuts = [
+      left,
+      ...columns.slice(1).map((c, n) => left + (columns[n].rect[2] + c.rect[0]) / 2),
+      right
+    ]
+    const divider = rules.find(
+      (r) =>
+        r[1] === r[3] &&
+        r[0] <= left + height &&
+        r[2] >= right - height &&
+        r[1] > union(leaf)[3] &&
+        r[1] < union(leaf)[3] + height
+    )
+    const parent = groups[h - 1]
+    const brackets = rules.filter(
+      (r) => r[1] === r[3] && r[1] > union(parent)[3] && r[1] < union(leaf)[1]
+    )
+    if (!divider || brackets.length !== (leaf.length - 1) / 2 || parent.length !== brackets.length)
+      continue
+    const spans = []
+    for (let c = 1; c < leaf.length; c += 2) {
+      const bracket = brackets.find(
+        (r) =>
+          leaf[c].rect[0] >= r[0] - 1 &&
+          leaf[c + 1].rect[2] <= r[2] + 1 &&
+          (c === 1 || leaf[c - 1].rect[2] < r[0]) &&
+          (c + 2 === leaf.length || leaf[c + 2].rect[0] > r[2])
+      )
+      if (
+        !bracket ||
+        parent.filter((i) => i.rect[0] >= bracket[0] && i.rect[2] <= bracket[2]).length !== 1
+      )
+        break
+      spans.push({ row: 0, column: c, rowSpan: 1, colSpan: 2 })
+    }
+    if (spans.length !== brackets.length) continue
+    const body = groups.slice(h + 1),
+      records = []
+    let valid = true
+    for (const g of body) {
+      const v = readSourceRow(g, cuts)
+      if (!v) {
+        valid = false
+        break
+      }
+      if (v.slice(1).every((x) => /^(?:NA|[−-]?\d[\d.,]*\([\d.,]+\))$/.test(x)) && v[0])
+        records.push([...g])
+      else if (
+        records.length &&
+        v[0] &&
+        v.slice(1).every((x) => !x) &&
+        g.every((i) => i.rect[0] >= leaf[0].rect[0] + height * 0.5) &&
+        g[0].baseline - records.at(-1).at(-1).baseline < height * 1.6
+      )
+        records.at(-1).push(...g)
+      else {
+        valid = false
+        break
+      }
+    }
+    if (
+      !valid ||
+      records.length < 8 ||
+      records.filter((g) => new Set(g.map((i) => Math.round(i.baseline))).size > 1).length < 4
+    )
+      continue
+    const rects = records.map(union)
+    if (rects.some((r, n) => n && r[1] <= rects[n - 1][3])) continue
+    const split = (union(parent)[3] + union(leaf)[1]) / 2
+    return {
+      rows: [
+        [left, union(parent)[1], right, split],
+        [left, split, right, divider[1]],
+        ...rects.map((r) => [left, r[1], right, r[3]])
+      ],
+      columns: cuts.slice(1).map((x, c) => [cuts[c], top, x, bottom]),
+      spans,
+      completeSpans: true
+    }
+  }
+}
+
+export function recoverAnchoredStubGrid(table, items, captions, rules = []) {
   if (!captions.some((c) => captionKind(c.lines[0]) === 'table')) return
+  const bracketed = recoverBracketedSummaryGrid(table, items, rules)
+  if (bracketed) return bracketed
   const [left, top, right, bottom] = table.cropRect
   const predicted = table.structure.objects
     .filter((o) => o.label === 'table column')
     .sort((a, b) => a.rect[0] - b.rect[0])
-  if (![2, 5].includes(predicted.length)) return
+  if (![2, 3, 5].includes(predicted.length)) return
   const cuts = [
     left,
     ...predicted.slice(1).map((c, n) => left + (predicted[n].rect[2] + c.rect[0]) / 2),
@@ -921,11 +1164,18 @@ export function recoverAnchoredStubGrid(table, items, captions) {
       i.rect[1] >= top &&
       i.rect[3] <= bottom
   )
+  const sharedOdds =
+    predicted.length === 3 && source.find((i) => /^Adjusted Odds Ratio \(95% CI\)$/.test(i.text))
+  if (predicted.length === 3 && !sharedOdds) return
   const odds = source.filter((i) => /^OR\s*\(CI\s*95%\)$/i.test(i.text))
   if (predicted.length === 5 && odds.length !== 2) return
   const first = source.filter((i) => col(i) === 0).sort((a, b) => a.baseline - b.baseline)[0]
   if (!first) return
-  const headerEnd = odds.length ? Math.max(...odds.map((i) => i.baseline)) : first.baseline
+  const headerEnd = sharedOdds
+    ? sharedOdds.baseline
+    : odds.length
+      ? Math.max(...odds.map((i) => i.baseline))
+      : first.baseline
   const note = source.find((i) => /^Notes?\s*:/i.test(i.text))
   const body = source.filter(
     (i) => i.baseline > headerEnd + 1 && (!note || i.rect[3] < note.rect[1])
@@ -945,7 +1195,7 @@ export function recoverAnchoredStubGrid(table, items, captions) {
   )
     return
   const borders = [
-    labels[0].rect[1] - 0.1,
+    (sharedOdds ? Math.min(...body.map((i) => i.rect[1])) : labels[0].rect[1]) - 0.1,
     ...labels.slice(1).map((i) => i.rect[1] - 0.1),
     Math.max(...body.map((i) => i.rect[3])) + 0.1
   ]
@@ -967,15 +1217,36 @@ export function recoverAnchoredStubGrid(table, items, captions) {
       records.some((g) => g.some((i) => col(i) > 0 && !/^[\d\s.,();−+–-]+$/.test(i.text)))
     )
       return
-  } else {
-    const definitions =
-      /^Term$/i.test(first.text) &&
-      source.some(
-        (i) =>
-          col(i) === 1 &&
-          /^Definition$/i.test(i.text) &&
-          Math.abs(i.baseline - first.baseline) < first.height * 0.25
+  } else if (sharedOdds) {
+    const numeric = (s) => /^[<>≤≥−+-]?\d[\d.,()–−+\s-]*$/.test(s)
+    if (
+      records.filter((g) => [1, 2].every((c) => numeric(value(g, c)))).length < 6 ||
+      records.filter((g) => [1, 2].every((c) => /\(n\s*=\s*\d+\s*\)/.test(value(g, c)))).length !==
+        2 ||
+      records.some(
+        (g) => ![1, 2].every((c) => numeric(value(g, c)) || /\(n\s*=\s*\d+\s*\)/.test(value(g, c)))
       )
+    )
+      return
+  } else {
+    const descriptions =
+      predicted.length === 2 &&
+      cuts[1] - left < (right - left) * 0.25 &&
+      rules.filter(
+        (r) =>
+          r[1] === r[3] && r[0] <= left + 12 && r[2] >= right - 12 && r[1] >= top && r[1] <= bottom
+      ).length === 3 &&
+      labels.every((i) => i.text.length < 40) &&
+      records.every((g) => value(g, 1).length > 5)
+    const definitions =
+      descriptions ||
+      (/^Term$/i.test(first.text) &&
+        source.some(
+          (i) =>
+            col(i) === 1 &&
+            /^Definition$/i.test(i.text) &&
+            Math.abs(i.baseline - first.baseline) < first.height * 0.25
+        ))
     if (
       records.filter((g) => value(g, 1).length > 25 && /\p{L}/u.test(value(g, 1))).length < 6 ||
       (!definitions && records.filter((g) => !value(g, 1)).length < 2) ||
@@ -992,7 +1263,7 @@ export function recoverAnchoredStubGrid(table, items, captions) {
     [left, header[1], right, header[3]],
     ...labels.map((_, n) => [left, borders[n], right, borders[n + 1]])
   ]
-  const spans = []
+  const spans = sharedOdds ? [{ row: 0, column: 1, colSpan: 2, rowSpan: 1 }] : []
   if (odds.length) {
     const parents = head.filter((i) => i.baseline < Math.min(...odds.map((i) => i.rect[1])))
     if (parents.length !== 2 || !parents.every((i) => /^(?:Uni|Multi)variate$/i.test(i.text)))
@@ -1269,19 +1540,92 @@ function recoverMixedCohortGrid(table, items, captions) {
 
 // Repeated baseline/intervention/follow-up triplets and within-group contrasts
 // independently establish rows in four-column clinical outcome tables.
-function recoverClinicalTimepointGrid(table, items, captions) {
+function recoverClinicalTimepointGrid(table, items, captions, rules) {
   if (!captions.some((c) => captionKind(c.lines[0]) === 'table')) return
   const [left, top, right, bottom] = table.cropRect
   const columns = table.structure.objects
     .filter((o) => o.label === 'table column')
     .sort((a, b) => a.rect[0] - b.rect[0])
-  if (columns.length !== 4) return
+  for (let n = columns.length - 1; n > 0; n--)
+    if (
+      intersect(columns[n].rect, columns[n - 1].rect) /
+        Math.min(area(columns[n].rect), area(columns[n - 1].rect)) >
+      0.9
+    )
+      columns.splice(n, 1)
+  if (![4, 5].includes(columns.length)) return
   const cuts = [
     left,
     ...columns.slice(1).map((c, n) => left + (columns[n].rect[2] + c.rect[0]) / 2),
     right
   ]
   const source = tableSourceItems(items, table.cropRect)
+  // Repeated visit labels anchor two-stub clinical tables even when the first
+  // outcome is predicted as the header. Both sample headings and native rules
+  // must independently identify the real header band.
+  const sampleHeadings = source.filter((i) => /\bgroup\s+[Nn]\s*=\s*\d+/.test(i.text))
+  if (
+    sampleHeadings.length === 2 &&
+    Math.abs(sampleHeadings[0].baseline - sampleHeadings[1].baseline) <
+      sampleHeadings[0].height * 0.2
+  ) {
+    const height = sampleHeadings[0].height
+    const borders = rules
+      .filter(
+        (r) =>
+          r[1] === r[3] && r[0] <= left + 12 && r[2] >= right - 12 && r[1] >= top && r[1] <= bottom
+      )
+      .sort((a, b) => a[1] - b[1])
+    const divider = borders.find(
+      (r) => r[1] > sampleHeadings[0].rect[3] && r[1] - sampleHeadings[0].rect[3] < height * 2
+    )
+    const footer = borders.at(-1)
+    if (divider && footer && footer !== divider) {
+      const header = source.filter((i) => i.rect[3] < divider[1])
+      const body = source.filter((i) => i.rect[1] > divider[1] && i.rect[3] < footer[1])
+      const groups = groupSourceRowsWithScripts(body, height, 0.35)
+      const values = groups?.map((g) => readSourceRow(g, cuts))
+      const visit = /^(?:baseline|\d+(?:st|nd|rd|th)week)$/i
+      const numeric = /^(?:[−+-]?\d[\d.,±−+-]*|(?:t|χ2)=[−+-]?\d[\d.,−+-]*,P[=<>][\d.]+[a-z]?)$/
+      if (
+        values &&
+        values.length >= 8 &&
+        values.every((v) => v && visit.test(v[1]) && v.slice(2).every((x) => numeric.test(x)))
+      ) {
+        const starts = values.flatMap((v, n) => (v[0] ? [n] : []))
+        const cycle = starts[1]
+        if (
+          starts.length >= 3 &&
+          starts[0] === 0 &&
+          cycle >= 3 &&
+          cycle <= 4 &&
+          values.length === starts.length * cycle &&
+          starts.every((n, i) => n === i * cycle) &&
+          values.every((v, n) => v[1] === values[n % cycle][1]) &&
+          hasUniqueRecordTokens(body, groups)
+        ) {
+          const spans = starts.map((n) => ({ row: n + 1, column: 0, rowSpan: cycle, colSpan: 1 }))
+          if (header.some((i) => i.rect[0] < cuts[1] && i.rect[2] > cuts[1] && i.rect[2] < cuts[2]))
+            spans.push({ row: 0, column: 0, rowSpan: 1, colSpan: 2 })
+          return {
+            rows: [
+              [left, union(header)[1], right, divider[1]],
+              ...groups.map((g) => {
+                const r = union(g)
+                return [left, r[1], right, r[3]]
+              })
+            ],
+            columns: cuts.slice(1).map((x, c) => [cuts[c], top, x, bottom]),
+            spans,
+            completeSpans: true,
+            headerRows: [0],
+            ownedTokens: new Set([...header, ...body])
+          }
+        }
+      }
+    }
+  }
+  if (columns.length !== 4) return
   const heading = source.find((i) => /^Between-Group Effects mean diff \(95% CI\)$/.test(i.text))
   if (!heading || !source.some((i) => /Group.*mean \(SD; 95% CI\)/.test(i.text))) return
   const groups = groupSourceRowsWithScripts(source, heading.height, 0.35)
@@ -1511,5 +1855,261 @@ function recoverQuartileComparisonGrid(table, items, captions, rules) {
     completeSpans: true,
     ownedTokens: new Set(source),
     repair: 'quartile-comparison-grid-recovered'
+  }
+}
+
+// Repeated, explicitly dated follow-up columns can be collapsed by the model.
+// Native heading centers and empty gutters must establish every missing column;
+// paired intervention rows independently validate the recovered time series.
+function recoverDatedFollowupColumns(table, items, captions, rules) {
+  const [left, top, right, bottom] = table.cropRect
+  if (
+    !captions.some(
+      (c) => captionKind(c.lines[0]) === 'table' && c.rect[3] <= top && top - c.rect[3] < 30
+    )
+  )
+    return
+  const source = tableSourceItems(items, table.cropRect)
+  const dates = source
+    .filter((i) => /^\d+-month$/.test(i.text) && i.rect[1] < top + 100)
+    .sort((a, b) => a.rect[0] - b.rect[0])
+  if (
+    dates.length !== 4 ||
+    dates.some(
+      (i, n) =>
+        Math.abs(i.baseline - dates[0].baseline) > 1 ||
+        (n && parseInt(i.text) <= parseInt(dates[n - 1].text))
+    )
+  )
+    return
+  const height = dates[0].height
+  const heading = source.filter((i) => i.rect[1] < dates[0].rect[3] + height * 1.5)
+  const label = (text) =>
+    heading.filter((i) => i.text === text && Math.abs(i.baseline - dates[0].baseline) < 1)
+  const anchors = [
+    label('Measure and'),
+    label('Pretreatment'),
+    label('Posttreatment'),
+    label('Group'),
+    ...dates.map((i) => [i]),
+    label('Treatment'),
+    label('Follow-up')
+  ]
+  if (anchors.some((g) => g.length !== 1)) return
+  const centers = anchors.map(([i]) => (i.rect[0] + i.rect[2]) / 2)
+  const time = label('Time')
+  if (
+    time.length !== 1 ||
+    time[0].rect[0] <= anchors[3][0].rect[2] ||
+    time[0].rect[2] >= dates[0].rect[0]
+  )
+    return
+  centers[3] = (anchors[3][0].rect[0] + time[0].rect[2]) / 2
+  if (centers.some((x, n) => n && x <= centers[n - 1])) return
+  const parent = heading.filter((i) => i.text === 'Follow-up' && i.rect[3] < dates[0].rect[1])
+  if (
+    parent.length !== 1 ||
+    !rules.some(
+      (r) =>
+        r[1] === r[3] &&
+        Math.abs(r[1] - parent[0].baseline) < height &&
+        r[0] > centers[3] &&
+        r[0] < centers[4] &&
+        r[2] > centers[7] &&
+        r[2] < centers[8]
+    )
+  )
+    return
+  const leaf = heading.filter((i) => i !== parent[0]),
+    body = source.filter((i) => !heading.includes(i))
+  const cuts = [left, ...centers.slice(1).map((x, n) => (x + centers[n]) / 2), right]
+  const columns = cuts.slice(1).map(() => [])
+  for (const i of [...leaf, ...body]) {
+    const c = cuts.slice(1).findIndex((x) => (i.rect[0] + i.rect[2]) / 2 < x)
+    if (c < 0) return
+    columns[c].push(i)
+  }
+  if (columns.some((c) => !c.length)) return
+  for (let c = 1; c < columns.length; c++) {
+    const a = Math.max(...columns[c - 1].map((i) => i.rect[2])),
+      b = Math.min(...columns[c].map((i) => i.rect[0]))
+    if (a >= b) return
+    cuts[c] = Math.max(a + 0.01, Math.min(b - 0.01, cuts[c]))
+  }
+  const leafValues = readSourceRow(leaf, cuts)
+  if (!leafValues || [1, 2, 4, 5, 6, 7].some((c) => !leafValues[c].endsWith('M(SD)'))) return
+  const groups = groupSourceRowsWithScripts(body, height, 0.3)
+  if (!groups || groups.length < 12 || groups.length % 3 !== 0) return
+  const values = groups.map((g) => readSourceRow(g, cuts))
+  if (values.some((v) => !v)) return
+  const pair = values.slice(1, 3).map((v) => v[0])
+  if (pair.some((v) => !/^[A-Z][A-Za-z-]+$/.test(v)) || pair[0] === pair[1]) return
+  for (let n = 0; n < values.length; n += 3) {
+    const section = values[n]
+    if (
+      !/\p{L}/u.test(section[0]) ||
+      section.some((s, c) => c > 0 && c !== 3 && s) ||
+      (section[3] && !/^\d+(?:\.\d+)?$/.test(section[3]))
+    )
+      return
+    for (let k = 1; k <= 2; k++) {
+      const v = values[n + k]
+      if (
+        v[0] !== pair[k - 1] ||
+        v[3] ||
+        v
+          .slice(1)
+          .some(
+            (s, c) =>
+              c !== 2 && !/^(?:[−–+-]?\d+(?:\.\d+)?(?:\(\d+(?:\.\d+)?\))?[a-d*]*|[—−–-])$/.test(s)
+          )
+      )
+        return
+    }
+  }
+  if (!hasUniqueRecordTokens(source, [parent, leaf, ...groups])) return
+  const y = (parent[0].rect[3] + Math.min(...leaf.map((i) => i.rect[1]))) / 2
+  const bound = union(leaf)
+  return {
+    rows: [
+      [left, parent[0].rect[1], right, y],
+      [left, y, right, bound[3]],
+      ...groups.map((g) => {
+        const r = union(g)
+        return [left, r[1], right, r[3]]
+      })
+    ],
+    columns: cuts.slice(1).map((x, c) => [cuts[c], top, x, bottom]),
+    headerRows: [0, 1],
+    spans: [
+      { row: 0, column: 4, rowSpan: 1, colSpan: 4 },
+      ...[0, 1, 2, 3, 8, 9].map((c) => ({ row: 0, column: c, rowSpan: 2, colSpan: 1 }))
+    ],
+    completeSpans: true,
+    ownedTokens: new Set(source)
+  }
+}
+
+// A two-stub cohort table prints one test and P value for an entire category
+// group. Native test starts and paired counts determine both shared cell spans.
+function recoverSharedClinicalStatistics(table, items, captions, rules) {
+  if (!captions.some((c) => captionKind(c.lines[0]) === 'table')) return
+  const [left, top, right, bottom] = table.cropRect
+  const columns = table.structure.objects
+    .filter((o) => o.label === 'table column')
+    .sort((a, b) => a.rect[0] - b.rect[0])
+  if (columns.length !== 5) return
+  const cuts = [
+    left,
+    ...columns.slice(1).map((c, n) => left + (columns[n].rect[2] + c.rect[0]) / 2),
+    right
+  ]
+  const col = (i) => cuts.slice(1).findIndex((x) => (i.rect[0] + i.rect[2]) / 2 < x)
+  const source = tableSourceItems(items, table.cropRect)
+  const title = source.find((i) => col(i) === 4 && /^Statistic,$/.test(i.text))
+  if (!title) return
+  const borders = rules
+    .filter(
+      (r) =>
+        r[1] === r[3] && r[0] <= left + 12 && r[2] >= right - 12 && r[1] >= top && r[1] <= bottom
+    )
+    .sort((a, b) => a[1] - b[1])
+  if (borders.length !== 3) return
+  const divider = borders[1][1],
+    footer = borders[2][1],
+    height = title.height
+  const header = source.filter((i) => i.rect[3] < divider)
+  if (
+    ![2, 3].every((c) =>
+      /groupN=\d+/.test(
+        header
+          .filter((i) => col(i) === c)
+          .map((i) => i.text)
+          .join('')
+          .replace(/\s/g, '')
+      )
+    )
+  )
+    return
+  const body = source.filter((i) => i.rect[1] > divider && i.rect[3] < footer)
+  const data = body.filter((i) => col(i) === 2 || col(i) === 3)
+  const groups = groupSourceRowsWithScripts(data, height, 0.35)
+  if (!groups || groups.length < 6) return
+  if (
+    !groups.every((g) => {
+      const v = readSourceRow(g, cuts)
+      return (
+        v &&
+        v
+          .slice(2, 4)
+          .every((x) => /^(?:\d+(?:\.\d+)?\([\d.]+\)|\d+(?:\.\d+)?±\d+(?:\.\d+)?)$/.test(x))
+      )
+    })
+  )
+    return
+  const anchors = groups.map(union)
+  const ys = [divider, ...anchors.slice(1).map((r) => r[1] - 0.1), footer]
+  const tests = body.filter((i) => col(i) === 4 && /^(?:t\s*=|χ$)/.test(i.text))
+  const starts = tests.map((i) =>
+    groups.findIndex((g) => Math.abs(g[0].baseline - i.baseline) < height * 0.3)
+  )
+  if (
+    starts.length < 3 ||
+    starts[0] !== 0 ||
+    starts.some((n, i) => n < 0 || (i && n <= starts[i - 1]))
+  )
+    return
+  const spans = [],
+    owned = [header, ...groups]
+  for (let n = 0; n < starts.length; n++) {
+    const start = starts[n],
+      end = starts[n + 1] ?? groups.length
+    const region = body.filter(
+      (i) =>
+        col(i) !== 2 &&
+        col(i) !== 3 &&
+        (i.rect[1] + i.rect[3]) / 2 >= ys[start] &&
+        (i.rect[1] + i.rect[3]) / 2 < ys[end]
+    )
+    const stats = region.filter((i) => col(i) === 4)
+    const statLines = groupSourceRowsWithScripts(stats, height, 0.35)
+    const value = statLines?.map((g) => readSourceRow(g, cuts)?.[4] ?? '').join('')
+    // Preserve the exponent in its baseline group before validating the pair.
+    if (!/^(?:t=|2χ=|χ2=)[\d.]+,P[=<>][\d.]+$/.test(value)) return
+    const label = region.filter((i) => col(i) === 0)
+    if (!label.length || !label.some((i) => /\p{L}/u.test(i.text))) return
+    const categories = region.filter((i) => col(i) === 1)
+    if (end - start === 1) {
+      if (categories.some((i) => !/^[\p{L}±(),.\s-]+$/u.test(i.text))) return
+      spans.push({ row: start + 1, column: 0, rowSpan: 1, colSpan: 2 })
+    } else {
+      if (
+        !groups
+          .slice(start, end)
+          .every((_, r) =>
+            categories.some(
+              (i) =>
+                (i.rect[1] + i.rect[3]) / 2 >= ys[start + r] &&
+                (i.rect[1] + i.rect[3]) / 2 < ys[start + r + 1]
+            )
+          )
+      )
+        return
+      spans.push({ row: start + 1, column: 0, rowSpan: end - start, colSpan: 1 })
+    }
+    spans.push({ row: start + 1, column: 4, rowSpan: end - start, colSpan: 1 })
+    owned.push(region)
+  }
+  if (!hasUniqueRecordTokens([...header, ...body], owned)) return
+  return {
+    rows: [
+      [left, union(header)[1], right, divider],
+      ...groups.map((_, n) => [left, ys[n], right, ys[n + 1]])
+    ],
+    columns: cuts.slice(1).map((x, c) => [cuts[c], top, x, bottom]),
+    spans,
+    completeSpans: true,
+    headerRows: [0],
+    ownedTokens: new Set([...header, ...body])
   }
 }
