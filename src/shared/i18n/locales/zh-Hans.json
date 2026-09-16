@@ -5889,6 +5889,14 @@
     "PDF downloaded to Inbox": "PDF 已下载到收件箱",
     "Review in Inbox to add to your library.": "请前往收件箱审核，确认后加入文献库。",
     "Already in library": "已在文献库中",
-    "Open reference": "打开文献"
+    "Open reference": "打开文献",
+    "The parent Session is unavailable.": "主会话不可用。",
+    "This session is read-only.": "此会话为只读。",
+    "Send a message in the main conversation first.": "请先在主会话中发送一条消息。",
+    "Waiting for conversation history to be saved.": "正在等待保存会话历史。",
+    "A Side chat prompt is already running.": "侧边聊天正在回复。",
+    "Enter a message to send.": "请输入要发送的消息。",
+    "Send draft to Side chat": "将草稿发送到侧边聊天",
+    "Opens an empty Side chat; keeps your draft.": "打开空白侧聊，保留当前草稿。"
   }
 }

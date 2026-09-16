@@ -6051,6 +6051,14 @@
     "PDF downloaded to Inbox": "PDF in den Posteingang heruntergeladen",
     "Review in Inbox to add to your library.": "Im Posteingang prüfen und zur Bibliothek hinzufügen.",
     "Already in library": "Bereits in der Bibliothek",
-    "Open reference": "Referenz öffnen"
+    "Open reference": "Referenz öffnen",
+    "The parent Session is unavailable.": "Die übergeordnete Sitzung ist nicht verfügbar.",
+    "This session is read-only.": "Diese Sitzung ist schreibgeschützt.",
+    "Send a message in the main conversation first.": "Senden Sie zuerst eine Nachricht in der Hauptkonversation.",
+    "Waiting for conversation history to be saved.": "Warten, bis der Konversationsverlauf gespeichert ist.",
+    "A Side chat prompt is already running.": "Eine Side-Chat-Anfrage wird bereits bearbeitet.",
+    "Enter a message to send.": "Geben Sie eine Nachricht zum Senden ein.",
+    "Send draft to Side chat": "Entwurf an Side-Chat senden",
+    "Opens an empty Side chat; keeps your draft.": "Öffnet einen leeren Side chat; Ihr Entwurf bleibt erhalten."
   }
 }

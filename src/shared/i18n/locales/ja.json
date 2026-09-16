@@ -5889,6 +5889,14 @@
     "PDF downloaded to Inbox": "PDF を受信トレイにダウンロード済み",
     "Review in Inbox to add to your library.": "受信トレイで確認してライブラリに追加してください。",
     "Already in library": "ライブラリに登録済み",
-    "Open reference": "文献を開く"
+    "Open reference": "文献を開く",
+    "The parent Session is unavailable.": "親セッションを利用できません。",
+    "This session is read-only.": "このセッションは読み取り専用です。",
+    "Send a message in the main conversation first.": "先にメインの会話でメッセージを送信してください。",
+    "Waiting for conversation history to be saved.": "会話履歴の保存を待っています。",
+    "A Side chat prompt is already running.": "サイドチャットは応答中です。",
+    "Enter a message to send.": "送信するメッセージを入力してください。",
+    "Send draft to Side chat": "下書きをサイドチャットに送信",
+    "Opens an empty Side chat; keeps your draft.": "空の Side chat を開き、下書きを保持します。"
   }
 }

@@ -5889,6 +5889,14 @@
     "PDF downloaded to Inbox": "PDF 已下載至收件匣",
     "Review in Inbox to add to your library.": "請前往收件匣審核，確認後加入文獻庫。",
     "Already in library": "已在文獻庫中",
-    "Open reference": "開啟文獻"
+    "Open reference": "開啟文獻",
+    "The parent Session is unavailable.": "主工作階段無法使用。",
+    "This session is read-only.": "此工作階段為唯讀。",
+    "Send a message in the main conversation first.": "請先在主對話中傳送一則訊息。",
+    "Waiting for conversation history to be saved.": "正在等候儲存對話歷史。",
+    "A Side chat prompt is already running.": "側邊聊天正在回覆。",
+    "Enter a message to send.": "請輸入要傳送的訊息。",
+    "Send draft to Side chat": "將草稿傳送至側邊聊天",
+    "Opens an empty Side chat; keeps your draft.": "開啟空白側聊，保留目前草稿。"
   }
 }

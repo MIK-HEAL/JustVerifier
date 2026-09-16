@@ -6221,6 +6221,14 @@
     "PDF downloaded to Inbox": "PDF téléchargé dans la boîte de réception",
     "Review in Inbox to add to your library.": "Vérifiez dans la boîte de réception pour ajouter à votre bibliothèque.",
     "Already in library": "Déjà dans la bibliothèque",
-    "Open reference": "Ouvrir la référence"
+    "Open reference": "Ouvrir la référence",
+    "The parent Session is unavailable.": "La session parente est indisponible.",
+    "This session is read-only.": "Cette session est en lecture seule.",
+    "Send a message in the main conversation first.": "Envoyez d’abord un message dans la conversation principale.",
+    "Waiting for conversation history to be saved.": "En attente de l’enregistrement de l’historique de la conversation.",
+    "A Side chat prompt is already running.": "Une réponse de la discussion parallèle est déjà en cours.",
+    "Enter a message to send.": "Saisissez un message à envoyer.",
+    "Send draft to Side chat": "Envoyer le brouillon à la discussion parallèle",
+    "Opens an empty Side chat; keeps your draft.": "Ouvre un Side chat vide et conserve votre brouillon."
   }
 }
