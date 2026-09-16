@@ -2438,30 +2438,38 @@ describe('SettingsService: preflight & spawn config', () => {
     })
   })
 
-  it('closes the provider gate when the configured model leaves the catalog', async () => {
-    const service = createService()
-    await repository.setClaudeInfo({ resolvedPath: execPath, version: '2.1.0' })
-    const created = (
-      await service.upsertProvider({
-        type: 'official',
-        name: 'DeepSeek',
-        vendorId: 'deepseek',
-        key: 'k'
+  it.each([
+    { vendorId: 'anthropic', model: 'claude-opus-5', ready: false },
+    { vendorId: 'deepseek', model: 'deepseek-v4-flash', ready: true }
+  ] as const)(
+    'checks the provider gate after discovery changes for $vendorId',
+    async ({ vendorId, model, ready }) => {
+      const service = createService()
+      await repository.setClaudeInfo({ resolvedPath: execPath, version: '2.1.0' })
+      const created = (
+        await service.upsertProvider({
+          type: 'official',
+          name: vendorId,
+          vendorId,
+          key: 'k'
+        })
+      ).providers[0]
+      await service.setActiveProvider(created.id, model)
+      const stored = (await repository.getSettings()).providers[0]
+      await repository.upsertProvider({
+        ...stored,
+        fetchedModels: ['replacement-model'],
+        lastValidatedAt: 1
       })
-    ).providers[0]
-    await service.setActiveProvider(created.id, 'deepseek-v4-pro')
-    const stored = (await repository.getSettings()).providers[0]
-    await repository.upsertProvider({
-      ...stored,
-      fetchedModels: ['replacement-model'],
-      lastValidatedAt: 1
-    })
 
-    await expect(service.getPreflight()).resolves.toMatchObject({
-      activeProviderReady: false,
-      providerReadiness: { status: 'not_ready', reason: 'model-not-found' }
-    })
-  })
+      await expect(service.getPreflight()).resolves.toMatchObject({
+        activeProviderReady: ready,
+        providerReadiness: ready
+          ? { status: 'ready' }
+          : { status: 'not_ready', reason: 'model-not-found' }
+      })
+    }
+  )
 
   it('closes the provider gate when the active shared Claude session is signed out', async () => {
     const claudeSharedAuth: ClaudeSharedAuthControllerPort = {
@@ -4062,12 +4070,14 @@ describe('SettingsService: official vendors', () => {
           'deepseek-v4-flash',
           'deepseek-v4-pro',
           'deepseek-v4-pro[1m]',
+          'deepseek-flash',
           'deepseek-v4-flash-vision-exp'
         ],
         modelOverrides: {
           'deepseek-v4-flash': 'deepseek-v4-flash',
           'deepseek-v4-pro': 'deepseek-v4-pro',
           'deepseek-v4-pro[1m]': 'deepseek-v4-pro[1m]',
+          'deepseek-flash': 'deepseek-flash',
           'deepseek-v4-flash-vision-exp': 'deepseek-v4-flash-vision-exp'
         }
       }
@@ -4080,12 +4090,14 @@ describe('SettingsService: official vendors', () => {
         'deepseek-v4-flash',
         'deepseek-v4-pro',
         'deepseek-v4-pro[1m]',
+        'deepseek-flash',
         'deepseek-v4-flash-vision-exp'
       ],
       modelOverrides: {
         'deepseek-v4-flash': 'deepseek-v4-flash',
         'deepseek-v4-pro': 'deepseek-v4-pro',
         'deepseek-v4-pro[1m]': 'deepseek-v4-pro[1m]',
+        'deepseek-flash': 'deepseek-flash',
         'deepseek-v4-flash-vision-exp': 'deepseek-v4-flash-vision-exp'
       }
     })
@@ -4111,7 +4123,7 @@ describe('SettingsService: official vendors', () => {
     expect(backend.contextUsageModel).toBe('deepseek-v4-flash')
   })
 
-  it('refreshes models from the vendor and persists them over the bundled catalog', async () => {
+  it('refreshes DeepSeek models while retaining bundled compatibility names', async () => {
     const service = createService()
     mockedNet.fetch.mockClear()
     vi.stubGlobal(
@@ -4142,9 +4154,52 @@ describe('SettingsService: official vendors', () => {
       expect.objectContaining({ method: 'GET', signal: expect.any(AbortSignal) })
     )
 
-    // The fetched list now backs the provider view (and persists).
+    // Preserve the raw discovery result, but expose compatibility names in the effective catalog.
+    expect((await repository.getSettings()).providers[0].fetchedModels).toEqual([
+      'deepseek-v5',
+      'deepseek-v4-pro'
+    ])
     const view = (await service.getSettingsView()).providers[0]
-    expect(view.models).toEqual(['deepseek-v5', 'deepseek-v4-pro'])
+    expect(view.models).toEqual([
+      'deepseek-v5',
+      'deepseek-v4-pro',
+      'deepseek-v4-pro[1m]',
+      'deepseek-flash',
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp'
+    ])
+  })
+
+  it('keeps a captured DeepSeek session model usable and passes its original id after refresh', async () => {
+    const service = createService()
+    await repository.setClaudeInfo({ resolvedPath: execPath, version: '2.1.0' })
+    const created = (
+      await service.upsertProvider({
+        type: 'official',
+        name: 'DeepSeek',
+        vendorId: 'deepseek',
+        key: 'k'
+      })
+    ).providers[0]
+    await service.setActiveProvider(created.id, 'deepseek-v4-flash')
+    const selection = await service.captureActiveAgentBackendSelection()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }]
+          })
+        )
+      )
+    )
+    expect(await service.refreshProviderModels({ providerId: created.id })).toMatchObject({
+      ok: true
+    })
+    expect((await service.getSettingsView()).activeModel).toBe('deepseek-v4-flash')
+    const backend = await service.resolveAgentBackend(selection)
+    expect(backend.env.ANTHROPIC_MODEL).toBe('deepseek-v4-flash')
+    expect(backend.contextUsageModel).toBe('deepseek-v4-flash')
   })
 
   it('reports a refresh failure without changing the bundled catalog', async () => {
@@ -4402,12 +4457,14 @@ describe('SettingsService: image-input capability', () => {
       })
     ).providers[0]
 
-    let view = (
-      await service.setActiveProvider(created.id, 'deepseek-v4-flash-vision-exp')
-    ).providers.find((provider) => provider.id === created.id)
-    expect(view?.supportsImageInput).toBe(true)
+    for (const model of ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp']) {
+      const snapshot = await service.setActiveProvider(created.id, model)
+      expect(snapshot.activeModel).toBe(model)
+      const view = snapshot.providers.find((provider) => provider.id === created.id)
+      expect(view?.supportsImageInput).toBe(true)
+    }
 
-    view = (await service.setActiveProvider(created.id, 'deepseek-v4-flash')).providers.find(
+    const view = (await service.setActiveProvider(created.id, 'deepseek-v4-pro')).providers.find(
       (provider) => provider.id === created.id
     )
     expect(view?.supportsImageInput).toBe(false)
