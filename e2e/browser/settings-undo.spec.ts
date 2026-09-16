@@ -126,15 +126,23 @@ test('mobile navigation hides Undo until its focus trap closes', async ({ page }
   expect(await navigation.evaluate((el) => el.contains(document.activeElement))).toBe(true)
   await page.keyboard.press('Escape')
   await expect(navigation).toHaveCount(0)
-  // Wait for Settings' close effect to return focus before starting the next keyboard interaction.
-  await expect(page.getByRole('button', { name: 'Open settings navigation' })).toBeFocused()
-  await expect(page.getByRole('dialog', { name: 'Settings', exact: true })).toBeVisible()
+  // A closing dialog stays visible during its exit animation.
+  await expect(page.getByRole('dialog', { name: 'Settings', exact: true })).toHaveAttribute(
+    'data-state',
+    'open'
+  )
   await expect(undo).toBeVisible()
   expect(await undo.evaluate((el, previous) => el === previous, original)).toBe(true)
+  await expect(page.getByRole('button', { name: 'Open settings navigation' })).toBeFocused()
   await undo.getByRole('button', { name: 'Dismiss permission Undo' }).focus()
   await page.keyboard.press('Shift+Tab')
   await expect(undo.getByRole('button', { name: 'Undo', exact: true })).toBeFocused()
   await page.keyboard.press('Enter')
   await expect(undo).toHaveCount(0)
-  await expect(page.getByRole('dialog', { name: 'Settings', exact: true })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Settings', exact: true })).toHaveAttribute(
+    'data-state',
+    'open'
+  )
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Settings', exact: true })).toHaveCount(0)
 })
