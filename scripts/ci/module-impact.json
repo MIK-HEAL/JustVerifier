@@ -409,7 +409,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
           "src/main/session-package/fork.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -1005,7 +1007,8 @@
           "src/main/web-service/task-api.test.ts",
           "src/main/window-find-ipc.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation"],
@@ -1745,7 +1748,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
           "src/main/session-package/fork.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -2287,7 +2292,8 @@
           "src/renderer/web/renderer-argument-shape-characterization.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -2918,7 +2924,9 @@
           "src/main/session-package/fork.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -3152,7 +3160,8 @@
           "src/renderer/src/stores/runtime-settings-store.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -3664,7 +3673,9 @@
           "src/main/session-package/fork.test.ts",
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -4182,7 +4193,9 @@
           "src/renderer/src/stores/settings-connectors-slice.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -4620,7 +4633,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
           "src/main/session-package/fork.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -5077,7 +5092,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/session-package/fork.test.ts",
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -5370,7 +5387,9 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -5900,7 +5919,8 @@
           "src/renderer/web/renderer-argument-shape-characterization.test.ts",
           "src/main/settings/skill-catalog.test.ts",
           "src/main/session-package/fork.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -6420,7 +6440,8 @@
           "src/main/settings/skill-catalog.test.ts",
           "src/main/session-package/fork.test.ts",
           "src/main/session-plan/plan-legacy-compatibility.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -6849,7 +6870,9 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/session-package/fork.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["i18n_catalog"],
@@ -7697,7 +7720,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -7879,7 +7903,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -8625,7 +8650,9 @@
           "src/shared/run-error-classification.test.ts",
           "src/main/session-package/fork.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -9246,7 +9273,8 @@
           "src/main/session-package/fork.test.ts",
           "src/renderer/src/lib/session-fork.test.ts",
           "src/renderer/src/pages/workspace/session-action-menu.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -9814,7 +9842,9 @@
           "src/main/session-package/fork.test.ts",
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["notebook_network_sandbox", "windows_sensitive"],
@@ -10158,7 +10188,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "scripts/ci/e2e-setup-snapshot.test.ts",
           "src/main/session-package/fork.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["notebook_network_sandbox", "windows_sensitive"],
@@ -10610,7 +10642,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/session-package/fork.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -10905,7 +10939,8 @@
           "src/renderer/src/stores/specialist-store.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -11938,7 +11973,8 @@
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
           "src/main/session-plan/plan-legacy-compatibility.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -12224,7 +12260,9 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -12428,7 +12466,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -12837,7 +12876,9 @@
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/renderer/src/stores/settings-connectors-slice.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -13017,7 +13058,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -13197,7 +13239,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -13377,7 +13420,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -13557,7 +13601,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -13737,7 +13782,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -13917,7 +13963,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -14105,7 +14152,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -14285,7 +14333,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -14465,7 +14514,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -14653,7 +14703,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -14837,7 +14888,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -15017,7 +15069,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -15210,7 +15263,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -15400,7 +15454,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -15581,7 +15636,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -15761,7 +15817,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -15941,7 +15998,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -16121,7 +16179,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -16301,7 +16360,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -16481,7 +16541,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -16661,7 +16722,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -16858,7 +16920,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -17048,7 +17111,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -17228,7 +17292,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -18065,7 +18130,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/session-package/fork.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -18437,7 +18504,9 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
           "src/main/session-package/fork.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -19588,7 +19657,9 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -19932,7 +20003,9 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -20231,7 +20304,9 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -20638,7 +20713,9 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/settings/skill-catalog.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -21524,7 +21601,9 @@
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
           "src/main/session-plan/plan-context-file.test.ts",
           "src/main/session-plan/plan-legacy-compatibility.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["notebook_network_sandbox", "windows_sensitive"],
@@ -21695,7 +21774,8 @@
           "src/main/web-service/task-api.test.ts",
           "src/main/window-find-ipc.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["notebook_network_sandbox", "windows_sensitive"],
@@ -22566,7 +22646,9 @@
           "src/main/notebook/dependency-analysis.stdlib-replay.test.ts",
           "src/main/session-package/fork.test.ts",
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["notebook_network_sandbox", "windows_sensitive"],
@@ -22869,7 +22951,6 @@
           "src/main/compute/slurm.real-ssh.integration.test.ts",
           "src/main/compute/ssh-runner.test.ts",
           "src/main/connectors/application.test.ts",
-          "src/main/connectors/descriptors/variants-gnomad.test.ts",
           "src/main/connectors/mcp-payload-pagination.integration.test.ts",
           "src/main/connectors/service.test.ts",
           "src/main/database/permission-approval-summary.test.ts",
@@ -22958,7 +23039,9 @@
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/connectors/descriptors/variants-gnomad.test.ts"
+          "src/main/connectors/descriptors/variants-gnomad.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -23350,7 +23433,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/settings/skill-catalog.test.ts"
+          "src/main/settings/skill-catalog.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -24029,7 +24113,9 @@
           "src/main/session-package/fork.test.ts",
           "src/main/settings/responses-bridge.plan-tools.test.ts",
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/lib/session-persistence/session-persistence.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -24202,7 +24288,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/settings/skill-catalog.test.ts"
+          "src/main/settings/skill-catalog.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -24489,7 +24576,8 @@
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/renderer/src/stores/specialist-store.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -25148,7 +25236,8 @@
           "src/main/session-plan/plan-context-file.shell.integration.test.ts",
           "src/main/session-plan/plan-legacy-compatibility.test.ts",
           "src/main/session-plan/plan-context-file.test.ts",
-          "src/main/settings/provider-runtime-health-owner.test.ts"
+          "src/main/settings/provider-runtime-health-owner.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -25639,7 +25728,8 @@
           "src/main/window-find-ipc.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-plan/plan-context-file.shell.integration.test.ts"
+          "src/main/session-plan/plan-context-file.shell.integration.test.ts",
+          "src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
