@@ -392,6 +392,7 @@ type NotebookRpcSessionBinding = {
   delegatedWorkRole?: 'main' | 'delegate'
   delegatedWorkAttemptId?: string
   allowedMethods?: ReadonlySet<string>
+  capabilityLifetime?: AbortController
   activeControlInvocation?: TrustedControlInvocationIdentity
   executionCwd?: string
   isControl?: true
@@ -679,7 +680,7 @@ class NotebookLocalRpcServer {
   private readonly sessionRpcCapabilities = new Map<string, NotebookRpcSessionBinding>()
   private readonly sessionRpcTokens = new Map<string, string>()
   private readonly skillImportRpcTokens = new Map<string, string>()
-  private readonly planRpcTokens = new Map<string, string>()
+  private readonly planRpcTokens = new Map<string, Set<string>>()
   // The session → Specialist relationship is established by the ACP runtime, not supplied by the
   // notebook process. Keeping it here prevents an agent from selecting another Specialist's scope
   // by forging an RPC parameter.
@@ -1026,6 +1027,7 @@ class NotebookLocalRpcServer {
   }
 
   private revokeSessionCapability(token: string): void {
+    this.sessionRpcCapabilities.get(token)?.capabilityLifetime?.abort()
     this.codeWriteProducers.get(token)?.controller.abort()
     this.codeWriteProducers.delete(token)
     this.sessionRpcCapabilities.delete(token)
@@ -1049,8 +1051,8 @@ class NotebookLocalRpcServer {
 
   private revokePlanSessionCapabilities(sessionId: string): void {
     for (const ownedSessionId of this.resolveSessionCapabilityOwners(sessionId)) {
-      const token = this.planRpcTokens.get(ownedSessionId)
-      if (token) this.revokeSessionCapability(token)
+      const tokens = this.planRpcTokens.get(ownedSessionId)
+      for (const token of tokens ?? []) this.revokeSessionCapability(token)
       this.planRpcTokens.delete(ownedSessionId)
     }
   }
@@ -1062,9 +1064,13 @@ class NotebookLocalRpcServer {
     const expected = new Set(capabilityTokens)
     let ownsCurrentCapability = false
     for (const owner of this.resolveSessionCapabilityOwners(sessionId)) {
-      for (const tokens of [this.sessionRpcTokens, this.skillImportRpcTokens, this.planRpcTokens]) {
+      for (const tokens of [this.sessionRpcTokens, this.skillImportRpcTokens]) {
         const token = tokens.get(owner)
         if (!token) continue
+        if (!expected.has(token)) return
+        ownsCurrentCapability = true
+      }
+      for (const token of this.planRpcTokens.get(owner) ?? []) {
         if (!expected.has(token)) return
         ownsCurrentCapability = true
       }
@@ -1394,23 +1400,32 @@ class NotebookLocalRpcServer {
     }
   }
 
-  async issuePlanConnection(sessionId: string, projectId: string): Promise<NotebookRpcConnection> {
+  async issuePlanConnection(
+    sessionId: string,
+    projectId: string,
+    options: Readonly<{ replaceExisting?: boolean }> = {}
+  ): Promise<NotebookRpcConnection> {
     const connection = await this.ensureStarted()
-    this.revokePlanSessionCapabilities(sessionId)
+    if (options.replaceExisting !== false) this.revokePlanSessionCapabilities(sessionId)
 
     const token = randomUUID()
-    this.planRpcTokens.set(sessionId, token)
+    const tokens = this.planRpcTokens.get(sessionId) ?? new Set<string>()
+    tokens.add(token)
+    this.planRpcTokens.set(sessionId, tokens)
     this.sessionRpcCapabilities.set(token, {
       sessionId,
       projectId,
-      allowedMethods: PLAN_RPC_METHODS
+      allowedMethods: PLAN_RPC_METHODS,
+      capabilityLifetime: new AbortController()
     })
     return {
       endpoint: connection.endpoint,
       socketPath: connection.socketPath,
       token,
       release: () => {
-        if (this.planRpcTokens.get(sessionId) === token) this.planRpcTokens.delete(sessionId)
+        const activeTokens = this.planRpcTokens.get(sessionId)
+        activeTokens?.delete(token)
+        if (activeTokens?.size === 0) this.planRpcTokens.delete(sessionId)
         this.revokeSessionCapability(token)
       }
     }
@@ -2231,9 +2246,15 @@ class NotebookLocalRpcServer {
         }
       }
       writeProducerSignal?.throwIfAborted()
-      const dispatchSignal = writeProducerSignal
-        ? AbortSignal.any([disconnect.signal, writeProducerSignal])
-        : disconnect.signal
+      const dispatchSignals = [
+        disconnect.signal,
+        ...(writeProducerSignal ? [writeProducerSignal] : []),
+        ...(authenticatedBinding?.capabilityLifetime
+          ? [authenticatedBinding.capabilityLifetime.signal]
+          : [])
+      ]
+      const dispatchSignal =
+        dispatchSignals.length === 1 ? dispatchSignals[0] : AbortSignal.any(dispatchSignals)
       const result =
         method === 'capabilitiesCall'
           ? hostCapabilities
