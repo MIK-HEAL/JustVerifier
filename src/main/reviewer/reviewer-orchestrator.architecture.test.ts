@@ -822,7 +822,13 @@ describe('Reviewer orchestrator architecture', () => {
           'src/shared/renderer-surface-inventory.test.ts',
           'src/shared/renderer-surface-matrix.test.ts',
           'src/main/settings/skill-catalog.test.ts',
-          'src/main/session-package/fork.test.ts'
+          'src/main/session-package/fork.test.ts',
+          'src/main/storage/brand-location.test.ts',
+          'src/main/storage/migration-target-race.test.ts',
+          'src/renderer/src/components/LegacyDataMoveDialog.storage.test.tsx',
+          'src/main/settings/provider-runtime-health-owner.test.ts',
+          'src/renderer/src/lib/session-persistence/session-persistence.test.ts',
+          'src/renderer/src/pages/workspace/workspace-message-queue-controller.test.ts'
         ]
       },
       capabilityOverlays: ['windows_sensitive', 'e2e_regressions', 'e2e_delegation'],

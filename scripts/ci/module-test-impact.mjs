@@ -265,13 +265,27 @@ export function executeModuleTestPlan(
   } = {}
 ) {
   process.stdout.write(formatModuleTestPlan(plan))
-  if (plan.mode === 'selective' && plan.testFiles.length === 0) return 0
-  const npmArguments = [
-    'test',
-    '--',
-    ...testArguments,
-    ...(plan.mode === 'full' ? [] : plan.testFiles)
-  ]
+  const mergeReports = testArguments.some(
+    (argument) => argument === '--merge-reports' || argument.startsWith('--merge-reports=')
+  )
+  const shard = testArguments.some(
+    (argument) => argument === '--shard' || argument.startsWith('--shard=')
+  )
+  if (!mergeReports && !shard && plan.mode === 'selective' && plan.testFiles.length === 0) return 0
+  // Report merging executes no tests and needs no generated Prisma client from npm's pretest.
+  const npmArguments = mergeReports
+    ? ['exec', '--', 'vitest', 'run', ...testArguments]
+    : [
+        'test',
+        '--',
+        ...testArguments,
+        // An empty shard must emit its blob without falling back to unfiltered discovery.
+        ...(plan.mode === 'full'
+          ? []
+          : plan.testFiles.length
+            ? plan.testFiles
+            : ['__no_selected_module_tests__'])
+      ]
   const npmExecPath = environment.npm_execpath
   if (platform === 'win32' && !npmExecPath) {
     throw new Error(
@@ -291,12 +305,16 @@ function argumentValue(arguments_, name) {
 }
 
 export function runModuleTestCli(arguments_ = process.argv.slice(2), options = {}) {
+  const separator = arguments_.indexOf('--')
+  const forwardedArguments = separator === -1 ? [] : arguments_.slice(separator + 1)
+  if (separator !== -1) arguments_ = arguments_.slice(0, separator)
+  const testArguments = [...(options.testArguments ?? []), ...forwardedArguments]
   const [command] = arguments_
   if (command === 'module') {
     const moduleId = arguments_[1]
     if (!moduleId || moduleId.startsWith('--')) throw new Error('Module id is required')
     const plan = createModuleTestPlan(moduleId)
-    return executeModuleTestPlan(plan, options)
+    return executeModuleTestPlan(plan, { ...options, testArguments })
   }
   if (command !== 'affected') throw new Error(`Unknown module test-impact command: ${command}`)
 
@@ -343,9 +361,10 @@ export function runModuleTestCli(arguments_ = process.argv.slice(2), options = {
           '--coverage',
           ...(coveragePaths.length > 0 ? coveragePaths : ['__no_changed_sources__']).map(
             (path) => `--coverage.include=${path}`
-          )
+          ),
+          ...testArguments
         ]
-      : options.testArguments
+      : testArguments
   })
 }
 
