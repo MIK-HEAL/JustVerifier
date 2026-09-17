@@ -1142,6 +1142,8 @@ describe('PR Gate workflow', () => {
       'src/main/windows.test.ts',
       'src/main/windows-icon-assets.test.ts',
       'src/main/windows-powershell.test.ts',
+      'src/main/delegation/acp-execution.test.ts',
+      'src/main/delegation/production-framework-runtime.test.ts',
       'src/main/file-save.test.ts',
       'src/main/specialist/repository.test.ts',
       'src/main/notebook/micromamba-cache-powershell.test.ts',
@@ -1149,6 +1151,15 @@ describe('PR Gate workflow', () => {
     ]) {
       expect(runtime?.run).toContain(testFile)
     }
+
+    const nativeMac = workflow.jobs.macos_e2e.steps?.find(
+      ({ name }) => name === 'Test macOS-native behavior'
+    )
+    for (const testFile of [
+      'src/main/delegation/acp-execution.test.ts',
+      'src/main/delegation/production-framework-runtime.test.ts'
+    ])
+      expect(nativeMac?.run).toContain(testFile)
 
     const wheelEvidence = workflow.jobs.windows_core.steps?.find(
       ({ name }) => name === 'Test Windows wheel evidence recovery'
@@ -1286,7 +1297,7 @@ describe('E2E throughput contracts', () => {
     const job = workflow.jobs.windows_e2e
     expect(job.steps?.find(({ id }) => id === 'renderer_layout')).toMatchObject({
       if: '${{ matrix.shard == 1 }}',
-      run: 'npm run test:e2e:browser -- --fail-on-flaky-tests --global-timeout=300000'
+      run: 'npm run test:e2e:browser -- --workers=1 --fail-on-flaky-tests --global-timeout=300000'
     })
     expect(
       job.steps?.find(({ name }) => name === 'Enforce selected Windows E2E checks')?.run
