@@ -1144,6 +1144,7 @@ describe('PR Gate workflow', () => {
       ({ name }) => name === 'Test Windows-specific behavior'
     )
     for (const testFile of [
+      'scripts/windows-updater-certification.test.ts',
       'src/main/windows.test.ts',
       'src/main/windows-icon-assets.test.ts',
       'src/main/windows-powershell.test.ts',
@@ -1302,7 +1303,7 @@ describe('E2E throughput contracts', () => {
     const job = workflow.jobs.windows_e2e
     expect(job.steps?.find(({ id }) => id === 'renderer_layout')).toMatchObject({
       if: '${{ matrix.shard == 1 }}',
-      run: 'npm run test:e2e:browser -- --workers=1 --fail-on-flaky-tests --global-timeout=300000'
+      run: 'npm run test:e2e:browser -- --workers=1 --fail-on-flaky-tests --global-timeout=600000'
     })
     expect(
       job.steps?.find(({ name }) => name === 'Enforce selected Windows E2E checks')?.run
