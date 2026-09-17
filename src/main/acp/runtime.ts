@@ -3,7 +3,8 @@ import type {
   ActiveSession,
   ClientConnection,
   CreateElicitationResponse,
-  PromptResponse
+  PromptResponse,
+  SessionConfigOption
 } from '@agentclientprotocol/sdk'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -644,6 +645,7 @@ class AcpRuntime {
   // Stable app identities, provider aliases, publication order, selection, and startup/delete
   // arbitration share one owner. The runtime retains only protocol/resource orchestration.
   private readonly sessionRegistry: AcpSessionRegistry
+  private readonly sessionEfforts = new WeakMap<ActiveSession, ResolvedReasoningEffort>()
   // App-owned MCP construction, routing aliases, and bearer lease ownership are kept behind one
   // explicit role policy. Connection/process lifetime remains with the connection resource owner.
   private readonly sessionInteractions: AcpSessionInteractionOwner
@@ -984,8 +986,16 @@ class AcpRuntime {
     const record = this.sessionRegistry.lookup(sessionId)
     if (!record?.attachment) return undefined
     const aggregate = record.aggregate.snapshot()
+    const effort = this.sessionEfforts.get(record.attachment.session)
+    let backend = this.backend
+    if (effort !== undefined) {
+      const session = { ...backend.session }
+      if (effort === 'default') delete session.effort
+      else session.effort = effort
+      backend = Object.freeze({ ...backend, session: Object.freeze(session) })
+    }
     return Object.freeze({
-      backend: this.backend,
+      backend,
       ...(aggregate.appliedModel ? { appliedModel: aggregate.appliedModel } : {})
     })
   }
@@ -1134,6 +1144,48 @@ class AcpRuntime {
   // Creates a protocol session, injects artifact tooling, and uses the returned id as the app session id.
   async createSession(request: AcpCreateSessionRequest = {}): Promise<AcpCreateSessionResponse> {
     return this.withOperationLease(() => this.providerSessionCreator.create(request))
+  }
+
+  getSessionReasoningEffort(sessionId: string): ResolvedReasoningEffort | undefined {
+    const session = this.activeSessionFor(sessionId)
+    return session ? this.sessionEfforts.get(session) : undefined
+  }
+
+  async applySessionReasoningEffortChange(
+    sessionId: string,
+    effort: ResolvedReasoningEffort
+  ): Promise<boolean> {
+    return this.withOperationLease(async () => {
+      const record = this.sessionRegistry.lookup(sessionId)
+      const session = record?.attachment?.session
+      const connection = this.connection
+      if (!session || !connection || this.sessionInteractions.current(sessionId)) return false
+      const assertCurrent = (): void => {
+        this.assertCurrentConnectedConnection(connection)
+        if (this.activeSessionFor(sessionId) !== session)
+          throw new Error('ACP session startup was superseded.')
+      }
+      const facts = await this.sessionConfigurator.applyLiveEffort({
+        backend: this.backend,
+        connection,
+        effort,
+        sessions: [
+          {
+            session,
+            configOptions:
+              (record.aggregate.snapshot().configOptions as
+                readonly SessionConfigOption[] | undefined) ??
+              (session as { newSessionResponse?: { configOptions?: SessionConfigOption[] | null } })
+                .newSessionResponse?.configOptions,
+            assertCurrent
+          }
+        ]
+      })
+      assertCurrent()
+      if (facts.reconnectRequired) return false
+      this.sessionEfforts.set(session, effort)
+      return true
+    })
   }
 
   // Reattaches a persisted protocol session after an app restart so later prompts can stream.

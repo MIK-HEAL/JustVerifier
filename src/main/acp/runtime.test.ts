@@ -26472,6 +26472,67 @@ describe('ACP runtime — session effort', () => {
     await prompt
   })
 
+  it.each([
+    ['Codex Responses', 'codex-responses'],
+    ['Codex Bridge', 'codex-bridge']
+  ] as const)(
+    'changes only one %s Session effort while retaining the process and other Session settings',
+    async (_name, modelRoute) => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['effort-a', 'effort-b', 'effort-c'], {
+        modes: {
+          currentModeId: 'agent',
+          availableModes: ['read-only', 'agent', 'agent-full-access'].map((id) => ({
+            id,
+            name: id
+          }))
+        },
+        configOptions: [thoughtLevelOption(['default', 'high', 'xhigh'])]
+      })
+      const spawn = vi.fn(() => asAgentProcess(process))
+      const bridgeLease =
+        modelRoute === 'codex-bridge' ? createBackendLeaseHarness().lease : undefined
+      const runtime = new AcpRuntime({
+        appVersion: '0.1.0',
+        defaultCwd: '/workspace',
+        resolveBackend: () => ({
+          framework: { ...codexFramework, spawn },
+          backendId: 'codex:provider-a',
+          modelRoute,
+          executablePath: '/bin/codex',
+          env: {},
+          sessionEffort: 'xhigh',
+          ...(bridgeLease ? { responsesBridgeLease: bridgeLease } : {})
+        })
+      })
+      await runtime.createSession({ cwd: '/workspace' })
+      await runtime.createSession({ cwd: '/workspace' })
+      fakeAgent.configChanges.length = 0
+      await expect(runtime.applySessionReasoningEffortChange('effort-a', 'high')).resolves.toBe(
+        true
+      )
+      expect(fakeAgent.configChanges).toEqual([
+        { sessionId: 'effort-a', configId: 'effort', value: 'high' }
+      ])
+      expect(runtime.captureSessionModel('effort-a')?.backend.session.effort).toBe('high')
+      expect(runtime.captureSessionModel('effort-b')?.backend.session.effort).toBe('xhigh')
+      await runtime.createSession({ cwd: '/workspace' })
+      expect(fakeAgent.configChanges.at(-1)).toEqual({
+        sessionId: 'effort-c',
+        configId: 'effort',
+        value: 'xhigh'
+      })
+      await expect(runtime.applySessionReasoningEffortChange('effort-a', 'default')).resolves.toBe(
+        true
+      )
+      expect(runtime.captureSessionModel('effort-a')?.backend.session.effort).toBeUndefined()
+      expect(runtime.captureSessionModel('effort-b')?.backend.session.effort).toBe('xhigh')
+      expect(spawn).toHaveBeenCalledOnce()
+      expect(fakeAgent.closedSessions).toEqual([])
+      await runtime.disconnect()
+    }
+  )
+
   it('hands control back to the agent default when the level is cleared live', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['s-live'], {
