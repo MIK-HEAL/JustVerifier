@@ -1,3 +1,6 @@
+import { statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+import { samePath } from '../storage-root'
 import { isDeepStrictEqual } from 'node:util'
 import { BootstrapError } from '../../shared/bootstrap'
 import type {
@@ -898,13 +901,23 @@ class SettingsRepository {
     })
   }
 
-  // Stamps the onboarding-completed time exactly once; later calls leave the first value intact.
-  async markOnboardingComplete(timestamp: number): Promise<StoredSettings> {
-    return this.mutate((settings) =>
-      settings.onboardingCompletedAt === undefined
-        ? { ...settings, onboardingCompletedAt: timestamp }
-        : settings
-    )
+  // Commit the confirmed running root and completion in one settings transaction. Never replace
+  // a concurrently saved selection or mark onboarding complete with an unavailable root.
+  async markOnboardingComplete(timestamp: number, dataRoot: string): Promise<StoredSettings> {
+    return this.mutate((settings) => {
+      if (settings.onboardingCompletedAt !== undefined) return settings
+      if (settings.dataRoot && !samePath(settings.dataRoot, dataRoot))
+        throw new Error('The data location changed. Restart to use the saved location.')
+      if (!isAbsolute(dataRoot) || !statSync(dataRoot, { throwIfNoEntry: false })?.isDirectory())
+        throw new Error(
+          `The saved data location is missing or is not a directory: ${dataRoot}. Reconnect it before restarting.`
+        )
+      return {
+        ...settings,
+        dataRoot: settings.dataRoot ?? dataRoot,
+        onboardingCompletedAt: timestamp
+      }
+    })
   }
 
   // Stamps the legacy-path-normalization completion time exactly once; later calls leave the first
@@ -930,8 +943,8 @@ class SettingsRepository {
   // Persists the relocatable data root, optional onboarding marker, and fail-closed managed-runtime
   // disable overrides in one atomic document mutation. Old keys remain for safe retry/rollback;
   // matching new-root keys are additive and idempotent.
-  async setDataRoot(update: DataRootUpdate): Promise<StoredSettings> {
-    return this.mutate((settings) => {
+  async setDataRoot(update: DataRootUpdate, validateTarget?: () => void): Promise<StoredSettings> {
+    return this.store.mutate((settings) => {
       let notebookRuntimeEnablement = settings.notebookRuntimeEnablement
       if (update.previousDataRoot) {
         notebookRuntimeEnablement = relocateManagedRuntimeEnablement({
@@ -947,9 +960,10 @@ class SettingsRepository {
           : { onboardingCompletedAt: update.onboardingCompletedAt }),
         ...settings,
         ...(notebookRuntimeEnablement ? { notebookRuntimeEnablement } : {}),
-        dataRoot: update.dataRoot
+        dataRoot: update.dataRoot,
+        dataRootIsInitialDefault: undefined
       }
-    })
+    }, validateTarget)
   }
 
   // Applies one RuntimeEnablement change to the latest persisted value inside the write queue.

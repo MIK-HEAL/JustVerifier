@@ -58,6 +58,7 @@ vi.mock('electron', () => ({
   net: { fetch: vi.fn((...args: Parameters<typeof fetch>) => globalThis.fetch(...args)) }
 }))
 
+const { initDataRoot } = await import('../storage-root')
 const { SettingsService } = await import('./service')
 const { ResponsesBridge: ResponsesBridgeClass } = await import('./responses-bridge')
 const { SettingsRepository } = await import('./repository')
@@ -959,17 +960,17 @@ describe('SettingsService: providers', () => {
     expect(await readFile(join(storageRoot, 'codex-subscription', 'config.toml'), 'utf8')).toBe(
       [
         'cli_auth_credentials_store = "file"',
-        '# Open Science: begin imported Codex route selection',
+        '# Open-Science: begin imported Codex route selection',
         'model_provider = "subscription-route"',
-        '# Open Science: end imported Codex route selection',
-        '# Open Science: begin imported Codex provider',
+        '# Open-Science: end imported Codex route selection',
+        '# Open-Science: begin imported Codex provider',
         '[model_providers."subscription-route"]',
         'name = "OpenAI"',
         'base_url = "http://127.0.0.1:1087/v1"',
         'wire_api = "responses"',
         'requires_openai_auth = true',
         'supports_websockets = false',
-        '# Open Science: end imported Codex provider',
+        '# Open-Science: end imported Codex provider',
         ''
       ].join('\n')
     )
@@ -1117,7 +1118,7 @@ describe('SettingsService: providers', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(
       readFile(join(storageRoot, 'codex-subscription', 'config.toml'), 'utf8')
-    ).resolves.not.toContain('Open Science:')
+    ).resolves.not.toContain('Open-Science:')
     await expect(readFile(join(userCodexDir, 'auth.json'), 'utf8')).resolves.toContain('global')
   })
 
@@ -1412,7 +1413,7 @@ describe('SettingsService: providers', () => {
       ok: false,
       category: 'auth',
       message:
-        'No existing Codex login was found. Run `codex login` or use the isolated Open Science login.'
+        'No existing Codex login was found. Run `codex login` or use the isolated Open-Science login.'
     })
     expect(codexAuth.getStatus).toHaveBeenCalledWith('shared')
   })
@@ -1665,7 +1666,7 @@ describe('SettingsService: providers', () => {
     expect(result).toEqual({
       ok: false,
       category: 'unknown',
-      message: 'No isolated Open Science Codex login is configured.'
+      message: 'No isolated Open-Science Codex login is configured.'
     })
     expect(codexAuth.cancelLogin).not.toHaveBeenCalled()
     expect(codexAuth.logoutIsolated).not.toHaveBeenCalled()
@@ -1864,15 +1865,15 @@ describe('SettingsService: providers', () => {
     })
 
     const backend = await resolveActiveBackend(service, {
-      systemPromptAppends: ['Stable Open Science app guidance.']
+      systemPromptAppends: ['Stable Open-Science app guidance.']
     })
 
-    expect(backend.persistentSystemPrompt).toContain('Stable Open Science app guidance.')
+    expect(backend.persistentSystemPrompt).toContain('Stable Open-Science app guidance.')
     const appInstructions = await readFile(
       join(storageRoot, 'opencode', 'config', 'opencode', 'instructions', 'open-science.md'),
       'utf8'
     )
-    expect(appInstructions).toContain('Stable Open Science app guidance.')
+    expect(appInstructions).toContain('Stable Open-Science app guidance.')
     expect(appInstructions).toContain(join(storageRoot, 'skills', 'personal'))
     expect(appInstructions).toContain(join(storageRoot, 'skills', 'imported'))
 
@@ -2957,7 +2958,7 @@ describe('SettingsService: preflight & spawn config', () => {
     vi.stubEnv('OPEN_SCIENCE_AGENT_FRAMEWORK', 'codex')
 
     const backend = await resolveActiveBackend(service, {
-      systemPromptAppends: ['Stable Open Science developer guidance.']
+      systemPromptAppends: ['Stable Open-Science developer guidance.']
     })
     const selection = await service.captureActiveAgentBackendSelection()
 
@@ -2973,7 +2974,7 @@ describe('SettingsService: preflight & spawn config', () => {
     expect(backend.env.CODEX_API_KEY).toBeUndefined()
     const developerInstructions = JSON.parse(backend.env.CODEX_CONFIG ?? '{}')
       .developer_instructions as string
-    expect(developerInstructions).toContain('Stable Open Science developer guidance.')
+    expect(developerInstructions).toContain('Stable Open-Science developer guidance.')
     expect(developerInstructions).toContain(
       'Load the matching `mcp-*` skill before the first `host.mcp` call'
     )
@@ -3198,7 +3199,7 @@ describe('SettingsService: preflight & spawn config', () => {
     await service.setActiveProvider(provider.id)
 
     await expect(resolveActiveBackend(service)).rejects.toThrow(
-      'Open Science Codex ACP adapter not found. Install Codex in settings.'
+      'Open-Science Codex ACP adapter not found. Install Codex in settings.'
     )
   })
 
@@ -4549,7 +4550,9 @@ describe('SettingsService: onboarding', () => {
   it('marks onboarding complete and surfaces it in the snapshot', async () => {
     const service = createService()
 
+    initDataRoot(storageRoot)
     const snapshot = await service.markOnboardingComplete()
+    expect((await service.getStoredSettings()).dataRoot).toBe(storageRoot)
     expect(snapshot.onboardingCompletedAt).toBeTypeOf('number')
 
     // The persisted value is visible on a fresh read too.
@@ -4569,9 +4572,7 @@ describe('SettingsService: onboarding', () => {
   it('persists a new dataRoot with onboarding completion across a fresh read', async () => {
     const service = createService()
 
-    // The repository canonicalizes dataRoot to the host separator on read (for samePath comparisons),
-    // so build the fixture the same way — a bare POSIX literal comes back with backslashes on Windows
-    // and would fail the round-trip.
+    // Use a host-native absolute fixture; the repository preserves its saved spelling.
     const dataRoot = normalize('/mnt/new-data')
     await service.setDataRoot(dataRoot, { completeOnboarding: true })
 
@@ -8753,9 +8754,9 @@ describe('SettingsService: claude-shared login orchestration', () => {
     ).resolves.toMatchObject({
       ok: false,
       category: 'auth',
-      message: expect.stringContaining('disconnected from Open Science')
+      message: expect.stringContaining('disconnected from Open-Science')
     })
-    await expect(resolveActiveBackend(service)).rejects.toThrow(/disconnected from Open Science/)
+    await expect(resolveActiveBackend(service)).rejects.toThrow(/disconnected from Open-Science/)
 
     await expect(service.loginClaudeShared()).resolves.toMatchObject({ ok: true, applied: true })
     await expect(resolveActiveBackend(service)).resolves.toMatchObject({

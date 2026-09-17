@@ -1,3 +1,4 @@
+import { storageErrorMessage } from '@/lib/storage-error'
 import { Notice } from '@/components/notice'
 import { InlineNotice } from '@/components/ui/inline-notice'
 import { AlertDialog } from 'radix-ui'
@@ -35,6 +36,7 @@ import { resolveLocalPath } from '../../../../shared/local-fs'
 import type {
   DataRootKind,
   DataRootInspection,
+  DataRootSelection,
   DataRootRecoveryStatus,
   UsageCategoryKey
 } from '../../../../shared/storage'
@@ -140,10 +142,11 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
   const [isInspecting, setIsInspecting] = useState(false)
   // The classification of `newPath` (a PARENT the user typed/picked), keyed by the exact path it
   // was computed for so a stale response for an already-superseded path never drives the action
-  // buttons. `dataRoot` is the derived `<newPath>/OpenScience` the app will actually use.
+  // buttons. `dataRoot` is the exact resolved destination, normally `<newPath>/Open-Science`.
   const [inspection, setInspection] = useState<(DataRootInspection & { path: string }) | null>(null)
   const [migrationTarget, setMigrationTarget] = useState<{
     path: string
+    selection?: DataRootSelection
     recoveryStatus?: DataRootRecoveryStatus
     targetAvailableBytes?: number
   } | null>(null)
@@ -189,7 +192,9 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
       const result = await window.api.storage.revealAppStorage()
       // Backend-supplied failure text passes through verbatim; the catalog copy is the fallback.
       if (!result.revealed)
-        setRevealError(result.error ?? t('Could not reveal application storage.'))
+        setRevealError(
+          storageErrorMessage(result.error, t) ?? t('Could not reveal application storage.')
+        )
     } catch (error) {
       setRevealError(
         error instanceof Error ? error.message : t('Could not reveal application storage.')
@@ -289,8 +294,8 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
     setMigrationTarget(null)
     // Discarding a recovered copy changes its on-disk classification. Refresh the editor instead of
     // leaving a stale `recover` action that would reopen a modal for a marker that no longer exists.
-    if (resolvedTarget && inspection?.path === resolvedTarget.path) {
-      void inspectPath(resolvedTarget.path)
+    if (resolvedTarget && inspection?.dataRoot === resolvedTarget.path) {
+      void inspectPath(inspection.path)
     }
   }
 
@@ -300,10 +305,14 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
     setAdoptError(undefined)
 
     try {
-      const result = await window.api.storage.setDataRootAndRelaunch(trimmedNewPath, false)
+      const result = await window.api.storage.setDataRootAndRelaunch(
+        inspection!.dataRoot,
+        false,
+        inspection!.selection
+      )
       if (!result.ok) {
         setIsAdopting(false)
-        setAdoptError(result.error ?? t('Could not switch to this folder.'))
+        setAdoptError(storageErrorMessage(result.error, t) ?? t('Could not switch to this folder.'))
       }
     } catch {
       setIsAdopting(false)
@@ -312,11 +321,8 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
     // On success the app relaunches; nothing left to update here.
   }
 
-  // "Use default location": relocate back to the default `<home>/OpenScience` (the reverse of any
-  // other move). The default is reproduced by feeding its parent through the same inspect/migrate
-  // flow a browsed folder uses, so the common case (default folder empty or gone → 'move') just
-  // opens the migration modal, which moves the data back and restarts. Rare fallbacks: the default
-  // folder still holds data ('adopt' → repoint as-is), or it is somehow unusable ('invalid' → error).
+  // Pass the displayed destination itself. A parent can resolve to a populated legacy sibling,
+  // which would make "Use default" silently target a different location from the one shown.
   const handleUseDefault = async (): Promise<void> => {
     if (!info) return
     const requestId = ++inspectRequestRef.current
@@ -325,31 +331,35 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
     setDefaultError(undefined)
     setIsInspecting(true)
     try {
-      const result = await window.api.storage.inspectDataRoot(info.defaultParent)
+      const result = await window.api.storage.inspectDataRoot(info.defaultDataRoot)
       if (inspectRequestRef.current !== requestId) return
       if (result.kind === 'move') {
         setMigrationTarget({
-          path: info.defaultParent,
+          path: result.dataRoot,
+          selection: result.selection,
           targetAvailableBytes: result.targetAvailableBytes
         })
         return
       }
       if (result.kind === 'adopt') {
-        setNewPath(info.defaultParent)
-        setInspection({ path: info.defaultParent, ...result })
+        setNewPath(info.defaultDataRoot)
+        setInspection({ path: info.defaultDataRoot, ...result })
         setIsEditing(true)
         setAdoptConfirmOpen(true)
         return
       }
       if (result.kind === 'recover' && result.recoveryStatus) {
         setMigrationTarget({
-          path: info.defaultParent,
+          path: result.dataRoot,
+          selection: result.selection,
           recoveryStatus: result.recoveryStatus,
           targetAvailableBytes: result.targetAvailableBytes
         })
         return
       }
-      setDefaultError(result.error ?? t('The default location is not usable.'))
+      setDefaultError(
+        storageErrorMessage(result.error, t) ?? t('The default location is not usable.')
+      )
     } catch {
       if (inspectRequestRef.current === requestId)
         setDefaultError(t('The default location is not usable.'))
@@ -382,7 +392,7 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
       {storageRepairActive && storageCheck ? (
         <SettingsSection
           title={t('Application storage')}
-          description={t('Open Science needs write access to its private configuration directory.')}
+          description={t('Open-Science needs write access to its private configuration directory.')}
           aria-label={t('Application storage')}
         >
           {/* Keep the failure visibly actionable, then remove the warning treatment as soon as a
@@ -456,7 +466,7 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
       <SettingsSection
         title={t('Data location')}
         description={t(
-          'Where Open Science stores your projects, artifacts, and other app data on this device.'
+          'Where Open-Science stores your projects, artifacts, and other app data on this device.'
         )}
         aria-label={t('Data location')}
         action={
@@ -585,7 +595,7 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
                 {kind === 'adopt' ? (
                   <p className="mt-2 text-xs text-muted-foreground">
                     <Trans
-                      i18nKey="This folder already contains Open Science data. It will be <em>used as-is (not merged)</em> — <em>your current data folder is kept, so you can switch back</em>. The app will restart."
+                      i18nKey="This folder already contains Open-Science data. It will be <em>used as-is (not merged)</em> — <em>your current data folder is kept, so you can switch back</em>. The app will restart."
                       components={{ em: <strong className="font-semibold text-foreground" /> }}
                     />
                   </p>
@@ -653,7 +663,8 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
                       type="button"
                       onClick={() =>
                         setMigrationTarget({
-                          path: trimmedNewPath,
+                          path: inspection.dataRoot,
+                          selection: inspection.selection,
                           recoveryStatus: inspection.recoveryStatus,
                           targetAvailableBytes: inspection.targetAvailableBytes
                         })
@@ -668,7 +679,8 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
                       disabled={!canChangeLocation}
                       onClick={() =>
                         setMigrationTarget({
-                          path: trimmedNewPath,
+                          path: inspection!.dataRoot,
+                          selection: inspection!.selection,
                           targetAvailableBytes: inspection?.targetAvailableBytes
                         })
                       }
@@ -880,7 +892,7 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
 
             <div className={dialogBodyClassName}>
               <AlertDialog.Description className={dialogDescriptionClassName}>
-                {t("You can move Open Science's data to another folder on this device.")}
+                {t("You can move Open-Science's data to another folder on this device.")}
               </AlertDialog.Description>
               <div className="mt-3">
                 <DataRootWarning />
@@ -938,7 +950,7 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
               <pre className={PATH_PILL}>{inspection?.dataRoot ?? trimmedNewPath}</pre>
               <AlertDialog.Description className={cn(dialogDescriptionClassName, 'mt-3')}>
                 <Trans
-                  i18nKey="Open Science will restart and use this folder as-is — <em>its contents are not merged with your current data</em>, and anything it's missing will show as unavailable. <em>Your current data folder is left untouched, so you can switch back.</em>"
+                  i18nKey="Open-Science will restart and use this folder as-is — <em>its contents are not merged with your current data</em>, and anything it's missing will show as unavailable. <em>Your current data folder is left untouched, so you can switch back.</em>"
                   components={{ em: <strong className="font-semibold text-text-000" /> }}
                 />
               </AlertDialog.Description>
@@ -963,6 +975,7 @@ const StoragePanel = ({ onContinueToAgent }: StoragePanelProps): React.JSX.Eleme
       {migrationTarget !== null ? (
         <StorageMigrationModal
           targetPath={migrationTarget.path}
+          selection={migrationTarget.selection}
           recoveryStatus={migrationTarget.recoveryStatus}
           targetAvailableBytes={migrationTarget.targetAvailableBytes}
           onClose={handleMigrationClose}

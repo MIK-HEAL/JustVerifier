@@ -1,3 +1,4 @@
+import { initDataRoot } from '../storage-root'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -52,6 +53,7 @@ describe('artifact finalization startup recovery', () => {
 
   beforeEach(async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'open-science-artifact-finalization-recovery-'))
+    initDataRoot(storageRoot)
     client = createProjectDbClient(storageRoot)
     await migrateApplicationDatabase(client)
     sessions = new SessionRepository(storageRoot)

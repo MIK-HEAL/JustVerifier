@@ -131,7 +131,7 @@ const INVALID_SUCCESS_MESSAGE =
 const OUTCOME_UNCONFIRMED_GUIDANCE =
   'Stop automatic retries. Do not assume the operation failed or repeat it until later Session Plan context confirms whether it took effect. Do not repeat confirmed writes; report unresolved state for application recovery.'
 const AUTHENTICATION_REJECTED_GUIDANCE =
-  "Do not retry automatically or bypass the rejection. Report it so Open Science can refresh this Session's Plan capability; retry only after the application provides a fresh capability."
+  "Do not retry automatically or bypass the rejection. Report it so Open-Science can refresh this Session's Plan capability; retry only after the application provides a fresh capability."
 
 const boundedRedactedMessage = (message: string): string => {
   const redacted = redactSensitiveText(message)
@@ -142,7 +142,7 @@ const guidanceForPlanError = (error: PlanCommandError): string | undefined => {
   if (error.code === 'invalid-backend-result') return OUTCOME_UNCONFIRMED_GUIDANCE
   if (error.code === 'invalid-plan') return undefined
   if (error.code === 'plan-unavailable') {
-    return 'The operation was not attempted. Do not rebuild or resubmit the Plan. Open Science must provide the Session Plan capability before another Plan call.'
+    return 'The operation was not attempted. Do not rebuild or resubmit the Plan. Open-Science must provide the Session Plan capability before another Plan call.'
   }
   if (error.code === 'no-active-plan') {
     return 'Do not retry this command unless later application context establishes an active Plan.'

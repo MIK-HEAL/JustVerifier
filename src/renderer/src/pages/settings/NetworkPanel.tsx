@@ -301,7 +301,7 @@ const NetworkPanel = ({
           <div className="rounded-xl border border-border p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-sm text-foreground">{t('Open Science domains')}</p>
+                <p className="text-sm text-foreground">{t('Open-Science domains')}</p>
                 <p className="text-xs text-muted-foreground">
                   {t('{{count}} custom domains allowed', {
                     count: notebookNetwork.allowedDomains.length,
@@ -325,7 +325,7 @@ const NetworkPanel = ({
         <SettingsSection
           title={t('Proxy')}
           description={t(
-            'How Open Science, ACP agents, notebook runtimes, and installers reach the internet.'
+            'How Open-Science, ACP agents, notebook runtimes, and installers reach the internet.'
           )}
           aria-label={t('Proxy')}
         >

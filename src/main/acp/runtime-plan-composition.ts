@@ -289,13 +289,13 @@ const composeAcpRuntimePlanWorkflow = (
     if (!service) {
       throw new PlanCommandError(
         'plan-unavailable',
-        'Session Plan capability is not configured. This operation was not attempted. Open Science must provide the capability before another Plan call.'
+        'Session Plan capability is not configured. This operation was not attempted. Open-Science must provide the capability before another Plan call.'
       )
     }
     if (interactions.providerPauseFor(input.sessionId)) {
       throw new PlanCommandError(
         'plan-review-pending',
-        'The Session Plan response has not been delivered. Wait for Open Science to resume this task before making another Plan call.'
+        'The Session Plan response has not been delivered. Wait for Open-Science to resume this task before making another Plan call.'
       )
     }
     if (input.operation === 'generate') {
@@ -303,7 +303,7 @@ const composeAcpRuntimePlanWorkflow = (
       if (!execution || execution.kind !== 'prompt') {
         throw new PlanCommandError(
           'interaction-mismatch',
-          'No active prompt interaction can generate a Session Plan. Generation was not attempted. Wait for Open Science to establish the active interaction before another Plan call.'
+          'No active prompt interaction can generate a Session Plan. Generation was not attempted. Wait for Open-Science to establish the active interaction before another Plan call.'
         )
       }
       const interactionId = base.artifactTurns?.snapshot(
@@ -312,7 +312,7 @@ const composeAcpRuntimePlanWorkflow = (
       if (!interactionId) {
         throw new PlanCommandError(
           'interaction-mismatch',
-          'The active prompt has no durable Message identity for a Session Plan. Generation was not attempted. Open Science must establish that identity before another Plan call.'
+          'The active prompt has no durable Message identity for a Session Plan. Generation was not attempted. Open-Science must establish that identity before another Plan call.'
         )
       }
       interactions.reserveApproval(input.sessionId, interactionId)
@@ -564,7 +564,7 @@ const composeAcpRuntimePlanWorkflow = (
     if (!service) {
       throw new PlanCommandError(
         'plan-unavailable',
-        'Session Plan capability is not configured. This operation was not attempted. Open Science must provide the capability before another Plan call.'
+        'Session Plan capability is not configured. This operation was not attempted. Open-Science must provide the capability before another Plan call.'
       )
     }
     const interaction = sessionInteractions.current(input.sessionId)
@@ -638,7 +638,7 @@ const composeAcpRuntimePlanWorkflow = (
     if (!service) {
       throw new PlanCommandError(
         'plan-unavailable',
-        'Session Plan capability is not configured. This operation was not attempted. Open Science must provide the capability before another Plan call.'
+        'Session Plan capability is not configured. This operation was not attempted. Open-Science must provide the capability before another Plan call.'
       )
     }
     const approvalInteractionId = interactions.approvalInteractionIdFor(input.sessionId)

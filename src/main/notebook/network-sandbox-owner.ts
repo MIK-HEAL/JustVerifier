@@ -151,6 +151,7 @@ const blockedDestinationKey = (sessionId: string, hostname: string): string =>
   `${sessionId}\0${hostname}`
 
 type NotebookNetworkSandboxOwnerOptions = Readonly<{
+  packaged?: boolean
   resourceRoot: string
   allowRuntimeAccessPrompt?: boolean
   getSettings: () => Promise<NotebookNetworkSettings | undefined>
@@ -787,7 +788,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
         throw new NotebookRuntimeAccessCancelledError('R access preparation was cancelled.')
       if (isMigrationInProgress())
         throw new Error(
-          'Open Science is moving your data. Wait for the move to finish before running this.'
+          'Open-Science is moving your data. Wait for the move to finish before running this.'
         )
       diagnostic.phase('data-root-write-wait')
       const result = await withDataRootWrite(async () => {
@@ -804,7 +805,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
           throw new NotebookRuntimeAccessCancelledError('R access preparation was cancelled.')
         if (!this.options.allowRuntimeAccessPrompt)
           throw new Error(
-            'R access requires administrator authorization on the local Open Science desktop.'
+            'R access requires administrator authorization on the local Open-Science desktop.'
           )
         diagnostic.phase('authorize')
         return {
@@ -1334,6 +1335,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     parentProxy: Readonly<{ http?: string; https?: string; noProxy?: string }> | undefined
   ): NotebookNetworkSandbox {
     return new NotebookNetworkSandbox({
+      packaged: this.options.packaged,
       policy: buildNotebookNetworkPolicy(settings),
       resources: { root: this.options.resourceRoot },
       ...(parentProxy ? { parentProxy } : {}),

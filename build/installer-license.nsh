@@ -8,7 +8,7 @@
 !macro customWelcomePage
   !define MUI_PAGE_HEADER_TEXT "Open-source license"
   !define MUI_PAGE_HEADER_SUBTEXT "Apache License 2.0"
-  !define MUI_LICENSEPAGE_TEXT_TOP "Open Science is distributed under the Apache License 2.0."
+  !define MUI_LICENSEPAGE_TEXT_TOP "Open-Science is distributed under the Apache License 2.0."
   !define MUI_LICENSEPAGE_TEXT_BOTTOM "The license is also included with the installed application."
   !define MUI_LICENSEPAGE_BUTTON "$(^NextBtn)"
 !macroend

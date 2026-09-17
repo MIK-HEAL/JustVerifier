@@ -790,7 +790,7 @@ describe('Session Plan MCP server', () => {
       code: 'plan-unavailable',
       message: 'Session Plan capability is not configured. This operation was not attempted.',
       guidance:
-        'The operation was not attempted. Do not rebuild or resubmit the Plan. Open Science must provide the Session Plan capability before another Plan call.'
+        'The operation was not attempted. Do not rebuild or resubmit the Plan. Open-Science must provide the Session Plan capability before another Plan call.'
     })
   })
 
@@ -1114,7 +1114,7 @@ describe('Session Plan MCP server', () => {
         approve: vi.fn(async () => {
           throw new PlanCommandError(
             'plan-review-pending',
-            'The Session Plan response has not been delivered. Wait for Open Science to resume this task before making another Plan call.'
+            'The Session Plan response has not been delivered. Wait for Open-Science to resume this task before making another Plan call.'
           )
         }),
         reject: vi.fn(),

@@ -62,7 +62,7 @@ export function Fixture(): React.JSX.Element {
     <main className="mx-auto flex max-w-4xl flex-col gap-7 p-6 text-foreground">
       <header className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">Open Science</h1>
+          <h1 className="text-xl font-semibold">Open-Science</h1>
           <p className="text-sm text-muted-foreground">Button feedback · production components</p>
         </div>
         <div data-testid="update">

@@ -219,10 +219,12 @@ function Get-ResetCacheCandidates([string]$Runtime, [string]$Identity, [string]$
     (Join-Path $Profile $compact)
   ) | ForEach-Object { [pscustomobject]@{ Path = $_; ManagedParent = $false } }
   $parents = @(
-    (Join-Path ([IO.Path]::GetPathRoot($Runtime)) 'OpenScienceTmp')
     (Join-Path $Profile 'os-tmp')
-    foreach ($tempRoot in $TempRoots) {
-      if ($tempRoot) { Join-Path $tempRoot 'OpenScienceTmp' }
+    foreach ($name in @('Open-ScienceTmp', 'OpenScienceTmp')) {
+      Join-Path ([IO.Path]::GetPathRoot($Runtime)) $name
+      foreach ($tempRoot in $TempRoots) {
+        if ($tempRoot) { Join-Path $tempRoot $name }
+      }
     }
   ) | Select-Object -Unique
   foreach ($parent in $parents) {
@@ -234,7 +236,12 @@ function Get-ResetPlan([string]$Profile, [string]$AppData, [string]$ExplicitData
     [string]$Identity, [string]$PublicRoot, [string[]]$TempRoots) {
   $Profile = Get-ResetPath $Profile
   $config = Assert-ResetTarget (Join-Path $Profile '.open-science') $Profile
-  $default = Assert-ResetTarget (Join-Path $Profile 'OpenScience') $Profile
+  $defaults = @('Open-Science', 'OpenScience') | ForEach-Object {
+    Assert-ResetTarget (Join-Path $Profile $_) $Profile
+  }
+  $electronProfiles = @('Open-Science', 'Open Science') | ForEach-Object {
+    Assert-ResetTarget (Join-Path $AppData $_) $Profile
+  }
   $settingsPath = Join-Path $config 'settings.json'
   $selected = $null
   if ($ExplicitDataRoot) {
@@ -260,11 +267,11 @@ function Get-ResetPlan([string]$Profile, [string]$AppData, [string]$ExplicitData
       catch { throw 'Cannot read settings. Review the data location and supply -DataRoot explicitly.' }
     }
   }
-  $dataRoots = @($default, $config)
+  $dataRoots = @($defaults) + @($config)
   if ($selected) {
     $selected = Assert-ResetTarget $selected $Profile
-    if ($selected -ne $config -and [IO.Path]::GetFileName($selected) -ine 'OpenScience') {
-      throw 'Custom data must be an OpenScience folder. Nonstandard historical paths require manual review.'
+    if ($selected -ne $config -and @('Open-Science', 'OpenScience') -notcontains [IO.Path]::GetFileName($selected)) {
+      throw 'Custom data must be an Open-Science or legacy OpenScience folder. Nonstandard historical paths require manual review.'
     }
     $dataRoots += $selected
   }
@@ -288,8 +295,9 @@ function Get-ResetPlan([string]$Profile, [string]$AppData, [string]$ExplicitData
       $targets += [pscustomobject]@{ Path = $root; Kind = 'Data and runtime'; Runtime = $null }
     }
   }
-  $electron = Assert-ResetTarget (Join-Path $AppData 'Open Science') $Profile
-  $targets += [pscustomobject]@{ Path = $electron; Kind = 'Electron profile'; Runtime = $null }
+  foreach ($electron in $electronProfiles) {
+    $targets += [pscustomobject]@{ Path = $electron; Kind = 'Electron profile'; Runtime = $null }
+  }
   # Configuration is last, so a failed data/cache deletion retains custom-root discovery metadata.
   $targets += [pscustomobject]@{ Path = $config; Kind = 'Configuration and legacy data'; Runtime = $null }
   return @($targets | Sort-Object -Property Path -Unique | Sort-Object { $_.Path -eq $config })
@@ -324,7 +332,7 @@ function Assert-OpenScienceStopped($Plan) {
         $blocked = $true
       }
     }
-    if ($blocked) { throw "Close Open Science and its runtime processes, then retry. Detected: $name (PID $($process.ProcessId))." }
+    if ($blocked) { throw "Close Open-Science and its runtime processes, then retry. Detected: $name (PID $($process.ProcessId))." }
   }
 }
 
@@ -349,9 +357,9 @@ function Remove-ResetTree([string]$Path, [string]$Boundary) {
 
 function Invoke-Reset($Plan, [string]$Profile, [string]$Identity, [switch]$PreviewOnly) {
   Assert-OpenScienceStopped $Plan
-  Write-Host 'Open Science - reset all local application data'
+  Write-Host 'Open-Science - reset all local application data'
   Write-Host 'This permanently deletes settings, conversations, managed files, models and runtimes.'
-  Write-Host 'Back up needed files first. Keep Open Science closed throughout this operation.'
+  Write-Host 'Back up needed files first. Keep Open-Science closed throughout this operation.'
   Write-Host 'External projects/runtimes and Windows sandbox ownership records are preserved.'
   Write-Host ''
   foreach ($target in $Plan) {
@@ -360,7 +368,7 @@ function Invoke-Reset($Plan, [string]$Profile, [string]$Identity, [switch]$Previ
   }
   if ($PreviewOnly) { Write-Host 'Preview only. Nothing was removed.'; return }
   Write-Host ''
-  if ((Read-Host 'Type RESET OPEN SCIENCE to permanently delete the listed data') -cne 'RESET OPEN SCIENCE') {
+  if ((Read-Host 'Type RESET OPEN-SCIENCE to permanently delete the listed data') -cne 'RESET OPEN-SCIENCE') {
     Write-Host 'Cancelled. Nothing was removed.'
     return
   }
@@ -375,7 +383,7 @@ function Invoke-Reset($Plan, [string]$Profile, [string]$Identity, [switch]$Previ
     Remove-ResetTree $path $path
     if (Test-Path -LiteralPath $path) { throw "Directory remains: $path" }
   }
-  Write-Host 'Reset completed. Start Open Science and configure it again. Managed runtimes will need installation.'
+  Write-Host 'Reset completed. Start Open-Science and configure it again. Managed runtimes will need installation.'
 }
 
 # Dot-sourcing exposes the same functions to isolated fixture tests without running a reset.

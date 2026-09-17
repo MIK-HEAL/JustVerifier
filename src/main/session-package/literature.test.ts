@@ -1,3 +1,4 @@
+import * as storageRoots from '../storage-root'
 import { BookmarkRepository } from '../bookmarks/repository'
 import { SessionProjectionRepository } from '../session-persistence/projection'
 import { LiteratureAttachmentAuthority } from '../literature/attachment-authority'
@@ -30,6 +31,7 @@ vi.mock('electron', () => ({
 const fixtures: Awaited<ReturnType<typeof createProvenanceTestFixture>>[] = []
 const services: SessionPackageService[] = []
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const service of services.splice(0)) await service.close()
   for (const fixture of fixtures.splice(0)) await fixture.dispose()
 })
@@ -38,6 +40,8 @@ const setup = async (): Promise<
 > => {
   const fixture = await createProvenanceTestFixture()
   fixtures.push(fixture)
+  // Session path codecs must use fixture data, not the desktop configuration under test.
+  vi.spyOn(storageRoots, 'resolveDataRoot').mockReturnValue(fixture.storageRoot)
   const service = new SessionPackageService({
     storageRoot: fixture.storageRoot,
     getClient: async () => fixture.client

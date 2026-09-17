@@ -938,10 +938,10 @@ const ConversationPanel = ({
         return
       }
       if (!(await workflows.wslSetup.start())) {
-        onSetComposerError(t('Open Science could not open the WSL2 setup conversation.'))
+        onSetComposerError(t('Open-Science could not open the WSL2 setup conversation.'))
       }
     } catch {
-      onSetComposerError(t('Open Science could not open the WSL2 setup conversation.'))
+      onSetComposerError(t('Open-Science could not open the WSL2 setup conversation.'))
     }
   }
 

@@ -55,6 +55,9 @@ describe('NetworkPanel offline retry', () => {
     await act(async () =>
       root.render(<NetworkPanel view={{ kind: 'list' }} onNavigate={() => {}} />)
     )
+    expect(container.querySelector('[aria-label="Proxy"]')?.textContent).toContain(
+      'How Open-Science, ACP agents, notebook runtimes, and installers reach the internet.'
+    )
     expect(buttonWithText('Check again')).not.toBeUndefined()
     await act(async () => buttonWithText('Check again').click())
     await act(async () => {

@@ -2314,13 +2314,13 @@ describe('ACP Runtime Session Plan composition', () => {
       first.call({ projectId: 'project', sessionId: 'session', operation: 'approve' })
     ).rejects.toMatchObject({
       code: 'plan-unavailable',
-      message: expect.stringMatching(/not configured.*not attempted.*Open Science must provide/)
+      message: expect.stringMatching(/not configured.*not attempted.*Open-Science must provide/)
     })
     await expect(
       first.respond({ projectId: 'project', sessionId: 'session', feedback: 'continue' })
     ).rejects.toMatchObject({
       code: 'plan-unavailable',
-      message: expect.stringMatching(/not configured.*not attempted.*Open Science must provide/)
+      message: expect.stringMatching(/not configured.*not attempted.*Open-Science must provide/)
     })
   })
 
@@ -2338,7 +2338,7 @@ describe('ACP Runtime Session Plan composition', () => {
     ).rejects.toMatchObject({
       code: 'interaction-mismatch',
       message: expect.stringMatching(
-        /No active prompt interaction.*not attempted.*Open Science.*active interaction/
+        /No active prompt interaction.*not attempted.*Open-Science.*active interaction/
       )
     })
     expect(harness.generate).not.toHaveBeenCalled()
@@ -2357,7 +2357,7 @@ describe('ACP Runtime Session Plan composition', () => {
     ).rejects.toMatchObject({
       code: 'interaction-mismatch',
       message: expect.stringMatching(
-        /no durable Message identity.*not attempted.*Open Science must establish/
+        /no durable Message identity.*not attempted.*Open-Science must establish/
       )
     })
     expect(harness.generate).not.toHaveBeenCalled()

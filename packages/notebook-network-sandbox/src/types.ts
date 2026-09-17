@@ -111,6 +111,8 @@ export type NotebookSandboxedProcess = Readonly<{
 }>
 
 export type NotebookNetworkSandboxOptions = Readonly<{
+  /** The application supplies its mode; standalone consumers default to production. */
+  packaged?: boolean
   policy: NotebookNetworkPolicy
   resources: NotebookSandboxResources
   parentProxy?: NotebookNetworkParentProxy

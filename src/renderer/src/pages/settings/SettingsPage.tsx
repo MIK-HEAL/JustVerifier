@@ -2,7 +2,7 @@ import { Notice } from '@/components/notice'
 import { ConnectorBulkManageView } from './ConnectorBulkManageView'
 import { ErrorNotice } from '@/components/error-notice'
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
-/* Hallmark · component: settings side rail · genre: modern-minimal · theme: existing Open Science tokens · slop: pass */
+/* Hallmark · component: settings side rail · genre: modern-minimal · theme: existing Open-Science tokens · slop: pass */
 import {
   AlertTriangle,
   Loader2,

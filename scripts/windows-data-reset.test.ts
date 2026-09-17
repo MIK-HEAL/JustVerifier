@@ -55,7 +55,7 @@ const success = (body: string): string => {
 const plan = (f: ReturnType<typeof fixture>, explicit = ''): string =>
   `$plan = @(Get-ResetPlan ${quote(f.profile)} ${quote(f.appData)} ${quote(explicit)} 'fixture-user' '' @());`
 const stopped = `function Get-CimInstance { [pscustomobject]@{ Name='unrelated.exe'; ProcessId=987654; ExecutablePath='C:\\unrelated.exe'; CommandLine='unrelated' } };`
-const confirmed = `function Read-Host { 'RESET OPEN SCIENCE' };`
+const confirmed = `function Read-Host { 'RESET OPEN-SCIENCE' };`
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -82,6 +82,57 @@ it('keeps standalone cache ownership checks identical to the installer owner', (
 })
 
 describe.skipIf(process.platform !== 'win32')('Windows data reset', () => {
+  it('includes both data and profile brand names in a confirmed reset', () => {
+    const f = fixture()
+    const brandedData = join(f.profile, 'Open-Science')
+    const brandedProfile = join(f.appData, 'Open-Science')
+    const oldProfile = join(f.appData, 'Open Science')
+    for (const path of [brandedData, brandedProfile, oldProfile]) mkdirSync(path)
+    writeFileSync(
+      join(f.profile, '.open-science/settings.json'),
+      JSON.stringify({ dataRoot: brandedData })
+    )
+    const preview = success(`${plan(f)} $plan | ConvertTo-Json`)
+    for (const path of [f.data, brandedData, brandedProfile, oldProfile]) {
+      expect(JSON.parse(preview).map((target: { Path: string }) => target.Path)).toContain(path)
+      expect(existsSync(path)).toBe(true)
+    }
+    success(
+      `${plan(f)} ${stopped} ${confirmed} Invoke-Reset $plan ${quote(f.profile)} 'fixture-user'`
+    )
+    for (const path of [f.data, brandedData, brandedProfile, oldProfile]) {
+      expect(existsSync(path)).toBe(false)
+    }
+  })
+
+  it.each(['Open-Science', 'OpenScience'])('previews a configured custom %s data root', (name) => {
+    const f = fixture()
+    const custom = join(f.root, 'custom data', name)
+    mkdirSync(custom, { recursive: true })
+    writeFileSync(
+      join(f.profile, '.open-science/settings.json'),
+      JSON.stringify({ dataRoot: custom })
+    )
+    const targets = JSON.parse(success(`${plan(f)} $plan | ConvertTo-Json`))
+    expect(targets.map((target: { Path: string }) => target.Path)).toContain(custom)
+    expect(existsSync(custom)).toBe(true)
+  })
+
+  it('discovers both working-cache parent names', () => {
+    const f = fixture()
+    const temp = join(f.root, 'temp')
+    const candidates = JSON.parse(
+      success(
+        `@(Get-ResetCacheCandidates ${quote(join(f.data, 'runtime'))} 'fixture-user' ${quote(f.profile)} '' @(${quote(temp)})) | ConvertTo-Json`
+      )
+    ) as { Path: string }[]
+    for (const name of ['Open-ScienceTmp', 'OpenScienceTmp']) {
+      expect(
+        candidates.some((candidate) => candidate.Path.startsWith(join(temp, name) + '\\'))
+      ).toBe(true)
+    }
+  })
+
   it('previews default, legacy and custom data with config last and deletes nothing', () => {
     const f = fixture()
     const custom = join(f.root, '科研 [test]', 'OpenScience')
@@ -144,7 +195,7 @@ describe.skipIf(process.platform !== 'win32')('Windows data reset', () => {
   it('rechecks processes after confirmation before deleting', () => {
     const f = fixture()
     const result = run(
-      `${plan(f)} ${stopped} function Read-Host { function script:Get-CimInstance { [pscustomobject]@{ Name='open-science.exe'; ProcessId=987654 } }; 'RESET OPEN SCIENCE' }; Invoke-Reset $plan ${quote(f.profile)} 'fixture-user'`
+      `${plan(f)} ${stopped} function Read-Host { function script:Get-CimInstance { [pscustomobject]@{ Name='open-science.exe'; ProcessId=987654 } }; 'RESET OPEN-SCIENCE' }; Invoke-Reset $plan ${quote(f.profile)} 'fixture-user'`
     )
     expect(result.status).not.toBe(0)
     expect(existsSync(f.data)).toBe(true)

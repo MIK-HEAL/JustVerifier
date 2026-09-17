@@ -505,7 +505,7 @@ export function ConnectorsPanel({
         <SettingsLoadNotice
           state={catalogState === 'error' ? 'error' : 'loading'}
           loadingLabel={t('Loading Connectors…')}
-          errorMessage={t('Open Science could not load Connectors.')}
+          errorMessage={t('Open-Science could not load Connectors.')}
           onRetry={retryCatalog}
         />
       </div>
@@ -518,7 +518,7 @@ export function ConnectorsPanel({
         <SettingsLoadNotice
           state="error"
           loadingLabel={t('Loading Connectors…')}
-          errorMessage={t('Open Science could not load Connectors.')}
+          errorMessage={t('Open-Science could not load Connectors.')}
           onRetry={retryCatalog}
           className="mb-4"
         />

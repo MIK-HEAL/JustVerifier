@@ -9,6 +9,7 @@ import { PdfStructureReader } from './literature/pdf-structure/reader'
 import { createSpecialistApplicationOwner } from './specialist/application-commands'
 import { dirname, join } from 'node:path'
 import { mkdir, realpath } from 'node:fs/promises'
+import { initializeDataLocation } from './storage/initialize-location'
 
 import {
   app,
@@ -554,6 +555,7 @@ const createApplicationModules = async (
     settingsStore ?? resolveConfigRoot(),
     (operation) => specialistPackageSkillAdapter.runMutationExclusive(operation)
   )
+  await initializeDataLocation(settingsRepository)
   initializeWsl2BashPreview({
     platform: process.platform,
     arch: process.arch,
@@ -631,6 +633,7 @@ const createApplicationModules = async (
   }
   const notebookNetworkSandbox = await modules.add(undefined, () => {
     const capability = new NotebookNetworkSandboxOwner({
+      packaged: app.isPackaged,
       allowRuntimeAccessPrompt: !headless,
       resourceRoot: app.isPackaged
         ? join(process.resourcesPath, 'notebook-network-sandbox')
@@ -762,7 +765,8 @@ const createApplicationModules = async (
       wslSetupSessions,
       ensureDefaultWslSetupWorkspace: async () => {
         const settings = await settingsRepository.getSettings()
-        if (!settings.dataRoot?.trim()) await mkdir(resolveDataRoot(), { recursive: true })
+        if (!settings.dataRoot && settings.onboardingCompletedAt === undefined)
+          await mkdir(resolveDataRoot(), { recursive: true })
       },
       resolveCodexProxyEnvironment: () =>
         Promise.resolve(networkProxyRuntime.getChildProcessProxyEnvironment())
@@ -813,9 +817,10 @@ const createApplicationModules = async (
   })
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
-  initDataRoot(storedSettings.dataRoot)
+  initDataRoot(storedSettings.dataRoot, storedSettings.onboardingCompletedAt)
   const configuredDataRootMissing =
-    Boolean(storedSettings.dataRoot?.trim()) && (await isDataRootMissing(resolveDataRoot()))
+    (Boolean(storedSettings.dataRoot) || storedSettings.onboardingCompletedAt !== undefined) &&
+    (await isDataRootMissing(resolveDataRoot()))
   initializeDataRootWriteAvailability(configuredDataRootMissing)
   const dataRootCleanupJournal = new DataRootCleanupJournal(resolveConfigRoot())
   const cleanupDataRootSources = createDataRootSourceCleanup((runtimeRoot) =>
@@ -1929,6 +1934,8 @@ const createApplicationModules = async (
   // One runner owns Windows integrity/preflight/fallback state for every production micromamba
   // consumer in this main-process generation. Each consumer receives only its narrow resolve seam.
   const micromambaRunner = createProductionMicromambaRunner({
+    packaged: app.isPackaged,
+    configHome: app.getPath('home'),
     home: dirname(dirname(provisioningRoot)),
     resourcesPath: process.resourcesPath
   })
@@ -4243,7 +4250,11 @@ const createApplicationModules = async (
         // Mirror probing never changes the configured enterprise CA bundle, so it is safe to pass
         // through synchronously while channel selection warms in the background.
         caBundle: configuredMirror?.caBundle,
-        micromamba: { resourcesPath: process.resourcesPath },
+        micromamba: {
+          resourcesPath: process.resourcesPath,
+          packaged: app.isPackaged,
+          configHome: app.getPath('home')
+        },
         // Self-guard the provisioner's prefix writes (startup restore/upgrade/repair, named create, lazy
         // materialize) against a prefix crash-recovery could not confirm free of a live orphan — closes
         // the startup-gate path the UI-only assertProvisionAllowed guard did not cover. Reads the live

@@ -2,7 +2,7 @@ import { Notice } from '@/components/notice'
 import { InlineNotice } from '@/components/ui/inline-notice'
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V5 */
 /* Hallmark · macrostructure: Workbench · genre: modern-minimal · tone: technical/austere
- * theme: existing Open Science Settings tokens · enrichment: none · motion: existing controls only
+ * theme: existing Open-Science Settings tokens · enrichment: none · motion: existing controls only
  */
 import {
   CheckCircle2,
@@ -754,7 +754,7 @@ const RuntimesPanel = ({
                       'Authorize an existing personal R library. Installation may change packages used by other projects. Environment restoration requires a matching interpreter.'
                     )
                   : t(
-                      'Lets Open Science install packages into this environment. Installs go to your own environment, not the app-managed storage.'
+                      'Lets Open-Science install packages into this environment. Installs go to your own environment, not the app-managed storage.'
                     )
               }
             >

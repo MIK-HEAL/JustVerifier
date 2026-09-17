@@ -1,3 +1,4 @@
+import { initDataRoot } from '../storage-root'
 import { createUploadVersionReference } from '../../shared/uploads'
 import { join, sep } from 'node:path'
 import { dirname } from 'node:path'
@@ -54,6 +55,7 @@ const fixtures: Awaited<ReturnType<typeof createProvenanceTestFixture>>[] = []
 
 it('resolves a copying file name once across progress chunks', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Progress' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -105,7 +107,9 @@ it('resolves a copying file name once across progress chunks', async () => {
 
 it('imports a compact package with required duplicate evidence and forwards the same safe selection', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Compact research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -180,6 +184,7 @@ it('imports a compact package with required duplicate evidence and forwards the 
 
 it('reports oversized retained Artifact content as unavailable through the provenance reader', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await source.stagePng('original')
@@ -203,7 +208,9 @@ it('reports oversized retained Artifact content as unavailable through the prove
 
 it('leaves the application database available while a slow import copies files', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'source', name: 'Source' } })
   await target.client.project.create({ data: { id: 'target', name: 'Target' } })
@@ -282,6 +289,7 @@ it('leaves the application database available while a slow import copies files',
 
 it('validates Artifact payloads without allocating a whole-file buffer', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -322,7 +330,9 @@ it.each(['commit', 'rollback'] as const)(
   'publishes a large review with bounded database round trips (%s)',
   async (outcome) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'source', name: 'Source' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -408,7 +418,9 @@ it.each(['commit', 'rollback'] as const)(
 
 it('clears copying counters while finalizing an import', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'source', name: 'Source' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -450,7 +462,9 @@ it.each(['success', 'rollback', 'late-ack', 'publication-retry', 'ownership-coll
   'imports into an existing project without changing its research (%s)',
   async (outcome) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'source', name: 'Source' } })
     await target.client.project.create({ data: { id: 'target', name: 'Keep project' } })
@@ -589,7 +603,9 @@ it.each([1, 12, 'unavailable'] as const)(
   'uses stage-level capacity queries for %s files and retains the normal transfer when queries are unavailable',
   async (count) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Capacity' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -641,7 +657,9 @@ it.each(['export', 'validation', 'compression', 'import', 'config'] as const)(
   'rejects insufficient %s capacity before publishing and checks fresh space after user input',
   async (boundary) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Capacity' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -726,6 +744,7 @@ it.each(['parent', 'operation', 'existing', 'cleanup', 'cleanup-recovery'] as co
   'cleans the config stage when the separate data %s directory cannot be allocated',
   async (boundary) => {
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(target)
     const cleanupFails = boundary.startsWith('cleanup')
     const configRoot = join(target.storageRoot, 'config')
@@ -795,7 +814,9 @@ it.each(['direct', 'forward'] as const)(
   'exports selected content through %s while retaining explicit omitted Artifact metadata across import and restart',
   async (path) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Selected research' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -924,7 +945,9 @@ afterEach(async () => {
 
 it('reopens finalized provenance messages against the imported graph and keeps source hashes intact', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   const session = await new SessionRepository(source.storageRoot).saveSession({
@@ -1092,7 +1115,9 @@ it('reopens finalized provenance messages against the imported graph and keeps s
 
 it('keeps terminal Task and Compute results as evidence without installing jobs or recovery authority', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -1163,6 +1188,7 @@ it('keeps terminal Task and Compute results as evidence without installing jobs 
 
 it('does not remove an unclaimed directory when recovering an interrupted import', async () => {
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(target)
   const operation = '12345678-1234-4123-8123-123456789012'
   await mkdir(join(target.storageRoot, 'session-package-imports', operation), { recursive: true })
@@ -1178,7 +1204,9 @@ it('does not remove an unclaimed directory when recovering an interrupted import
 
 it('rejects a linked Notebook root without including files outside the selected Session', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const outside = await createProvenanceTestFixture()
+  initDataRoot(outside.storageRoot)
   fixtures.push(source, outside)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -1212,6 +1240,7 @@ it('rejects a linked Notebook root without including files outside the selected 
 
 it('blocks recognized credentials in Notebook files instead of silently exporting or rewriting them', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -1243,6 +1272,7 @@ it('blocks recognized credentials in Notebook files instead of silently exportin
 
 it('rejects a Notebook file changed during export without replacing the destination', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -1348,6 +1378,7 @@ it('allows excluded Side Chat projection updates while exporting the parent Sess
 
 it('aborts active export and queued work when its lifecycle owner closes', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -1382,7 +1413,9 @@ it.each(['readable', 'unavailable'] as const)(
   'reconciles a lost database acknowledgement with a %s commit witness',
   async (witness) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -1440,7 +1473,9 @@ it.each(['organized', 'deleted', 'projection-pending'] as const)(
   'preserves an already-published Session during staging recovery (%s)',
   async (state) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'source', name: 'Source' } })
     await target.client.project.create({ data: { id: 'target', name: 'Target' } })
@@ -1519,7 +1554,9 @@ it.each(['organized', 'deleted', 'projection-pending'] as const)(
 
 it('transfers conversation branches and delivered Side Chat relays without auxiliary Side Chats', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   const sourceConfigRoot = join(source.storageRoot, 'config')
@@ -1783,7 +1820,9 @@ it('transfers conversation branches and delivered Side Chat relays without auxil
 
 it('rejects self-consistent archive hashes when the embedded evidence contradicts its version', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -1843,7 +1882,9 @@ it.each(['root', 'frame'] as const)(
   'keeps exact cross-Session input bytes and %s Notebook execution evidence after import',
   async (laneKind) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -2350,6 +2391,7 @@ it.each(['checksum', 'sidecar'] as const)(
   'rejects a Review-only Session with a corrupt %s before deriving evidence',
   async (corruption) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     fixtures.push(source)
     await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -2399,7 +2441,9 @@ it.each(['checksum', 'sidecar'] as const)(
 
 it('preserves a completed Review and its findings without restarting the Review', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -2475,7 +2519,9 @@ it('preserves a completed Review and its findings without restarting the Review'
 
 it('imports both immutable Artifact Versions and keeps original evidence distinct from local identities', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -2532,7 +2578,9 @@ it.each(['pdf-context', 'pdf-annotation', 'text-annotation', 'image-annotation']
   'includes a foreign immutable file referenced only by %s',
   async (kind) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'References' } })
     const content = Buffer.from('%PDF-1.4\nfixture evidence\n%%EOF')
@@ -2717,6 +2765,7 @@ it.each(['pdf-context', 'pdf-annotation', 'text-annotation', 'image-annotation']
 
 it('drops an undelivered Side Chat relay instead of blocking Session export', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -2755,7 +2804,9 @@ it('drops an undelivered Side Chat relay instead of blocking Session export', as
 
 it('blocks recognized sensitive content when forwarding an externally created package', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const target = await createProvenanceTestFixture()
+  initDataRoot(target.storageRoot)
   fixtures.push(source, target)
   await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -2805,6 +2856,7 @@ it('blocks recognized sensitive content when forwarding an externally created pa
 
 it('includes retained Notebook bytes in the content-selection summary even without optional files', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Workspace evidence' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -2845,7 +2897,9 @@ it.each(['accept', 'reject', 'cancel'] as const)(
   'owns the reviewed import staging through %s',
   async (decision) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Reviewed import' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -2899,6 +2953,7 @@ it.each(['accept', 'reject', 'cancel'] as const)(
 
 it('does not spend processing time while the user chooses export content', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Patient selection' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -2954,6 +3009,7 @@ it('does not spend processing time while the user chooses export content', async
 
 it('still aborts processing after the budget expires while copying', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Bounded processing' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -3014,7 +3070,9 @@ it.each(
       getArtifactReproducibilityOutput
     } = await import('../artifacts/artifact-reproducibility-receipts')
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Probe' } })
     await new SessionRepository(source.storageRoot).saveSession({
@@ -3254,6 +3312,7 @@ it.each(
         reusedArchive
       )
       const reuseTarget = await createProvenanceTestFixture()
+      initDataRoot(reuseTarget.storageRoot)
       fixtures.push(reuseTarget)
       const reuseService = new SessionPackageService({
         storageRoot: reuseTarget.storageRoot,
@@ -3276,6 +3335,7 @@ it.each(
       )
     } else if (scenario === 'rollback') {
       const rollbackTarget = await createProvenanceTestFixture()
+      initDataRoot(rollbackTarget.storageRoot)
       fixtures.push(rollbackTarget)
       const rollbackService = new SessionPackageService({
         storageRoot: rollbackTarget.storageRoot,
@@ -3330,6 +3390,7 @@ it('retains a later Version lock when an earlier owner cannot supply the same ch
   const { ArtifactReproducibilityReceiptStore } =
     await import('../artifacts/artifact-reproducibility-receipts')
   const fixture = await createProvenanceTestFixture()
+  initDataRoot(fixture.storageRoot)
   fixtures.push(fixture)
   await fixture.client.project.create({ data: { id: 'project-1', name: 'Lock ownership' } })
   await new SessionRepository(fixture.storageRoot).saveSession({
@@ -3441,7 +3502,9 @@ it('retains a later Version lock when an earlier owner cannot supply the same ch
 
 it('creates a named destination only after validation and final confirmation', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   const destination = await createProvenanceTestFixture()
+  initDataRoot(destination.storageRoot)
   fixtures.push(source, destination)
   await source.client.project.create({ data: { id: 'source', name: 'Original project' } })
   await new SessionRepository(source.storageRoot).saveSession({
@@ -3487,6 +3550,7 @@ it('creates a named destination only after validation and final confirmation', a
 
 it('compares large Session metadata without allocating serialized comparison copies', async () => {
   const source = await createProvenanceTestFixture()
+  initDataRoot(source.storageRoot)
   fixtures.push(source)
   await source.client.project.create({ data: { id: 'project-1', name: 'Metadata' } })
   const request = { projectId: 'project-1', sessionId: 'session-1' }
@@ -3545,6 +3609,7 @@ it.each(['inactive branch', 'task history'] as const)(
   'rejects changed %s metadata before replacing an export',
   async (changed) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     fixtures.push(source)
     await source.client.project.create({ data: { id: 'project-1', name: 'Metadata' } })
     const request = { projectId: 'project-1', sessionId: 'session-1' }
@@ -3633,7 +3698,9 @@ it.each([false, true])(
   'uses a temporary validation database only for native rows (Artifact: %s)',
   async (withArtifact) => {
     const source = await createProvenanceTestFixture()
+    initDataRoot(source.storageRoot)
     const target = await createProvenanceTestFixture()
+    initDataRoot(target.storageRoot)
     fixtures.push(source, target)
     await source.client.project.create({ data: { id: 'project-1', name: 'Research' } })
     await new SessionRepository(source.storageRoot).saveSession({
