@@ -2194,6 +2194,7 @@ const createApplicationModules = async (
       }
     },
     skillPort: specialistPackageSkillAdapter,
+    skillSettings: settingsRepository,
     marketplaceOperationCoordinator,
     onSpecialistDeleted: (specialistId) =>
       marketplaceRepository.removeInstallationsForSpecialist(specialistId),
@@ -2214,7 +2215,7 @@ const createApplicationModules = async (
       ]),
     onCommitted: () => {
       broadcastToRenderers(SPECIALIST_IPC.CATALOG_CHANGED, undefined)
-      void runtime.requestSkillsReload()
+      requestSkillCatalogRefresh()
     }
   })
   specialistPackageRecovery.current = (operation) =>
@@ -2227,8 +2228,6 @@ const createApplicationModules = async (
     packages: specialistPackageService,
     fetch: netFetchWithManualRedirect,
     officialSource: OFFICIAL_MARKETPLACE_SOURCE,
-    getDisabledSkillIds: async () =>
-      (await settingsRepository.getSettings()).disabledSkillIds ?? [],
     getInstalledSpecialists: async () =>
       (await specialistService.list()).map((profile) => ({
         id: profile.id,
