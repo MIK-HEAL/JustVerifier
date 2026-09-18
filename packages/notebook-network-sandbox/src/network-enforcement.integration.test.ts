@@ -420,7 +420,7 @@ describe.runIf(platformSupported)('Notebook network sandbox enforcement', () => 
         onNetworkAccessRequest: async () => false
       })
       const denied = await runAndCleanup(deniedProcess)
-      expect(denied.code).not.toBe(0)
+      expect(denied.code, denied.annotatedStderr).toBe(22)
       expect(denied.stdout).not.toContain('OPEN_SCIENCE_NETWORK_DOMAIN_BLOCKED')
       expect(denied.annotatedStderr).toContain('OPEN_SCIENCE_NETWORK_DOMAIN_BLOCKED')
       expect(denied.annotatedStderr).toContain('deny network-outbound example.com:80')
@@ -437,7 +437,7 @@ describe.runIf(platformSupported)('Notebook network sandbox enforcement', () => 
         onNetworkAccessRequest: hardDeniedDecision
       })
       const hardDenied = await runAndCleanup(hardDeniedProcess)
-      expect(hardDenied.code).not.toBe(0)
+      expect(hardDenied.code, hardDenied.annotatedStderr).toBe(22)
       expect(hardDenied.stdout).toContain('OPEN_SCIENCE_NETWORK_POLICY_BLOCKED')
       expect(hardDenied.annotatedStderr).toContain('destination is explicitly blocked')
       expect(hardDeniedDecision).not.toHaveBeenCalled()
@@ -449,7 +449,7 @@ describe.runIf(platformSupported)('Notebook network sandbox enforcement', () => 
         onNetworkAccessRequest: privateDecision
       })
       const privateResult = await runAndCleanup(privateProcess)
-      expect(privateResult.code).not.toBe(0)
+      expect(privateResult.code, privateResult.annotatedStderr).toBe(22)
       expect(privateResult.stdout).toContain('OPEN_SCIENCE_NETWORK_POLICY_BLOCKED')
       expect(privateResult.annotatedStderr).toContain(
         'destination resolves to a non-public network address'
