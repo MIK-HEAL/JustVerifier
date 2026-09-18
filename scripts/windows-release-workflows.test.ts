@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -99,7 +100,7 @@ describe('post-merge Windows validation', () => {
 
     expect(build.jobs.windows_full_test).toBeUndefined()
     expect(workflow.on?.push).toBeUndefined()
-    expect(workflow.on?.schedule).toEqual([{ cron: '47 18 * * *' }])
+    expect(workflow.on?.schedule).toEqual([{ cron: '47 16 * * *' }])
     expect(dispatch?.inputs?.mode).toMatchObject({
       default: 'full',
       options: ['full', 'notebook-sandbox', 'notebook-mutation', 'regressions']
@@ -394,21 +395,27 @@ describe('post-merge Windows validation', () => {
     expect(uploadEvidence.with?.name).toBe('certification-${{ matrix.name }}')
     expect(uploadEvidence.with?.['retention-days']).toBe(7)
     expect(p0Regression).toMatchObject({ needs: 'source', 'runs-on': 'macos-26' })
-    expect(p0Regression.if).toBe("needs.source.outputs.available == 'true'")
-    expect(p0Regression['continue-on-error']).toBe('${{ inputs.allow_failure }}')
+    expect(p0Regression.if).toBe(
+      "needs.source.outputs.available == 'true' && inputs.suite != 'visual'"
+    )
+    expect(p0Regression['continue-on-error']).toBe('${{ inputs.allow_failure == true }}')
     expect(findStep(p0Regression, 'Download macOS ARM64 package').with?.name).toBe('macos-arm64')
     expect(findStep(p0Regression, 'Download macOS ARM64 package').with?.['run-id']).toBe(
       '${{ needs.source.outputs.run_id }}'
     )
     expect(findStep(p0Regression, 'Extract packaged application').run).toContain('ditto -x -k')
-    expect(findStep(p0Regression, 'Run packaged P0 regression').run).toBe('npm run test:e2e:p0')
+    expect(findStep(p0Regression, 'Run packaged P0 regression').run).toBe(
+      'bash scripts/ci/run-macos-packaged-e2e.sh npm run test:e2e:p0'
+    )
     expect(
       findStep(p0Regression, 'Run packaged P0 regression').env?.OPEN_SCIENCE_E2E_EXECUTABLE
     ).toBe('${{ steps.packaged_app.outputs.executable }}')
     expect(findStep(p0Regression, 'Upload P0 diagnostics').if).toBe('always()')
     expect(visualRegression).toMatchObject({ needs: 'source', 'runs-on': 'macos-14' })
-    expect(visualRegression.if).toBe("needs.source.outputs.available == 'true'")
-    expect(visualRegression['continue-on-error']).toBe('${{ inputs.allow_failure }}')
+    expect(visualRegression.if).toBe(
+      "${{ !cancelled() && inputs.suite != 'p0' && (inputs.suite == 'visual' || needs.source.outputs.available == 'true') }}"
+    )
+    expect(visualRegression['continue-on-error']).toBe('${{ inputs.allow_failure == true }}')
     expect(findStep(visualRegression, 'Build Electron application').run).toBe('npm run build:e2e')
     expect(findStep(visualRegression, 'Run visual stability regression')).toMatchObject({
       run: 'npm run test:e2e:visual -- --fail-on-flaky-tests'
@@ -459,8 +466,34 @@ describe('post-merge Windows validation', () => {
     expect(nightly.jobs.prepare.needs).toEqual(['plan', 'build', 'package-smoke'])
     expect(regression.on).not.toHaveProperty('workflow_run')
     expect(regression.on).toHaveProperty('workflow_dispatch')
+    expect(regression.on.workflow_dispatch).toMatchObject({
+      inputs: {
+        run_id: { required: false },
+        suite: { default: 'all', options: ['all', 'p0', 'visual'] }
+      }
+    })
+    expect(regression.jobs.source.if).toBe("inputs.suite != 'visual'")
+    expect(findStep(regression.jobs.visual, 'Upload visual diagnostics').with?.name).toBe(
+      'desktop-regression-visual-${{ needs.source.outputs.run_id || github.run_id }}'
+    )
+    expect(findStep(regression.jobs.p0, 'Checkout source revision').with?.ref).toBe(
+      '${{ needs.source.outputs.sha }}'
+    )
+    expect(findStep(regression.jobs.p0, 'Checkout manual launch tooling')).toMatchObject({
+      if: "github.event_name == 'workflow_dispatch'",
+      with: { ref: '${{ github.sha }}', 'persist-credentials': false }
+    })
+    expect(
+      findStep(regression.jobs.p0, 'Apply manual launch tooling').run?.trim().split('\n')
+    ).toEqual([
+      'cp .regression-tooling/e2e/fixtures/electron-app.ts e2e/fixtures/electron-app.ts',
+      'cp .regression-tooling/scripts/ci/run-macos-packaged-e2e.sh scripts/ci/run-macos-packaged-e2e.sh'
+    ])
+    expect(findStep(regression.jobs.visual, 'Checkout source revision').with?.ref).toBe(
+      "${{ github.event_name == 'workflow_dispatch' && github.sha || needs.source.outputs.sha }}"
+    )
     expect(regression.on).toHaveProperty('workflow_call')
-    expect(regression.jobs.source['continue-on-error']).toBe('${{ inputs.allow_failure }}')
+    expect(regression.jobs.source['continue-on-error']).toBe('${{ inputs.allow_failure == true }}')
     expect(findStep(regression.jobs.source, 'Resolve source run').run).toContain(
       '.name == "macos-arm64" and (.expired | not)'
     )
@@ -475,6 +508,37 @@ describe('post-merge Windows validation', () => {
       with: { allow_failure: true }
     })
   })
+
+  it.skipIf(process.platform === 'win32').each([
+    { suite: 'all', runId: '', exit: 1, message: 'run_id is required' },
+    { suite: 'p0', runId: '', exit: 1, message: 'run_id is required' },
+    { suite: 'all', runId: '456', exit: 77, message: 'actions/runs/456' },
+    { suite: 'p0', runId: '456', exit: 77, message: 'actions/runs/456' },
+    { suite: '', runId: '', exit: 77, message: 'actions/runs/123' }
+  ])(
+    'validates source run before metadata lookup for suite=$suite run_id=$runId',
+    ({ suite, runId, exit, message }) => {
+      const source = readWorkflow('desktop-regression.yml').jobs.source
+      const resolve = findStep(source, 'Resolve source run')
+      expect(resolve.env?.REGRESSION_SUITE).toBe('${{ inputs.suite }}')
+      const result = spawnSync(
+        'bash',
+        ['-c', `gh() { echo "$2" >&2; exit 77; };\n${resolve.run}`],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            GITHUB_REPOSITORY: 'aipoch/open-science',
+            MANUAL_RUN_ID: runId,
+            CURRENT_RUN_ID: '123',
+            REGRESSION_SUITE: suite
+          }
+        }
+      )
+      expect(result.status).toBe(exit)
+      expect(result.stderr).toContain(message)
+    }
+  )
 
   it('builds every platform without repeating the verified typecheck', () => {
     const workflow = readWorkflow('build.yml')
