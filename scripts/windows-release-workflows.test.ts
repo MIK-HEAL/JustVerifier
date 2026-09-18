@@ -106,9 +106,10 @@ describe('post-merge Windows validation', () => {
       options: ['full', 'notebook-sandbox', 'notebook-mutation', 'regressions']
     })
     expect(workflow.on).not.toHaveProperty('workflow_call')
-    expect(findStep(plan, 'Check for untested main changes').run).toContain(
-      'event=schedule&status=success'
-    )
+    expect(findStep(plan, 'Check for untested main changes')).toMatchObject({
+      uses: './.github/actions/skip-unchanged-scheduled',
+      with: { 'workflow-file': 'windows-full-test.yml' }
+    })
     expect(job).toMatchObject({
       needs: ['plan', 'windows_dependencies'],
       if: "${{ needs.plan.outputs.should_test == 'true' && needs.windows_dependencies.result == 'success' && (github.event_name != 'workflow_dispatch' || (inputs.mode == 'full' || inputs.mode == 'regressions')) }}",
@@ -132,10 +133,10 @@ describe('post-merge Windows validation', () => {
     expect(findStep(workflow.jobs.notebook_mutation, 'Restore dependencies').shell).toBe('bash')
     expect(job['continue-on-error']).toBeUndefined()
     expect(job.strategy?.matrix).toEqual({
-      shard: "${{ fromJSON(inputs.mode == 'regressions' && '[1]' || '[1,2,3,4,5]') }}"
+      shard: "${{ fromJSON(inputs.mode == 'regressions' && '[1]' || '[1,2,3,4,5,6,7,8]') }}"
     })
     expect(findStep(job, 'Test complete suite shard').run).toBe(
-      'npm test -- --shard=${{ matrix.shard }}/5 --maxWorkers=1 --testTimeout=60000 --hookTimeout=60000 --reporter=default --reporter=github-actions'
+      'npm test -- --shard=${{ matrix.shard }}/8 --maxWorkers=1 --testTimeout=60000 --hookTimeout=60000 --reporter=default --reporter=github-actions'
     )
     expect(findStep(job, 'Test complete suite shard').if).toBe(
       "${{ github.event_name != 'workflow_dispatch' || inputs.mode == 'full' }}"
