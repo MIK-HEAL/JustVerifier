@@ -1508,6 +1508,39 @@ describe('ConversationPanel composer intake', () => {
     expect(document.activeElement).toBe(navigationButton)
   })
 
+  it.each([false, true])(
+    'does not replay composer focus after permission approval (preview focus: %s)',
+    (previewFocus) => {
+      renderPanel({ view: { composerFocusKey: 'session-a' } })
+      if (previewFocus) {
+        act(() => window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT)))
+      }
+      const navigationButton = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Open navigation"]'
+      )!
+      navigationButton.focus()
+      renderPanel({
+        view: { composerFocusKey: 'session-a' },
+        permissions: { requests: [{ requestId: 'permission-focus' } as never] }
+      })
+      expectComposerCoveredByBlockingOverlay()
+      renderPanel({ view: { composerFocusKey: 'session-a' } })
+      expect(document.activeElement).toBe(navigationButton)
+    }
+  )
+
+  it('does not focus the composer when opening a pending permission then approving it', () => {
+    renderPanel({
+      view: { composerFocusKey: 'session-blocked' },
+      permissions: { requests: [{ requestId: 'permission-focus' } as never] }
+    })
+    expect(document.activeElement).not.toBe(getComposerEditor())
+    renderPanel({ view: { composerFocusKey: 'session-blocked' } })
+    expect(document.activeElement).not.toBe(getComposerEditor())
+    act(() => window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT)))
+    expect(document.activeElement).toBe(getComposerEditor())
+  })
+
   it('does not refocus the composer when draft editing becomes available', () => {
     renderPanel({
       view: {

@@ -2273,10 +2273,8 @@ const ConversationPanel = ({
                                     }
                                   : undefined
                               }
-                              focusRequest={ordinaryComposerBlocked ? undefined : composerFocusKey}
-                              restoreFocusRequest={
-                                ordinaryComposerBlocked ? undefined : composerRestoreFocusRequest
-                              }
+                              focusRequest={composerFocusKey}
+                              restoreFocusRequest={composerRestoreFocusRequest}
                               caretRequest={ordinaryComposerBlocked ? undefined : caretRequest}
                             />
                           </div>
