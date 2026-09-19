@@ -2885,6 +2885,46 @@ describe('workspace agent message sending', () => {
     }
   )
 
+  it('announces the real message before waiting for persistence or dispatching the prompt', async () => {
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    }
+    let release!: () => void
+    const persistence = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let flushCount = 0
+    const flushPersistence = vi.fn(() => {
+      flushCount += 1
+      return flushCount === 1 ? Promise.resolve() : persistence
+    })
+    const onMessageAppended = vi.fn(({ sessionId, messageId }) => {
+      const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId)
+      expect(session?.messages.find((m) => m.id === messageId)?.content).toBe('mobile send')
+    })
+    const send = sendWorkspaceMessage(
+      runtime,
+      {
+        sessionId: 'transport-session-1',
+        text: 'mobile send',
+        cwd: '/workspace/project',
+        projectId: 'project-1',
+        onMessageAppended
+      },
+      { flushPersistence }
+    )
+    await vi.waitFor(() => expect(onMessageAppended).toHaveBeenCalledOnce())
+    expect(runtime.sendPrompt).not.toHaveBeenCalled()
+    release()
+    const result = await send
+    expect(result).toEqual(onMessageAppended.mock.calls[0][0])
+    expect(runtime.sendPrompt).toHaveBeenCalledOnce()
+  })
+
   it('forwards and durably stores Plan first for an existing Session', async () => {
     const runtime = {
       state: createSnapshot(['transport-session-1']),

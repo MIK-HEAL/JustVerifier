@@ -504,6 +504,7 @@ const sendIntentKeys = [
   'expectedFrameworkId',
   'sessionId',
   'messageId',
+  'onMessageAppended',
   'branchSourceSessionId',
   'branchSourceMessageId',
   'text',
