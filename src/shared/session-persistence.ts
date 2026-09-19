@@ -1025,6 +1025,7 @@ export type SessionConflictRebaseField =
   | 'pinned'
 
 export type SaveSessionOptions = {
+  runtimeWriterToken?: string
   conflictRebaseFields?: SessionConflictRebaseField[]
   conversationCommands?: import('./session-conversation-command').SessionConversationCommand[]
 }

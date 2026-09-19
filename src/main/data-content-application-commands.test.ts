@@ -258,6 +258,7 @@ const WRAPPED_COMMAND_KEYS = [
   'artifactFinalizeRun',
   'artifactOpenFile',
   'lifecycleClientId',
+  'runtimeWriterClaim',
   'projectCreate',
   'projectDelete',
   'projectUpdate',
@@ -329,6 +330,7 @@ describe('Data and content application commands', () => {
         'artifacts:reconcile-pending',
         'artifacts:resolve-version-descriptors',
         'lifecycle:client-id',
+        'lifecycle:claim-runtime-writer',
         'preview:delete',
         'preview:load',
         'preview:save',
@@ -845,6 +847,39 @@ describe('Data and content application commands', () => {
       message:
         'Artifact finalization was rejected because its ownership no longer matches the saved Session.'
     })
+  })
+
+  it('fences runtime saves by caller while retaining explicit observer edits', async () => {
+    const router = createApplicationCommandRouter()
+    const deps = createDependencies()
+    registerDataContentApplicationCommands(router.registrar, deps.dependencies)
+    const lease = await router.dispatcher.invoke(
+      dataContentApplicationCommands.runtimeWriterClaim,
+      invocation([] as const, electronCaller)
+    )
+    expect(lease.token).toBeTruthy()
+    const observer = await router.dispatcher.invoke(
+      dataContentApplicationCommands.runtimeWriterClaim,
+      invocation([] as const, remoteCaller)
+    )
+    expect(observer.token).toBeUndefined()
+    await router.dispatcher.invoke(
+      dataContentApplicationCommands.sessionSave,
+      invocation([deps.session, { runtimeWriterToken: lease.token }] as const, electronCaller)
+    )
+    expect(deps.sessions.saveSession).toHaveBeenCalledTimes(1)
+    await expect(
+      router.dispatcher.invoke(
+        dataContentApplicationCommands.sessionSave,
+        invocation([deps.session, { runtimeWriterToken: lease.token }] as const, remoteCaller)
+      )
+    ).rejects.toMatchObject({ code: 'SESSION_RUNTIME_WRITER_LOST' })
+    expect(deps.sessions.saveSession).toHaveBeenCalledTimes(1)
+    await router.dispatcher.invoke(
+      dataContentApplicationCommands.sessionSave,
+      invocation([{ ...deps.session, title: 'Explicit mobile edit' }] as const, remoteCaller)
+    )
+    expect(deps.sessions.saveSession).toHaveBeenCalledTimes(2)
   })
 
   it('returns bounded committed execution facts without exposing an operational cause', async () => {

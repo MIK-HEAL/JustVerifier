@@ -78,6 +78,7 @@ export const WEB_INVOKE_CHANNELS = {
   'compute.scratchSet': 'compute:scratch:set',
   'compute.sshConfigAliases': 'compute:ssh-config-aliases',
   'github.getStars': 'github:get-stars',
+  'lifecycle.claimRuntimeWriter': 'lifecycle:claim-runtime-writer',
   'lifecycle.getClientId': 'lifecycle:client-id',
   'literature.citationStyles': 'literature:citation-styles',
   'literature.completeMetadata': 'literature:complete-metadata',

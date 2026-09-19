@@ -1,3 +1,4 @@
+import { RuntimeWriterOwner } from './runtime-writer'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import {
@@ -1229,6 +1230,40 @@ describe('session persistence IPC handlers', () => {
       }
     })
     expect(broadcastLifecycleEvent).not.toHaveBeenCalled()
+  })
+
+  it('uses the shared runtime writer fence on the desktop persistence transport', async () => {
+    const session = createSession()
+    const repository: SessionPersistenceBackend = {
+      loadAll: vi.fn().mockResolvedValue({ sessions: [], manifest: { version: 1 as const } }),
+      loadOne: vi.fn(),
+      saveSession: vi.fn().mockResolvedValue({ created: false, session }),
+      deleteSession: vi.fn(),
+      saveManifest: vi.fn()
+    }
+    const writer = new RuntimeWriterOwner()
+    const lease = writer.claim('electron:1')
+    registerSessionPersistenceIpcHandlers(
+      repository,
+      createMockReviewRepository(),
+      undefined,
+      undefined,
+      undefined,
+      writer
+    )
+    const save = ipcHandlers.get('sessions:save-session')!
+    await expect(
+      save({ sender: { id: 2 } }, session, { runtimeWriterToken: lease.token })
+    ).rejects.toMatchObject({ code: 'SESSION_RUNTIME_WRITER_LOST' })
+    expect(repository.saveSession).not.toHaveBeenCalled()
+    await expect(
+      save({ sender: { id: 1 } }, session, { runtimeWriterToken: lease.token })
+    ).resolves.toEqual({ ok: true, result: session })
+    await expect(save({ sender: { id: 2 } }, session)).resolves.toEqual({
+      ok: true,
+      result: session
+    })
+    expect(repository.saveSession).toHaveBeenCalledTimes(2)
   })
 
   it('captures the lifecycle origin before awaiting a durable save', async () => {

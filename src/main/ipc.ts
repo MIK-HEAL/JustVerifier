@@ -1,3 +1,4 @@
+import { RuntimeWriterOwner } from './session-persistence/runtime-writer'
 import { getDefaultPermissionProfile } from '../shared/permission-profiles'
 import { PackageLiteratureReader } from './session-package/literature-reader'
 import { PdfElementAgentReader } from './literature/pdf-structure/agent-reader'
@@ -4503,8 +4504,14 @@ const createApplicationModules = async (
         )
     }
   })
+  const runtimeWriter = new RuntimeWriterOwner(undefined, undefined, (clientId) => {
+    if (!clientId.startsWith('electron:')) return undefined
+    const sender = webContents.fromId(Number(clientId.slice('electron:'.length)))
+    return Boolean(sender && !sender.isDestroyed() && !sender.isCrashed())
+  })
   surfaceAdapters.push(
     createSessionPersistenceElectronSurface({
+      runtimeWriter,
       sessionPersistenceBackend,
       reviewRepository,
       sessionPersistenceHandlers,
@@ -4881,6 +4888,7 @@ const createApplicationModules = async (
       clearAll: () => memoryService.clearAll()
     },
     dataContent: {
+      runtimeWriter,
       artifacts: artifactHandlers,
       electron: {
         sessionPackageOperation: async (invocation) =>

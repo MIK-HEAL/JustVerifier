@@ -1,3 +1,8 @@
+import {
+  ensureRuntimeWriter,
+  isRuntimeWriter,
+  runtimeWriterSaveOptions
+} from '../acp/runtime-writer-client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { shallow } from 'zustand/vanilla/shallow'
@@ -39,6 +44,7 @@ import {
 import { PENDING_UPLOAD_SESSION_ID } from '../../../../shared/uploads'
 import {
   getExternallyHydratedSessionAuthority,
+  hydrateSession,
   isArtifactFinalizationError,
   isExternallyHydratedSession,
   toPersistedSession,
@@ -771,14 +777,19 @@ const mergeSaveSessionOptions = (
   const conflictRebaseFields = [
     ...new Set([...(previous?.conflictRebaseFields ?? []), ...(next?.conflictRebaseFields ?? [])])
   ]
+  const runtimeWriterToken =
+    next && Object.hasOwn(next, 'runtimeWriterToken')
+      ? next.runtimeWriterToken
+      : previous?.runtimeWriterToken
   const conversationCommands = [
     ...(previous?.conversationCommands ?? []),
     ...(next?.conversationCommands ?? [])
   ].filter(
     (command, index, commands) => commands.findIndex(({ id }) => id === command.id) === index
   )
-  return conflictRebaseFields.length > 0 || conversationCommands.length > 0
+  return conflictRebaseFields.length > 0 || runtimeWriterToken || conversationCommands.length > 0
     ? {
+        ...(runtimeWriterToken ? { runtimeWriterToken } : {}),
         ...(conflictRebaseFields.length > 0 ? { conflictRebaseFields } : {}),
         ...(conversationCommands.length > 0 ? { conversationCommands } : {})
       }
@@ -1002,7 +1013,12 @@ const createOrderedSessionPersistence = (
     const pending = pendingLatestByTarget.get(target)
     if (pending?.promise) {
       pending.task = task
-      pending.options = mergeSaveSessionOptions(pending.options, options)
+      // The latest snapshot owns its lease; explicit edits must not inherit an earlier writer's
+      // token. Rebase fields and conversation commands still accumulate across queued snapshots.
+      pending.options = mergeSaveSessionOptions(
+        { ...pending.options, runtimeWriterToken: options?.runtimeWriterToken },
+        options
+      )
       if (pending.streaming && !streaming) {
         // The turn ended: flush the terminal snapshot at the normal cadence instead of waiting
         // out the relaxed streaming interval.
@@ -1372,6 +1388,7 @@ const retryPendingArtifactFinalization = async (
 // are isolated and never block the rest; an empty result leaves references untouched so a file still
 // readable at its pending path is never dropped.
 const reconcilePendingArtifacts = async (api: ArtifactReconcileApi): Promise<void> => {
+  if (!(await ensureRuntimeWriter())) return
   for (const session of useSessionStore.getState().sessions) {
     try {
       await reconcileSessionPendingArtifacts(
@@ -1860,6 +1877,20 @@ const createStoreSaver = (
         if (authorityIsNewer) acknowledgedSessions.set(session.id, authority)
       }
 
+      // A reader flush must not write a received snapshot back to the authority. Real user edits
+      // differ from the acknowledged snapshot and still follow normal conflict checking.
+      if (
+        isForced &&
+        !isRuntimeWriter() &&
+        jsonValuesEqual(
+          toPersistedSession(session, nextStreamingMessages),
+          acknowledgedSessions.has(session.id)
+            ? toPersistedSession(hydrateSession(acknowledgedSessions.get(session.id)!))
+            : undefined
+        )
+      )
+        continue
+
       const hasUnsavedLocalTitle =
         session.unsavedTitle === true && Boolean(authority && session.title !== authority.title)
       const rootBranchId = selectedRootBranchId(session)
@@ -1933,10 +1964,23 @@ const createStoreSaver = (
           ])
         ]
 
-        const saveOptions = mergeSaveSessionOptions(
-          conflictRebaseFields.length > 0 ? { conflictRebaseFields } : undefined,
-          { conversationCommands: pendingSessionConversationCommands(session.id) }
-        )
+        const conversationCommands = pendingSessionConversationCommands(session.id)
+        const writerOptions =
+          conflictRebaseFields.length > 0 ||
+          hasUnsavedContextReset ||
+          conversationCommands.length > 0
+            ? undefined
+            : runtimeWriterSaveOptions()
+        const saveOptions =
+          conflictRebaseFields.length > 0 ||
+          writerOptions?.runtimeWriterToken ||
+          conversationCommands.length > 0
+            ? {
+                ...(conflictRebaseFields.length > 0 ? { conflictRebaseFields } : {}),
+                ...(writerOptions ?? {}),
+                ...(conversationCommands.length > 0 ? { conversationCommands } : {})
+              }
+            : undefined
         const sourceAuthority = acknowledgedSessions.get(session.id)
         let submittedAuthority = sourceAuthority
         let rebasedBeforeSave = false

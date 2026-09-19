@@ -240,6 +240,7 @@ const isNonActionableCodexDiagnostic = (text: string): boolean => {
 }
 
 type WorkspaceRuntimeEventDependencies = {
+  canProject?: () => boolean
   agentPromptInFlight?: boolean
   finalizeRunArtifacts?: (request: FinalizeRunArtifactsRequest) => Promise<ArtifactFile[]>
   reconcilePendingArtifacts?: (
@@ -309,6 +310,7 @@ const finalizeArtifactEvent = async (
     .getState()
     .sessions.find((candidate) => candidate.id === event.sessionId)
   const persistLatestSession = async (): Promise<void> => {
+    if (dependencies.canProject?.() === false) return
     const attachedSession = useSessionStore
       .getState()
       .sessions.find((candidate) => candidate.id === event.sessionId)
@@ -322,7 +324,7 @@ const finalizeArtifactEvent = async (
     const durableSession = await (dependencies.saveSession ?? saveSessionInRuntimeOrder)(
       submittedSession
     )
-    if (durableSession) {
+    if (durableSession && dependencies.canProject?.() !== false) {
       useSessionStore.getState().applyDurableSessionProjection({
         source: attachedSession,
         session: durableSession
@@ -348,6 +350,7 @@ const finalizeArtifactEvent = async (
   if (appliedMessage && artifactProjectId && artifactVersionIds.length > 0) {
     try {
       await persistLatestSession()
+      if (dependencies.canProject?.() === false) return true
       const reconcile =
         dependencies.reconcilePendingArtifacts ?? window.api.artifacts.reconcilePendingArtifacts
       const result = await reconcile({
@@ -364,6 +367,7 @@ const finalizeArtifactEvent = async (
         error.code = result.code
         throw error
       }
+      if (dependencies.canProject?.() === false) return true
       const reconciledVersionIds = new Set(
         result.flatMap((artifact) => (artifact.versionId ? [artifact.versionId] : []))
       )
@@ -390,6 +394,7 @@ const finalizeArtifactEvent = async (
       }
       throw new Error('Artifact reconciliation did not resolve all native Versions.')
     } catch (error) {
+      if (dependencies.canProject?.() === false) return true
       useSessionStore
         .getState()
         .recordArtifactError(
@@ -434,6 +439,7 @@ const finalizeArtifactEvent = async (
 
   try {
     await persistLatestSession()
+    if (dependencies.canProject?.() === false) return true
 
     const finalize = dependencies.finalizeRunArtifacts ?? finalizeRunArtifacts
     const finalizeRequest = {
@@ -444,10 +450,13 @@ const finalizeArtifactEvent = async (
     try {
       finalizedArtifacts = await finalize(finalizeRequest)
     } catch (error) {
+      if (dependencies.canProject?.() === false) return true
       if (!isArtifactOwnershipPersistenceRace(error)) throw error
       await persistLatestSession()
+      if (dependencies.canProject?.() === false) return true
       finalizedArtifacts = await finalize(finalizeRequest)
     }
+    if (dependencies.canProject?.() === false) return true
     artifactsFinalized = true
 
     store.replaceMessageArtifacts({
@@ -461,8 +470,10 @@ const finalizeArtifactEvent = async (
     // memory. Persist the checksum-bearing finalized Version descriptors before the stop handler may
     // trigger a Review, otherwise it can freeze a pre-finalization scope.
     await persistLatestSession()
+    if (dependencies.canProject?.() === false) return true
     return true
   } catch (error) {
+    if (dependencies.canProject?.() === false) return true
     if (!artifactsFinalized) {
       store.recordArtifactError(
         event.sessionId,
@@ -589,10 +600,11 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const triggerAutoReview = async (
   sessionId: string,
   saveSession: NonNullable<WorkspaceRuntimeEventDependencies['saveSession']>,
+  canProject?: () => boolean,
   committedTurnMessageId?: string
 ): Promise<void> => {
   try {
-    if (autoReviewsSuppressedForQuit) return
+    if (autoReviewsSuppressedForQuit || canProject?.() === false) return
 
     // Loop guard: if this session's next review was suppressed (e.g. because the stop comes from
     // the [Auditor] correction turn), skip exactly this one call and clear the flag.
@@ -645,7 +657,7 @@ const triggerAutoReview = async (
     // main and comes back 'already-reviewed' rather than launching a duplicate. A renderer-local store
     // check could only race that cross-process window, so we rely on main's verdict.
     for (let attempt = 0; attempt < AUTO_REVIEW_START_ATTEMPTS; attempt++) {
-      if (autoReviewsSuppressedForQuit) return
+      if (autoReviewsSuppressedForQuit || canProject?.() === false) return
       const result = await window.api.reviewer.run({ ...request, origin: 'auto' })
       if (result?.started !== false) return
       if (!result.reason || !RETRYABLE_START_FAILURE_REASONS.has(result.reason)) return
@@ -680,13 +692,14 @@ const scheduleAutoReview = (
   saveSession: NonNullable<
     WorkspaceRuntimeEventDependencies['saveSession']
   > = saveSessionInRuntimeOrder,
+  canProject?: () => boolean,
   committedTurnMessageId?: string
 ): void => {
-  if (autoReviewsSuppressedForQuit) return
+  if (autoReviewsSuppressedForQuit || canProject?.() === false) return
   cancelScheduledAutoReview(sessionId)
   const timer = setTimeout(() => {
     scheduledAutoReviewsBySession.delete(sessionId)
-    void triggerAutoReview(sessionId, saveSession, committedTurnMessageId)
+    void triggerAutoReview(sessionId, saveSession, canProject, committedTurnMessageId)
   }, AUTO_REVIEW_ARTIFACT_SETTLE_DELAY_MS)
   scheduledAutoReviewsBySession.set(sessionId, timer)
 }
@@ -722,7 +735,7 @@ const scheduleCommittedRuntimeTranscriptAutoReview = (
   }
   // The lifecycle payload is already Main's durable commit; the legacy pre-review renderer save
   // would only submit a stale whole-session projection back across the ownership boundary.
-  scheduleAutoReview(committed.id, async (session) => session, completedMessage.id)
+  scheduleAutoReview(committed.id, async (session) => session, undefined, completedMessage.id)
 }
 
 // Startup summaries have no message graph. Load their existing authority before projecting
@@ -749,6 +762,7 @@ const applyWorkspaceRuntimeEvent = async (
   if (event.kind === 'thought') return false
   const loading = loadRuntimeEventSession(event.sessionId)
   if (loading) await loading
+  if (dependencies.canProject?.() === false) return true
   const store = useSessionStore.getState()
 
   if (event.kind === 'permission' && event.sessionId) {
@@ -1000,7 +1014,11 @@ const applyWorkspaceRuntimeEvent = async (
     if (deferredArtifacts) {
       deferredArtifactEventsBySession.delete(event.sessionId)
       for (const deferredArtifact of deferredArtifacts) {
-        await finalizeArtifactEvent(deferredArtifact.event, deferredArtifact.dependencies)
+        await finalizeArtifactEvent(deferredArtifact.event, {
+          ...deferredArtifact.dependencies,
+          ...dependencies
+        })
+        if (dependencies.canProject?.() === false) return true
       }
     }
 
@@ -1012,7 +1030,7 @@ const applyWorkspaceRuntimeEvent = async (
     ) {
       // Trigger a background review for the just-completed turn. Read state after both finishRun and
       // Artifact finalization so the scope includes the terminal message and finalized versions.
-      scheduleAutoReview(event.sessionId, dependencies.saveSession)
+      scheduleAutoReview(event.sessionId, dependencies.saveSession, dependencies.canProject)
     }
 
     return true
@@ -1105,11 +1123,13 @@ const applyWorkspaceRuntimeEvent = async (
       ? pendingByPrompt?.get(event.promptMessageId)
       : undefined
     const wasFinalized = await finalizeArtifactEvent(event, dependencies, matchingTurnUsage)
+    if (dependencies.canProject?.() === false) return true
     if (wasFinalized && matchingTurnUsage && event.promptMessageId) {
       pendingByPrompt?.delete(event.promptMessageId)
       if (pendingByPrompt?.size === 0) pendingArtifactTurnUsageBySession.delete(event.sessionId)
     }
-    if (wasFinalized) scheduleAutoReview(event.sessionId, dependencies.saveSession)
+    if (wasFinalized)
+      scheduleAutoReview(event.sessionId, dependencies.saveSession, dependencies.canProject)
     return wasFinalized
   }
 
@@ -1197,10 +1217,13 @@ const applyWorkspaceRuntimeEvent = async (
 // A presentation tick contains only adjacent text deltas from one Session lane. Projecting the
 // complete tick in one store transaction preserves every event id while avoiding one React update
 // and growing-Markdown parse per provider token.
-const applyWorkspaceRuntimeEventBatch = async (events: AcpRuntimeEvent[]): Promise<boolean> => {
+const applyWorkspaceRuntimeEventBatch = async (
+  events: AcpRuntimeEvent[],
+  canProject?: () => boolean
+): Promise<boolean> => {
   if (events.length === 0) return true
   if (!events.every(isBufferableAssistantTextEvent)) {
-    for (const event of events) await applyWorkspaceRuntimeEvent(event)
+    for (const event of events) await applyWorkspaceRuntimeEvent(event, { canProject })
     return true
   }
 
@@ -1209,6 +1232,7 @@ const applyWorkspaceRuntimeEventBatch = async (events: AcpRuntimeEvent[]): Promi
     if (loading) await loading
   }
   const store = useSessionStore.getState()
+  if (canProject?.() === false) return true
   const inputs: Parameters<typeof store.appendAgentMessageChunks>[0] = []
   const completedActivityGroups = new Set<string>()
 

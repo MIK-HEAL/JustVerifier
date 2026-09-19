@@ -368,6 +368,7 @@ describe('preload bridge — public surface inventory', () => {
       'handoff.list',
       'handoff.onChanged',
       'handoff.retry',
+      'lifecycle.claimRuntimeWriter',
       'lifecycle.getClientId',
       'literature.citationStyles',
       'literature.completeMetadata',
