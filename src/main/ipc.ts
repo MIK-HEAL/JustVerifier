@@ -2925,12 +2925,6 @@ const createApplicationModules = async (
                     agentConfiguration: toSessionAgentConfiguration(agentTarget)
                   })
                 }
-                const started = await delivery.startDispatch()
-                if (started !== 'started') {
-                  throw new DelegateMessageParkedError(
-                    'Parent message dispatch fence was not acquired.'
-                  )
-                }
                 if (!runtime.hasLiveSession(latest.projectId, latest.id) || agentTarget) {
                   await runtime.resumeSession({
                     sessionId: latest.id,
@@ -2957,7 +2951,14 @@ const createApplicationModules = async (
                     ...(agentTarget ? { agentTarget } : {})
                   })
                 }
-              }
+                const started = await delivery.startDispatch()
+                if (started !== 'started') {
+                  throw new DelegateMessageParkedError(
+                    'Parent message dispatch fence was not acquired.'
+                  )
+                }
+              },
+              delivery.messageId
             )
           }
         )

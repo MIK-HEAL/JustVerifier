@@ -405,7 +405,8 @@ const composeAcpRuntimePromptOwners = (
             request,
             executionId,
             reviewOwner,
-            planDeliveryCommandId
+            planDeliveryCommandId,
+            delegatedMessageId
           ) => {
             const provenance = request.provenanceContext
             if (
@@ -440,7 +441,8 @@ const composeAcpRuntimePromptOwners = (
                 ...(backend.backendId ? { agentBackendId: backend.backendId } : {}),
                 ...(backend.session.model ? { agentModel: backend.session.model } : {}),
                 reviewOwner,
-                ...(planDeliveryCommandId ? { planDeliveryCommandId } : {})
+                ...(planDeliveryCommandId ? { planDeliveryCommandId } : {}),
+                ...(delegatedMessageId ? { delegatedMessageId } : {})
               }
             )
           }
