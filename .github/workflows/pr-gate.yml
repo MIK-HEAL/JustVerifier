@@ -590,6 +590,7 @@ jobs:
           --coverage.reporter=text-summary
           --testTimeout=30000
           --shard=${{ matrix.shard }}/4
+          --reporter=dot
           --reporter=blob
           --reporter=github-actions
           --outputFile=vitest-reports/blob-${{ matrix.shard }}.json
@@ -605,6 +606,7 @@ jobs:
           --coverage.reporter=text-summary
           --testTimeout=30000
           --shard=${{ matrix.shard }}/4
+          --reporter=dot
           --reporter=blob
           --reporter=github-actions
           --outputFile=vitest-reports/blob-${{ matrix.shard }}.json
