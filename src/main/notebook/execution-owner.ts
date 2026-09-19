@@ -62,6 +62,7 @@ import {
   shellRuntimePlatform
 } from './shell-runtime'
 import type { NotebookSourceFileAccessContext } from './dependency-analysis-types'
+import type { GrantedLocalRoot } from '../../shared/local-fs'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
@@ -147,6 +148,7 @@ type NotebookExecutionOwnerOptions = {
   shellProcess?: NotebookShellProcess
   shellConcurrencyLimit?: number
   shellRuntimeBinding?: ShellRuntimeBinding
+  getGrantedLocalRoots?: () => Promise<readonly GrantedLocalRoot[]>
 }
 
 const errorToExecutionResult = (error: unknown, cwd: string): NotebookSessionExecutionResult => {
@@ -1523,27 +1525,36 @@ class NotebookExecutionOwner {
           void reason
         }
       }
+      // Register the live run before async lookup to maintain cancellation coverage
       this.liveShellRuns.set(runId, liveRun)
-      const shellProcessRequest = {
-        runId,
-        executionReference: runId,
-        runtimeBinding,
-        command: request.command,
-        cwd: frozenShellContext.cwd,
-        handoffDir: frozenShellContext.handoffDir,
-        runtimeRoot: frozenShellContext.runtimeRoot,
-        notebookSessionRoot: frozenShellContext.notebookSessionRoot,
-        inputRoot: frozenShellContext.inputRoot,
-        protectedDirs: frozenShellContext.protectedDirs,
-        environment: frozenShellContext.environment,
-        sessionId: session.sessionId,
-        projectId: session.projectId,
-        timeoutMs: frozenShellContext.timeoutMs
-      }
       let preparedShell:
         Awaited<ReturnType<NonNullable<NotebookShellProcess['prepare']>>> | undefined
       let lease: ShellAdmissionLease | undefined
       try {
+        // Fetch granted roots with cancellation coverage via liveRun lifecycle
+        // Only await if the function exists to avoid unnecessary async overhead
+        const grantedRoots = this.options.getGrantedLocalRoots
+          ? await this.options.getGrantedLocalRoots()
+          : []
+        // Recheck admission after async lookup - shutdown or revocation could have happened
+        this.assertShellAdmissionAvailable(session)
+        const shellProcessRequest = {
+          runId,
+          executionReference: runId,
+          runtimeBinding,
+          command: request.command,
+          cwd: frozenShellContext.cwd,
+          handoffDir: frozenShellContext.handoffDir,
+          runtimeRoot: frozenShellContext.runtimeRoot,
+          notebookSessionRoot: frozenShellContext.notebookSessionRoot,
+          inputRoot: frozenShellContext.inputRoot,
+          protectedDirs: frozenShellContext.protectedDirs,
+          environment: frozenShellContext.environment,
+          sessionId: session.sessionId,
+          projectId: session.projectId,
+          timeoutMs: frozenShellContext.timeoutMs,
+          grantedRoots
+        }
         let durableAdmission: Awaited<ReturnType<NotebookRunTerminalizationOwner['admit']>>
         try {
           if (lifecycleSignal.aborted) throw lifecycleSignal.reason
