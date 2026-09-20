@@ -6145,6 +6145,12 @@
     "Account unavailable": "Konto nicht verfügbar",
     "Use a new API key": "Neuen API-Schlüssel verwenden",
     "Removing this service keeps the shared account and key. Capability selection returns to the default method.": "Beim Entfernen dieses Dienstes bleiben das gemeinsam genutzte Konto und der Schlüssel erhalten. Fähigkeiten und Konnektoren werden wieder mit der Standardmethode ausgewählt.",
-    "OpenRouter": "OpenRouter"
+    "OpenRouter": "OpenRouter",
+    "Custom HTTP service": "Benutzerdefinierter HTTP-Dienst",
+    "Custom services use the TypeSafe classification request and response format.": "Benutzerdefinierte Dienste verwenden das Anfrage- und Antwortformat der TypeSafe-Klassifikation.",
+    "Endpoint URL": "Endpunkt-URL",
+    "Enter a valid secure HTTP endpoint. Remote endpoints must use HTTPS.": "Geben Sie einen gültigen sicheren HTTP-Endpunkt ein. Entfernte Endpunkte müssen HTTPS verwenden.",
+    "Model ID exposed by the endpoint": "Vom Endpunkt bereitgestellte Modell-ID",
+    "This is not a Chat Completions endpoint. Services using another API format need an adaptor.": "Dies ist kein Chat-Completions-Endpunkt. Dienste mit einem anderen API-Format benötigen einen Adapter."
   }
 }

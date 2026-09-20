@@ -5983,6 +5983,12 @@
     "Account unavailable": "アカウントを利用できません",
     "Use a new API key": "新しい API キーを使用",
     "Removing this service keeps the shared account and key. Capability selection returns to the default method.": "このサービスを削除しても、共有アカウントとキーは保持されます。スキルとコネクタの選択は標準の方法に戻ります。",
-    "OpenRouter": "OpenRouter"
+    "OpenRouter": "OpenRouter",
+    "Custom HTTP service": "カスタム HTTP サービス",
+    "Custom services use the TypeSafe classification request and response format.": "カスタムサービスは TypeSafe の分類リクエストとレスポンス形式を使用します。",
+    "Endpoint URL": "エンドポイント URL",
+    "Enter a valid secure HTTP endpoint. Remote endpoints must use HTTPS.": "有効で安全な HTTP エンドポイントを入力してください。リモートエンドポイントには HTTPS が必要です。",
+    "Model ID exposed by the endpoint": "エンドポイントが公開するモデル ID",
+    "This is not a Chat Completions endpoint. Services using another API format need an adaptor.": "これは Chat Completions エンドポイントではありません。別の API 形式を使用するサービスにはアダプターが必要です。"
   }
 }

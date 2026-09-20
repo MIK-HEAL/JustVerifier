@@ -6456,6 +6456,12 @@
     "Account unavailable": "Аккаунт недоступен",
     "Use a new API key": "Использовать новый API-ключ",
     "Removing this service keeps the shared account and key. Capability selection returns to the default method.": "При удалении этого сервиса общий аккаунт и ключ сохраняются. Для выбора возможностей снова используется способ по умолчанию.",
-    "OpenRouter": "OpenRouter"
+    "OpenRouter": "OpenRouter",
+    "Custom HTTP service": "Пользовательский HTTP-сервис",
+    "Custom services use the TypeSafe classification request and response format.": "Пользовательские службы используют формат запросов и ответов классификации TypeSafe.",
+    "Endpoint URL": "URL конечной точки",
+    "Enter a valid secure HTTP endpoint. Remote endpoints must use HTTPS.": "Введите корректную защищённую HTTP-конечную точку. Для удалённых конечных точек требуется HTTPS.",
+    "Model ID exposed by the endpoint": "Идентификатор модели, предоставляемый конечной точкой",
+    "This is not a Chat Completions endpoint. Services using another API format need an adaptor.": "Это не конечная точка Chat Completions. Службам с другим форматом API требуется адаптер."
   }
 }

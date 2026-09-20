@@ -5983,6 +5983,12 @@
     "Account unavailable": "帳戶無法使用",
     "Use a new API key": "使用新的 API 金鑰",
     "Removing this service keeps the shared account and key. Capability selection returns to the default method.": "移除此服務會保留共用的帳戶和金鑰。技能和連接器將恢復預設選擇方式。",
-    "OpenRouter": "OpenRouter"
+    "OpenRouter": "OpenRouter",
+    "Custom HTTP service": "自訂 HTTP 服務",
+    "Custom services use the TypeSafe classification request and response format.": "自訂服務使用 TypeSafe 分類請求與回應格式。",
+    "Endpoint URL": "端點 URL",
+    "Enter a valid secure HTTP endpoint. Remote endpoints must use HTTPS.": "請輸入有效且安全的 HTTP 端點。遠端端點必須使用 HTTPS。",
+    "Model ID exposed by the endpoint": "端點提供的模型 ID",
+    "This is not a Chat Completions endpoint. Services using another API format need an adaptor.": "此端點不是 Chat Completions 端點。使用其他 API 格式的服務需要轉接器。"
   }
 }
