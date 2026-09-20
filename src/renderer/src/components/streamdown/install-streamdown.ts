@@ -795,6 +795,7 @@ const installFullscreenDialogAdapter = (): (() => void) => {
 /* --- Code block language badge --- */
 
 const CODE_BLOCK_ACTIONS = `${AGENT_MARKDOWN_ROOT_SELECTOR} [data-streamdown="code-block-actions"]`
+const CODE_BLOCK_ACTION_NODE = '[data-streamdown="code-block-actions"]'
 
 const GENERIC_CODE_ICON_PATH = 'M8 6L2 12l6 6M16 6l6 6-6 6'
 
@@ -806,8 +807,24 @@ const buildCodeBadgeSvg = (language: string): string => {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${GENERIC_CODE_ICON_PATH}"/></svg>`
 }
 
-const decorateCodeBlockChips = (): void => {
-  for (const actions of document.querySelectorAll(`${CODE_BLOCK_ACTIONS}:not([data-lang-badge])`)) {
+const decorateCodeBlockChips = (roots: Iterable<Node> = [document]): void => {
+  const actionNodes = new Set<HTMLElement>()
+  for (const root of roots) {
+    const selector = root === document ? CODE_BLOCK_ACTIONS : CODE_BLOCK_ACTION_NODE
+    if (root instanceof HTMLElement && root.matches(`${selector}:not([data-lang-badge])`)) {
+      actionNodes.add(root)
+    }
+    if (root instanceof Element || root instanceof Document || root instanceof DocumentFragment) {
+      for (const actions of root.querySelectorAll<HTMLElement>(
+        `${selector}:not([data-lang-badge])`
+      )) {
+        actionNodes.add(actions)
+      }
+    }
+  }
+
+  for (const actions of actionNodes) {
+    if (!actions.isConnected || !actions.closest(AGENT_MARKDOWN_ROOT_SELECTOR)) continue
     actions.setAttribute('data-lang-badge', '')
     const language = actions
       .closest('[data-streamdown="code-block"]')
@@ -826,7 +843,25 @@ const decorateCodeBlockChips = (): void => {
 
 const installCodeLanguageBadges = (): (() => void) => {
   decorateCodeBlockChips()
-  const observer = new MutationObserver(decorateCodeBlockChips)
+  const observer = new MutationObserver((mutations) => {
+    const roots = new Set<Node>()
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        roots.add(node)
+        if (node instanceof Element) {
+          const actions = node.closest(CODE_BLOCK_ACTION_NODE)
+          if (actions) roots.add(actions)
+        }
+      }
+
+      if (mutation.target instanceof Element) {
+        const actions = mutation.target.closest(CODE_BLOCK_ACTION_NODE)
+        if (actions) roots.add(actions)
+      }
+    }
+
+    if (roots.size > 0) decorateCodeBlockChips(roots)
+  })
   observer.observe(document.body, { childList: true, subtree: true })
 
   return () => {
