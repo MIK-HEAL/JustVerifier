@@ -1344,6 +1344,7 @@ describe('Session persistence coordinator architecture', () => {
       'src/main/artifacts/artifact-provenance-graph.test.ts',
       'src/main/artifacts/artifact-reproducibility-execution.test.ts',
       'src/main/artifacts/artifact-reproducibility-export.test.ts',
+      'src/main/artifacts/ro-crate-export.test.ts',
       'src/main/artifacts/artifact-reproducibility-ipc.test.ts',
       'src/main/artifacts/artifact-reproducibility-lifecycle.test.ts',
       'src/main/artifacts/artifact-reproducibility-receipts.test.ts',
