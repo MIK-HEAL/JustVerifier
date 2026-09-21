@@ -191,6 +191,44 @@ describe('bundled tool contracts', () => {
   )
 })
 
+describe('Zenodo input contracts', () => {
+  it.each([
+    {},
+    { query: '' },
+    { query: '\u3000 ' },
+    { query: 'x'.repeat(1001) },
+    { query: 'x', page: 0 },
+    { query: 'x', page: '2' },
+    { query: 'x', page: 1.5 },
+    { query: 'x', page_size: 26 },
+    { query: 'x', page_size: 0 },
+    { query: 'x', all_versions: 'true' },
+    { query: 'x', sort: 'unknown' },
+    { query: 'x', url: 'https://example.com' }
+  ])('rejects invalid search arguments: %j', (args) => {
+    expect(() => validateToolArguments(getDescriptor('zenodo', 'search_records')!, args)).toThrow(
+      /invalid_arguments/
+    )
+  })
+
+  it('counts the query limit in Unicode code points', () => {
+    const descriptor = getDescriptor('zenodo', 'search_records')!
+    expect(() => validateToolArguments(descriptor, { query: '😀'.repeat(1000) })).not.toThrow()
+    expect(() => validateToolArguments(descriptor, { query: '😀'.repeat(1001) })).toThrow(
+      /invalid_arguments/
+    )
+  })
+
+  it.each(['0', '../1', '8435696?download=1', '01', '10.5281/zenodo.8435696', 8435696])(
+    'rejects noncanonical record IDs: %s',
+    (recordId) => {
+      expect(() =>
+        validateToolArguments(getDescriptor('zenodo', 'get_record')!, { record_id: recordId })
+      ).toThrow(/invalid_arguments/)
+    }
+  )
+})
+
 describe('UniProt discovery input contract', () => {
   const search = getDescriptor('genes', 'search_uniprot_entries')!
   it.each([

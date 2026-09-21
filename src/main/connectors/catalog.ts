@@ -282,5 +282,15 @@ export const CONNECTOR_CATALOG: ConnectorMeta[] = [
     sources: ['ZINC'],
     termsUrl: 'https://zinc.docking.org/',
     requiresNcbi: false
+  },
+  {
+    id: 'zenodo',
+    displayName: 'Zenodo',
+    description: 'Public research records, versions and file metadata from Zenodo.',
+    useWhen:
+      'Use when discovering datasets, software or publications deposited in Zenodo, inspecting record and concept DOIs, or listing file names, sizes, checksums and download links for a record. Searches fetch one page of public metadata; file access may be restricted. No uploads or file downloads.',
+    sources: ['Zenodo'],
+    termsUrl: 'https://about.zenodo.org/terms/',
+    requiresNcbi: false
   }
 ]
