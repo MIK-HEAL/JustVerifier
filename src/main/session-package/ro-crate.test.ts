@@ -197,6 +197,49 @@ describe('Session package RO-Crate projection', () => {
       ).toMatchObject({ identifier: [`urn:open-science:version:${id}`] })
   })
 
+  it('merges names and MIME types when versions share one packaged object', async () => {
+    const { records, manifest } = fixture()
+    const first = records.tables.ArtifactVersion[0]!
+    const second = records.tables.ArtifactVersion[1]!
+    const secondEvidence: ArtifactVersionEvidence = {
+      ...JSON.parse(String(second.evidenceJson)),
+      filename: 'result.txt',
+      content_type: 'text/plain',
+      checksum: first.checksum
+    }
+    second.filename = secondEvidence.filename
+    second.contentType = secondEvidence.content_type ?? null
+    second.checksum = secondEvidence.checksum
+    second.contentStorageKey = first.contentStorageKey
+    second.evidenceJson = JSON.stringify(secondEvidence)
+    second.evidenceChecksum = sha256(second.evidenceJson)
+    manifest.inventory = manifest.inventory.filter(
+      (entry) => entry.storageKey !== 'artifacts/p/s/v2'
+    )
+
+    const document = await buildSessionPackageRoCrateMetadata(manifest, records)
+    const object = document['@graph'].find(
+      (entity) => entity['@id'] === `objects/${sha256(String(first.contentStorageKey))}`
+    )!
+    expect(object).toMatchObject({
+      name: 'result.txt',
+      alternateName: ['same.csv'],
+      encodingFormat: ['text/csv', 'text/plain']
+    })
+  })
+
+  it('rejects one checksum declared with conflicting sizes', async () => {
+    const { records, manifest } = fixture()
+    const artifact = records.tables.ArtifactVersion[0]!
+    const upload = records.tables.UploadVersion[0]!
+    upload.checksum = artifact.checksum
+    upload.sizeBytes = 5
+
+    await expect(buildSessionPackageRoCrateMetadata(manifest, records)).rejects.toThrow(
+      'RO-Crate content checksum has conflicting sizes'
+    )
+  })
+
   it.each(['checksum', 'sizeBytes'] as const)('rejects an inventory %s mismatch', async (field) => {
     const { records, manifest } = fixture()
     const entry = manifest.inventory.find((entry) => entry.storageKey === 'artifacts/p/s/v1')!
