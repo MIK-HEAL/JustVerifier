@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
-import { LoaderCircle } from 'lucide-react'
+import { Check, LoaderCircle } from 'lucide-react'
+import { Checkbox } from 'radix-ui'
 import * as Dialog from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { ErrorNotice } from '@/components/error-notice'
+import { FieldHelp } from '@/components/FieldHelp'
+import { formatByteSize } from '@/lib/utils'
 import {
   dialogOverlayClassName,
   dialogPanelClassName,
@@ -176,71 +179,90 @@ export const SessionDiagnosticsDialog = ({
           onInteractOutside={(event) => event.preventDefault()}
         >
           <div className={`${dialogHeaderClassName} flex-col items-start`}>
-            <Dialog.Title className={dialogTitleClassName}>{t('Export diagnostics…')}</Dialog.Title>
+            <div className="flex w-full items-center justify-between gap-3">
+              <Dialog.Title className={dialogTitleClassName}>
+                {t('Export diagnostics')}
+              </Dialog.Title>
+              <FieldHelp
+                content={t(
+                  'The archive always includes a manifest and export log; missing sources do not stop the export. Include screenshots when reporting an issue to developers.'
+                )}
+                contentClassName="max-w-[320px]"
+              />
+            </div>
             <Dialog.Description className={dialogDescriptionClassName}>
               {t(
                 'Exports diagnostic metadata with private content fields excluded. Saved locally; nothing is uploaded or sent to an LLM. Damaged or large files may include only a summary.'
               )}
             </Dialog.Description>
           </div>
-          <div className={`${dialogBodyClassName} min-h-0 overflow-auto space-y-3`}>
+          <div className={`${dialogBodyClassName} min-h-0 overflow-auto`}>
             {busy && (
               <p role="status" className="flex items-center gap-2">
                 <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
                 {t('Preparing diagnostics…')}
               </p>
             )}
-            {items.map((item) => (
-              <label key={item.id} className="flex items-start gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={selected.includes(item.id)}
-                  disabled={busy || !item.available}
-                  onChange={(event) =>
-                    setSelected((current) =>
-                      event.target.checked
-                        ? [...current, item.id]
-                        : current.filter((id) => id !== item.id)
-                    )
-                  }
-                />
-                <span className="min-w-0 break-words">
-                  {item.kind === 'database' ? t('Session database records') : item.name}
-                  {item.sizeBytes !== undefined && (
-                    <span className="ml-2 text-text-300">
-                      {t('{{size}} bytes', { size: item.sizeBytes.toLocaleString() })}
+            <div className="mt-3 space-y-2">
+              {items.map((item) => {
+                const label = item.kind === 'database' ? t('Session database records') : item.name
+                const description =
+                  item.kind === 'log'
+                    ? item.id === 'log:main.log'
+                      ? t(
+                          'Current application log metadata, including activity outside this session.'
+                        )
+                      : t(
+                          'Historical application log metadata, including activity outside this session. Select manually to investigate earlier issues.'
+                        )
+                    : undefined
+                const sourceCode = diagnosticSourceCode(item.reason)
+                const size = formatByteSize(item.sizeBytes)
+
+                return (
+                  <Checkbox.Root
+                    key={item.id}
+                    checked={selected.includes(item.id)}
+                    disabled={busy || !item.available}
+                    onCheckedChange={(checked) =>
+                      setSelected((current) =>
+                        checked === true
+                          ? [...current, item.id]
+                          : current.filter((id) => id !== item.id)
+                      )
+                    }
+                    className="group flex min-h-14 w-full min-w-0 items-start gap-3 rounded-xl border border-transparent bg-bg-000 px-3.5 py-3 text-left outline-none transition-[background-color,border-color,box-shadow,transform] duration-150 hover:-translate-y-0.5 hover:border-primary/35 hover:bg-primary/5 hover:shadow-sm focus-visible:ring-3 focus-visible:ring-ring/40 active:translate-y-0 active:shadow-none data-[state=checked]:border-primary/30 data-[state=checked]:bg-primary/5 data-[state=checked]:hover:border-primary/50 data-[state=checked]:hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-55 motion-reduce:transform-none motion-reduce:transition-none"
+                  >
+                    <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border border-border-100 bg-bg-000 text-text-000 group-data-[state=checked]:border-primary group-data-[state=checked]:bg-primary group-data-[state=checked]:text-primary-foreground">
+                      <Checkbox.Indicator>
+                        <Check className="size-3" aria-hidden="true" />
+                      </Checkbox.Indicator>
                     </span>
-                  )}
-                  {item.kind === 'log' && (
-                    <span className="block text-xs text-text-300">
-                      {item.id === 'log:main.log'
-                        ? t(
-                            'Current application log metadata, including activity outside this session.'
-                          )
-                        : t(
-                            'Historical application log metadata, including activity outside this session. Select manually to investigate earlier issues.'
-                          )}
+                    <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-1">
+                      <span className="min-w-0 break-words text-sm font-medium text-text-000">
+                        {label}
+                      </span>
+                      {size && (
+                        <span className="shrink-0 whitespace-nowrap text-xs text-text-300">
+                          {size}
+                        </span>
+                      )}
+                      {description && (
+                        <span className="col-span-2 text-xs leading-5 text-text-300">
+                          {description}
+                        </span>
+                      )}
+                      {!item.available && (
+                        <span className="col-span-2 text-xs leading-5 text-text-300">
+                          {t('Unavailable')}
+                          {sourceCode ? `: ${sourceCode}` : ''}
+                        </span>
+                      )}
                     </span>
-                  )}
-                  {!item.available && (
-                    <span className="block text-text-300">
-                      {t('Unavailable')}
-                      {diagnosticSourceCode(item.reason)
-                        ? `: ${diagnosticSourceCode(item.reason)}`
-                        : ''}
-                    </span>
-                  )}
-                </span>
-              </label>
-            ))}
-            <p className="text-xs text-text-300">
-              {t(
-                'The archive always includes a manifest and export log. Missing sources do not stop the export.'
-              )}
-            </p>
-            <p className="text-xs text-text-300">
-              {t('When reporting an issue to developers, include screenshots of the problem.')}
-            </p>
+                  </Checkbox.Root>
+                )
+              })}
+            </div>
             {result && (
               <p role="status">
                 {result.status === 'exported'

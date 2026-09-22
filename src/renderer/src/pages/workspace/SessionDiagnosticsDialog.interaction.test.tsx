@@ -18,10 +18,16 @@ beforeEach(() => {
   vi.clearAllMocks()
   inspectDiagnostics.mockResolvedValue({
     items: [
-      { id: 'session', name: 'session.json', kind: 'session', available: true },
+      { id: 'session', name: 'session.json', kind: 'session', available: true, sizeBytes: 29_840 },
       { id: 'database', name: 'db', kind: 'database', available: true },
-      { id: 'log:main.log', name: 'main.log', kind: 'log', available: true },
-      { id: 'log:main.1.log', name: 'main.1.log', kind: 'log', available: true },
+      { id: 'log:main.log', name: 'main.log', kind: 'log', available: true, sizeBytes: 197_723 },
+      {
+        id: 'log:main.1.log',
+        name: 'main.1.log',
+        kind: 'log',
+        available: true,
+        sizeBytes: 5_242_719
+      },
       {
         id: 'invalid:backup',
         name: 'session.json.invalid-1-1',
@@ -56,14 +62,28 @@ const button = (name: string): HTMLButtonElement =>
   [...document.querySelectorAll('button')].find((item) => item.textContent === name)!
 it('exports only selected available items, opts into historical logs and reports partial success', async () => {
   await render()
-  const checkboxes = [...document.querySelectorAll<HTMLInputElement>('input')]
-  expect(checkboxes.map((item) => item.checked)).toEqual([true, true, true, false, false])
+  const checkboxes = [...document.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')]
+  expect(checkboxes.map((item) => item.getAttribute('aria-checked') === 'true')).toEqual([
+    true,
+    true,
+    true,
+    false,
+    false
+  ])
   expect(checkboxes[4].disabled).toBe(true)
-  expect(checkboxes[1].closest('label')?.textContent).toContain('Session database records')
-  expect(checkboxes[2].closest('label')?.textContent).toContain(
+  expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Export diagnostics')
+  expect(document.body.textContent).toContain(
+    'Exports diagnostic metadata with private content fields excluded. Saved locally; nothing is uploaded or sent to an LLM. Damaged or large files may include only a summary.'
+  )
+  expect(document.querySelector('[data-slot="field-help"]')).not.toBeNull()
+  expect(checkboxes[0].textContent).toContain('29 KB')
+  expect(checkboxes[2].textContent).toContain('193 KB')
+  expect(checkboxes[3].textContent).toContain('5.0 MB')
+  expect(checkboxes[1].textContent).toContain('Session database records')
+  expect(checkboxes[2].textContent).toContain(
     'Current application log metadata, including activity outside this session.'
   )
-  expect(checkboxes[3].closest('label')?.textContent).toContain(
+  expect(checkboxes[3].textContent).toContain(
     'Historical application log metadata, including activity outside this session. Select manually to investigate earlier issues.'
   )
   await act(async () => fireEvent.click(checkboxes[2]))
