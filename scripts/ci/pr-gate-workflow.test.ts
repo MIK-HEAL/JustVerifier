@@ -1612,6 +1612,7 @@ describe('PR Gate workflow', () => {
     const runtime = workflow.jobs.windows_core.steps?.find(
       ({ name }) => name === 'Test Windows-specific behavior'
     )
+    expect(runtime?.run).not.toContain('\n')
     for (const testFile of [
       'scripts/windows-updater-certification.test.ts',
       'src/main/windows.test.ts',
@@ -1620,6 +1621,8 @@ describe('PR Gate workflow', () => {
       'src/main/delegation/acp-execution.test.ts',
       'src/main/delegation/production-framework-runtime.test.ts',
       'src/main/file-save.test.ts',
+      'src/main/notebook/file-evidence-publication.integration.test.ts',
+      'src/main/compute/compute-submission-evidence-recovery.integration.test.ts',
       'src/main/specialist/repository.test.ts',
       'src/main/notebook/micromamba-cache-powershell.test.ts',
       'src/main/notebook/micromamba-cache-acl.integration.test.ts'
