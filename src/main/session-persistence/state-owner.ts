@@ -1,5 +1,8 @@
 import { rebaseTaskSessionBinding, rebaseTaskTurnOntoLatestSession } from './task-admission'
-import { applySessionConversationCommands } from '../../shared/session-conversation-command'
+import {
+  applySessionConversationCommands,
+  SessionConversationCommandDeferredError
+} from '../../shared/session-conversation-command'
 import { applyRuntimeSessionEvents } from '../../shared/runtime-session-projection'
 import { createHash, randomUUID } from 'node:crypto'
 
@@ -1187,7 +1190,18 @@ class SessionPersistenceStateOwner {
       if (!isDeepStrictEqual(candidate, authority))
         candidate.updatedAt = Math.max(authority.updatedAt + 1, Date.now())
       if (options.conversationCommands?.length) {
-        candidate = applySessionConversationCommands(candidate, options.conversationCommands)
+        try {
+          candidate = applySessionConversationCommands(candidate, options.conversationCommands)
+        } catch (error) {
+          // A renderer edit can arrive after the UI becomes idle but before Main commits the
+          // terminal runtime projection. Keep the command pending; independent named preferences
+          // in this same save still belong to the current renderer intent and must be committed.
+          // The next terminal save retries the command against an authority with no active run.
+          // Real branch identity conflicts still reject.
+          if (error instanceof SessionConversationCommandDeferredError)
+            return this.mutateRuntimeSession({ projectId, sessionId }, () => candidate)
+          throw error
+        }
         if (this.options.uploads)
           candidate = await this.options.uploads.upgradeLegacySessionUploads(candidate, {
             mode: 'live-save'
