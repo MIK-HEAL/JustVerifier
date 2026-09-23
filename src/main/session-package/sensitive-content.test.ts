@@ -13,7 +13,13 @@ describe('package text policy', () => {
     'https://example.org/?token=%5Bredacted%5D',
     'https://[example]',
     'file:///tmp/results.csv',
-    '{"inputTokens":"1024"}'
+    '{"inputTokens":"1024"}',
+    'one-token bluffs. A hyphenated phrase is not a command-line flag.',
+    'prefix--token value is not a standalone command-line flag.',
+    'café-token valeur is not a standalone command-line flag.',
+    'cafe\u0301-token valeur is not a standalone command-line flag.',
+    '研究-token 内容 is not a standalone command-line flag.',
+    'naïve--token example is not a standalone command-line flag.'
   ])('accepts empty, redacted or noncredential text: %s', (value) => {
     expect(findSensitivePackageText(value)).toBeUndefined()
   })
@@ -34,6 +40,8 @@ describe('package text policy', () => {
     '{"pass\\u0077ord":"synthetic-private-value"}',
     'password = os.environ["PASSWORD"]',
     'curl --token synthetic-private-value',
+    'curl -token synthetic-private-value',
+    '研究：--token synthetic-private-value',
     'https://user:synthetic-private-value@example.org/',
     'Bearer synthetic-private-value',
     'ghp_syntheticprivatevalue',
