@@ -516,22 +516,18 @@ test('previews and opens an Agent HTTPS source link in the isolated preview tab'
   await app.completeOnboarding()
   const page = await app.configureFakeAgent()
   await allowCitationPreviewDomain(page)
+  await app.showMainWindow()
   let sourceDocumentRequestCount = 0
-  let releaseSourceDocument: (() => void) | undefined
-  const sourceDocumentGate = new Promise<void>((resolve) => {
-    releaseSourceDocument = resolve
-  })
-  await page.route('https://citation.example/paper', async (route) => {
-    sourceDocumentRequestCount += 1
-    await sourceDocumentGate
+  let replicationDocumentRequestCount = 0
+  await page.context().route('https://citation.example/paper', async (route) => {
+    sourceDocumentRequestCount++
     await route.fulfill({
       contentType: 'text/html',
-      body: '<!doctype html><html><body><main><h1>Fixture source</h1><p>Peer-reviewed evidence.</p></main></body></html>'
+      body: '<!doctype html><html><body><main><h1>Fixture source</h1><p>Peer-reviewed evidence.</p><p data-preview-context-menu-passthrough>Native area</p></main></body></html>'
     })
   })
-  let replicationDocumentRequestCount = 0
-  await page.route('https://citation.example/replication', async (route) => {
-    replicationDocumentRequestCount += 1
+  await page.context().route('https://citation.example/replication', async (route) => {
+    replicationDocumentRequestCount++
     await route.fulfill({
       contentType: 'text/html',
       body: '<!doctype html><html><body><main><h1>Replication source</h1></main></body></html>'
@@ -573,7 +569,7 @@ test('previews and opens an Agent HTTPS source link in the isolated preview tab'
   await expect(sourceLink).toBeFocused()
   await sourceLink.evaluate((element) => (element as HTMLElement).blur())
   await expect(sourceLink).not.toBeFocused()
-
+  await page.mouse.move(5, 5)
   await sourceLink.hover()
   const hoverTitle = hoverCard.locator('[data-source-preview-hover-title]')
   await expect(hoverTitle).toHaveText('Fixture study')
@@ -677,22 +673,13 @@ test('previews and opens an Agent HTTPS source link in the isolated preview tab'
     'true'
   )
   const sourceFrame = page.locator(
-    '[data-source-preview-frame][src="https://citation.example/paper"]'
+    '[data-source-preview-frame][data-source-url="https://citation.example/paper"]'
   )
-  await expect(sourceFrame).toHaveAttribute('src', 'https://citation.example/paper')
+  await expect(sourceFrame).toHaveAttribute('data-source-url', 'https://citation.example/paper')
   await expect.poll(() => sourceDocumentRequestCount).toBe(1)
   const sourceProgress = page.locator('[data-source-preview-progress]')
   const sourceSkeleton = page.locator('[data-source-preview-skeleton]')
-  await expect(sourceProgress).toBeVisible()
-  await expect(sourceSkeleton).toBeVisible()
-  expect(await sourceProgress.evaluate((element) => getComputedStyle(element).height)).toBe('2px')
-  await page.screenshot({ path: testInfo.outputPath('source-preview-loading.png') })
-  await expect(sourceFrame).toHaveAttribute(
-    'sandbox',
-    'allow-same-origin allow-scripts allow-forms'
-  )
-  await expect(sourceFrame).toHaveAttribute('referrerpolicy', 'no-referrer')
-  await expect(sourceFrame).toHaveAttribute('name', 'open-science-source-preview')
+  expect(await sourceFrame.evaluate((element) => element.tagName)).toBe('WEBVIEW')
   const sourceHeader = page.locator('[data-source-preview-header]')
   const sourceHeaderTitle = sourceHeader.locator('[data-source-preview-header-title]')
   const sourceHeaderUrl = sourceHeader.locator('[data-source-preview-header-url]')
@@ -767,17 +754,190 @@ test('previews and opens an Agent HTTPS source link in the isolated preview tab'
   expect(sourceIslandVisuals.rightInset).toBeCloseTo(4, 0)
   expect(sourceIslandVisuals.borderRadius).toBeGreaterThan(0)
   expect(sourceIslandVisuals.boxShadow).not.toBe('none')
-  releaseSourceDocument?.()
-  await expect(
-    page.frameLocator('[data-source-preview-frame]').getByRole('heading', {
-      name: 'Fixture source'
-    })
-  ).toBeVisible()
+  await expect
+    .poll(() => sourceFrame.evaluate((element) => (element as Electron.WebviewTag).getURL()))
+    .toBe('https://citation.example/paper')
+  await expect
+    .poll(() =>
+      page
+        .context()
+        .pages()
+        .some((candidate) => candidate.url() === 'https://citation.example/paper')
+    )
+    .toBe(true)
+  const nativePage = page
+    .context()
+    .pages()
+    .find((candidate) => candidate.url() === 'https://citation.example/paper')!
+  await expect(nativePage.getByRole('heading', { name: 'Fixture source' })).toBeVisible()
   await expect(sourceProgress).toHaveCount(0)
   await expect(sourceSkeleton).toHaveCount(0)
+  await app.showMainWindow()
+  const guestId = await sourceFrame.evaluate((element) =>
+    (element as Electron.WebviewTag).getWebContentsId()
+  )
+  await nativePage.evaluate(() => {
+    sessionStorage.setItem('overlay-session', 'retained')
+    const form = document.createElement('input')
+    form.id = 'overlay-form'
+    form.value = '页面表单保留'
+    document.body.append(form)
+    const canvas = document.createElement('canvas')
+    canvas.id = 'overlay-animation'
+    canvas.width = 240
+    canvas.height = 80
+    canvas.style.cssText = 'display:block;width:240px;height:80px'
+    document.body.append(canvas)
+    const state = { frames: 0, marker: crypto.randomUUID() }
+    Object.assign(window, { overlayState: state })
+    const draw = (): void => {
+      state.frames++
+      const context = canvas.getContext('2d')!
+      context.fillStyle = Math.floor(state.frames / 20) % 2 ? '#008080' : '#ff8000'
+      context.fillRect(0, 0, 240, 80)
+      context.fillStyle = 'white'
+      context.font = '24px sans-serif'
+      context.fillText(String(state.frames), 20, 48)
+      requestAnimationFrame(draw)
+    }
+    requestAnimationFrame(draw)
+  })
+  const readSourceState = (): Promise<{
+    frames: number
+    marker: string
+    session: string | null
+    form: string
+  }> =>
+    nativePage.evaluate(() => ({
+      ...(window as unknown as { overlayState: { frames: number; marker: string } }).overlayState,
+      session: sessionStorage.getItem('overlay-session'),
+      form: (document.getElementById('overlay-form') as HTMLInputElement).value
+    }))
+  const initialState = await readSourceState()
+  for (let iteration = 0; iteration < 3; iteration++) {
+    await page.getByRole('button', { name: PROJECT_NAME, exact: true }).click()
+    await page.getByRole('menuitem', { name: 'New project', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'New project' })
+    await expect(dialog).toBeVisible()
+    await expect
+      .poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
+      .toBe(true)
+    const before = await readSourceState()
+    await expect
+      .poll(async () => (await readSourceState()).frames)
+      .toBeGreaterThan(before.frames + 5)
+    await expect(sourceFrame).toBeVisible()
+    expect(
+      await sourceFrame.evaluate((element) => (element as Electron.WebviewTag).getWebContentsId())
+    ).toBe(guestId)
+    await page.screenshot({ path: testInfo.outputPath(`source-under-dialog-${iteration}.png`) })
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.tagName !== 'WEBVIEW'))
+      .toBe(true)
+  }
+  expect(await readSourceState()).toMatchObject({
+    marker: initialState.marker,
+    session: 'retained',
+    form: '页面表单保留'
+  })
+  expect(sourceDocumentRequestCount).toBe(1)
+  await app.setMainWindowSize(1400, 950)
+  await app.setMainWindowZoomFactor(1.25)
+  await expect(sourceFrame).toBeVisible()
+  const rightClickTarget = nativePage.getByRole('heading', { name: 'Fixture source' })
+  const sourceBounds = (await sourceFrame.boundingBox())!
+  const headingBounds = (await rightClickTarget.boundingBox())!
+  await rightClickTarget.click({ button: 'right', position: { x: 8, y: 10 } })
+  const sourceMenu = page.getByRole('menu')
+  await expect(sourceMenu.getByText('Copy link', { exact: true })).toBeVisible()
+  const menuBounds = (await sourceMenu.boundingBox())!
+  expect(Math.abs(menuBounds.x - (sourceBounds.x + headingBounds.x + 8))).toBeLessThan(5)
+  expect(Math.abs(menuBounds.y - (sourceBounds.y + headingBounds.y + 10))).toBeLessThan(5)
+  await page.screenshot({ path: testInfo.outputPath('source-context-menu-zoom.png') })
+  await page.keyboard.press('Escape')
+  await expect(sourceMenu).toHaveCount(0)
+  await expect.poll(() => nativePage.evaluate(() => document.hasFocus())).toBe(true)
+  await nativePage.getByText('Native area', { exact: true }).click({ button: 'right' })
+  await expect(sourceMenu).toHaveCount(0)
+  await nativePage.locator('#overlay-form').click({ button: 'right' })
+  await expect(sourceMenu).toHaveCount(0)
+  await page.context().route('https://nested.citation.example/frame', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<h2>Nested source</h2><p data-preview-context-menu-passthrough>Nested native area</p>'
+    })
+  )
+  await nativePage.evaluate(() => {
+    const frame = document.createElement('iframe')
+    frame.id = 'nested-source'
+    frame.src = 'https://nested.citation.example/frame'
+    frame.style.cssText = 'display:block;width:260px;height:130px'
+    document.body.prepend(frame)
+  })
+  const nested = nativePage.frameLocator('#nested-source')
+  const nestedHeading = nested.getByRole('heading', { name: 'Nested source' })
+  await expect(nestedHeading).toBeVisible()
+  const nestedBounds = (await nestedHeading.boundingBox())!
+  await nestedHeading.click({ button: 'right', position: { x: 8, y: 10 } })
+  await expect(sourceMenu.getByText('Copy link', { exact: true })).toBeVisible()
+  const nestedMenuBounds = (await sourceMenu.boundingBox())!
+  expect(Math.abs(nestedMenuBounds.x - (sourceBounds.x + nestedBounds.x + 8))).toBeLessThan(5)
+  expect(Math.abs(nestedMenuBounds.y - (sourceBounds.y + nestedBounds.y + 10))).toBeLessThan(5)
+  await page.keyboard.press('Escape')
+  await expect(sourceMenu).toHaveCount(0)
+  await nested.getByText('Nested native area').click({ button: 'right' })
+  await expect(sourceMenu).toHaveCount(0)
+  await nativePage.locator('#nested-source').evaluate((element) => element.remove())
+  await app.setMainWindowZoomFactor(1)
+  // Exercise Chromium composition events without changing the operating system's input source.
+  const composition = await page.context().newCDPSession(nativePage)
+  await nativePage.locator('#overlay-form').fill('')
+  await composition.send('Input.imeSetComposition', {
+    text: '中文输入',
+    selectionStart: 4,
+    selectionEnd: 4
+  })
+  await composition.send('Input.insertText', { text: '中文输入' })
+  await expect(nativePage.locator('#overlay-form')).toHaveValue('中文输入')
+  await composition.detach()
+
+  await app.showMainWindow()
+  // Native content must forward window shortcuts and search its own document when focused.
+  await nativePage.getByRole('heading', { name: 'Fixture source' }).click()
+  await app.pressSourcePreviewShortcut(
+    nativePage.url(),
+    'F',
+    process.platform === 'darwin' ? ['meta'] : ['control']
+  )
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(true)
+  const findPage = page
+    .context()
+    .pages()
+    .find((candidate) => candidate.url().includes('/find-overlay/'))!
+  await findPage.getByRole('textbox').fill('Peer-reviewed evidence')
+  await expect(findPage.locator('#find-overlay-count')).toHaveText('1 / 1')
+  await findPage.getByRole('textbox').press('Escape')
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(false)
+  await expect.poll(() => nativePage.evaluate(() => document.hasFocus())).toBe(true)
+  await app.pressSourcePreviewShortcut(
+    nativePage.url(),
+    'F',
+    process.platform === 'darwin' ? ['meta'] : ['control']
+  )
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(true)
+  const reopenedFindPage = page
+    .context()
+    .pages()
+    .find((candidate) => candidate.url().includes('/find-overlay/'))!
+  await reopenedFindPage.getByRole('textbox').fill('Fixture source')
+  await expect(reopenedFindPage.locator('#find-overlay-count')).toHaveText('1 / 1')
+  await reopenedFindPage.getByRole('textbox').press('Escape')
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(false)
 
   // Use real Chromium same-document navigations; IPC injection cannot verify this adapter.
-  const sourceDocument = sourceFrame.contentFrame().locator('body')
+  const sourceDocument = nativePage.locator('body')
   for (const operation of ['anchor', 'push', 'replace', 'back', 'forward']) {
     const previousUrl = await sourceHeaderUrl.textContent()
     await sourceDocument.evaluate((_body, action) => {
@@ -791,20 +951,23 @@ test('previews and opens an Agent HTTPS source link in the isolated preview tab'
     await expect(sourceHeaderUrl).toHaveText(await sourceDocument.evaluate(() => location.href))
     await expect(sourceSkeleton).toHaveCount(0)
     await expect(sourceProgress).toHaveCount(0)
-    await expect(sourceFrame).toHaveAttribute('src', 'https://citation.example/paper')
+    await expect(sourceFrame).toHaveAttribute('data-source-url', 'https://citation.example/paper')
   }
 
   await page.screenshot({ path: testInfo.outputPath('citation-source-preview.png') })
 
   const replicationLink = page.getByRole('link', { name: 'Chen et al. 2026' })
-  await replicationLink.hover()
-  await page.locator('[data-source-preview-hover-url]').click()
+  await replicationLink.focus()
+  await page.keyboard.press('Tab')
+  await expect(page.locator('[data-source-preview-hover-url]')).toBeFocused()
+  await page.keyboard.press('Enter')
   await expect(page.getByRole('tab', { name: 'Replication study' })).toHaveAttribute(
     'aria-selected',
     'true'
   )
   await expect.poll(() => replicationDocumentRequestCount).toBe(1)
   await expect(page.locator('[data-source-preview-frame]')).toHaveCount(2)
+  await expect(sourceFrame).toBeHidden()
 
   const fixtureTab = page.getByRole('tab', { name: 'Fixture study' })
   await fixtureTab.click()
@@ -814,9 +977,57 @@ test('previews and opens an Agent HTTPS source link in the isolated preview tab'
 
   await sourcePanel.locator('[data-source-preview-header-close]').click()
   await expect(sourceFrame).toHaveCount(0)
-  await sourceLink.hover()
-  await page.locator('[data-source-preview-hover-url]').click()
+  await expect.poll(() => nativePage.isClosed()).toBe(true)
+  await sourceLink.focus()
+  await page.keyboard.press('Tab')
+  await expect(page.locator('[data-source-preview-hover-url]')).toBeFocused()
+  await page.keyboard.press('Enter')
   await expect.poll(() => sourceDocumentRequestCount).toBe(2)
+
+  // Close the searched source while the native find overlay is still open. The overlay must not
+  // restore focus to the destroyed guest when Escape dismisses it.
+  const reopenedSourceFrame = page.locator(
+    '[data-source-preview-frame][data-source-url="https://citation.example/paper"]'
+  )
+  await expect(reopenedSourceFrame).toBeVisible()
+  await expect
+    .poll(() =>
+      page
+        .context()
+        .pages()
+        .some((candidate) => candidate.url() === 'https://citation.example/paper')
+    )
+    .toBe(true)
+  const reopenedNativePage = page
+    .context()
+    .pages()
+    .find((candidate) => candidate.url() === 'https://citation.example/paper')!
+  await reopenedNativePage.getByRole('heading', { name: 'Fixture source' }).click()
+  await app.pressSourcePreviewShortcut(
+    reopenedNativePage.url(),
+    'F',
+    process.platform === 'darwin' ? ['meta'] : ['control']
+  )
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(true)
+  const closingFindPage = page
+    .context()
+    .pages()
+    .find((candidate) => candidate.url().includes('/find-overlay/'))!
+  await closingFindPage.getByRole('textbox').fill('Peer-reviewed evidence')
+  await expect(closingFindPage.locator('#find-overlay-count')).toHaveText('1 / 1')
+  await page
+    .getByRole('tabpanel')
+    .filter({ has: reopenedSourceFrame })
+    .locator('[data-source-preview-header-close]')
+    .click()
+  await expect(reopenedSourceFrame).toHaveCount(0)
+  await expect.poll(() => reopenedNativePage.isClosed()).toBe(true)
+  await closingFindPage.getByRole('textbox').press('Escape')
+  await expect.poll(() => app.findOverlayIsVisible()).toBe(false)
+  await expect(page.getByRole('tab', { name: 'Replication study' })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  )
 })
 
 test('shows the Electron failure reason when a source request fails', async ({ app }, testInfo) => {
@@ -825,11 +1036,11 @@ test('shows the Electron failure reason when a source request fails', async ({ a
   await allowCitationPreviewDomain(page)
   app.allowRendererConsoleError('Failed to load resource: net::ERR_CONNECTION_REFUSED')
   let sourceDocumentRequestCount = 0
-  await page.route('https://citation.example/paper', async (route) => {
+  await page.context().route('https://citation.example/paper', async (route) => {
     sourceDocumentRequestCount += 1
     await route.abort('connectionrefused')
   })
-  await page.route('https://citation.example/replication', async (route) => {
+  await page.context().route('https://citation.example/replication', async (route) => {
     await route.fulfill({
       contentType: 'text/html',
       body: '<!doctype html><html><body><main><h1>Replication source</h1></main></body></html>'
@@ -876,6 +1087,16 @@ test('shows the Electron failure reason when a source request fails', async ({ a
   await sourceError.getByRole('button', { name: 'Try again' }).click()
   await expect.poll(() => sourceDocumentRequestCount).toBe(2)
   await expect(sourceError).toContainText('ERR_CONNECTION_REFUSED (-102)')
+  await page.context().route('https://citation.example/paper', (route) =>
+    route.fulfill({
+      status: 302,
+      headers: { location: 'http://blocked.example/paper' }
+    })
+  )
+  await sourceError.getByRole('button', { name: 'Try again' }).click()
+  await expect(sourceError).toContainText('This source does not allow embedded previews.')
+  await expect(page.locator('[data-source-preview-skeleton]')).toHaveCount(0)
+  await expect(page.locator('[data-source-preview-progress]')).toHaveCount(0)
 })
 
 test('archives a completed session from its mobile sidebar actions', async ({ app }, testInfo) => {

@@ -15,7 +15,12 @@ import { tmpdir } from 'node:os'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import {
+  _electron as electron,
+  type ElectronApplication,
+  type JSHandle,
+  type Page
+} from 'playwright'
 import {
   RuntimeResourceProfiler,
   type RuntimeProfileResult,
@@ -340,6 +345,8 @@ type ElectronApp = {
   findOverlayIsVisible: () => Promise<boolean>
   launchSecondInstance: () => Promise<Page>
   mainWindowState: () => Promise<{ minimized: boolean; visible: boolean }>
+  trustSourcePreviewCertificate: (certificate: string) => Promise<void>
+  setDefaultSessionCookie: (url: string) => Promise<void>
   readClipboardText: () => Promise<string>
   markResourceProfilePhase: (phase: string) => Promise<void>
   pressMainWindowShortcut: (key: string, modifiers: ShortcutModifier[]) => Promise<void>
@@ -359,6 +366,12 @@ type ElectronApp = {
   captureResourceTimings: (prefix?: string) => Promise<void>
   sampleResourceProfileNow: () => Promise<void>
   setMainWindowSize: (width: number, height: number) => Promise<void>
+  auditSourceAttachments: () => Promise<JSHandle<boolean[]>>
+  pressSourcePreviewShortcut: (
+    url: string,
+    key: string,
+    modifiers?: ShortcutModifier[]
+  ) => Promise<void>
   setMainWindowZoomFactor: (factor: number) => Promise<void>
   finishResourceProfile: () => Promise<RuntimeProfileResult>
 }
@@ -972,6 +985,9 @@ class ElectronAppHarness implements ElectronApp {
       if (!mainWindow) return false
 
       return mainWindow.contentView.children.some((view) => {
+        const contents = (view as Electron.WebContentsView).webContents
+        if (!contents || contents.isDestroyed() || !contents.getURL().includes('/find-overlay/'))
+          return false
         const bounds = view.getBounds()
         return bounds.width > 0 && bounds.height > 0
       })
@@ -985,6 +1001,44 @@ class ElectronAppHarness implements ElectronApp {
 
       return { minimized: mainWindow.isMinimized(), visible: mainWindow.isVisible() }
     })
+  }
+
+  async auditSourceAttachments(): Promise<JSHandle<boolean[]>> {
+    return this.runningApplication.evaluateHandle(({ BrowserWindow }) => {
+      const decisions: boolean[] = []
+      // Installed after production: observe its real preventDefault decision before guest creation.
+      BrowserWindow.getAllWindows()[0].webContents.on('will-attach-webview', (event) => {
+        decisions.push(event.defaultPrevented)
+      })
+      return decisions
+    })
+  }
+
+  // Trust only the current test's loopback certificate; retain normal verification elsewhere.
+  async trustSourcePreviewCertificate(certificate: string): Promise<void> {
+    await this.runningApplication.evaluate(({ session }, certificate) => {
+      session
+        .fromPartition('persist:open-science-source-preview-v1')
+        .setCertificateVerifyProc((request, callback) => {
+          callback(
+            request.hostname === '127.0.0.1' &&
+              request.certificate.data.trim() === certificate.trim()
+              ? 0
+              : -3
+          )
+        })
+    }, certificate)
+  }
+
+  async setDefaultSessionCookie(url: string): Promise<void> {
+    await this.runningApplication.evaluate(async ({ session }, cookieUrl) => {
+      await session.defaultSession.cookies.set({
+        url: cookieUrl,
+        name: 'hostOnlyCookie',
+        value: 'host-session',
+        path: '/'
+      })
+    }, url)
   }
 
   async readClipboardText(): Promise<string> {
@@ -1024,6 +1078,30 @@ class ElectronAppHarness implements ElectronApp {
         BrowserWindow.getAllWindows()[0].setSize(width, height)
       },
       { width, height }
+    )
+  }
+
+  async pressSourcePreviewShortcut(
+    url: string,
+    key: string,
+    modifiers: ShortcutModifier[] = []
+  ): Promise<void> {
+    await this.runningApplication.evaluate(
+      ({ webContents }, { url, key, modifiers }) => {
+        const contents = webContents
+          .getAllWebContents()
+          .find(
+            (candidate) =>
+              candidate.getType() === 'webview' &&
+              !candidate.isDestroyed() &&
+              candidate.getURL() === url
+          )
+        if (!contents) throw new Error('Source preview was not found.')
+        contents.focus()
+        contents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers })
+        contents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers })
+      },
+      { url, key, modifiers }
     )
   }
 
