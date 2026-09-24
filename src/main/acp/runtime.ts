@@ -727,6 +727,7 @@ class AcpRuntime {
     string,
     { revision: number; tail: Promise<void> }
   >()
+  private cancellationTeardown: Promise<AcpStateSnapshot> | undefined
   private readonly repeatedToolFailureGuard = new RepeatedToolFailureGuard()
 
   // Wires runtime dependencies and forwards permission prompts into the event stream.
@@ -1849,6 +1850,10 @@ class AcpRuntime {
 
   // Requests cancellation without clearing in-flight state before the agent stops.
   async cancelPrompt(request: AcpCancelPromptRequest): Promise<AcpStateSnapshot> {
+    // A timed-out cancellation may already be closing the shared connection. Wait before taking
+    // any early permission/continuation path so every caller observes the same teardown boundary.
+    const pendingCancellationTeardown = this.cancellationTeardown
+    if (pendingCancellationTeardown) await pendingCancellationTeardown.catch(() => undefined)
     const cancelPromptRequest = this.promptTurnWorkflow.captureCancellation(request.sessionId)
     const connection = this.connection
     const activeSession = this.activeSessionFor(request.sessionId)
@@ -1901,6 +1906,7 @@ class AcpRuntime {
     }
 
     let cancellationAccepted = false
+    let teardownAfterCancellationTimeout: Promise<AcpStateSnapshot> | undefined
     const onAccepted = (): void => {
       cancellationAccepted = true
       cancelPromptRequest?.()
@@ -1915,24 +1921,43 @@ class AcpRuntime {
       this.emitState()
     }
     if (connection && activeSession) {
-      await this.sessionInteractions.cancelPrompt({
-        sessionId: request.sessionId,
-        notify: () =>
-          connection.agent.notify(acp.methods.agent.session.cancel, {
-            sessionId: activeSession.sessionId
-          }),
-        onAccepted,
-        onTimeout: () => {
-          this.pushEvent({
-            kind: 'error',
-            level: 'error',
-            sessionId: request.sessionId,
-            title: 'Prompt cancellation timed out',
-            text: 'Cancellation was not confirmed before the deadline. The agent connection is being closed; process termination is not yet confirmed.'
-          })
-          void this.disconnect()
-        }
-      })
+      try {
+        await this.sessionInteractions.cancelPrompt({
+          sessionId: request.sessionId,
+          notify: () =>
+            connection.agent.notify(acp.methods.agent.session.cancel, {
+              sessionId: activeSession.sessionId
+            }),
+          onAccepted,
+          onTimeout: () => {
+            this.pushEvent({
+              kind: 'error',
+              level: 'error',
+              sessionId: request.sessionId,
+              title: 'Prompt cancellation timed out',
+              text: 'Cancellation was not confirmed before the deadline. The agent connection is being closed; process termination is not yet confirmed.'
+            })
+            teardownAfterCancellationTimeout = this.disconnect()
+            this.cancellationTeardown = teardownAfterCancellationTimeout
+            const clearCancellationTeardown = (): void => {
+              if (this.cancellationTeardown === teardownAfterCancellationTimeout) {
+                this.cancellationTeardown = undefined
+              }
+            }
+            void teardownAfterCancellationTimeout.then(
+              clearCancellationTeardown,
+              clearCancellationTeardown
+            )
+            void teardownAfterCancellationTimeout.catch(() => undefined)
+          }
+        })
+      } catch (error) {
+        await (teardownAfterCancellationTimeout ?? this.cancellationTeardown)?.catch(
+          () => undefined
+        )
+        throw error
+      }
+      await this.cancellationTeardown?.catch(() => undefined)
     } else if (cancelPromptRequest) {
       onAccepted()
     }

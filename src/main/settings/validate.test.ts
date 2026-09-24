@@ -219,6 +219,32 @@ describe('validate: request construction', () => {
 
     expect(request.url).toBe('https://ark.cn-beijing.volces.com/api/v3/responses')
   })
+
+  it('uses an official vendor native Responses base when it differs from the Chat base', () => {
+    const request = buildValidationRequest({
+      type: 'custom',
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      openaiBaseUrl: 'https://api.deepseek.com/v1',
+      responsesBaseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-flash',
+      key: 'test-token',
+      apiEndpoints: ['anthropic', 'openai', 'responses']
+    })
+
+    expect(request.url).toBe('https://api.deepseek.com/responses')
+  })
+
+  it('adds /v1 before /responses for a custom gateway root with a path prefix', () => {
+    const request = buildValidationRequest({
+      type: 'custom',
+      baseUrl: 'https://host/proxy',
+      model: 'custom-responses',
+      key: 'test-token',
+      apiEndpoints: ['responses']
+    })
+
+    expect(request.url).toBe('https://host/proxy/v1/responses')
+  })
 })
 
 describe('validate: classification', () => {

@@ -164,25 +164,47 @@ const isolatedCodexHomeEnv = (codexHome: string, platform: NodeJS.Platform): Nod
   CODEX_HOME: codexHome
 })
 
-const normalizeResponsesBaseUrl = (value: string | undefined): string | undefined => {
+const normalizeResponsesBaseUrl = (
+  value: string | undefined,
+  options: { appendVersionPath?: boolean } = {}
+): string | undefined => {
   const normalized = value
     ?.trim()
     .replace(/\/+$/, '')
     .replace(/\/responses$/i, '')
   if (!normalized) return undefined
 
-  // Codex posts to `{base_url}/responses`, so a bare origin (e.g. the official
-  // `https://api.openai.com`) would target `.../responses` and miss the `/v1` version segment.
-  // Append `/v1` only when the input carries no path at all; gateways that already include `/v1`
-  // or a custom path are left untouched.
+  // Codex posts to `{base_url}/responses`. Explicit native/OpenAI bases preserve their published
+  // path; a custom provider's baseUrl is a root, so add `/v1` even when that root has a path prefix.
   try {
     const { pathname } = new URL(normalized)
-    if (pathname === '' || pathname === '/') return `${normalized}/v1`
+    const appendVersionPath =
+      options.appendVersionPath === true ||
+      (options.appendVersionPath === undefined && (pathname === '' || pathname === '/'))
+    if (appendVersionPath) {
+      if (/\/v1$/i.test(pathname)) return normalized
+      return `${normalized}/v1`
+    }
   } catch {
     // Non-URL inputs pass through unchanged.
   }
 
   return normalized
+}
+
+const resolveResponsesBaseUrl = (provider: {
+  responsesBaseUrl?: string
+  openaiBaseUrl?: string
+  baseUrl?: string
+}): string | undefined => {
+  const exactBase = provider.responsesBaseUrl?.trim()
+  const openAiBase = provider.openaiBaseUrl?.trim()
+  const base = exactBase || openAiBase || provider.baseUrl
+  return normalizeResponsesBaseUrl(base, {
+    // A custom provider's baseUrl is a root even when it has a path prefix (`/proxy`); only an
+    // explicitly projected OpenAI base is already versioned. A native Responses base is exact.
+    appendVersionPath: !exactBase && !openAiBase
+  })
 }
 
 const isOfficialOpenAiResponsesBase = (value: string | undefined): boolean => {
@@ -210,12 +232,15 @@ const buildCodexModelOptions = (input: {
 
 const buildCodexConfig = (provider: {
   baseUrl?: string
+  preserveBaseUrl?: boolean
   model?: string
   contextWindow?: number
   key?: string
   reasoningEffort?: ModelReasoningEffort
 }): Record<string, unknown> => {
-  const baseUrl = normalizeResponsesBaseUrl(provider.baseUrl)
+  const baseUrl = normalizeResponsesBaseUrl(provider.baseUrl, {
+    appendVersionPath: !provider.preserveBaseUrl
+  })
   const contextWindow =
     provider.contextWindow && provider.contextWindow > 0 ? provider.contextWindow : undefined
 
@@ -248,6 +273,7 @@ type CodexNativeModelCatalogInput = {
   vendorId?: OfficialVendorId
   baseUrl?: string
   openaiBaseUrl?: string
+  responsesBaseUrl?: string
   nativeVersion?: string
   contextWindow?: number
   supportsImageInput?: boolean
@@ -547,13 +573,13 @@ export const createCodexFramework = ({
       (provider.apiEndpoints?.includes('responses') ?? false)
     const useLocalResponsesEndpoint = useChatBridge || useNativeCompatibility
     const codexModel = useChatBridge ? CODEX_BRIDGE_MODEL : provider.model
-    // A dual-endpoint vendor keeps its Anthropic route in
-    // `baseUrl` and its OpenAI/Responses `/v1` root in `openaiBaseUrl`, so post to the latter; a
-    // Responses-only provider (e.g. OpenAI) carries its base in `baseUrl`. The Chat bridge and the
-    // protocol-preserving native compatibility endpoint both expose a local Responses URL.
+    // A dual-endpoint vendor keeps its Anthropic route in `baseUrl` and its OpenAI Chat base in
+    // `openaiBaseUrl`. Native Responses may use a separate base, so prefer that when supplied.
+    // The Chat bridge and the protocol-preserving native compatibility endpoint both expose a local
+    // Responses URL.
     const responsesBaseUrl = useLocalResponsesEndpoint
       ? bridge.baseUrl
-      : (provider.openaiBaseUrl ?? provider.baseUrl)
+      : resolveResponsesBaseUrl(provider)
     const authentication: AgentAuthentication | undefined =
       provider.key && !useLocalResponsesEndpoint
         ? {
@@ -591,6 +617,7 @@ export const createCodexFramework = ({
         model: codexModel,
         contextWindow: provider.contextWindow,
         baseUrl: responsesBaseUrl,
+        preserveBaseUrl: Boolean(provider.responsesBaseUrl?.trim()) && !useLocalResponsesEndpoint,
         key: useLocalResponsesEndpoint ? undefined : provider.key,
         reasoningEffort: ctx.reasoningEffort
       }),
@@ -689,5 +716,6 @@ export {
   codexSubscriptionStorageDir,
   isOfficialOpenAiResponsesBase,
   mapCodexPermissionProfile,
-  normalizeResponsesBaseUrl
+  normalizeResponsesBaseUrl,
+  resolveResponsesBaseUrl
 }
