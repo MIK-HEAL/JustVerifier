@@ -361,10 +361,18 @@ for (const width of [1280, 414]) {
     await expect(help).toContainText('Lower speeds reduce disk activity')
     await page.screenshot({ path: testInfo.outputPath('transfer-speed-help.png') })
     const speed = dialog.getByRole('combobox', { name: 'Disk activity limit', exact: true })
+    await expect(speed).toHaveText('Auto')
     await speed.click()
     const options = page.getByRole('listbox')
     await expect(options).toBeVisible()
-    await expect(options.getByRole('option')).toHaveCount(3)
+    await expect(options.getByRole('option')).toHaveText([
+      'Auto',
+      '4.0 MiB/s',
+      '16.0 MiB/s',
+      '64.0 MiB/s',
+      '128.0 MiB/s',
+      '256.0 MiB/s'
+    ])
     await page.screenshot({ path: testInfo.outputPath('transfer-speed-menu.png') })
     await page.getByRole('option', { name: '4.0 MiB/s', exact: true }).click()
     await expect(speed).toHaveText('4.0 MiB/s')
@@ -372,6 +380,14 @@ for (const width of [1280, 414]) {
     await expect(speed).toBeFocused()
     await speed.press('Enter')
     await expect(options).toBeVisible()
+    await page.getByRole('option', { name: 'Auto', exact: true }).click()
+    await expect(speed).toHaveText('Auto')
+    await expect(speed).toBeFocused()
+    await speed.press('Enter')
+    await expect(page.getByRole('option', { name: 'Auto', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    )
     await page.keyboard.press('Escape')
     await expect(options).toHaveCount(0)
     await expect(dialog).toBeVisible()
