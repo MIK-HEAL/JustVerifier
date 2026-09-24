@@ -1,4 +1,9 @@
-import { NotebookExecutionStopError } from '../../shared/notebook-execution-error'
+import { executionRecoveryContext } from './execution-recovery'
+import {
+  NotebookExecutionStopError,
+  isNotebookKernelStopResolved,
+  notebookErrorRecovery
+} from '../../shared/notebook-execution-error'
 import { artifactSaveRequestSchema } from '../artifacts/save-request'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
@@ -443,6 +448,8 @@ type DelegatedNotebookConnection = NotebookRpcConnection & {
 type BoundArtifactTurn = ActiveArtifactTurnBinding & {
   pendingRequests: Set<Promise<void>>
   stopFailure?: NotebookExecutionStopError
+  // Keep every failure identity: a newer epoch must not hide an older unresolved process.
+  kernelStopFailures?: Set<NotebookExecutionStopError>
 }
 
 type NotebookRpcRequestLifecycle = {
@@ -1451,6 +1458,7 @@ class NotebookLocalRpcServer {
       beginControlInvocation(context: TrustedControlInvocationIdentity): () => void
       completeControlInvocation(controlInvocationId: string): Promise<readonly TransientViewImage[]>
       discardControlInvocation(controlInvocationId: string): void
+      revoke: () => void
       release: () => void
     }
   > {
@@ -1509,6 +1517,9 @@ class NotebookLocalRpcServer {
         this.hostViewImage?.discard(controlInvocationId)
         ownedControlInvocationIds.delete(controlInvocationId)
       },
+      // Epoch retirement closes RPC admission immediately; already produced images remain owned
+      // by their invocation until its completion gate accepts or discards them.
+      revoke: () => this.revokeSessionCapability(token),
       release: () => {
         for (const controlInvocationId of ownedControlInvocationIds) {
           this.hostViewImage?.discard(controlInvocationId)
@@ -1584,6 +1595,10 @@ class NotebookLocalRpcServer {
       if (ownedTurns.size === 0) this.artifactTurnBindingsByExecution.delete(sessionId)
     }
     if (binding.stopFailure) throw binding.stopFailure
+    const unresolvedKernel = [...(binding.kernelStopFailures?.values() ?? [])].find(
+      (failure) => !isNotebookKernelStopResolved(failure)
+    )
+    if (unresolvedKernel) throw unresolvedKernel
   }
 
   async prepareNotebookTurnInputs(
@@ -1779,7 +1794,12 @@ class NotebookLocalRpcServer {
     }
     const recordStopFailure = (error: unknown): void => {
       if (error instanceof NotebookExecutionStopError && activeRequest.foregroundTurn) {
-        activeRequest.foregroundTurn.binding.stopFailure ??= error
+        const binding = activeRequest.foregroundTurn.binding
+        const kernel = notebookErrorRecovery(error)?.kernel
+        if (kernel) {
+          binding.kernelStopFailures ??= new Set()
+          binding.kernelStopFailures.add(error)
+        } else binding.stopFailure ??= error
       }
     }
     lifecycle.activeRequests.add(activeRequest)
@@ -1882,7 +1902,7 @@ class NotebookLocalRpcServer {
             !sessionBinding.delegatedNotebook &&
             sessionBinding.delegatedWorkRole !== 'delegate' &&
             params.background !== true &&
-            ['execute', 'runCell', 'executeControl', 'executeShell'].includes(method)
+            ['execute', 'runCell', 'executeControl', 'executeShell', 'restart'].includes(method)
           ) {
             const sessionId =
               this.sessionAliases.get(sessionBinding.sessionId) ?? sessionBinding.sessionId
@@ -2298,8 +2318,10 @@ class NotebookLocalRpcServer {
       }
       if (response.destroyed) return
       const message = error instanceof Error ? error.message : String(error)
-      const serializedError =
-        error instanceof NotebookBackgroundRunError
+      const recovery = executionRecoveryContext(notebookErrorRecovery(error))
+      const serializedError = recovery
+        ? { code: 'notebook-kernel-exited', message, recovery }
+        : error instanceof NotebookBackgroundRunError
           ? { ...error.detail, message }
           : error instanceof BackgroundHostMethodUnsafeError
             ? error.detail

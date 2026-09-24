@@ -299,13 +299,11 @@ describe('notebook MCP server config', () => {
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toContain('will not resolve a bare relative name')
   })
 
-  it('bounds recovery after repeated kernel-process failures', () => {
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toMatch(/repeated kernel failures/i)
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toMatch(/retry at most once when safe/i)
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('check possible side effects before replaying')
+  it('keeps retry decisions tied to side effects without a global kernel failure stop rule', () => {
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toMatch(/stop Notebook tools/i)
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toMatch(/retry at most once/i)
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('check possible side effects before retrying')
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('absent means unknown')
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toMatch(/stop Notebook tools/i)
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toMatch(/report the failure/i)
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toContain('then revise/rerun')
   })
 
@@ -1506,6 +1504,75 @@ describe('repl_execute tool', () => {
       expect(body.params.code).toBe('return 2')
     } finally {
       globalThis.fetch = originalFetch
+    }
+  })
+
+  it('delivers verified REPL exit recovery in the immediate MCP response and history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repl-exit-mcp-'))
+    const recovery = {
+      execution: 'may-have-run' as const,
+      retryAfter: 'runtime-ready' as const,
+      kernel: {
+        kind: 'repl' as const,
+        signal: 'SIGKILL',
+        exitCode: null,
+        cause: 'unknown' as const,
+        cleanup: 'verified' as const
+      }
+    }
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async () => ({
+          status: 'failed',
+          stdout: '',
+          stderr: 'Kernel exited',
+          traceback: '',
+          cwdAfter: root,
+          outputs: [],
+          recovery
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const rpc = new NotebookLocalRpcServer(service, { transport: 'tcp' })
+    const connection = await rpc.issueSessionConnection(
+      'session-1',
+      'default-project',
+      'root-frame-session-1'
+    )
+    const mcp = createNotebookMcpServer({
+      ...connection,
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root
+    })
+    const client = new ModelContextProtocolClient({ name: 'exit-recovery-test', version: '1' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await mcp.connect(serverTransport)
+    await client.connect(clientTransport)
+    try {
+      const response = await client.callTool({
+        name: 'repl_execute',
+        arguments: { code: 'process.kill(process.pid, "SIGKILL")' }
+      })
+      const text = (response.content as Array<{ type: string; text?: string }>).find(
+        (item) => item.type === 'text'
+      )!.text!
+      expect(JSON.parse(text).recovery).toMatchObject(recovery)
+      expect(JSON.parse(text).recovery.guidance).toContain('no extra restart')
+      expect(
+        (await service.state({ sessionId: 'session-1', workspaceCwd: root })).runs.at(-1)?.recovery
+      ).toEqual(recovery)
+    } finally {
+      await client.close()
+      await mcp.close()
+      await rpc.close()
+      await service.dispose()
+      await rm(root, { recursive: true, force: true })
     }
   })
 
@@ -3287,7 +3354,8 @@ describe('compactRestartResult', () => {
     expect(compact.kernelStatus).toBe('idle')
     expect(compact.status).toBe('restarted')
     expect(compact.cells).toBe(2)
-    expect(String(compact.note)).toContain('restarted')
+    expect(String(compact.note)).toContain('fresh process starts on the next execution')
+    expect(String(compact.note)).toContain('interrupted writes may be partial')
     // The verbose run history is NOT carried into the agent-facing restart result.
     const serialized = JSON.stringify(compact)
     expect(serialized).not.toContain('runs')

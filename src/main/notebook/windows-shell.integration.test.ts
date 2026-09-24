@@ -1,8 +1,12 @@
 import { join } from 'node:path'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import * as fsPromises from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
+import * as processTree from '../process-tree'
 import { build } from 'esbuild'
 
 import { describe, expect, it, vi } from 'vitest'
@@ -18,13 +22,30 @@ import { windowsSupervisedLaunch } from '../../../packages/notebook-network-sand
 import type { NotebookProcessSandbox } from './process-sandbox'
 import { NotebookRuntimeService } from './runtime-service'
 import { NotebookRunRepository } from './repository'
+import { NotebookNetworkSandboxOwner } from './network-sandbox-owner'
+import { DEFAULT_NOTEBOOK_NETWORK_SETTINGS } from '../../shared/notebook-network'
+import { NotebookNetworkSandbox } from '@aipoch/notebook-network-sandbox'
+import { createRootNotebookLane } from './lane-identity'
+
+vi.mock('node:child_process', async (original) => {
+  const actual = await original<typeof import('node:child_process')>()
+  return { ...actual, spawn: vi.fn(actual.spawn) }
+})
+
+vi.mock('node:fs/promises', async (original) => ({
+  ...(await original<typeof import('node:fs/promises')>())
+}))
 
 const POWERSHELL_PROCESS_TIMEOUT_MS = 30_000
 const POWERSHELL_TEST_TIMEOUT_MS = POWERSHELL_PROCESS_TIMEOUT_MS + 5_000
 
 // Use the production native supervisor when requested, while keeping the workload harmless and
 // independent of machine PowerShell startup speed, network access, and AppContainer installation.
-const fixtureSandbox = (root: string, code: string): NotebookProcessSandbox => ({
+const fixtureSandbox = (
+  root: string,
+  code: string,
+  observe?: (event: Record<string, unknown>) => void
+): NotebookProcessSandbox => ({
   wrap: async (invocation) => {
     const launch = invocation.superviseProcessTree
       ? windowsSupervisedLaunch({
@@ -48,14 +69,28 @@ const fixtureSandbox = (root: string, code: string): NotebookProcessSandbox => (
       args: launch.argv.slice(1),
       env: launch.env,
       ...('confirmProcessTreeTermination' in launch
-        ? { confirmProcessTreeTermination: launch.confirmProcessTreeTermination }
+        ? {
+            confirmProcessTreeTermination: async () => {
+              const confirmed = await launch.confirmProcessTreeTermination()
+              observe?.({ phase: 'native-proof', confirmed })
+              return confirmed
+            }
+          }
         : {}),
       annotateStderr: (stderr) => stderr,
-      cleanup: async (_reason, outcome) => ({
-        processesTerminated: outcome.processesTerminated,
-        networkClosed: true,
-        temporaryResourcesRemoved: true
-      })
+      cleanup: async (reason, outcome) => {
+        observe?.({
+          phase: 'sandbox-cleanup',
+          reason,
+          processesTerminated: outcome.processesTerminated,
+          canReconcile: Boolean(outcome.confirmTermination)
+        })
+        return {
+          processesTerminated: outcome.processesTerminated,
+          networkClosed: true,
+          temporaryResourcesRemoved: true
+        }
+      }
     }
   }
 })
@@ -87,6 +122,237 @@ const runPowerShell = (command: string): ReturnType<typeof runShellCommand> =>
   })
 
 describe.runIf(process.platform === 'win32')('Windows notebook shell integration', () => {
+  it('persists two real standard REPL commands and releases their native owner on shutdown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repl-native-persistence-'))
+    vi.stubEnv('OPEN_SCIENCE_E2E_STORAGE_ROOT', root)
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: join(process.cwd(), 'packages/notebook-network-sandbox/vendor'),
+      temporaryRoot: join(root, 'commands'),
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      requestDecision: async () => 'deny'
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'native-repl',
+      repository: new NotebookRunRepository(root),
+      processSandbox: owner
+    })
+    const wrap = owner.wrap.bind(owner)
+    const launches: string[] = []
+    const wrapping = vi.spyOn(owner, 'wrap').mockImplementation(async (invocation) => {
+      const wrapped = await wrap(invocation)
+      launches.push(wrapped.args[0])
+      return wrapped
+    })
+    const scope = { sessionId: 'repl-persistence', workspaceCwd: root }
+    const nonce = `REPL_${randomUUID()}`
+    let cleanupVerified = false
+    try {
+      await expect(
+        service.executeControl({
+          ...scope,
+          code: `globalThis.persistedNonce = ${JSON.stringify(nonce)}; console.log(persistedNonce)`
+        })
+      ).resolves.toMatchObject({ status: 'completed', stdout: `${nonce}\n` })
+      await expect(
+        service.executeControl({
+          ...scope,
+          code: 'console.log(persistedNonce + "_FOLLOWING")'
+        })
+      ).resolves.toMatchObject({ status: 'completed', stdout: `${nonce}_FOLLOWING\n` })
+      expect(launches).toEqual(['supervise'])
+      const persisted = await new NotebookRunRepository(root).loadOrCreate({
+        ...scope,
+        projectId: 'native-repl',
+        lane: createRootNotebookLane(
+          'native-repl',
+          scope.sessionId,
+          `root-frame-${scope.sessionId}`
+        )
+      })
+      expect(persisted.runs).toHaveLength(2)
+      expect(
+        persisted.runs.map((run) => ({
+          status: run.status,
+          kernelKind: run.kernelKind,
+          stdout: run.text.stdout
+        }))
+      ).toEqual([
+        { status: 'completed', kernelKind: 'repl', stdout: `${nonce}\n` },
+        { status: 'completed', kernelKind: 'repl', stdout: `${nonce}_FOLLOWING\n` }
+      ])
+      expect(new Set(persisted.runs.map((run) => run.runId)).size).toBe(2)
+      await expect(service.shutdownAll()).resolves.toEqual({ reaped: true })
+      expect(await readdir(join(root, 'commands'))).toEqual([])
+      expect(await readdir(join(root, 'runtime', 'kernel-processes'))).toEqual([])
+      cleanupVerified = true
+    } finally {
+      wrapping.mockRestore()
+      const shutdown = await service.shutdownAll().catch(() => ({ reaped: false }))
+      await service.dispose().catch(() => undefined)
+      await owner.dispose().catch(() => undefined)
+      vi.unstubAllEnvs()
+      if (cleanupVerified || shutdown.reaped) await rm(root, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  it.each([false, true])(
+    'blocks B until A supplies its original native proof, then persists B exactly once (receipt retry: %s)',
+    async (receiptRetry) => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-native-admission-'))
+      vi.stubEnv('OPEN_SCIENCE_E2E_STORAGE_ROOT', root)
+      const info = vi.fn()
+      const owner = new NotebookNetworkSandboxOwner({
+        resourceRoot: join(process.cwd(), 'packages/notebook-network-sandbox/vendor'),
+        temporaryRoot: join(root, 'commands'),
+        getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+        persistAlwaysAllow: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+        requestDecision: async () => 'deny',
+        logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() }
+      })
+      const registry = new ShellProcessOwnershipRegistry(root)
+      const adapter = new NotebookShellProcessAdapter('win32', owner, registry)
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'native-admission',
+        repository: new NotebookRunRepository(root),
+        shellProcess: adapter,
+        shellRuntimeBinding: { kind: 'powershell', version: '5.1' }
+      })
+      const sentinel = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      })
+      await once(sentinel, 'spawn')
+      const launch = NotebookNetworkSandbox.prototype.wrap
+      let allowProof = false
+      const proofs: Array<() => Promise<boolean>> = []
+      const proofReads: number[] = []
+      const native = vi
+        .spyOn(NotebookNetworkSandbox.prototype, 'wrap')
+        .mockImplementation(async function (this: NotebookNetworkSandbox, request) {
+          const wrapped = await launch.call(this, request)
+          expect(wrapped.argv[1]).toBe('supervise')
+          expect(wrapped.confirmProcessTreeTermination).toBeTypeOf('function')
+          const first = proofs.length === 0
+          const index = proofs.length
+          proofReads.push(0)
+          let confirmed = false
+          const confirm = async (): Promise<boolean> => {
+            proofReads[index]++
+            const result = await wrapped.confirmProcessTreeTermination!()
+            confirmed ||= result
+            return result
+          }
+          proofs.push(async () => confirmed || confirm())
+          return {
+            ...wrapped,
+            // Inject only unavailable evidence. The real native Job and original receipt remain in use.
+            confirmProcessTreeTermination: () =>
+              first && !allowProof ? Promise.resolve(false) : confirm()
+          }
+        })
+      const scope = (sessionId: string): { sessionId: string; workspaceCwd: string } => ({
+        sessionId,
+        workspaceCwd: root
+      })
+      const nonceA = `A_${randomUUID()}`
+      const nonceB = `B_${randomUUID()}`
+      let receiptRemoval: ReturnType<typeof vi.spyOn> | undefined
+      let allNativeProofs = false
+      try {
+        const a = await service.executeShell({ ...scope('A'), command: `Write-Output '${nonceA}'` })
+        expect(a).toMatchObject({ errorCode: 'shell-cleanup-incomplete' })
+        expect(a.stdout).toContain(nonceA)
+        expect(info).toHaveBeenCalledWith(
+          'sandbox cleanup completed',
+          expect.objectContaining({
+            processesTerminated: false,
+            networkClosed: true,
+            temporaryResourcesRemoved: false
+          })
+        )
+        expect(proofs).toHaveLength(1)
+        const retained = await readdir(join(root, 'commands'))
+        expect(retained).toHaveLength(2)
+        const receiptName = retained.find((name) => name.endsWith('.receipt'))!
+        const receipt = await readFile(join(root, 'commands', receiptName), 'utf8')
+        expect(registry.hasReceipts()).toBe(true)
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const blocked = await service.executeShell({
+            ...scope('B'),
+            command: `Write-Output '${nonceB}'`
+          })
+          expect(blocked).toMatchObject({
+            errorCode: 'shell-cleanup-incomplete',
+            recovery: { execution: 'not-started', retryAfter: 'cleanup-verified' }
+          })
+          expect(blocked.stderr).toContain('SHELL_CLEANUP_INCOMPLETE')
+          expect(proofs).toHaveLength(1)
+          expect(await readdir(join(root, 'commands'))).toEqual(retained)
+          expect(await readFile(join(root, 'commands', receiptName), 'utf8')).toBe(receipt)
+          const blockedRuns = (await service.state(scope('B'))).runs
+          expect(blockedRuns).toHaveLength(attempt + 1)
+          expect(blockedRuns.every((run) => run.status === 'failed')).toBe(true)
+          expect(sentinel.exitCode).toBeNull()
+        }
+        if (receiptRetry) {
+          const remove = fsPromises.rm
+          let rejected = false
+          receiptRemoval = vi.spyOn(fsPromises, 'rm').mockImplementation(async (path, options) => {
+            if (!rejected && path === join(root, 'commands', receiptName)) {
+              rejected = true
+              throw new Error('Injected original command receipt removal failure')
+            }
+            return remove(path, options)
+          })
+        }
+        allowProof = true
+        if (receiptRetry) {
+          const stillBlocked = await service.executeShell({
+            ...scope('B'),
+            command: `Write-Output '${nonceB}'`
+          })
+          expect(stillBlocked).toMatchObject({ errorCode: 'shell-cleanup-incomplete' })
+          expect(proofs).toHaveLength(1)
+          expect(await readFile(join(root, 'commands', receiptName), 'utf8')).toBe(receipt)
+        }
+        const b = await service.executeShell({ ...scope('B'), command: `Write-Output '${nonceB}'` })
+        expect(b).toMatchObject({ exitCode: 0 })
+        expect(b.errorCode).toBeUndefined()
+        expect(b.stdout.trim()).toBe(nonceB)
+        expect(proofs).toHaveLength(2)
+        expect(proofReads).toEqual([1, 1])
+        expect((await service.state(scope('A'))).runs).toHaveLength(1)
+        const bRuns = (await service.state(scope('B'))).runs
+        expect(bRuns).toHaveLength(receiptRetry ? 4 : 3)
+        const completed = bRuns.filter((run) => run.status === 'completed')
+        expect(completed).toHaveLength(1)
+        expect(completed[0].text.stdout.trim()).toBe(nonceB)
+        expect(await readdir(join(root, 'commands'))).toEqual([])
+        expect(registry.hasReceipts()).toBe(false)
+        expect(sentinel.exitCode).toBeNull()
+      } finally {
+        allowProof = true
+        receiptRemoval?.mockRestore()
+        allNativeProofs = (await Promise.all(proofs.map((confirm) => confirm()))).every(Boolean)
+        native.mockRestore()
+        const exited = once(sentinel, 'exit')
+        sentinel.kill()
+        await exited
+        await service.dispose()
+        await owner.dispose().catch(() => undefined)
+        vi.unstubAllEnvs()
+        // Preserve evidence when the original native owner cannot prove termination.
+        if (allNativeProofs) await rm(root, { recursive: true, force: true })
+      }
+    },
+    60_000
+  )
+
   it.each([undefined, '0'])(
     'preserves the Shell workload Node-mode environment: %s',
     async (nodeMode) => {
@@ -262,8 +528,51 @@ require('node:fs').writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));
 child.unref();
 ${ending === 'exit' ? '' : 'setInterval(() => {}, 1000);'}
 `
+      const events: Record<string, unknown>[] = []
+      const observe = (event: Record<string, unknown>): void => {
+        events.push(event)
+      }
+      const actual =
+        await vi.importActual<typeof import('node:child_process')>('node:child_process')
+      // Observe the real taskkill without changing its arguments, result or invocation count.
+      vi.mocked(spawn).mockImplementation((...args) => {
+        const child = actual.spawn(...args)
+        if (args[0] === 'taskkill') {
+          const event = {
+            phase: 'taskkill',
+            stdout: '',
+            stderr: '',
+            exitCode: null as number | null,
+            signal: null as NodeJS.Signals | null
+          }
+          observe(event)
+          child.stdout?.on('data', (chunk: Buffer) => {
+            event.stdout = (event.stdout + chunk.toString()).slice(0, 4096)
+          })
+          child.stderr?.on('data', (chunk: Buffer) => {
+            event.stderr = (event.stderr + chunk.toString()).slice(0, 4096)
+          })
+          child.once('exit', (code, signal) => {
+            event.exitCode = code
+            event.signal = signal
+          })
+        }
+        return child
+      })
+      const terminate = processTree.terminateProcessTree
+      const termination = vi
+        .spyOn(processTree, 'terminateProcessTree')
+        .mockImplementation(async (...args) => {
+          const result = await terminate(...args)
+          observe({ phase: 'terminate-result', ...result })
+          return result
+        })
       const registry = new ShellProcessOwnershipRegistry(root)
-      const adapter = new NotebookShellProcessAdapter('win32', fixtureSandbox(root, code), registry)
+      const adapter = new NotebookShellProcessAdapter(
+        'win32',
+        fixtureSandbox(root, code, observe),
+        registry
+      )
       const controller = new AbortController()
       const execution = adapter.execute({
         ...shellRequest(root),
@@ -280,8 +589,25 @@ ${ending === 'exit' ? '' : 'setInterval(() => {}, 1000);'}
         const result = await execution
         const pid = Number(await readFile(pidPath, 'utf8'))
         expect(pid).toBeGreaterThan(0)
-        expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }))
-        expect(result.errorCode).toBeUndefined()
+        // Windows can acknowledge Job termination before the descendant's process object is
+        // fully signalled. Wait for read-only absence; never signal a saved, possibly reused PID.
+        await vi.waitFor(
+          () =>
+            expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' })),
+          { timeout: 4000 }
+        )
+        const diagnostic = JSON.stringify({
+          ending,
+          events,
+          hasReceipts: registry.hasReceipts(),
+          result: {
+            errorCode: result.errorCode,
+            ownedTreeReaped: result.ownedTreeReaped,
+            cancelled: result.cancelled,
+            exitCode: result.exitCode
+          }
+        })
+        expect(result.errorCode, diagnostic).toBeUndefined()
         expect(result.ownedTreeReaped).not.toBe(false)
         if (ending === 'exit') expect(result.exitCode).toBe(0)
         if (ending === 'timeout')
@@ -292,6 +618,8 @@ ${ending === 'exit' ? '' : 'setInterval(() => {}, 1000);'}
       } finally {
         controller.abort()
         await execution
+        termination.mockRestore()
+        vi.mocked(spawn).mockImplementation(actual.spawn)
         await rm(root, { recursive: true, force: true })
       }
     },
