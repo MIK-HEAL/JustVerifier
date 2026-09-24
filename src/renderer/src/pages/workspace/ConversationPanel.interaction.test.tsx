@@ -6718,6 +6718,88 @@ describe('ConversationPanel error box + report affordance', () => {
     expect(reportButton()).not.toBeNull()
   })
 
+  it('dismisses the current error without changing the run and shows a later failure', () => {
+    renderPanel({ view: { activeSession: errorSession } })
+
+    const dismiss = container.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')
+    expect(dismiss).not.toBeNull()
+    act(() => dismiss?.click())
+    expect(errorBoxText()).toBe('')
+    expect(reportButton()).toBeNull()
+
+    renderPanel({ view: { activeSession: errorSession } })
+    expect(errorBoxText()).toBe('')
+
+    renderPanel({
+      view: {
+        activeSession: {
+          ...errorSession,
+          autoReviewEnabled: true,
+          updatedAt: errorSession.updatedAt + 1
+        }
+      }
+    })
+    expect(errorBoxText()).toBe('')
+
+    renderPanel({
+      view: {
+        activeSession: { ...errorSession, status: 'running', error: undefined }
+      }
+    })
+    renderPanel({
+      view: {
+        activeSession: {
+          ...errorSession,
+          updatedAt: errorSession.updatedAt + 2
+        }
+      }
+    })
+    expect(errorBoxText()).toContain('Run failed: connection reset')
+    expect(reportButton()).not.toBeNull()
+  })
+
+  it('shows a repeated transient action error after the dismissed one clears', () => {
+    const idleSession = { ...errorSession, status: 'idle' as const, error: undefined }
+    renderPanel({
+      view: {
+        activeSession: idleSession,
+        actionError: 'Could not send message'
+      }
+    })
+
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click())
+    expect(errorBoxText()).toBe('')
+
+    renderPanel({ view: { activeSession: idleSession, actionError: null } })
+    renderPanel({
+      view: { activeSession: idleSession, actionError: 'Could not send message' }
+    })
+    expect(errorBoxText()).toContain('Could not send message')
+  })
+
+  it('keeps the same translated action error dismissed when the language changes', async () => {
+    const { i18next } = await import('../../i18n')
+    renderPanel({
+      view: {
+        activeSession: { ...errorSession, status: 'idle', error: undefined },
+        actionError: VISION_MODEL_NOT_CONFIGURED_MESSAGE
+      }
+    })
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click())
+    expect(errorBoxText()).toBe('')
+
+    try {
+      await act(async () => {
+        await i18next.changeLanguage('zh-Hans')
+      })
+      expect(errorBoxText()).toBe('')
+    } finally {
+      await act(async () => {
+        await i18next.changeLanguage('en')
+      })
+    }
+  })
+
   it('renders the error box for a failed run even when it has no error text', () => {
     renderPanel({
       view: {
