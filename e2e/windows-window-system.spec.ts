@@ -16,7 +16,7 @@ test.describe('Windows window system', () => {
   test.skip(process.platform !== 'win32', 'Windows window behavior requires a Windows host.')
   test.use({ windowMode: 'normal' })
 
-  test('uses interface scale steps for Windows plus aliases and reset shortcuts', async ({
+  test('uses interface scale steps for Windows plus aliases and reset shortcuts @pr-mainline-windows', async ({
     app
   }, testInfo) => {
     const page = await app.completeOnboarding()
@@ -47,7 +47,9 @@ test.describe('Windows window system', () => {
     await expect.poll(pixelRatio).toBeCloseTo(baseline, 4)
   })
 
-  test('persists minimize-to-tray across titlebar close, relaunch, and Ctrl+W', async ({ app }) => {
+  test('persists minimize-to-tray across titlebar close, relaunch, and Ctrl+W @pr-mainline-windows', async ({
+    app
+  }) => {
     let page = await app.completeOnboarding()
     let settings = await openGeneralSettings(page)
     const closeAction = settings.getByRole('combobox', { name: 'When closing the window' })
