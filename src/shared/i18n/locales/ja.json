@@ -129,6 +129,9 @@
     "This Session package requires a newer version of Open Science. Update Open Science, then try importing it again.": "このセッションパッケージには、より新しいバージョンの Open Science が必要です。Open Science を更新してから、もう一度インポートしてください。"
   },
   "renderer": {
+    "Remembered for this project": "このプロジェクトで許可を記憶",
+    "Remembered across all projects": "すべてのプロジェクトで許可を記憶",
+    "Try again when the connection is available, or close this dialog.": "接続が利用可能になったら再試行するか、このダイアログを閉じてください。",
     "The installed Claude Code CLI is incompatible or its version could not be verified. Update Claude Code to 2.1.118 or later, then re-detect it in Settings.": "インストール済みの Claude Code CLI に互換性がないか、バージョンを確認できません。Claude Code を 2.1.118 以降に更新し、設定で再検出してください。",
     "Other classification tokens": "その他の分類のトークン",
     "Literature classification tokens": "文献分類のトークン数",
@@ -6289,6 +6292,14 @@
     "Start an update to see the screening process.": "更新を開始するとスクリーニングの進行状況が表示されます。",
     "Pending candidates": "未処理の候補",
     "Pause analysis": "分析を一時停止",
-    "Auto-approve workspace edits and supported Library workflows. Other tools follow their permission rules.": "ワークスペースの編集と対応するライブラリのワークフローを自動承認します。他のツールはそれぞれの権限ルールに従います。"
+    "Auto-approve workspace edits and supported Library workflows. Other tools follow their permission rules.": "ワークスペースの編集と対応するライブラリのワークフローを自動承認します。他のツールはそれぞれの権限ルールに従います。",
+    "Continue for now": "今回は続行",
+    "Your choice could not be saved. Continue for now to keep using this folder; we may ask again after restarting.": "選択を保存できませんでした。今回はこのフォルダーを使い続けることができます。再起動後に再び確認する場合があります。",
+    "Could not send your response.": "回答を送信できませんでした。",
+    "Restore the file or reconnect its drive before retrying. You can close this preview and continue working.": "再試行する前に、ファイルを復元するかドライブを再接続してください。このプレビューを閉じて作業を続けられます。",
+    "Open the file from your current storage location, or close this preview and continue working.": "現在の保存先からファイルを開くか、このプレビューを閉じて作業を続けてください。",
+    "This conversation cannot continue until its Plan is restored or explicitly discarded. You can switch to another conversation while recovery continues.": "この会話は、プランが復元されるか明示的に破棄されるまで続行できません。復旧中は別の会話に切り替えられます。",
+    "If recovery keeps failing, check that Open-Science is running on the host computer and that both devices are connected. Save a copy of unsent drafts before leaving this page.": "復旧に失敗し続ける場合は、ホストコンピューターでOpen-Scienceが実行されていることと、両方のデバイスが接続されていることを確認してください。このページを離れる前に、未送信の下書きのコピーを保存してください。",
+    "Appearance changed elsewhere. Review the current appearance before trying again.": "外観が別の場所で変更されました。現在の外観を確認してから、もう一度お試しください。"
   }
 }
