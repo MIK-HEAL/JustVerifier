@@ -157,9 +157,11 @@ const GENERATED_SOURCE_OMISSIONS = [
   'window.onCloseConfirmRequest',
   'window.onFindInPageResult',
   'window.onHideWindowFind',
+  'window.onInterfaceScaleShortcut',
   'window.onShowWindowFind',
   'window.onWindowFindAppearance',
-  'window.sendCloseConfirmResponse'
+  'window.sendCloseConfirmResponse',
+  'window.setZoomFactor'
 ] as const
 
 const BROWSER_NATIVE_CALLABLE_PATHS = [
