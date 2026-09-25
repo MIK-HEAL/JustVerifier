@@ -177,8 +177,23 @@ type OrderedSessionPersistence = Pick<SessionPersistenceApi, 'saveSession' | 'sa
   releaseAcknowledgedSessionBody: (sessionId: string) => boolean
   clearWriteFailure: (target: string) => void
   clearWriteFailures: () => void
-  flush: () => Promise<void>
+  pruneDeferredConversationCommands: (sessions: readonly Pick<ChatSession, 'id'>[]) => void
+  hasDeferredConversationCommands: (target: string) => boolean
+  flush: (target?: string) => Promise<void>
 }
+
+export class SessionPersistenceDeferredError extends Error {
+  readonly code = 'session-conversation-deferred' as const
+
+  constructor(readonly target: string) {
+    super('Session conversation changes are waiting for the active run to finish.')
+    this.name = 'SessionPersistenceDeferredError'
+  }
+}
+
+export const isSessionPersistenceDeferredError = (
+  error: unknown
+): error is SessionPersistenceDeferredError => error instanceof SessionPersistenceDeferredError
 
 const SESSION_CONFLICT_REBASE_FIELDS = [
   'title',
@@ -870,6 +885,7 @@ const createOrderedSessionPersistence = (
   const acknowledgedRevisions = new Map<string, number>()
   const acknowledgedSessions = new Map<string, PersistedChatSession>()
   const pendingLatestByTarget = new Map<string, PendingLatestSessionSave>()
+  const deferredConversationCommandTargets = new Set<string>()
   // The queue swallows rejections to stay usable; retain terminal failures until that target heals.
   const failedWritesByTarget = new Map<string, unknown>()
   let hydrationGeneration = 0
@@ -919,6 +935,19 @@ const createOrderedSessionPersistence = (
       Math.max(acknowledgedRevisions.get(session.id) ?? 0, revision)
     )
     acknowledgedSessions.set(session.id, structuredClone(session))
+  }
+
+  const trackConversationCommandOutcome = (
+    target: string,
+    options: SaveSessionOptions | undefined,
+    durable: PersistedChatSession
+  ): void => {
+    const commands = options?.conversationCommands
+    if (!commands || commands.length === 0) return
+    const acknowledged = new Set(durable.runtimeConversationCommandIds ?? [])
+    if (commands.some(({ id }) => !acknowledged.has(id)))
+      deferredConversationCommandTargets.add(target)
+    else deferredConversationCommandTargets.delete(target)
   }
 
   const releasePendingLatestCadence = (): void => {
@@ -1001,6 +1030,7 @@ const createOrderedSessionPersistence = (
       : await api.saveSession(submitted)
     acknowledgeSession(durable)
     acknowledgeSessionConversationCommands(durable)
+    trackConversationCommandOutcome(`session:${submitted.id}`, options, durable)
     return durable
   }
 
@@ -1046,6 +1076,7 @@ const createOrderedSessionPersistence = (
       }
       const durable = await entry.task(entry.options)
       acknowledgeSession(durable)
+      trackConversationCommandOutcome(entry.target, entry.options, durable)
       return durable
     }
     const run = schedule(target, runTask)
@@ -1066,6 +1097,11 @@ const createOrderedSessionPersistence = (
       for (const target of failedWritesByTarget.keys()) {
         if (target.startsWith('session:')) failedWritesByTarget.delete(target)
       }
+      const activeSessionTargets = new Set(sessions.map((session) => `session:${session.id}`))
+      for (const target of deferredConversationCommandTargets) {
+        if (target.startsWith('session:') && !activeSessionTargets.has(target))
+          deferredConversationCommandTargets.delete(target)
+      }
       for (const session of sessions) {
         acknowledgedRevisions.set(session.id, sessionRevision(session))
         acknowledgedSessions.set(session.id, structuredClone(session))
@@ -1081,8 +1117,22 @@ const createOrderedSessionPersistence = (
       // Keep the small revision watermark: later explicit writes must not regress their revision.
       return true
     },
-    clearWriteFailure: (target) => failedWritesByTarget.delete(target),
-    clearWriteFailures: () => failedWritesByTarget.clear(),
+    clearWriteFailure: (target) => {
+      failedWritesByTarget.delete(target)
+      deferredConversationCommandTargets.delete(target)
+    },
+    clearWriteFailures: () => {
+      failedWritesByTarget.clear()
+      deferredConversationCommandTargets.clear()
+    },
+    pruneDeferredConversationCommands: (sessions) => {
+      const activeSessionTargets = new Set(sessions.map((session) => `session:${session.id}`))
+      for (const target of deferredConversationCommandTargets) {
+        if (target.startsWith('session:') && !activeSessionTargets.has(target))
+          deferredConversationCommandTargets.delete(target)
+      }
+    },
+    hasDeferredConversationCommands: (target) => deferredConversationCommandTargets.has(target),
     saveSession: (session, options) => {
       // Commands must be paired with the snapshot visible when the save is admitted. Reading the
       // pending buffer after an older save waits in the queue can attach a newer Message command.
@@ -1110,7 +1160,7 @@ const createOrderedSessionPersistence = (
       })
     },
     saveManifest: (request) => enqueue('manifest', () => api.saveManifest(request)),
-    flush: async () => {
+    flush: async (target?: string) => {
       // Runtime/store updates can admit new snapshots while earlier writes are in flight.
       // Keep cadence disabled until every overlapping flush has finished.
       activeFlushes += 1
@@ -1124,6 +1174,12 @@ const createOrderedSessionPersistence = (
         }
         const failure = failedWritesByTarget.values().next()
         if (!failure.done) throw failure.value
+        const deferredTarget = target
+          ? deferredConversationCommandTargets.has(target)
+            ? target
+            : undefined
+          : deferredConversationCommandTargets.values().next().value
+        if (deferredTarget) throw new SessionPersistenceDeferredError(deferredTarget)
       } finally {
         activeFlushes -= 1
       }
@@ -1179,6 +1235,9 @@ const saveSessionInOrder = async (
         )
       }
     )
+    if (persistence.hasDeferredConversationCommands(target)) {
+      throw new SessionPersistenceDeferredError(target)
+    }
     acknowledgeSessionConversationCommands(durable)
     unresolvedSessionRevisionConflictTargets.delete(target)
     return durable
@@ -1219,8 +1278,24 @@ class SessionPersistenceFlushConflictError extends Error {
   }
 }
 
-const flushSessionPersistence = async (): Promise<void> => {
-  await liveSessionPersistence.flush()
+const retryDeferredSessionPersistence = async (target: string): Promise<void> => {
+  if (!target.startsWith('session:')) return
+  const sessionId = target.slice('session:'.length)
+  const session = useSessionStore
+    .getState()
+    .sessions.find((candidate) => candidate.id === sessionId)
+  if (!session) return
+  await saveSessionInOrder(toPersistedSession(session))
+}
+
+const flushSessionPersistence = async (target?: string): Promise<void> => {
+  try {
+    await liveSessionPersistence.flush(target)
+  } catch (error) {
+    if (!target || !isSessionPersistenceDeferredError(error) || error.target !== target) throw error
+    await retryDeferredSessionPersistence(target)
+    await liveSessionPersistence.flush(target)
+  }
   if (unresolvedSessionRevisionConflictTargets.size > 0) {
     throw new SessionPersistenceFlushConflictError()
   }
@@ -1539,6 +1614,7 @@ const pruneRemovedSessionWriteTargets = (
   ...relatedTargets: Set<string>[]
 ): void => {
   const activeSessionTargets = new Set(sessions.map((session) => `session:${session.id}`))
+  liveSessionPersistence.pruneDeferredConversationCommands(sessions)
   for (const target of targets) {
     if (target.startsWith('session:') && !activeSessionTargets.has(target)) {
       targets.delete(target)
