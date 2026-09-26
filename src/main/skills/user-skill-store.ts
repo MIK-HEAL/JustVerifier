@@ -2,7 +2,10 @@ import { cp, lstat, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises
 import { dirname, join, relative } from 'node:path'
 
 import { isSafeSkillReferenceName } from '../../shared/skill-reference-name'
-import { isAppOwnedSkillRootFile } from '../../shared/skill-import-limits'
+import {
+  isAppOwnedSkillRootFile,
+  isSkillPackageIgnoredPath
+} from '../../shared/skill-import-limits'
 import type { SkillReference, SkillSource } from '../../shared/settings'
 import {
   frontmatterBlock,
@@ -129,6 +132,10 @@ export class UserSkillStore {
   sourceDir(source: UserSkillSource): string {
     assertUserSkillSource(source)
     return join(this.storageRoot, 'skills', source)
+  }
+
+  runtimeStorageRoot(): string {
+    return this.storageRoot
   }
 
   skillDirectory(source: UserSkillSource, directoryName: string): string {
@@ -289,7 +296,7 @@ export class UserSkillStore {
       const staged = await this.transactions.stage('personal', name, async (staging) => {
         await mkdir(staging, { recursive: true })
         await this.writeSkillDirectory(staging, prepared)
-        await inspectSkillPackage(staging)
+        await inspectSkillPackage(staging, { storageRoot: this.storageRoot })
       })
       await this.transactions.promote(staged)
       return `personal-${name}`
@@ -326,6 +333,9 @@ export class UserSkillStore {
           force: false,
           errorOnExist: true,
           filter: async (entry) => {
+            if (isSkillPackageIgnoredPath(relative(sourcePath, entry).replaceAll('\\', '/'))) {
+              return false
+            }
             if ((await lstat(entry)).isSymbolicLink()) {
               throw new Error('Refusing to publish a Skill containing a symbolic link.')
             }
@@ -363,6 +373,9 @@ export class UserSkillStore {
           force: false,
           errorOnExist: true,
           filter: async (entry) => {
+            if (isSkillPackageIgnoredPath(relative(live, entry).replaceAll('\\', '/'))) {
+              return false
+            }
             if ((await lstat(entry)).isSymbolicLink()) {
               throw new Error('Refusing to update a Skill containing a symbolic link.')
             }
@@ -385,7 +398,7 @@ export class UserSkillStore {
         )
         const prepared = prepareSkillWrite(input, existingReferences)
         await this.writeSkillDirectory(staging, prepared)
-        await inspectSkillPackage(staging)
+        await inspectSkillPackage(staging, { storageRoot: this.storageRoot })
       })
       await this.transactions.promote(staged)
     }, ['personal'])

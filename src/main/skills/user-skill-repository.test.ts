@@ -617,6 +617,31 @@ describe('UserSkillRepository', () => {
     expect((await repo.importFromZip(zip)).status).toBe('unchanged')
   })
 
+  it('imports a Skill ZIP while ignoring internal VCS metadata files', async () => {
+    const storage = await makeStorage()
+    const repo = new UserSkillRepository(storage)
+    const zip = buildZip([
+      { path: 'metadata-skill/SKILL.md', content: Buffer.from('---\nname: Metadata\n---\nbody') },
+      { path: 'metadata-skill/.gitignore', content: Buffer.from('*.log\n') },
+      { path: 'metadata-skill/.github/workflows/ci.yml', content: Buffer.from('name: ci\n') },
+      { path: 'metadata-skill/references/guide.md', content: Buffer.from('guide') }
+    ])
+
+    await expect(repo.importFromZip(zip)).resolves.toEqual({
+      status: 'imported',
+      id: 'imported-metadata'
+    })
+    await expect(
+      readFile(join(storage, 'skills', 'imported', 'metadata', '.gitignore'))
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      readFile(join(storage, 'skills', 'imported', 'metadata', '.github', 'workflows', 'ci.yml'))
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(
+      readFile(join(storage, 'skills', 'imported', 'metadata', 'references', 'guide.md'), 'utf8')
+    ).resolves.toBe('guide')
+  })
+
   it.each(['os-reserved', 'mcp-reserved'])(
     'rejects reserved imported name %s before GitHub or archive content is written',
     async (name) => {
@@ -1169,9 +1194,11 @@ describe('UserSkillRepository', () => {
     await mkdir(source, { recursive: true })
     const old = '---\nname: Original Name\n---\nold'
     await writeFile(join(source, 'SKILL.md'), old)
+    await writeFile(join(source, '.gitignore'), '*.log\n')
     const ref = { source: 'agents' as const, slug: 'citation' }
     await repo.importAgentHomeSkill(source, ref)
     const installed = join(storage, 'skills', 'imported', 'citation')
+    await expect(stat(join(installed, '.gitignore'))).rejects.toMatchObject({ code: 'ENOENT' })
     await writeFile(join(installed, 'local.txt'), 'local')
     await writeFile(join(source, 'SKILL.md'), old.replace('old', 'new'))
     const preview = await repo.previewAgentHomeSkill(source, ref)

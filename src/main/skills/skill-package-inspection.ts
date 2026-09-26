@@ -3,7 +3,11 @@ import { join, posix } from 'node:path'
 
 import { marked } from 'marked'
 
-import { isSkillPackageBudgetedPath, SKILL_IMPORT_LIMITS } from '../../shared/skill-import-limits'
+import {
+  isSkillPackageBudgetedPath,
+  isSkillPackageIgnoredPath,
+  SKILL_IMPORT_LIMITS
+} from '../../shared/skill-import-limits'
 import { frontmatterFieldNames, parseSkillDocument } from './frontmatter'
 import { isUnsafeSkillArchivePath } from './zip-extract'
 import { validateSkillHelperPackage } from './registered-helper-catalog'
@@ -86,7 +90,15 @@ export class SkillPackagePolicyError extends Error {
   }
 }
 
-export const inspectSkillPackage = async (root: string): Promise<SkillPackageFile[]> => {
+export type SkillPackageInspectionOptions = Readonly<{
+  storageRoot?: string
+  rejectIgnoredPaths?: boolean
+}>
+
+export const inspectSkillPackage = async (
+  root: string,
+  options: SkillPackageInspectionOptions = {}
+): Promise<SkillPackageFile[]> => {
   const files: SkillPackageFile[] = []
   let totalBytes = 0
 
@@ -114,6 +126,12 @@ export const inspectSkillPackage = async (root: string): Promise<SkillPackageFil
         ? posix.join(relativeDirectory, entry.name)
         : entry.name
       if (!isSkillPackageBudgetedPath(relativePath)) continue
+      if (isSkillPackageIgnoredPath(relativePath)) {
+        if (options.rejectIgnoredPaths) {
+          throw new SkillPackagePolicyError('unsafePath', relativePath)
+        }
+        continue
+      }
       if (isUnsafeSkillArchivePath(relativePath)) {
         throw new SkillPackagePolicyError('unsafePath', relativePath)
       }
@@ -149,7 +167,7 @@ export const inspectSkillPackage = async (root: string): Promise<SkillPackageFil
   await visit(root, '', 0)
   // Helper descriptors are executable package metadata. Validate the staged bytes before Personal
   // or Imported transaction owners promote them into the live catalog.
-  await validateSkillHelperPackage(root)
+  await validateSkillHelperPackage(root, options.storageRoot)
   return files.sort((left, right) => compareText(left.relativePath, right.relativePath))
 }
 
@@ -247,11 +265,12 @@ export type SkillPackageValidation = Readonly<{
 export const validateSkillPackage = async (
   root: string,
   packageName: string,
-  expectedName?: string
+  expectedName?: string,
+  options: SkillPackageInspectionOptions = {}
 ): Promise<SkillPackageValidation> => {
   let inventory: SkillPackageFile[]
   try {
-    inventory = await inspectSkillPackage(root)
+    inventory = await inspectSkillPackage(root, options)
   } catch (error) {
     if (!(error instanceof SkillPackagePolicyError)) throw error
     return { name: packageName, files: [], errors: [error.toIssue()], warnings: [] }

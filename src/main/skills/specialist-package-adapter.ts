@@ -438,7 +438,10 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
         if (skill.disposition === 'reuse-owned') {
           // Reuse preserves the current tree; only ownership metadata changes.
           await mkdir(dirname(staging), { recursive: true })
-          await cp(existingDirectory, staging, { recursive: true, errorOnExist: true })
+          await cp(existingDirectory, staging, {
+            recursive: true,
+            errorOnExist: true
+          })
           if ((await directoryHash(staging)) !== skill.contentHash) {
             throw new Error(`Skill ${skill.id} changed after preview.`)
           }
@@ -536,7 +539,10 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
         if (!metadata) throw new Error(`Owned Skill ${id} has no ownership metadata.`)
         const staging = join(root, 'staging', id)
         await mkdir(dirname(staging), { recursive: true })
-        await cp(live, staging, { recursive: true, errorOnExist: true })
+        await cp(live, staging, {
+          recursive: true,
+          errorOnExist: true
+        })
         const ownerIds = metadata.ownerIds.filter((ownerId) => ownerId !== specialistId).sort()
         await writeFile(
           join(staging, SPECIALIST_PACKAGE_SKILL_METADATA),

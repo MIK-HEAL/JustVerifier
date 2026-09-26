@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 
 import type { TrustedCallingSession } from '../../shared/agents-contract'
-import { SKILL_IMPORT_LIMITS } from '../../shared/skill-import-limits'
+import { isSkillPackageIgnoredPath, SKILL_IMPORT_LIMITS } from '../../shared/skill-import-limits'
 import { parseSkillDocument } from './frontmatter'
 import type { BundledSkill } from './registry'
 import {
@@ -264,7 +264,9 @@ export class HostSkillsService {
   ): Promise<HostSkillReadResult> {
     const files =
       relativePath === 'SKILL.md'
-        ? (await inspectSkillPackage(root)).map(({ relativePath: path }) => path)
+        ? (await inspectSkillPackage(root, { storageRoot: this.options.storageRoot })).map(
+            ({ relativePath: path }) => path
+          )
         : undefined
     return {
       name,
@@ -309,7 +311,9 @@ export class HostSkillsService {
     origin: HostSkillOrigin,
     expectedName?: string
   ): Promise<HostSkillValidationResult> {
-    const report = await validateSkillPackage(sourceDir, name, expectedName)
+    const report = await validateSkillPackage(sourceDir, name, expectedName, {
+      storageRoot: this.options.storageRoot
+    })
     return {
       valid: report.errors.length === 0,
       name: report.name,
@@ -377,6 +381,13 @@ export class HostSkillsService {
           force: false,
           errorOnExist: true,
           filter: async (entry) => {
+            if (
+              isSkillPackageIgnoredPath(
+                relative(lockedSkill.sourceDir, entry).replaceAll('\\', '/')
+              )
+            ) {
+              return false
+            }
             if ((await lstat(entry)).isSymbolicLink()) {
               throw new Error('refusing to draft a Skill containing a symbolic link')
             }
@@ -399,7 +410,7 @@ export class HostSkillsService {
     target: string,
     nextBytes: number
   ): Promise<void> {
-    const inventory = await inspectSkillPackage(root)
+    const inventory = await inspectSkillPackage(root, { storageRoot: this.options.storageRoot })
     let count = inventory.length
     const total = inventory.reduce((sum, file) => sum + file.size, 0)
     const replacedBytes =
