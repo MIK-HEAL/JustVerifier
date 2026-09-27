@@ -5883,7 +5883,7 @@ const LiteratureLibraryPage = (): React.JSX.Element => {
                                     >
                                       <SelectTrigger
                                         aria-label={t('Sort references')}
-                                        className="w-52"
+                                        className="w-48"
                                       >
                                         <SelectValue />
                                       </SelectTrigger>
