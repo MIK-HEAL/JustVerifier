@@ -26,6 +26,11 @@ import {
   type RuntimeProfileResult,
   type RuntimeResourceProfilerOptions
 } from '../../scripts/performance/runtime-resource-profiler'
+import {
+  startElectronContentTrace,
+  stopElectronContentTrace,
+  type ElectronContentTraceArtifact
+} from '../../scripts/performance/electron-content-trace'
 import { terminateProcessTree } from '../../src/main/process-tree'
 import {
   readProcessTable,
@@ -561,6 +566,14 @@ const openMainWindow = async (
   return page
 }
 
+const enableRendererRuntimeProfiling = async (page: Page): Promise<void> => {
+  await page.evaluate(() => {
+    ;(globalThis as typeof globalThis & { __OPEN_SCIENCE_PERF_PROFILE__?: boolean })[
+      '__OPEN_SCIENCE_PERF_PROFILE__'
+    ] = true
+  })
+}
+
 class ElectronAppHarness implements ElectronApp {
   private application: ElectronApplication | undefined
   private currentPage: Page | undefined
@@ -571,6 +584,11 @@ class ElectronAppHarness implements ElectronApp {
   private fakeRemoteItEnabled = false
   private readonly rendererFailures = new RendererFailureGate()
   private resourceProfiler: RuntimeResourceProfiler | undefined
+  private rendererRuntimeProfilingArmed = false
+  private electronTraceArmed = false
+  private electronTraceSequence = 0
+  private electronTrace: { heapProfile: boolean } | undefined
+  private readonly electronTraceArtifacts: ElectronContentTraceArtifact[] = []
   private readonly sabotagedDelegatedHandoffs = new Map<string, string>()
 
   private constructor(
@@ -648,6 +666,10 @@ class ElectronAppHarness implements ElectronApp {
 
   async beginResourceProfile(options: RuntimeResourceProfilerOptions = {}): Promise<void> {
     if (this.resourceProfiler) throw new Error('Runtime resource profiling is already active.')
+    const traceRequested = process.env.OPEN_SCIENCE_PERF_ELECTRON_TRACE === '1'
+    const heapProfileRequested = process.env.OPEN_SCIENCE_PERF_ELECTRON_HEAP_PROFILE === '1'
+    this.electronTraceArmed = traceRequested || heapProfileRequested
+    this.rendererRuntimeProfilingArmed = true
     const profileDataRoot = join(this.testRoot, 'profile-data')
     await mkdir(profileDataRoot, { recursive: true })
     await this.close()
@@ -702,13 +724,20 @@ class ElectronAppHarness implements ElectronApp {
         'open-science:persistence-runtime-lookup-catalog',
         'open-science:persistence-runtime-lookup-ownership',
         'open-science:persistence-runtime-lookup-read',
-        'open-science:persistence-runtime-lookup-targeted'
+        'open-science:persistence-runtime-lookup-targeted',
+        'open-science:startup-imports',
+        'open-science:renderer-runtime-event-batch',
+        'open-science:renderer-runtime-event-apply'
       ])
       const timings = performance
         .getEntriesByType('measure')
-        .filter((entry) => names.has(entry.name))
+        .filter(
+          (entry) => names.has(entry.name) || entry.name.startsWith('open-science:ipc-surface:')
+        )
         .map(({ name, duration }) => ({ name, duration }))
-      for (const name of names) performance.clearMeasures(name)
+      for (const name of new Set([...names, ...timings.map(({ name }) => name)])) {
+        performance.clearMeasures(name)
+      }
       for (const entry of performance.getEntriesByType('paint')) {
         if (entry.name === 'first-paint' || entry.name === 'first-contentful-paint') {
           timings.push({ name: entry.name, duration: entry.startTime })
@@ -731,9 +760,16 @@ class ElectronAppHarness implements ElectronApp {
   async finishResourceProfile(): Promise<RuntimeProfileResult> {
     const profiler = this.resourceProfiler
     if (!profiler) throw new Error('Runtime resource profiling is not active.')
+    await this.stopElectronTrace()
     this.resourceProfiler = undefined
     profiler.detach()
-    return profiler.finish()
+    const result = await profiler.finish()
+    await Promise.all(
+      this.electronTraceArtifacts.map(async ({ path }, index) =>
+        copyFile(path, join(result.outputDirectory, `electron-trace-${index + 1}.json`))
+      )
+    )
+    return result
   }
 
   // Keep real renderer/preload navigation while replacing the external SSH directory read.
@@ -1281,6 +1317,7 @@ class ElectronAppHarness implements ElectronApp {
       process.platform === 'win32' && child.pid !== undefined
         ? await readProcessTree(child.pid)
         : undefined
+    await this.stopElectronTrace(application)
     const result = await terminateProcessTree(child, options.force ? 'SIGKILL' : undefined)
     let reaped = result.reaped
     // Windows termination is asynchronous even when taskkill succeeds. Playwright's child is
@@ -1406,6 +1443,17 @@ class ElectronAppHarness implements ElectronApp {
       this.resourceProfiler !== undefined,
       packagePath
     )
+    if (this.electronTraceArmed) {
+      const heapProfile = process.env.OPEN_SCIENCE_PERF_ELECTRON_HEAP_PROFILE === '1'
+      try {
+        await startElectronContentTrace(this.application, { heapProfile })
+        this.electronTrace = { heapProfile }
+      } catch (error) {
+        process.stderr.write(
+          `Electron content trace could not start; continuing without trace capture: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+      }
+    }
     await this.resourceProfiler?.attach(this.application)
     try {
       if (process.env.OPEN_SCIENCE_E2E_EXECUTABLE) {
@@ -1430,9 +1478,12 @@ class ElectronAppHarness implements ElectronApp {
         this.application,
         this.rendererFailures,
         this.windowMode,
-        this.resourceProfiler
+        this.rendererRuntimeProfilingArmed || this.resourceProfiler
           ? async (page) => {
               this.currentPage = page
+              if (this.rendererRuntimeProfilingArmed) {
+                await enableRendererRuntimeProfiling(page)
+              }
               this.recordResourceTiming('first-' + timingName, performance.now() - launchStartedAt)
               await this.captureResourceTimings(
                 timingName === 'recovery-startup-ready' ? 'first-recovery:' : 'first:'
@@ -1521,6 +1572,7 @@ class ElectronAppHarness implements ElectronApp {
 
     const application = this.application
     const page = this.currentPage
+    await this.stopElectronTrace(application)
     this.resourceProfiler?.detach(application)
     this.application = undefined
     this.currentPage = undefined
@@ -1556,6 +1608,26 @@ class ElectronAppHarness implements ElectronApp {
       this.stopFlushDiagnostics?.()
       this.stopFlushDiagnostics = undefined
     })
+  }
+
+  private async stopElectronTrace(application = this.application): Promise<void> {
+    const trace = this.electronTrace
+    if (!trace || !application) return
+    this.electronTrace = undefined
+    const destination = join(
+      this.testRoot,
+      'electron-traces',
+      `trace-${String(++this.electronTraceSequence).padStart(2, '0')}.json`
+    )
+    try {
+      this.electronTraceArtifacts.push(
+        await stopElectronContentTrace(application, destination, trace)
+      )
+    } catch (error) {
+      process.stderr.write(
+        `Electron content trace could not be saved: ${error instanceof Error ? error.message : String(error)}\n`
+      )
+    }
   }
 }
 
