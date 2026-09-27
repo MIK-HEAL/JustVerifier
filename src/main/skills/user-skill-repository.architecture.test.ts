@@ -225,7 +225,10 @@ describe('User Skill repository architecture', () => {
       'src/main/skills/user-skill-repository.ts',
       'src/main/skills/user-skill-store.ts'
     ])
-    expect(importersOf(catalogObserverPath)).toEqual(['src/main/ipc.ts'])
+    expect(importersOf(catalogObserverPath)).toEqual([
+      'src/main/composition/agent-activation.ts',
+      'src/main/composition/session-foundation.ts'
+    ])
     expect(readSource(repositoryPath)).not.toContain('skillMutationOwnerFor(')
     expect(readSource(repositoryPath)).toContain('mutationOwner?: SkillMutationOwner')
     expect(readSource(repositoryPath)).toContain(
@@ -386,6 +389,9 @@ describe('User Skill repository architecture', () => {
           'src/shared/renderer-contract-catalog.test.ts'
         ],
         consumer: [
+          'src/main/composition/notebook-environment.test.ts',
+          'src/main/literature/command-owner.test.ts',
+          'src/main/composition/reviewer.test.ts',
           'src/main/session-persistence/runtime-session-owner.test.ts',
           'src/main/session-plan/adversarial-session-plan.test.ts',
           'src/main/skills/conversation-import.test.ts',

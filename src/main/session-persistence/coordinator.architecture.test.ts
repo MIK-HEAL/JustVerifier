@@ -374,7 +374,7 @@ const constructionSites = (className: string): string[] => {
 const concreteCoordinatorConsumerFiles = (): string[] =>
   findTypeScriptFiles(resolve(projectRoot, 'src/main'))
     .filter((path) => !path.endsWith('/session-persistence/coordinator.ts'))
-    .filter((path) => path !== resolve(projectRoot, 'src/main/ipc.ts'))
+    .filter((path) => path !== resolve(projectRoot, 'src/main/composition/session-authority.ts'))
     .filter((path) => {
       const sourceFile = createSourceFile(
         path,
@@ -538,6 +538,7 @@ describe('Session persistence coordinator architecture', () => {
         'PatchSessionRuntimeContextCommand',
         'ProjectSessionDeletionResult',
         'SessionCatalog',
+        'SessionPersistenceCommands',
         'SessionDeletion',
         'SessionDeletionHandlers',
         'SessionFileIndex',
@@ -645,7 +646,9 @@ describe('Session persistence coordinator architecture', () => {
       expect(staticStateFields(file), file).toEqual([])
     }
 
-    expect(constructionSites('SessionPersistenceCoordinator')).toEqual(['src/main/ipc.ts:module'])
+    expect(constructionSites('SessionPersistenceCoordinator')).toEqual([
+      'src/main/composition/session-authority.ts:module'
+    ])
     expect(constructionSites('SessionPersistenceStateOwner')).toEqual([
       'src/main/session-persistence/coordinator.ts:constructor'
     ])
@@ -1264,6 +1267,9 @@ describe('Session persistence coordinator architecture', () => {
       'src/shared/renderer-contract-catalog.test.ts'
     ])
     expect(sessionPersistence.testFiles.consumer).toEqual([
+      'src/main/composition/notebook-environment.test.ts',
+      'src/main/literature/command-owner.test.ts',
+      'src/main/composition/reviewer.test.ts',
       'src/renderer/src/lib/acp/runtime-observer.test.ts',
       'src/renderer/src/lib/acp/runtime-writer-takeover.test.ts',
       'src/main/session-plan/adversarial-session-plan.test.ts',
