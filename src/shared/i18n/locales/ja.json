@@ -6582,6 +6582,22 @@
     "Only one year per source is shown. Enabling this dataset replaces the selected year for this source.": "ソースごとに1年分のみ表示します。このデータセットを有効にすると、このソースで選択中の年が置き換わります。",
     "Journal data follows your display settings. Missing values are not taken from other years.": "ジャーナルデータは表示設定に従います。欠損値は他の年から補完されません。",
     "Check journal matches": "ジャーナルの一致を確認",
-    "Find unmatched or ambiguous references. This check does not change your library.": "一致しない文献や一致が曖昧な文献を見つけます。この確認でライブラリが変更されることはありません。"
+    "Find unmatched or ambiguous references. This check does not change your library.": "一致しない文献や一致が曖昧な文献を見つけます。この確認でライブラリが変更されることはありません。",
+    "Search Pathway Commons pathways, genes, and proteins.": "Pathway Commons のパスウェイ、遺伝子、タンパク質を検索します。",
+    "Find top-level Pathway Commons pathways with optional filters.": "任意のフィルターで Pathway Commons の最上位パスウェイを検索します。",
+    "Query Pathway Commons gene neighborhoods and network paths.": "Pathway Commons の遺伝子近傍とネットワークパスを検索します。",
+    "Export Pathway Commons entities in BioPAX, GSEA, SIF, TXT, SBGN, or JSON-LD.": "Pathway Commons のエンティティを BioPAX、GSEA、SIF、TXT、SBGN、JSON-LD でエクスポートします。",
+    "List or retrieve species in the Bgee expression atlas.": "Bgee 発現アトラスの種を一覧表示または取得します。",
+    "Retrieve Bgee expression calls for one gene and species.": "1つの遺伝子と種について Bgee の発現コールを取得します。",
+    "Run a bounded Bgee SPARQL expression query.": "制限付きの Bgee SPARQL 発現クエリを実行します。",
+    "Build official Bgee expression download links.": "Bgee の公式発現ダウンロードリンクを作成します。",
+    "List cBioPortal samples in a study.": "研究の cBioPortal サンプルを一覧表示します。",
+    "List cBioPortal patients in a study.": "研究の cBioPortal 患者を一覧表示します。",
+    "Fetch cBioPortal clinical data for selected patients or samples.": "選択した患者またはサンプルの cBioPortal 臨床データを取得します。",
+    "Fetch cBioPortal molecular expression data for selected samples.": "選択したサンプルの cBioPortal 分子発現データを取得します。",
+    "Search FAERS adverse-event reports with bounded filters.": "制限付きフィルターで FAERS 有害事象報告を検索します。",
+    "Count matching FAERS adverse-event reports by selected buckets.": "選択した分類で一致する FAERS 有害事象報告を集計します。",
+    "Search FDA drug enforcement and recall reports.": "FDA 医薬品の執行および回収報告を検索します。",
+    "List result-file metadata and download URLs for an MGnify analysis.": "MGnify 解析の結果ファイルメタデータとダウンロード URL を一覧表示します。"
   }
 }

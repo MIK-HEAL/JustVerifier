@@ -6908,6 +6908,22 @@
     "Only one year per source is shown. Enabling this dataset replaces the selected year for this source.": "Une seule année est affichée par source. Activer ce jeu de données remplace l’année sélectionnée pour cette source.",
     "Journal data follows your display settings. Missing values are not taken from other years.": "Les données des revues suivent vos paramètres d’affichage. Les valeurs manquantes ne sont pas reprises d’autres années.",
     "Check journal matches": "Vérifier les correspondances des revues",
-    "Find unmatched or ambiguous references. This check does not change your library.": "Repérez les références sans correspondance ou ambiguës. Cette vérification ne modifie pas votre bibliothèque."
+    "Find unmatched or ambiguous references. This check does not change your library.": "Repérez les références sans correspondance ou ambiguës. Cette vérification ne modifie pas votre bibliothèque.",
+    "Search Pathway Commons pathways, genes, and proteins.": "Rechercher des voies, des gènes et des protéines dans Pathway Commons.",
+    "Find top-level Pathway Commons pathways with optional filters.": "Trouver les voies de premier niveau de Pathway Commons avec des filtres facultatifs.",
+    "Query Pathway Commons gene neighborhoods and network paths.": "Interroger les voisinages de gènes et les chemins de réseau dans Pathway Commons.",
+    "Export Pathway Commons entities in BioPAX, GSEA, SIF, TXT, SBGN, or JSON-LD.": "Exporter des entités Pathway Commons en BioPAX, GSEA, SIF, TXT, SBGN ou JSON-LD.",
+    "List or retrieve species in the Bgee expression atlas.": "Lister ou récupérer les espèces de l’atlas d’expression Bgee.",
+    "Retrieve Bgee expression calls for one gene and species.": "Récupérer les appels d’expression Bgee pour un gène et une espèce.",
+    "Run a bounded Bgee SPARQL expression query.": "Exécuter une requête SPARQL Bgee bornée sur l’expression.",
+    "Build official Bgee expression download links.": "Créer des liens officiels de téléchargement d’expression Bgee.",
+    "List cBioPortal samples in a study.": "Lister les échantillons cBioPortal d’une étude.",
+    "List cBioPortal patients in a study.": "Lister les patients cBioPortal d’une étude.",
+    "Fetch cBioPortal clinical data for selected patients or samples.": "Récupérer les données cliniques cBioPortal pour les patients ou échantillons sélectionnés.",
+    "Fetch cBioPortal molecular expression data for selected samples.": "Récupérer les données d’expression moléculaire cBioPortal pour les échantillons sélectionnés.",
+    "Search FAERS adverse-event reports with bounded filters.": "Rechercher des rapports d’événements indésirables FAERS avec des filtres bornés.",
+    "Count matching FAERS adverse-event reports by selected buckets.": "Compter les rapports d’événements indésirables FAERS correspondants par catégorie sélectionnée.",
+    "Search FDA drug enforcement and recall reports.": "Rechercher les rapports d’application et de rappel de médicaments de la FDA.",
+    "List result-file metadata and download URLs for an MGnify analysis.": "Lister les métadonnées des fichiers de résultats et les URL de téléchargement d’une analyse MGnify."
   }
 }

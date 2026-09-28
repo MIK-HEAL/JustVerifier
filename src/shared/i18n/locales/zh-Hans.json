@@ -6582,6 +6582,22 @@
     "Only one year per source is shown. Enabling this dataset replaces the selected year for this source.": "每个来源仅展示一个年份。开启此数据集将替换该来源当前选择的年份。",
     "Journal data follows your display settings. Missing values are not taken from other years.": "期刊数据遵循您的展示设置。缺失值不会从其他年份补充。",
     "Check journal matches": "检查期刊匹配情况",
-    "Find unmatched or ambiguous references. This check does not change your library.": "查找未匹配或匹配不明确的文献。此检查不会更改文献库。"
+    "Find unmatched or ambiguous references. This check does not change your library.": "查找未匹配或匹配不明确的文献。此检查不会更改文献库。",
+    "Search Pathway Commons pathways, genes, and proteins.": "搜索 Pathway Commons 中的通路、基因和蛋白质。",
+    "Find top-level Pathway Commons pathways with optional filters.": "使用可选筛选条件查找 Pathway Commons 顶层通路。",
+    "Query Pathway Commons gene neighborhoods and network paths.": "查询 Pathway Commons 基因邻域和网络路径。",
+    "Export Pathway Commons entities in BioPAX, GSEA, SIF, TXT, SBGN, or JSON-LD.": "将 Pathway Commons 实体导出为 BioPAX、GSEA、SIF、TXT、SBGN 或 JSON-LD。",
+    "List or retrieve species in the Bgee expression atlas.": "列出或获取 Bgee 表达图谱中的物种。",
+    "Retrieve Bgee expression calls for one gene and species.": "获取一个基因和物种的 Bgee 表达调用。",
+    "Run a bounded Bgee SPARQL expression query.": "运行有界的 Bgee SPARQL 表达查询。",
+    "Build official Bgee expression download links.": "生成官方 Bgee 表达下载链接。",
+    "List cBioPortal samples in a study.": "列出研究中的 cBioPortal 样本。",
+    "List cBioPortal patients in a study.": "列出研究中的 cBioPortal 患者。",
+    "Fetch cBioPortal clinical data for selected patients or samples.": "获取所选患者或样本的 cBioPortal 临床数据。",
+    "Fetch cBioPortal molecular expression data for selected samples.": "获取所选样本的 cBioPortal 分子表达数据。",
+    "Search FAERS adverse-event reports with bounded filters.": "使用有界筛选条件搜索 FAERS 不良事件报告。",
+    "Count matching FAERS adverse-event reports by selected buckets.": "按所选分组统计匹配的 FAERS 不良事件报告。",
+    "Search FDA drug enforcement and recall reports.": "搜索 FDA 药品执法和召回报告。",
+    "List result-file metadata and download URLs for an MGnify analysis.": "列出 MGnify 分析的结果文件元数据和下载 URL。"
   }
 }

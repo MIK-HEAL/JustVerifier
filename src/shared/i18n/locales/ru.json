@@ -7046,6 +7046,22 @@
     "Only one year per source is shown. Enabling this dataset replaces the selected year for this source.": "Для каждого источника данных отображается только один год. Включение этого набора заменяет выбранный год для данного источника данных.",
     "Journal data follows your display settings. Missing values are not taken from other years.": "Данные журналов соответствуют настройкам отображения. Пропущенные значения не берутся из других лет.",
     "Check journal matches": "Проверить соответствия журналов",
-    "Find unmatched or ambiguous references. This check does not change your library.": "Найдите источники без соответствия или с неоднозначным соответствием. Проверка не изменяет вашу библиотеку."
+    "Find unmatched or ambiguous references. This check does not change your library.": "Найдите источники без соответствия или с неоднозначным соответствием. Проверка не изменяет вашу библиотеку.",
+    "Search Pathway Commons pathways, genes, and proteins.": "Поиск путей, генов и белков в Pathway Commons.",
+    "Find top-level Pathway Commons pathways with optional filters.": "Поиск путей верхнего уровня Pathway Commons с необязательными фильтрами.",
+    "Query Pathway Commons gene neighborhoods and network paths.": "Запрос соседств генов и сетевых путей в Pathway Commons.",
+    "Export Pathway Commons entities in BioPAX, GSEA, SIF, TXT, SBGN, or JSON-LD.": "Экспорт сущностей Pathway Commons в форматах BioPAX, GSEA, SIF, TXT, SBGN или JSON-LD.",
+    "List or retrieve species in the Bgee expression atlas.": "Список или получение видов из атласа экспрессии Bgee.",
+    "Retrieve Bgee expression calls for one gene and species.": "Получение данных об экспрессии Bgee для одного гена и вида.",
+    "Run a bounded Bgee SPARQL expression query.": "Выполнение ограниченного SPARQL-запроса Bgee об экспрессии.",
+    "Build official Bgee expression download links.": "Создание официальных ссылок для загрузки данных об экспрессии Bgee.",
+    "List cBioPortal samples in a study.": "Список образцов cBioPortal в исследовании.",
+    "List cBioPortal patients in a study.": "Список пациентов cBioPortal в исследовании.",
+    "Fetch cBioPortal clinical data for selected patients or samples.": "Получение клинических данных cBioPortal для выбранных пациентов или образцов.",
+    "Fetch cBioPortal molecular expression data for selected samples.": "Получение данных о молекулярной экспрессии cBioPortal для выбранных образцов.",
+    "Search FAERS adverse-event reports with bounded filters.": "Поиск сообщений FAERS о нежелательных явлениях с ограниченными фильтрами.",
+    "Count matching FAERS adverse-event reports by selected buckets.": "Подсчёт совпадающих сообщений FAERS о нежелательных явлениях по выбранным группам.",
+    "Search FDA drug enforcement and recall reports.": "Поиск сообщений FDA о мерах контроля и отзывах лекарств.",
+    "List result-file metadata and download URLs for an MGnify analysis.": "Список метаданных файлов результатов и URL загрузки для анализа MGnify."
   }
 }
