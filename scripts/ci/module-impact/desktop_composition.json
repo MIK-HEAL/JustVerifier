@@ -33,7 +33,6 @@
     "src/main/composition/specialists.ts",
     "src/main/composition/storage-startup.ts",
     "src/main/composition/upload-storage.ts",
-
     "src/main/composition/notebook-environment.ts",
     "src/main/composition/notebook-environment.test.ts",
     "src/main/composition/reviewer.test.ts",
@@ -1150,6 +1149,7 @@
       "src/main/compute/compute-submission-evidence-recovery.integration.test.ts",
       "src/renderer/src/lib/acp/workspace-runtime-save-admission.test.ts",
       "src/main/acp/library-auto-policy.test.ts",
+      "src/main/reviewer/correction-resume.test.ts",
       "src/main/notebook/mcp-wsl-diagnostics.test.ts",
       "src/main/wsl/wsl-setup-owner.integration.test.ts",
       "src/main/notebook/wsl2-scheduling.integration.test.ts"
