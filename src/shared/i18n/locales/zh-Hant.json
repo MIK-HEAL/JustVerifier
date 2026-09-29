@@ -133,6 +133,8 @@
     "More items": "更多會話"
   },
   "renderer": {
+    "Enter a valid number. This condition keeps its last applied setting.": "請輸入有效數字。此條件仍使用上一次已套用的設定。",
+    "Enter a valid number. This condition has not been applied.": "請輸入有效數字。此條件尚未套用。",
     "Retrieve an Alliance gene summary and genomic location.": "取得 Alliance 基因摘要與基因組位置。",
     "Search Alliance genes by symbol, name or identifier.": "依符號、名稱或識別碼搜尋 Alliance 基因。",
     "Retrieve cross-species orthologs and prediction methods.": "取得跨物種直系同源基因及預測方法。",

@@ -135,6 +135,8 @@
     "More items": "Más sesiones"
   },
   "renderer": {
+    "Enter a valid number. This condition keeps its last applied setting.": "Introduzca un número válido. Esta condición conserva la última configuración aplicada.",
+    "Enter a valid number. This condition has not been applied.": "Introduzca un número válido. Esta condición aún no se ha aplicado.",
     "Retrieve an Alliance gene summary and genomic location.": "Obtener un resumen de un gen de Alliance y su ubicación genómica.",
     "Search Alliance genes by symbol, name or identifier.": "Buscar genes de Alliance por símbolo, nombre o identificador.",
     "Retrieve cross-species orthologs and prediction methods.": "Obtener ortólogos entre especies y métodos de predicción.",

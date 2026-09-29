@@ -136,6 +136,8 @@
     "More items": "Другие сеансы"
   },
   "renderer": {
+    "Enter a valid number. This condition keeps its last applied setting.": "Введите допустимое число. Для этого условия сохраняется последняя применённая настройка.",
+    "Enter a valid number. This condition has not been applied.": "Введите допустимое число. Это условие ещё не применено.",
     "Retrieve an Alliance gene summary and genomic location.": "Получить сводку о гене Alliance и его положение в геноме.",
     "Search Alliance genes by symbol, name or identifier.": "Найти гены Alliance по символу, названию или идентификатору.",
     "Retrieve cross-species orthologs and prediction methods.": "Получить ортологи у разных видов и методы предсказания.",

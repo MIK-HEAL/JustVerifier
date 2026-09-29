@@ -133,6 +133,8 @@
     "More items": "その他のセッション"
   },
   "renderer": {
+    "Enter a valid number. This condition keeps its last applied setting.": "有効な数値を入力してください。この条件には前回適用した設定が引き続き使用されます。",
+    "Enter a valid number. This condition has not been applied.": "有効な数値を入力してください。この条件はまだ適用されていません。",
     "Retrieve an Alliance gene summary and genomic location.": "Alliance の遺伝子概要とゲノム上の位置を取得します。",
     "Search Alliance genes by symbol, name or identifier.": "シンボル、名称、識別子で Alliance の遺伝子を検索します。",
     "Retrieve cross-species orthologs and prediction methods.": "種間のオルソログと予測手法を取得します。",

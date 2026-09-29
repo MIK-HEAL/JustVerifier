@@ -133,6 +133,8 @@
     "More items": "더 많은 세션"
   },
   "renderer": {
+    "Enter a valid number. This condition keeps its last applied setting.": "유효한 숫자를 입력하세요. 이 조건에는 마지막으로 적용된 설정이 유지됩니다.",
+    "Enter a valid number. This condition has not been applied.": "유효한 숫자를 입력하세요. 이 조건은 아직 적용되지 않았습니다.",
     "Retrieve an Alliance gene summary and genomic location.": "Alliance 유전자 요약과 유전체 위치를 가져옵니다.",
     "Search Alliance genes by symbol, name or identifier.": "기호, 이름 또는 식별자로 Alliance 유전자를 검색합니다.",
     "Retrieve cross-species orthologs and prediction methods.": "종 간 직계상동유전자와 예측 방법을 가져옵니다.",
