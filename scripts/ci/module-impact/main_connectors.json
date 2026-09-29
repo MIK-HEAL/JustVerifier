@@ -148,6 +148,7 @@
       "src/main/artifacts/code-reconstruction.test.ts",
       "src/main/artifacts/mcp-server.test.ts",
       "src/main/compute/compute-job-workflow-owner.test.ts",
+      "src/main/connectors/descriptors/alliance.test.ts",
       "src/main/connectors/descriptors/biomart.test.ts",
       "src/main/connectors/descriptors/biorxiv.test.ts",
       "src/main/connectors/descriptors/cancer-models.test.ts",
