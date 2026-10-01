@@ -130,7 +130,7 @@ it('offers conversation approval for the Claude Code configured Skill loader', a
     expect(emit).toHaveBeenCalledOnce()
     const [grant] = await registry.list()
     expect(grant).toMatchObject({
-      capability: { kind: 'mcp_tool', key: 'mcp:skills/load_skill' },
+      capability: { kind: 'skill_operation', key: 'skill:invoke' },
       scope: { kind: 'session', projectId: 'project-skill', sessionId: 'session-skill' }
     })
     const secondProvision = await owner.provision({
@@ -1627,7 +1627,7 @@ it('releases queued durable searches without granting other capabilities or conv
     settleLive
   })
   const unsubscribe = registry.subscribe(() => {
-    void broker.releaseGrantedWebSearchRequests()
+    void broker.releaseGrantedRequests()
   })
   const request = (
     id: string,
@@ -1702,3 +1702,217 @@ it('releases queued durable searches without granting other capabilities or conv
     broker.cancelAllPending()
   }
 })
+
+it.each([
+  ['claude-code', 'claude-anthropic'],
+  ['opencode', 'opencode-openai'],
+  ['codex', 'codex-responses'],
+  ['codex', 'codex-bridge']
+] as const)('uses revocable shared Skill grants for %s / %s', async (frameworkId, modelRoute) => {
+  storageRoot = await mkdtemp(join(tmpdir(), 'permission-skill-authority-'))
+  client = createProjectDbClient(storageRoot)
+  await migrateApplicationDatabase(client)
+  const registry = await createPermissionGrantRegistry({ getClient: async () => client! })
+  const emit = vi.fn()
+  const broker = new AcpPermissionBroker(emit, undefined, registry)
+  const policy = { frameworkId, modelRoute, profile: 'ask' as const, mcpServerNames: ['skills'] }
+  const request = (): RequestPermissionRequest =>
+    frameworkId === 'opencode'
+      ? withTrustedNativeToolIdentity(
+          {
+            ...mcpRequest('session-1', 'skill'),
+            toolCall: {
+              toolCallId: 'skill-call',
+              title: 'skill',
+              kind: 'other',
+              rawInput: { name: 'example' }
+            }
+          },
+          'opencode/skill'
+        )
+      : withTrustedMcpToolIdentity(
+          mcpRequest('session-1', 'mcp__skills__load_skill'),
+          'skills/load_skill'
+        )
+  await seedDefaultPermissionGrants(registry, client)
+  await expect(broker.requestPermission(request(), policy)).resolves.toEqual({
+    outcome: { outcome: 'selected', optionId: 'provider-allow-once' }
+  })
+  expect(emit).not.toHaveBeenCalled()
+  const grant = (await registry.list()).find((record) => record.capability.key === 'skill:invoke')!
+  await registry.revoke({ grants: [{ id: grant.id, revision: grant.revision }] })
+  const pending = broker.requestPermission(request(), policy)
+  await vi.waitFor(() => expect(emit).toHaveBeenCalledOnce())
+  await broker.respond({
+    requestId: emit.mock.calls[0][0].requestId,
+    optionId: 'provider-reject-once'
+  })
+  await expect(pending).resolves.toEqual({
+    outcome: { outcome: 'selected', optionId: 'provider-reject-once' }
+  })
+})
+
+it('keeps historical MCP Skill authority on its original loader only', async () => {
+  storageRoot = await mkdtemp(join(tmpdir(), 'permission-legacy-loader-'))
+  client = createProjectDbClient(storageRoot)
+  await migrateApplicationDatabase(client)
+  const registry = await createPermissionGrantRegistry({ getClient: async () => client! })
+  await registry.remember({
+    capability: { kind: 'mcp_tool', key: 'mcp:skills/load_skill' },
+    scope: { kind: 'global' }
+  })
+  const emit = vi.fn()
+  const broker = new AcpPermissionBroker(emit, undefined, registry)
+  await expect(
+    broker.requestPermission(
+      withTrustedMcpToolIdentity(
+        mcpRequest('session-1', 'mcp__skills__load_skill'),
+        'skills/load_skill'
+      ),
+      { profile: 'ask', frameworkId: 'claude-code', mcpServerNames: ['skills'] }
+    )
+  ).resolves.toMatchObject({ outcome: { outcome: 'selected' } })
+  const pending = broker.requestPermission(
+    withTrustedNativeToolIdentity(
+      {
+        ...mcpRequest('session-1', 'skill'),
+        toolCall: { toolCallId: 'native-skill', title: 'skill', kind: 'other' }
+      },
+      'opencode/skill'
+    ),
+    { profile: 'ask', frameworkId: 'opencode' }
+  )
+  await vi.waitFor(() => expect(emit).toHaveBeenCalledOnce())
+  broker.cancelAllPending()
+  await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  expect((await registry.list()).map((grant) => grant.capability.key)).toEqual([
+    'mcp:skills/load_skill'
+  ])
+})
+
+it.each(['claude-code', 'opencode', 'codex', 'codebuddy'] as const)(
+  'rechecks pending mapped %s capabilities when grants change and unsubscribes on disposal',
+  async (frameworkId) => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'permission-pending-registry-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    await client.project.create({ data: { id: 'project-1', name: 'Permission test' } })
+    const registry = await createPermissionGrantRegistry({ getClient: async () => client! })
+    const unsubscribe = vi.fn()
+    const subscribe = registry.subscribe.bind(registry)
+    vi.spyOn(registry, 'subscribe').mockImplementation((listener) => {
+      const stop = subscribe(listener)
+      return () => {
+        unsubscribe()
+        stop()
+      }
+    })
+    const emit = vi.fn()
+    const context = new AcpPermissionContext({
+      emitPermissionRequest: emit,
+      permissionGrantRegistry: registry,
+      routing: {
+        resolveAppSessionId: (id) => id,
+        sessionSnapshot: () => undefined,
+        hasActivePrimarySession: () => true,
+        capturePrompt: () => undefined,
+        currentInteractionSequence: () => undefined,
+        mcpServerNamesFor: () => ['open-science-notebook'],
+        reviewerContextFor: () => undefined,
+        resolveReviewerPermission: () => undefined,
+        currentFramework: () => claudeCodeFramework,
+        resolveProjectId: () => 'project-1'
+      }
+    })
+    try {
+      const policy = {
+        profile: 'ask' as const,
+        frameworkId,
+        projectId: 'project-1',
+        mcpServerNames: ['open-science-notebook']
+      }
+      const request = (sessionId: string): RequestPermissionRequest =>
+        withTrustedMcpToolIdentity(
+          mcpRequest(sessionId, 'mcp__open-science-notebook__notebook_state'),
+          'open-science-notebook/notebook_state'
+        )
+      const first = context.requestPermission(request('session-1'), policy)
+      const other = context.requestPermission(request('session-2'), policy)
+      await vi.waitFor(() => expect(emit).toHaveBeenCalledTimes(2))
+      await registry.remember({
+        capability: { kind: 'mcp_tool', key: 'mcp:open-science-notebook/notebook_state' },
+        scope: { kind: 'session', projectId: 'project-1', sessionId: 'session-1' }
+      })
+      await expect(first).resolves.toMatchObject({
+        outcome: { outcome: 'selected', optionId: 'provider-allow-once' }
+      })
+      expect(context.getPendingRequests().map((request) => request.sessionId)).toEqual([
+        'session-2'
+      ])
+      context.cancelForSession('session-2')
+      await expect(other).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    } finally {
+      context.dispose()
+    }
+    expect(unsubscribe).toHaveBeenCalledOnce()
+  }
+)
+
+it.each(['revoked', 'lookup_failed'])(
+  'cancels a pending automatic grant after settlement when %s',
+  async (failure) => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'permission-revoke-settlement-'))
+    client = createProjectDbClient(storageRoot)
+    await migrateApplicationDatabase(client)
+    const registry = await createPermissionGrantRegistry({ getClient: async () => client! })
+    const resolveGrant = vi.spyOn(registry, 'resolve')
+    let finishSettlement!: () => void
+    const settlement = new Promise<void>((resolve) => {
+      finishSettlement = resolve
+    })
+    const settleLive = vi.fn(() => settlement)
+    const emit = vi.fn()
+    const broker = new AcpPermissionBroker(emit, undefined, registry, undefined, {
+      persist: async () => true,
+      settleLive
+    })
+    const unsubscribe = registry.subscribe(() => {
+      void broker.releaseGrantedRequests()
+    })
+    try {
+      const pending = broker.requestPermission(
+        withTrustedMcpToolIdentity(
+          mcpRequest('session-race', 'mcp__open-science-notebook__notebook_state'),
+          'open-science-notebook/notebook_state'
+        ),
+        {
+          profile: 'ask',
+          frameworkId: 'claude-code',
+          projectId: 'project-1',
+          promptMessageId: 'prompt-1',
+          mcpServerNames: ['open-science-notebook']
+        }
+      )
+      await vi.waitFor(() => expect(emit).toHaveBeenCalledOnce())
+      await registry.remember({
+        capability: { kind: 'mcp_tool', key: 'mcp:open-science-notebook/notebook_state' },
+        scope: { kind: 'global' }
+      })
+      await vi.waitFor(() => expect(settleLive).toHaveBeenCalledOnce())
+      if (failure === 'revoked') {
+        const [grant] = await registry.list()
+        await registry.revoke({ grants: [{ id: grant.id, revision: grant.revision }] })
+      } else {
+        resolveGrant.mockRejectedValue(new Error('registry unavailable'))
+      }
+      finishSettlement()
+      await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+      expect(broker.getPendingRequests()).toEqual([])
+    } finally {
+      finishSettlement()
+      resolveGrant.mockRestore()
+      unsubscribe()
+      broker.cancelAllPending()
+    }
+  }
+)

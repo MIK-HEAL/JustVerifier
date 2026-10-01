@@ -4,9 +4,13 @@ import type {
   SessionNotification
 } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { sanitizeSessionPermissionRuntimeContext } from '../../shared/session-persistence'
 import { opencodeFramework } from '../agent-framework'
+import { createLogger, flushLogs, initLogger } from '../logger'
 import {
   AcpPermissionContext,
   AGENT_PERMISSION_ACTION_ORIGIN,
@@ -74,6 +78,42 @@ const observe = (
 }
 
 describe('ACP permission context', () => {
+  it('does not log routine permission requests through the ACP context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'permission-context-log-'))
+    initLogger({ logDir: root, mirrorToConsole: false })
+    createLogger('test').info('permission test boundary')
+    try {
+      for (const frameworkId of ['claude-code', 'opencode', 'codex', 'codebuddy'] as const) {
+        const context = new AcpPermissionContext({
+          emitPermissionRequest: vi.fn(),
+          routing: permissionRouting({
+            capturePrompt: () => ({ sequence: 1, isCancellationAccepted: () => false }),
+            currentInteractionSequence: () => 1,
+            sessionSnapshot: () => ({
+              cwd: '/workspace',
+              frameworkId,
+              permissionProfile: { selectedProfile: 'full' }
+            })
+          })
+        })
+        await expect(
+          context.handleProviderRequest(
+            permissionRequest('normal-session', 'normal-call', { title: 'Read', kind: 'read' })
+          )
+        ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+      }
+      await flushLogs()
+      const contents = await readFile(join(root, 'main.log'), 'utf8')
+      expect(contents).not.toContain('permission request received')
+      expect(contents).not.toContain('permission decision trace')
+      expect(contents).not.toContain('normal-session')
+      expect(contents).not.toContain('normal-call')
+    } finally {
+      await flushLogs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('denies app preflight approval using the reserved prompt policy without publishing a wait', async () => {
     const emitPermissionRequest = vi.fn()
     const context = new AcpPermissionContext({

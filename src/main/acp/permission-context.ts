@@ -23,6 +23,7 @@ import type { ShellRuntimeBinding } from '../../shared/notebook'
 import { shellRuntimeDialect } from '../notebook/shell-runtime'
 import { resolveCanonicalMcpToolIdentity } from '../agent-framework/app-mcp-names'
 import { createLogger } from '../logger'
+import { logPermissionDiagnostic } from '../permission-grants/diagnostics'
 import {
   AcpPermissionBroker,
   ConversationPermissionGrantStore,
@@ -100,6 +101,7 @@ type AcpPermissionContextOptions = {
     sessionSnapshot: (sessionId: string) =>
       | {
           cwd?: string
+          modelRoute?: import('../agent-framework/types').AgentModelRoute
           frameworkId?: AgentFrameworkId
           permissionProfile?: Readonly<
             Pick<SessionPermissionProfileState, 'selectedProfile' | 'autoReviewStrategy'> &
@@ -421,7 +423,7 @@ class AcpPermissionContext {
       options.permissionWaitHooks
     )
     this.unsubscribePermissionGrants = options.permissionGrantRegistry?.subscribe(() => {
-      void this.broker.releaseGrantedWebSearchRequests()
+      void this.broker.releaseGrantedRequests()
     })
     this.setTimer = options.setTimer ?? setTimeout
     this.clearTimer = options.clearTimer ?? clearTimeout
@@ -468,20 +470,6 @@ class AcpPermissionContext {
     }
     const executionMethod = notebookExecutionMethod(trustedMcpToolIdentity(normalizedParams))
 
-    // Keep the audit record useful without logging titles, URLs, raw input, or provider payloads.
-    const toolName = extractProviderToolName(normalizedParams.toolCall)
-    const isMcp =
-      isMcpToolName(normalizedParams.toolCall.title, mcpServerNames) ||
-      isMcpToolName(toolName, mcpServerNames)
-    log.info('permission request received', {
-      tool:
-        this.toolIdentityForDiagnostics(toolName, appSessionId) ?? normalizedParams.toolCall.kind,
-      isMcp,
-      toolCallId: normalizedParams.toolCall.toolCallId,
-      sessionId: params.sessionId,
-      optionCount: params.options.length
-    })
-
     try {
       if (reviewerContext) {
         const response = routing.resolveReviewerPermission(normalizedParams)
@@ -510,6 +498,7 @@ class AcpPermissionContext {
       const response = await this.requestPermission(routedParams, {
         profile: profileState?.selectedProfile ?? DEFAULT_PERMISSION_PROFILE,
         frameworkId,
+        modelRoute: aggregateSnapshot?.modelRoute,
         shellDialect: notebookShellRuntime
           ? shellRuntimeDialect(notebookShellRuntime)
           : permissionFramework.commandShellDialect,
@@ -683,6 +672,7 @@ class AcpPermissionContext {
       profile,
       isCurrent
     )
+    if (isCurrent()) this.logProfileCoverage(sessionId, profile)
     for (const requestId of resolvedRequestIds) this.humanOnlyRequestIds.delete(requestId)
   }
 
@@ -692,6 +682,7 @@ class AcpPermissionContext {
     isCurrent: () => boolean = () => true
   ): void {
     this.broker.setLivePermissionProfile(sessionId, profile, isCurrent)
+    this.logProfileCoverage(sessionId, profile)
   }
 
   beginPermissionProfileTransition(
@@ -706,7 +697,9 @@ class AcpPermissionContext {
     sessionId: string,
     profile: Readonly<SessionPermissionProfileState>
   ): boolean {
-    return this.broker.setProviderPermissionProfile(sessionId, profile)
+    const applied = this.broker.setProviderPermissionProfile(sessionId, profile)
+    if (applied) this.logProfileCoverage(sessionId, profile)
+    return applied
   }
 
   clearLivePermissionProfile(sessionId: string): void {
@@ -1031,6 +1024,15 @@ class AcpPermissionContext {
         params.toolCall.toolCallId,
         context
       )
+      logPermissionDiagnostic({
+        stage: 'context',
+        sessionId,
+        toolCallId: params.toolCall.toolCallId,
+        frameworkId: 'opencode',
+        reason: `context_${outcome}`,
+        fallback: outcome === 'timeout',
+        waitMs: outcome === 'timeout' ? OPENCODE_PERMISSION_CONTEXT_WAIT_MS : undefined
+      })
       if (outcome === 'cancelled') return undefined
       if (outcome === 'timeout') {
         this.options.onOpenCodeWaitTimeout?.({
@@ -1618,6 +1620,33 @@ class AcpPermissionContext {
       this.nativeNotebookExecutionAuthorizations.delete(sessionId)
     }
     this.resolveOpenCodeWaiters(sessionId, toolCallId, 'cancelled')
+  }
+
+  private logProfileCoverage(
+    sessionId: string,
+    profile: Readonly<SessionPermissionProfileState>
+  ): void {
+    try {
+      const snapshot = this.options.routing.sessionSnapshot(sessionId)
+      const framework = snapshot?.frameworkId ?? this.options.routing.currentFramework().id
+      const native =
+        profile.autoReviewStrategy === 'native' ||
+        usesNativeFullAccess(getAgentFramework(framework), profile)
+      logPermissionDiagnostic({
+        stage: 'profile',
+        sessionId,
+        frameworkId: framework,
+        modelRoute: snapshot?.modelRoute,
+        profile: profile.selectedProfile,
+        authority: native ? 'provider_native' : 'automatic_policy',
+        reason: native
+          ? 'provider_interception_unavailable'
+          : 'provider_read_policy_and_host_gates',
+        fallback: native
+      })
+    } catch {
+      // Coverage reporting is diagnostic only; never interrupt a profile transition.
+    }
   }
 
   private toolIdentityForDiagnostics(

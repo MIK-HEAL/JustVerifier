@@ -1539,7 +1539,9 @@ describe('Settings backend ownership architecture', () => {
       'src/main/literature/smart-collections.test.ts',
       'src/main/notebook/runtime-service.macos-isolation.integration.test.ts',
       'src/main/acp/library-auto-policy.test.ts',
-      'src/main/literature/journal-attributes.test.ts'
+      'src/main/literature/journal-attributes.test.ts',
+      'src/main/session-diagnostics/export-evidence.integration.test.ts',
+      'src/main/permission-grants/connector-broker.test.ts'
     ])
     expect(
       [
