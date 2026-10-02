@@ -9,10 +9,40 @@ const clean = (value: string): string =>
     .trim()
     .slice(0, 1000)
 
-const pathNear = (stderr: string, failure: string): string | undefined => {
+const diagnosticLines = function* (output: string, failure: RegExp): Generator<string> {
+  for (const line of output.split(/\r?\n/)) {
+    // Unicode escapes can also encode the error phrase itself in a JSON message.
+    if (!failure.test(line) && !line.includes('\\u')) continue
+    // CLI JSON envelopes escape Windows separators. Decode complete JSON strings only;
+    // replacing backslashes in ordinary output would corrupt UNC paths and escape sequences.
+    // Advance monotonically: an unterminated string must not retry at every escaped quote.
+    let index = 0
+    while (index < line.length) {
+      if (line[index] !== '"') {
+        index += 1
+        continue
+      }
+      const start = index++
+      while (index < line.length && line[index] !== '"') {
+        index += line[index] === '\\' ? 2 : 1
+      }
+      if (index >= line.length) break
+      const literal = line.slice(start, ++index)
+      try {
+        yield JSON.parse(literal) as string
+      } catch {
+        // Quoted prose is not necessarily JSON; retain the original line below.
+      }
+    }
+    yield line
+  }
+}
+
+const pathNear = (output: string, failure: string): string | undefined => {
   const path = String.raw`([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+|\/[^\s'"\x60:]+)`
-  for (const line of stderr.split(/\r?\n/)) {
-    const failureMatch = new RegExp(failure, 'i').exec(line)
+  const failurePattern = new RegExp(failure, 'i')
+  for (const line of diagnosticLines(output, failurePattern)) {
+    const failureMatch = failurePattern.exec(line)
     if (!failureMatch) continue
     const before = [...line.slice(0, failureMatch.index).matchAll(new RegExp(path, 'gi'))].at(
       -1
@@ -21,7 +51,7 @@ const pathNear = (stderr: string, failure: string): string | undefined => {
       .slice(failureMatch.index + failureMatch[0].length)
       .match(new RegExp(path, 'i'))?.[1]
     const candidate = before ?? after
-    if (candidate) return clean(candidate)
+    if (candidate) return clean(candidate).replace(/['"`]$/, '')
   }
   return undefined
 }
@@ -43,12 +73,14 @@ class ViolationLog {
   attach(
     commandId: string,
     stderr: string,
-    hiddenBySandbox: (path: string) => boolean = () => false
+    hiddenBySandbox: (path: string) => boolean = () => false,
+    stdout = ''
   ): string {
     const events = this.#events.get(commandId)
     this.#events.delete(commandId)
-    const permissionDenied = new RegExp(permissionFailure, 'i').test(stderr)
-    const missing = missingPath(stderr)
+    const diagnostics = `${stderr}\n${stdout}`
+    const permissionDenied = new RegExp(permissionFailure, 'i').test(diagnostics)
+    const missing = missingPath(diagnostics)
     const hiddenMissingPath = missing && hiddenBySandbox(missing) ? missing : undefined
     const lines = [...(events ?? [])]
     if (
@@ -65,7 +97,7 @@ class ViolationLog {
     ) {
       lines.unshift(NETWORK_POLICY_BLOCKED)
     }
-    const path = (permissionDenied ? deniedPath(stderr) : undefined) ?? hiddenMissingPath
+    const path = (permissionDenied ? deniedPath(diagnostics) : undefined) ?? hiddenMissingPath
     if (path) {
       lines.push(
         `OPEN_SCIENCE_FILESYSTEM_ACCESS_BLOCKED${path ? `: ${path}` : ''} ` +

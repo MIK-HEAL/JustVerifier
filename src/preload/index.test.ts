@@ -595,6 +595,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.cancelCustomServerAuthentication',
       'settings.cancelDeviceCredentialAuthentication',
       'settings.cancelIsolatedClaudeLogin',
+      'settings.cancelNotebookNetworkSetup',
       'settings.cancelXaiOAuthLogin',
       'settings.checkEnvironment',
       'settings.createDeviceCredential',
