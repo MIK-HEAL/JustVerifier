@@ -326,6 +326,7 @@
       "src/main/notebook/runtime-service.macos-isolation.integration.test.ts",
       "src/main/acp/library-auto-policy.test.ts",
       "src/main/connectors/descriptors/pathway-commons.test.ts",
+      "src/main/connectors/descriptors/cellosaurus.test.ts",
       "src/main/connectors/descriptors/monarch.test.ts"
     ]
   },
