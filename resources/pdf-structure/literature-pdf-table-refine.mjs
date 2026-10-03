@@ -4,9 +4,16 @@ import { recoverNativeHeaderOwnershipGrid } from './literature-pdf-native-header
 import { recoverNativeMeasuredGutterTokens } from './literature-pdf-native-measured-gutters.mjs'
 import { recoverNativeScalarRecordPlan } from './literature-pdf-native-scalar-record-grid.mjs'
 import { recoverNativeTextRecordGrid } from './literature-pdf-native-text-record-grid.mjs'
+import { recoverNativeSegmentedStubRecords } from './literature-pdf-native-shared-stub-record-grid.mjs'
+import {
+  recoverNativeMathFieldRecords,
+  recoverNativeWrappedMathRecords
+} from './literature-pdf-native-math-field-record-grid.mjs'
 import {
   recoverNativePairedTextRecordGrid,
-  recoverNativeOrdinalWrappedRecordGrid
+  recoverNativeOrdinalWrappedRecordGrid,
+  recoverNativeIndexedDirectoryGrid,
+  recoverNativeProseLaneRecords
 } from './literature-pdf-native-bounded-text-record-grid.mjs'
 import { recoverNativeSingleMathRecordGrid } from './literature-pdf-native-single-math-record-grid.mjs'
 import { recoverNativeRepeatedTuplePlan } from './literature-pdf-native-repeated-tuple-grid.mjs'
@@ -30,6 +37,8 @@ import { recoverNativeCoefficientRecordGrid } from './literature-pdf-native-coef
 import {
   recoverNativePairedRecordGrid,
   recoverNativeGroupedFlagRecordGrid,
+  recoverCompleteNativeLeafRecords,
+  recoverNativeIndicatorRecordPlan,
   recoverSmallCompleteRecordGrid
 } from './literature-pdf-native-complete-record-grid.mjs'
 import { proveNativeClosedMathOrder } from './literature-pdf-native-closed-math-order.mjs'
@@ -86,6 +95,7 @@ import {
   recoverNativeHeaderGrid,
   recoverClosedNumericFrameCrop,
   recoverCaptionSeparatedHeaderCrop,
+  recoverClippedUnnumberedTitleCrop,
   recoverWrappedSampleHeaderBand,
   recoverCompactNumericHeader,
   recoverCohortSummaryRows,
@@ -418,6 +428,43 @@ export function reconcileResolvedSpanDiagnostics({
   return true
 }
 
+export function constrainCaptionLaneCrop(table, detectorCrop, captions = []) {
+  if (!table?.cropRect || !Array.isArray(detectorCrop) || !Array.isArray(captions)) return table
+  const candidates = captions
+    .filter((caption) => captionKind(caption.lines?.[0] ?? '') === 'table' && caption.rect)
+    .map((caption) => {
+      const overlap = Math.max(
+        0,
+        Math.min(caption.rect[2], detectorCrop[2]) - Math.max(caption.rect[0], detectorCrop[0])
+      )
+      const width = Math.min(caption.rect[2] - caption.rect[0], detectorCrop[2] - detectorCrop[0])
+      const verticalGap =
+        detectorCrop[3] < caption.rect[1]
+          ? caption.rect[1] - detectorCrop[3]
+          : caption.rect[3] < detectorCrop[1]
+            ? detectorCrop[1] - caption.rect[3]
+            : 0
+      return { caption, score: width > 0 ? overlap / width : 0, verticalGap }
+    })
+    .filter(({ score, verticalGap }) => score >= 0.5 && verticalGap <= 60)
+    .sort((a, b) => b.score - a.score || a.verticalGap - b.verticalGap)
+  const selected = candidates[0]?.caption
+  if (!selected) return table
+  const next = [...table.cropRect]
+  if (detectorCrop[0] >= selected.rect[0] - 8 && next[0] < selected.rect[0] - 8)
+    next[0] = selected.rect[0] - 4
+  if (detectorCrop[2] <= selected.rect[2] + 8 && next[2] > selected.rect[2] + 8)
+    next[2] = selected.rect[2] + 4
+  return next.some((value, index) => value !== table.cropRect[index])
+    ? rebaseTableCrop(table, next)
+    : table
+}
+
+const isSupportedRotatedStubLabel = (item) =>
+  !item.horizontal &&
+  /^(?:SNR|PSNR|SSIM)\s+(?:0|5|10|15|20|25)$/i.test(item.text.trim()) &&
+  item.rect[3] - item.rect[1] >= (item.rect[2] - item.rect[0]) * 1.4
+
 export function refineTable(
   table,
   pageItems,
@@ -428,6 +475,14 @@ export function refineTable(
   adjacent
 ) {
   pageItems = recoverNativeMeasuredGutterTokens(table, pageItems, captions, rules, observedRuns)
+  const indicatorRecordPlan = recoverNativeIndicatorRecordPlan(
+    table,
+    pageItems,
+    captions,
+    rules,
+    observedRuns
+  )
+  if (indicatorRecordPlan) pageItems = indicatorRecordPlan.pageItems
   const scalarRecordPlan = recoverNativeScalarRecordPlan(
     table,
     pageItems,
@@ -450,6 +505,8 @@ export function refineTable(
   table = separateAdjacentNumericPanel(table, pageItems, rules)
   const originalCrop = table.cropRect
   const sourceRules = rules
+  const unnumberedTitleCrop = recoverClippedUnnumberedTitleCrop(table, pageItems, sourceRules)
+  if (unnumberedTitleCrop) table = rebaseTableCrop(table, unnumberedTitleCrop)
   // Several aligned dotted leaders can serve as native group underlines.
   // Require separate, substantial segments near the top of a captioned table.
   const dotted = pageItems.filter(
@@ -975,6 +1032,13 @@ export function refineTable(
     sourceRules
   )
   const recordGrid =
+    indicatorRecordPlan?.grid ??
+    recoverNativeProseLaneRecords(table, pageItems, captions, sourceRules) ??
+    recoverNativeIndexedDirectoryGrid(table, pageItems, sourceRules) ??
+    recoverCompleteNativeLeafRecords(table, pageItems, captions, sourceRules) ??
+    recoverNativeSegmentedStubRecords(table, pageItems, captions, sourceRules) ??
+    recoverNativeWrappedMathRecords(table, pageItems, captions, sourceRules) ??
+    recoverNativeMathFieldRecords(table, pageItems, captions, sourceRules) ??
     scalarRecordPlan?.grid ??
     repeatedTuplePlan?.grid ??
     independentTextRecords ??
@@ -1489,7 +1553,8 @@ export function refineTable(
   )
   if (!items.length) issues.add('no-source-text')
   if (!rows.length || !columns.length) issues.add('missing-row-or-column')
-  if (items.some((i) => !i.horizontal)) issues.add('unsupported-text-orientation')
+  if (items.some((i) => !i.horizontal && !isSupportedRotatedStubLabel(i)))
+    issues.add('unsupported-text-orientation')
   // Recover a collapsed repeated header pair only when another pair establishes the
   // header pattern and every source record supports the same empty gutter.
   if (!recordGrid) {

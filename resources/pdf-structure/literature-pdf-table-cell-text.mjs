@@ -5,11 +5,119 @@ import { hasWitnessedLineEndHyphen, sourceWordSpellings } from './literature-pdf
 import { recoverNativeStackedUncertainty } from './literature-pdf-native-stacked-uncertainty.mjs'
 import { recoverNativeStackedRecordRuns } from './literature-pdf-native-stacked-records.mjs'
 import { recoverNativeClosedMathRuns } from './literature-pdf-native-closed-math-order.mjs'
+import { orderNativeDualScriptLanes } from './literature-pdf-native-dual-script-lanes.mjs'
 
 const BACKSPACE = String.fromCharCode(8)
 
 // Mutates resolved cells and diagnostics, preserving source-token identity while
 // assigning wrapped labels and scripts. Returns text that still has no owner.
+// Recover a narrative tail that falls into the gap between two predicted rows only
+// when native geometry proves that it continues an already-owned same-column prefix.
+// This deliberately does not generalize the final-row tail rule: a nearby independent
+// next-row stub, a closed table frame, and an empty interval between them are required.
+export function recoverNativeMidRowNarrativeTail({
+  items,
+  cells,
+  rows,
+  columnRects,
+  rules,
+  assignments,
+  bottom,
+  repairs
+}) {
+  const area = (rect) => Math.max(0, rect[2] - rect[0]) * Math.max(0, rect[3] - rect[1])
+  const overlap = (a, b) => {
+    const width = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]))
+    const height = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]))
+    return (width * height) / Math.max(area(a), 1)
+  }
+  const horizontal = (rule) => Math.abs(rule[3] - rule[1]) < 0.05
+  const frameRules = rules
+    .filter(
+      (rule) =>
+        horizontal(rule) &&
+        rule[2] - rule[0] >=
+          Math.max(...columnRects.map((column) => column[2])) -
+            Math.min(...columnRects.map((column) => column[0])) -
+            24
+    )
+    .sort((a, b) => a[1] - b[1])
+  if (frameRules.length < 3) return false
+  const top = frameRules[0]
+  const bottomRule = frameRules.at(-1)
+  if (bottomRule[1] <= top[1] || bottomRule[1] > bottom + 1) return false
+  const unassigned = items.filter((item) => !assignments.has(item) && item.horizontal)
+  const candidates = []
+  for (const item of unassigned) {
+    if (!/^\p{Ll}/u.test(item.text.trim())) continue
+    const column = columnRects.findIndex(
+      (rect) => item.rect[0] >= rect[0] && item.rect[2] <= rect[2]
+    )
+    if (column < 1) continue
+    const prefixCells = cells.filter(
+      (cell) => cell.column === column && cell.rowSpan === 1 && cell.colSpan === 1
+    )
+    const prefixes = prefixCells
+      .map((cell) => ({
+        cell,
+        lines: items
+          .filter((anchor) => assignments.get(anchor) === cell)
+          .filter(
+            (anchor) =>
+              anchor.horizontal &&
+              Math.abs(anchor.rect[0] - item.rect[0]) <= item.height * 0.2 &&
+              Math.abs(anchor.height - item.height) <= item.height * 0.08 &&
+              anchor.rect[3] <= item.rect[1] + item.height * 0.2 &&
+              item.rect[1] - anchor.rect[3] <= item.height * 1.2 &&
+              !/[.!?:;]$/u.test(anchor.text.trim())
+          )
+      }))
+      .filter(({ cell, lines }) => {
+        if (lines.length !== 1) return false
+        if (overlap(item.rect, cell.rect) >= 0.5) return false
+        const next = items
+          .filter((stub) => {
+            const owner = assignments.get(stub)
+            return (
+              owner &&
+              owner.column === 0 &&
+              owner.row > cell.row &&
+              stub.horizontal &&
+              stub.rect[1] >= item.rect[3] - item.height * 0.5 &&
+              stub.rect[1] - item.rect[3] <= item.height * 1.5 &&
+              /^[\p{Lu}\d]/u.test(stub.text.trim())
+            )
+          })
+          .sort((a, b) => a.rect[1] - b.rect[1])
+        const nextCells = new Set(next.map((stub) => assignments.get(stub)))
+        if (nextCells.size !== 1) return false
+        const nextStub = next[0]
+        const nextCell = assignments.get(nextStub)
+        if (
+          overlap(
+            item.rect,
+            cells.find((candidate) => candidate === nextCell)?.rect ?? [0, 0, 0, 0]
+          ) >= 0.5
+        )
+          return false
+        const betweenRules = rules.some(
+          (rule) => horizontal(rule) && rule[1] > lines[0].rect[3] && rule[1] < nextStub.rect[1]
+        )
+        if (betweenRules) return false
+        return true
+      })
+    for (const match of prefixes) candidates.push({ ...match, item })
+  }
+  if (candidates.length !== 1) return false
+  const { item, cell } = candidates[0]
+  assignments.set(item, cell)
+  cell.rect[3] = Math.max(cell.rect[3], item.rect[3])
+  const row = rows[cell.row]
+  row.rect[3] = Math.max(row.rect[3], item.rect[3])
+  repairs.push('mid-row-narrative-tail-recovered')
+  return true
+}
+
 export function populateTableCellText({
   cells,
   items,
@@ -41,12 +149,24 @@ export function populateTableCellText({
       !/[.!?]$/.test(value)
     )
   }
+  const rotatedStubLabel = (item) =>
+    !item.horizontal &&
+    /^(?:SNR|PSNR|SSIM)\s+(?:0|5|10|15|20|25)$/i.test(item.text.trim()) &&
+    item.rect[3] - item.rect[1] >= (item.rect[2] - item.rect[0]) * 1.4
   for (const item of items) {
     const candidates = cells
       .map((cell) => ({ cell, overlap: intersect(cell.rect, item.rect) / area(item.rect) }))
-      .filter((m) => m.overlap > 0.5)
+      .filter((m) => m.overlap > (rotatedStubLabel(item) ? 0.1 : 0.5))
       .sort((a, b) => b.overlap - a.overlap)
-    if (!item.horizontal || !candidates.length) {
+    if (!item.horizontal && !rotatedStubLabel(item)) continue
+    if (!candidates.length) {
+      continue
+    }
+    if (rotatedStubLabel(item)) {
+      const stubs = candidates
+        .filter(({ cell }) => cell.column === 0)
+        .sort((a, b) => b.overlap - a.overlap)
+      if (stubs.length) assignments.set(item, stubs[0].cell)
       continue
     }
     if (numericContinuation(item.text) && candidates.length) {
@@ -822,6 +942,57 @@ export function populateTableCellText({
     assignments.set(item, assignments.get(anchor))
     anchors.set(item, anchor)
   }
+  // TeX radicals can have a raised full-em box. A literal radical, its touching
+  // native overbar, and one uniquely owned operand witness the ordinary line;
+  // font-box overlap alone may have stranded it above that row.
+  const nativeRadicals = new Set()
+  for (const item of items.filter((i) => i.horizontal && i.text === '√')) {
+    const matches = items.filter((operand) => {
+      const cell = assignments.get(operand)
+      return (
+        cell &&
+        operand !== item &&
+        operand.horizontal &&
+        Math.abs(operand.height - item.height) < operand.height * 0.1 &&
+        operand.baseline - item.baseline > operand.height * 0.5 &&
+        operand.baseline - item.baseline < operand.height &&
+        Math.abs(operand.rect[0] - item.rect[2]) < operand.height * 0.05 &&
+        item.rect[0] >= cell.rect[0] &&
+        item.rect[2] <= cell.rect[2] &&
+        rules.some(
+          (r) =>
+            r[1] === r[3] &&
+            Math.abs(r[0] - item.rect[2]) < operand.height * 0.05 &&
+            Math.abs(r[1] - item.baseline) < operand.height * 0.05 &&
+            r[2] >= operand.rect[2] - operand.height * 0.05 &&
+            r[2] - r[0] < operand.height * 4
+        ) &&
+        !rules.some(
+          (r) =>
+            r[0] === r[2] &&
+            r[0] > item.rect[0] &&
+            r[0] < operand.rect[2] &&
+            r[1] < operand.baseline &&
+            r[3] > item.rect[1]
+        ) &&
+        !rules.some(
+          (r) =>
+            r[1] === r[3] &&
+            r[1] > item.baseline + operand.height * 0.05 &&
+            r[1] < operand.baseline &&
+            r[0] <= item.rect[0] + operand.height * 0.05 &&
+            r[2] >= operand.rect[2] - operand.height * 0.05
+        )
+      )
+    })
+    if (matches.length !== 1) continue
+    const operand = matches[0]
+    if (assignments.get(item) !== assignments.get(operand))
+      repairs.push('inline-fragment-reassigned')
+    assignments.set(item, assignments.get(operand))
+    anchors.set(item, operand)
+    nativeRadicals.add(item)
+  }
   // A bounded native record recognizer can prove raised full-em stars whose
   // font boxes do not satisfy the generic small-script predicate. Retain its
   // exact source pair only when both tokens already own the same final cell.
@@ -880,7 +1051,11 @@ export function populateTableCellText({
       // independently verified adjacent script with its owned source anchor.
       if (
         !recordGrid.ownedTokens.has(item) &&
-        !(anchor && recordGrid.ownedTokens.has(anchor) && isAdjacentTableScript(item, anchor))
+        !(
+          anchor &&
+          recordGrid.ownedTokens.has(anchor) &&
+          (isAdjacentTableScript(item, anchor) || nativeRadicals.has(item))
+        )
       )
         assignments.delete(item)
     }
@@ -1052,6 +1227,31 @@ export function populateTableCellText({
     assignments.set(operator, target)
     repairs.push('inline-fragment-reassigned')
   }
+  // Intermediate script anchors can move after their smaller descendants were
+  // assigned. Only serialize a chain on its final owner's line. A stale chain
+  // is ambiguous; retain the descendant in its cell instead of moving it again
+  // or dropping it because that other cell has no corresponding text line.
+  const staleAnchors = []
+  for (const [item, parent] of anchors) {
+    let anchor = parent
+    while (assignments.get(item) === assignments.get(anchor) && anchors.has(anchor))
+      anchor = anchors.get(anchor)
+    if (!assignments.has(anchor) || assignments.get(item) !== assignments.get(anchor)) {
+      staleAnchors.push(item)
+      if (assignments.has(item)) issues.add('ambiguous-script-anchor')
+    }
+  }
+  for (const item of staleAnchors) anchors.delete(item)
+  recoverNativeMidRowNarrativeTail({
+    items,
+    cells,
+    rows,
+    columnRects,
+    rules,
+    assignments,
+    bottom,
+    repairs
+  })
   const unassignedItems = items.filter((item) => !assignments.has(item))
   for (const [item, cell] of assignments) cell.items.push(item)
   if (unassignedItems.length) issues.add('unassigned-source-text')
@@ -1117,6 +1317,8 @@ export function populateTableCellText({
     }
     for (const [lineIndex, line] of lines.entries()) {
       line.sort((a, b) => a.rect[0] - b.rect[0] || a.baseline - b.baseline)
+      const orderedScripts = orderNativeDualScriptLanes(line, anchors)
+      if (orderedScripts) line.splice(0, line.length, ...orderedScripts)
       const previous = lines[lineIndex - 1]
       // Reflow only tightly aligned lines owned by this cell, including a
       // separate terminal hyphen glyph. A source spelling is required to remove
