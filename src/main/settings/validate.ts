@@ -187,7 +187,8 @@ const buildOpenAiValidationRequest = (
       ? responsesToChatRequest(bridgeProbeResponsesBody(provider.model ?? ''), provider.model)
       : {
           model: provider.model ?? '',
-          max_tokens: 1,
+          // Requesty rejects Chat probes below 16 output tokens, including for OpenAI models.
+          max_tokens: provider.vendorId === 'requesty' ? 16 : 1,
           messages: [{ role: 'user', content: 'ping' }],
           stream: false
         }
@@ -654,7 +655,7 @@ const validateProviderThroughNativeResponsesCompatibility = async (
   )
 }
 
-// Validates a custom provider by hitting its Messages endpoint with a 1-token request.
+// Validates a provider with its protocol-specific connectivity or tool-call probe.
 const validateCustomProvider = async (
   provider: ResolvedProvider,
   {

@@ -44,6 +44,62 @@ const deferred = <T>(): {
 }
 
 describe('ProviderAccountsModule', () => {
+  it.each(['opencode', 'codebuddy'] as const)(
+    'saves and revalidates Requesty GPT models with the minimum Chat probe budget for %s',
+    async (frameworkId) => {
+      await repository.setAgentFramework(frameworkId)
+      const model = 'openai/gpt-5.4-mini'
+      const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { model: string; max_tokens: number }
+        return body.model.startsWith('openai/') && body.max_tokens < 16
+          ? Response.json({ error: { message: 'max_tokens must be at least 16' } }, { status: 400 })
+          : Response.json({ choices: [{ message: { role: 'assistant', content: 'pong' } }] })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      try {
+        const result = await module.saveValidatedProvider({
+          id: 'requesty',
+          type: 'official',
+          vendorId: 'requesty',
+          name: 'Requesty',
+          model,
+          key: 'synthetic-key'
+        })
+        expect(result).toMatchObject({
+          providerId: 'requesty',
+          validation: { ok: true, category: 'ok', status: 200 }
+        })
+        await module.setActiveProvider('requesty', model)
+        expect(await module.validateProvider({ providerId: 'requesty' })).toMatchObject({
+          ok: true,
+          category: 'ok',
+          status: 200
+        })
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+        for (const [url, init] of fetchMock.mock.calls) {
+          expect(url).toBe('https://router.requesty.ai/v1/chat/completions')
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            max_tokens: 16,
+            stream: false
+          })
+        }
+        expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).model).toBe(model)
+        const stored = (await new SettingsRepository(dir).getSettings()).providers[0]
+        expect(stored.lastValidatedTarget).toEqual({ model, endpoint: 'openai' })
+        expect(stored.lastValidationFailure).toBeUndefined()
+        const framework = getAgentFramework(frameworkId)
+        const catalog = buildConfiguredModelCatalog({
+          providers: [module.toProviderView(stored)],
+          frameworkId,
+          frameworkEndpoints: framework.supportedApiTypes
+        })
+        expect(catalog.find((entry) => entry.model === model)).toMatchObject({ selectable: true })
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    }
+  )
+
   it.each(['test', 'save'] as const)(
     'marks an unchanged saved provider unavailable after %s receives 403 without changing its configuration',
     async (operation) => {

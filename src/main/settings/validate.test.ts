@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { resolveProviderDraft } from './provider-draft-projection'
 
 import {
   buildValidationRequest,
@@ -151,6 +152,23 @@ describe('validate: request construction', () => {
       ],
       tool_choice: 'auto'
     })
+  })
+
+  it('preserves the Requesty Messages and Codex bridge probe budgets', () => {
+    const provider = resolveProviderDraft({
+      type: 'official',
+      vendorId: 'requesty',
+      model: 'openai/gpt-5.4-mini',
+      key: 'synthetic-key'
+    })
+    const messages = buildValidationRequest(provider, false, ['anthropic'])
+    expect(messages.url).toBe('https://router.requesty.ai/v1/messages')
+    expect(JSON.parse(messages.body).max_tokens).toBe(16)
+
+    const bridge = buildValidationRequest(provider, true)
+    expect(bridge.url).toBe('https://router.requesty.ai/v1/chat/completions')
+    expect(JSON.parse(bridge.body)).toMatchObject({ max_tokens: 512, stream: true })
+    expect(bridge.requiresBridgeToolCall).toBe(true)
   })
 
   it('uses the OpenAI endpoint for a both-capable provider and never doubles /v1', () => {
