@@ -4,8 +4,15 @@ import { load } from 'js-yaml'
 
 type Workflow = {
   on: {
+    workflow_call: {
+      inputs: Record<string, { default?: string; required?: boolean; type?: string }>
+      outputs: Record<string, { value: string }>
+    }
     workflow_dispatch: {
-      inputs: Record<string, { required?: boolean; type?: string }>
+      inputs: Record<
+        string,
+        { default?: string; options?: string[]; required?: boolean; type?: string }
+      >
     }
   }
   permissions: Record<string, string>
@@ -14,7 +21,14 @@ type Workflow = {
     {
       environment?: string
       permissions?: Record<string, string>
-      steps: Array<{ name: string; uses?: string; run?: string; with?: Record<string, unknown> }>
+      outputs?: Record<string, string>
+      steps: Array<{
+        id?: string
+        name: string
+        uses?: string
+        run?: string
+        with?: Record<string, unknown>
+      }>
     }
   >
 }
@@ -39,13 +53,29 @@ it('signs a verified runtime artifact without granting CDN publication access', 
     source_run: { required: true, type: 'string' },
     artifact_id: { required: true, type: 'string' }
   })
+  expect(workflow.on.workflow_call).toMatchObject({
+    inputs: {
+      source_run: { required: true, type: 'string' },
+      artifact_id: { required: true, type: 'string' }
+    },
+    outputs: { artifact_id: { value: '${{ jobs.sign.outputs.artifact_id }}' } }
+  })
   expect(workflow.permissions).toEqual({ actions: 'read', contents: 'read', 'id-token': 'write' })
   expect(sign).toMatchObject({
-    environment: 'windows-signing',
+    environment: 'windows-runtime-signing',
     permissions: { actions: 'read', contents: 'read', 'id-token': 'write' }
   })
+  expect(sign.outputs).toEqual({ artifact_id: '${{ steps.upload.outputs.artifact-id }}' })
+  expect(workflow.on.workflow_dispatch.inputs).not.toHaveProperty('source_kind')
+  expect(workflow.on.workflow_call.inputs).not.toHaveProperty('source_kind')
   expect(findStep(steps, 'Verify source run and artifact').run).toContain(
-    "name -ne 'Prepare Windows Notebook runtime'"
+    "$env:GITHUB_REF -ne 'refs/heads/main'"
+  )
+  expect(findStep(steps, 'Verify source run and artifact').run).toContain(
+    "$run.event -notin @('push', 'workflow_dispatch')"
+  )
+  expect(findStep(steps, 'Verify source run and artifact').run).toContain(
+    "$run.path -ne '.github/workflows/windows-notebook-runtime.yml'"
   )
   expect(findStep(steps, 'Download unsigned runtime').with).toMatchObject({
     'artifact-ids': '${{ inputs.artifact_id }}',
@@ -74,6 +104,7 @@ it('signs a verified runtime artifact without granting CDN publication access', 
     'retention-days': 7,
     'if-no-files-found': 'error'
   })
+  expect(findStep(steps, 'Upload signed runtime artifact').id).toBe('upload')
   const text = JSON.stringify(workflow)
   expect(text).not.toContain('S3_')
   expect(steps.map((step) => step.name)).not.toContain('Publish immutable CDN components')

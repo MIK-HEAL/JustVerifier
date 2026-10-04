@@ -4,6 +4,20 @@ name: Sign Windows Notebook runtime
 # This workflow never publishes a GitHub Release or writes to the runtime CDN. Its output is the
 # exact signed runtime artifact consumed by windows-runtime-cdn.yml.
 on:
+  workflow_call:
+    inputs:
+      source_run:
+        description: Successful runtime-producing workflow run
+        type: string
+        required: true
+      artifact_id:
+        description: Exact unsigned Windows runtime artifact ID from source_run
+        type: string
+        required: true
+    outputs:
+      artifact_id:
+        description: Signed Windows runtime artifact ID
+        value: ${{ jobs.sign.outputs.artifact_id }}
   workflow_dispatch:
     inputs:
       source_run:
@@ -29,11 +43,15 @@ jobs:
     name: Sign Windows Notebook runtime
     runs-on: windows-2022
     timeout-minutes: 30
-    environment: windows-signing
+    # Runtime preparation is signed from main under its own protected environment. The application
+    # release environment remains tag-only and is used by build.yml for installer signing.
+    environment: windows-runtime-signing
     permissions:
       actions: read
       contents: read
       id-token: write
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -50,14 +68,20 @@ jobs:
           if ($env:SOURCE_RUN -notmatch '^\d+$' -or $env:ARTIFACT_ID -notmatch '^\d+$') {
             throw 'Numeric source run and artifact IDs are required.'
           }
+          if ($env:GITHUB_REF -ne 'refs/heads/main') {
+            throw 'Runtime signing must run from main.'
+          }
           $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.conclusion -ne 'success') {
+            throw 'Source run must have succeeded.'
+          }
           if (
-            $LASTEXITCODE -ne 0 -or
             $run.name -ne 'Prepare Windows Notebook runtime' -or
-            $run.conclusion -ne 'success' -or
-            $run.head_branch -ne 'main'
+            $run.path -ne '.github/workflows/windows-notebook-runtime.yml' -or
+            $run.head_branch -ne 'main' -or
+            $run.event -notin @('push', 'workflow_dispatch')
           ) {
-            throw 'Source run must be a successful Prepare Windows Notebook runtime run on main.'
+            throw 'Source must be a successful Prepare Windows Notebook runtime push or dispatch run on main.'
           }
           $artifact = gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:ARTIFACT_ID" | ConvertFrom-Json
           if (
@@ -158,7 +182,7 @@ jobs:
             'AZURE_SIGNING_PUBLISHER'
           )) {
             if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name").Value)) {
-              throw "Missing windows-signing variable: $name"
+              throw "Missing windows-runtime-signing variable: $name"
             }
           }
 
@@ -220,6 +244,7 @@ jobs:
           Write-Host "Verified signed and timestamped runtime PE files: $($files.Count)"
 
       - name: Upload signed runtime artifact
+        id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-notebook-runtime-signed-${{ github.run_id }}-${{ github.run_attempt }}

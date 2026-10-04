@@ -1066,6 +1066,10 @@ if ($artifactSaveBase -eq $artifactSaveCommit) {
       permissions: { contents: 'read' },
       'runs-on': 'ubuntu-latest'
     })
+    expect(preflight.outputs).toEqual({
+      windows_runtime_source_changed: '${{ steps.runtime_change.outputs.source_changed }}',
+      windows_runtime_catalog_changed: '${{ steps.runtime_change.outputs.catalog_changed }}'
+    })
     expect(checkout).toMatchObject({
       uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
       with: { 'fetch-depth': 0 }
@@ -1077,7 +1081,26 @@ if ($artifactSaveBase -eq $artifactSaveCommit) {
       if: stableTagCondition,
       run: 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main'
     })
+    const runtimeChange = findStep(preflight, 'Detect Windows runtime changes')
+    expect(runtimeChange).toMatchObject({ id: 'runtime_change', shell: 'bash' })
+    expect(runtimeChange.run).toContain("git describe --tags --match 'v*'")
+    expect(runtimeChange.run).toContain('src/main/notebook/windows-runtime-catalog.json')
+    expect(runtimeChange.run).toContain('Runtime source changed without a catalog update')
+    expect(runtimeChange.run).toContain("'.github/workflows/windows-notebook-runtime.yml'")
+    const verifyRuntime = findStep(preflight, 'Verify reviewed Windows runtime CDN objects')
+    expect(verifyRuntime).toMatchObject({
+      if: "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
+      run: 'node scripts/windows-runtime-cdn.mjs check --verify-bytes',
+      env: {
+        CDN_BASE_URL: '${{ vars.CDN_BASE_URL }}',
+        S3_PREFIX: '${{ vars.S3_PREFIX }}'
+      }
+    })
+    expect(release.jobs['windows-notebook-runtime']).toBeUndefined()
+    expect(release.jobs['windows-runtime-sign']).toBeUndefined()
+    expect(release.jobs['windows-runtime-cdn']).toBeUndefined()
     expect(release.jobs.build.needs).toBe('release-preflight')
+    expect(release.jobs.build.if).toBeUndefined()
     expect(release.jobs.build.with?.sign_windows).toBe(
       "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}"
     )

@@ -28,6 +28,9 @@ jobs:
     name: Release preflight
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      windows_runtime_source_changed: ${{ steps.runtime_change.outputs.source_changed }}
+      windows_runtime_catalog_changed: ${{ steps.runtime_change.outputs.catalog_changed }}
     permissions:
       contents: read
     steps:
@@ -48,6 +51,57 @@ jobs:
       - name: Verify release commit is on main
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Detect Windows runtime changes
+        id: runtime_change
+        shell: bash
+        env:
+          CDN_BASE_URL: ${{ vars.CDN_BASE_URL }}
+          S3_PREFIX: ${{ vars.S3_PREFIX }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "push" ] || [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+            exit 0
+          fi
+          previous_tag=$(git describe --tags --match 'v*' --abbrev=0 "$GITHUB_SHA^" 2>/dev/null || true)
+          if [ -z "$previous_tag" ]; then
+            source_changed=true
+            catalog_changed=true
+            echo "No previous version tag found; requiring the reviewed runtime catalog and CDN objects."
+          else
+            runtime_paths=(
+              'packages/notebook-network-sandbox/vendor/windows-runtime/sources.json'
+              'packages/notebook-network-sandbox/vendor/windows-runtime/*.patch'
+              'packages/notebook-network-sandbox/vendor/windows-runtime/build.ps1'
+              'packages/notebook-network-sandbox/vendor/windows-runtime/npm/**'
+              'scripts/check-windows-notebook-runtime.mjs'
+              'scripts/stage-windows-notebook-components.mjs'
+              '.github/actions/windows-notebook-runtime/action.yml'
+              '.github/workflows/windows-notebook-runtime.yml'
+            )
+            source_changed=false
+            catalog_changed=false
+            if ! git diff --quiet "$previous_tag" "$GITHUB_SHA" -- "${runtime_paths[@]}"; then
+              source_changed=true
+            fi
+            if ! git diff --quiet "$previous_tag" "$GITHUB_SHA" -- src/main/notebook/windows-runtime-catalog.json; then
+              catalog_changed=true
+            fi
+            echo "Runtime source changed since $previous_tag: $source_changed"
+            echo "Runtime catalog changed since $previous_tag: $catalog_changed"
+          fi
+          if [ "$source_changed" = true ] && [ "$catalog_changed" != true ]; then
+            echo 'Runtime source changed without a catalog update. Run the runtime signing/staging flow, merge the catalog, publish its CDN objects, then create the application tag.' >&2
+            exit 1
+          fi
+          echo "source_changed=$source_changed" >> "$GITHUB_OUTPUT"
+          echo "catalog_changed=$catalog_changed" >> "$GITHUB_OUTPUT"
+
+      - name: Verify reviewed Windows runtime CDN objects
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          CDN_BASE_URL: ${{ vars.CDN_BASE_URL }}
+          S3_PREFIX: ${{ vars.S3_PREFIX }}
+        run: node scripts/windows-runtime-cdn.mjs check --verify-bytes
 
   # Build the platform matrix (macOS arm64/x64 + Linux + Windows x64) via the reusable workflow.
   # secrets: inherit forwards the optional signing/notarization secrets. macOS is signed but NOT

@@ -79,10 +79,19 @@ node scripts/windows-runtime-cdn.mjs verify <output>
 ```
 
 To create the signed input without signing an application installer, dispatch
-**Sign Windows Notebook runtime** with the successful `Prepare Windows Notebook runtime` run and
-its exact artifact ID. It uses the protected Windows signing environment, verifies every runtime PE
-file and timestamp, and uploads a short-lived signed runtime artifact. It never writes to the CDN;
-pass that artifact to **Stage Windows Notebook CDN components** with `dry_run=true` first.
+**Sign Windows Notebook runtime** from `main` with the successful `Prepare Windows Notebook runtime`
+run and its exact artifact ID. The runtime path uses the separate protected
+`windows-runtime-signing` environment, verifies every runtime PE file and timestamp, and uploads a
+short-lived signed runtime artifact. It never writes to the CDN; pass that artifact to
+**Stage Windows Notebook CDN components** with `dry_run=true` first. Keep the application
+`windows-signing` environment restricted to version-tag releases. The runtime environment must have
+the same Azure signing variables. Restrict its deployment branch policy to the `main` branch (not a
+tag). With the repository's default OIDC subject format, add an Azure federated credential with
+issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`, and
+subject `repo:aipoch/open-science:environment:windows-runtime-signing`. An environment job uses the
+environment subject, not `ref:refs/heads/main`; GitHub's deployment policy enforces the branch.
+See the [GitHub OIDC reference](https://docs.github.com/en/actions/reference/security/oidc).
+This is a one-time GitHub/Azure configuration requirement, not a runtime catalog or data migration.
 
 Use the existing repository `CDN_BASE_URL` and `S3_PREFIX` values. The runtime
 namespace uses the application root (the first segment of `S3_PREFIX`), matching
