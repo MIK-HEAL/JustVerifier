@@ -1070,6 +1070,100 @@ describe('ConversationPanel header spacing', () => {
     expect(exportDiagnostics).toHaveBeenCalledWith(expect.objectContaining({ id: session.id }))
   })
 
+  it('opens an empty side chat from the persistent header menu without sending the main draft', async () => {
+    const createDraft = vi.fn(() => 'empty-side-chat')
+    const start = vi.fn()
+    const changeDoc = vi.fn()
+    renderPanel({
+      view: {
+        activeSession: {
+          id: 'header-session',
+          projectId: 'project-a',
+          title: 'Research',
+          cwd: '/workspace',
+          status: 'running',
+          messages: planOriginMessages(),
+          createdAt: 1,
+          updatedAt: 2
+        }
+      },
+      composer: {
+        view: { doc: docFromText('Keep this draft') },
+        actions: { changeDoc }
+      },
+      sideChat: { createDraft },
+      conversation: { actions: { sideChat: { start } } },
+      sessionTools: { exportDiagnostics: vi.fn() }
+    })
+    const header = getConversationHeader()
+    const trigger = header.querySelector<HTMLButtonElement>('[aria-label="Session actions"]')!
+    const diagnostics = header.querySelector('[aria-label="Export diagnostics…"]')!
+    expect(
+      diagnostics.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(trigger.className).not.toMatch(/opacity-0|invisible|hidden/)
+    await act(async () => trigger.click())
+    await act(async () =>
+      document.querySelector<HTMLElement>('[data-action-id="new-side-chat"]')!.click()
+    )
+    expect(createDraft).toHaveBeenCalledExactlyOnceWith()
+    expect(start).not.toHaveBeenCalled()
+    expect(changeDoc).not.toHaveBeenCalled()
+    expect(getComposerEditor().textContent).toContain('Keep this draft')
+  })
+
+  it('passes pending credential state to the header menu availability projection', async () => {
+    const activeSession: ChatSession = {
+      id: 'credential-header',
+      projectId: 'project-a',
+      title: 'Research',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const execute = vi.fn()
+    const disabled = vi.fn(({ presentedStatus }: { presentedStatus: string }) =>
+      presentedStatus.startsWith('waiting-')
+    )
+    renderPanel({
+      view: { activeSession },
+      permissions: {
+        ...createPanelDefaults().permissions,
+        credentialRequests: [
+          {
+            id: 'credential-1',
+            credentialId: 'openalex',
+            connector: 'literature',
+            method: 'openalex_search_works',
+            sessionId: activeSession.id
+          }
+        ]
+      },
+      sessionTools: {
+        menuBindings: {
+          fork: {
+            execute,
+            disabled
+          }
+        }
+      }
+    })
+    await act(async () =>
+      getConversationHeader()
+        .querySelector<HTMLButtonElement>('[aria-label="Session actions"]')!
+        .click()
+    )
+    const fork = document.querySelector<HTMLButtonElement>('[data-action-id="fork"]')!
+    expect(disabled).toHaveBeenLastCalledWith(
+      expect.objectContaining({ presentedStatus: 'waiting-for-user' })
+    )
+    expect(fork.disabled).toBe(true)
+    await act(async () => fork.click())
+    expect(execute).not.toHaveBeenCalled()
+  })
+
   it('opens Session information and routes editing through the owner', () => {
     const session: ChatSession = {
       id: 'info-session',

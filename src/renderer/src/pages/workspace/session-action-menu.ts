@@ -87,9 +87,9 @@ type SessionActionOptions = {
   canArchiveSession?: (session: ChatSession) => boolean
   onTogglePin: (session: ChatSession) => void
   onRenameSession: (session: ChatSession) => void
-  onDownloadArtifacts: (session: ChatSession) => void
+  onDownloadArtifacts?: (session: ChatSession) => void
   onCheckArtifacts?: (session: ChatSession) => void
-  onViewNotebook: (session: ChatSession) => void
+  onViewNotebook?: (session: ChatSession) => void
   onViewReplay?: (session: ChatSession) => void
   onDiscussSession?: (session: ChatSession) => Promise<void>
   onExportSession?: (session: ChatSession) => void
@@ -98,7 +98,7 @@ type SessionActionOptions = {
   onExportDiagnostics?: (session: ChatSession) => void
   packageBusy?: boolean
   onArchiveSession?: (session: ChatSession) => void
-  onDeleteSession: (session: ChatSession) => void
+  onDeleteSession?: (session: ChatSession) => void
 }
 
 const hasTransferActivity = ({ session, presentedStatus }: SessionActionInvocation): boolean =>
@@ -147,8 +147,8 @@ export const createSessionActionBindings = (
     disabled: !options.canMutateConversations
   },
   'download-artifacts': {
-    execute: ({ session }) => options.onDownloadArtifacts(session),
-    hidden: !options.canDownloadArtifacts
+    execute: ({ session }) => options.onDownloadArtifacts?.(session),
+    hidden: !options.canDownloadArtifacts || !options.onDownloadArtifacts
   },
   'check-artifacts': {
     execute: ({ session }) => options.onCheckArtifacts?.(session),
@@ -156,7 +156,8 @@ export const createSessionActionBindings = (
     disabled: !options.canMutateConversations
   },
   'view-notebook': {
-    execute: ({ session }) => options.onViewNotebook(session)
+    execute: ({ session }) => options.onViewNotebook?.(session),
+    hidden: !options.onViewNotebook
   },
   'view-replay': {
     execute: ({ session }) => options.onViewReplay?.(session),
@@ -196,7 +197,8 @@ export const createSessionActionBindings = (
     disabled: ({ session }) => !options.canArchiveSession?.(session)
   },
   delete: {
-    execute: ({ session }) => options.onDeleteSession(session),
+    execute: ({ session }) => options.onDeleteSession?.(session),
+    hidden: !options.onDeleteSession,
     disabled: !options.canDeleteConversations
   }
 })
