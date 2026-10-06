@@ -1,4 +1,0 @@
-provider: generic
-url: https://statics.aipoch.com/open-science/app/stable
-channel: latest
-updaterCacheDirName: open-science-updater
