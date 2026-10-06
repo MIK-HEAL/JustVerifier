@@ -1,0 +1,9 @@
+{
+  "name": "@agnes/research-verifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./schema/*": "./schema/*" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -b" },
+  "license": "Apache-2.0"
+}

@@ -32,6 +32,7 @@ import { ResourceAdminApi, ResourceAdminApiError } from './api.js'
 import { RESOURCE_ADMIN_LOCALE_NAMESPACE, resourceAdminLocaleCatalog } from './locales/admin.js'
 import { type McpFormFieldId, type McpFormFieldSnapshot, mcpFormIssues } from './mcp-form-validation.js'
 import { watchMcpPanel } from './mcp-refresh.js'
+import { SCIENCE_EXTENSION, scienceExtensionState } from './science-extension.js'
 import { SKILL_LOCATION_HINTS } from './skill-copy.js'
 import type { ResourceAdminContext, ResourceAdminError } from './types.js'
 
@@ -51,6 +52,8 @@ let mcpTransport!: HTMLSelectElement
 let mcpSecretKind!: HTMLSelectElement
 let mcpPickers: SelectPicker[] = []
 let stopMcpRefresh: (() => void) | undefined
+let scienceToggle!: HTMLButtonElement
+let scienceStatus!: HTMLElement
 const terminal = new Set<ResourceOperation['state']>(['succeeded', 'failed', 'cancelled'])
 
 type Tab = 'skills' | 'mcp'
@@ -402,6 +405,18 @@ class ResourceAdminPage {
     $('skill-refresh', 'button').disabled = !this.writable() || busy
     $('mcp-create', 'button').hidden = true
     $('mcp-create', 'button').disabled = !this.writable() || busy
+    const scienceState = scienceExtensionState(
+      this.#items.filter((item): item is SkillDescriptor => item.kind === 'skill'),
+      this.#items.filter((item): item is McpServerDescriptor => item.kind === 'mcp'),
+    )
+    if (scienceStatus && scienceToggle) {
+      scienceStatus.textContent = this.#t(`science.state.${scienceState}`)
+      scienceStatus.dataset.state = scienceState
+      // Keep the action available when the current tab has no matches: the other catalog may
+      // still contain the extension, and toggleScience() reads both catalogs before deciding.
+      scienceToggle.disabled = !this.writable() || busy
+      scienceToggle.textContent = this.#t(scienceState === 'enabled' ? 'science.disable' : 'science.enable')
+    }
     list.dataset.state = this.#loadState
     list.setAttribute('aria-busy', String(this.#loadState === 'loading'))
     renderRegion(
@@ -517,6 +532,66 @@ class ResourceAdminPage {
       )
     }
     this.openDetail(this.#itemName(selected))
+  }
+
+  async toggleScience(): Promise<void> {
+    // The page list is scoped to one tab, so fetch both catalogs before applying the preset.
+    // Follow cursors because a curated resource may be outside the first page.
+    const readAll = async <T,>(read: (cursor?: string) => Promise<{ items: T[]; nextCursor?: string }>) => {
+      const items: T[] = []
+      let cursor: string | undefined
+      do {
+        const page = await read(cursor)
+        items.push(...page.items)
+        cursor = page.nextCursor
+      } while (cursor)
+      return items
+    }
+    const [allSkills, allMcp] = await Promise.all([
+      readAll((cursor) => this.api().skills(cursor)),
+      readAll((cursor) => this.api().mcp(cursor)),
+    ])
+    const skills = allSkills.filter(
+      (item): item is SkillDescriptor =>
+        item.kind === 'skill' && SCIENCE_EXTENSION.skills.includes(item.name),
+    )
+    const mcp = allMcp.filter(
+      (item): item is McpServerDescriptor =>
+        item.kind === 'mcp' && SCIENCE_EXTENSION.mcp.includes(item.serverId),
+    )
+    const state = scienceExtensionState(skills, mcp)
+    const enable = state !== 'enabled'
+    if (!(await this.confirm(this.#t(enable ? 'science.confirm-enable' : 'science.confirm-disable')))) return
+    if (!skills.length && !mcp.length) {
+      this.setNotice('science.unavailable', 'warning')
+      return
+    }
+    for (let skill of skills) {
+      if (enable && skill.trust !== 'trusted') {
+        if (!(await this.track(await this.api().skillTrust(skill.resourceId, skill.revision, 'trusted'))))
+          return
+        skill = await this.api().skill(skill.resourceId)
+      }
+      await this.track(
+        await this.api().skillDesired(skill.resourceId, skill.revision, enable ? 'enabled' : 'disabled'),
+      )
+    }
+    for (const server of mcp) {
+      let current = server
+      if (enable && current.trust !== 'trusted') {
+        if (!(await this.track(await this.api().mcpTrust(current.serverId, current.revision, 'trusted'))))
+          return
+        current = await this.api().mcpGet(current.serverId)
+      }
+      const on = current.desired === 'enabled' || current.actual === 'ready'
+      if (on !== enable)
+        await this.track(
+          await (enable
+            ? this.api().mcpEnable(current.serverId, current.revision)
+            : this.api().mcpDisable(current.serverId, current.revision)),
+        )
+    }
+    await this.reload(true)
   }
 
   /** 在**新**列表里找回资源行（React 键控行复用 DOM，焦点可精确归还）。 */
@@ -908,6 +983,23 @@ export function mountResourceAdmin(options: ResourceAdminOptions = {}): Resource
   form = $('mcp-form', 'form')
   mcpTransport = $('mcp-transport', 'select')
   mcpSecretKind = $('mcp-secret-kind', 'select')
+  scienceToggle = document.getElementById('science-toggle') as HTMLButtonElement
+  scienceStatus = document.getElementById('science-status') as HTMLElement
+  if (!scienceToggle || !scienceStatus) {
+    const card = document.createElement('section')
+    card.className = 'science-extension-card'
+    card.innerHTML =
+      '<div><h3></h3><p></p><p id="science-status" class="admin-notice" role="status"></p></div><button id="science-toggle" class="secondary-button compact" type="button"></button>'
+    const heading = card.querySelector('h3') as HTMLElement
+    const description = card.querySelector('p') as HTMLElement
+    heading.textContent = activeResourceText('science.title')
+    description.textContent = activeResourceText('science.description')
+    scienceStatus = card.querySelector('#science-status') as HTMLElement
+    scienceToggle = card.querySelector('#science-toggle') as HTMLButtonElement
+    scienceStatus.textContent = activeResourceText('science.state.unavailable')
+    scienceToggle.textContent = activeResourceText('science.enable')
+    $('resource-notice', 'p').before(card)
+  }
   const page = new ResourceAdminPage(options.workspaceId, options.tab, options.locale)
   syncResourcePickers(activeResourceText)
 
@@ -954,6 +1046,10 @@ export function mountResourceAdmin(options: ResourceAdminOptions = {}): Resource
       })().catch((error) => page.showError(error)),
   )
   $('mcp-create', 'button').addEventListener('click', () => openMcpDialog(undefined, activeResourceText))
+  scienceToggle.addEventListener(
+    'click',
+    () => void page.toggleScience().catch((error) => page.showError(error)),
+  )
   $('mcp-cancel', 'button').addEventListener('click', () => dialog.close())
   mcpTransport.addEventListener('change', () => syncTransport(activeResourceText))
   mcpSecretKind.addEventListener('change', () => syncTransport(activeResourceText))

@@ -35,6 +35,14 @@
     </header>
     <main id="resource-content" class="admin-main resource-admin-main" tabindex="-1">
       <p id="resource-notice" class="admin-notice" role="status" aria-live="polite"></p>
+      <section class="science-extension-card" aria-labelledby="science-extension-title">
+        <div>
+          <h2 id="science-extension-title" data-i18n="science.title">Science extension</h2>
+          <p data-i18n="science.description">Enable the curated Open Science Skills and MCP services together.</p>
+          <p id="science-status" class="admin-notice" role="status" aria-live="polite" data-i18n="science.state.unavailable">Not installed</p>
+        </div>
+        <button id="science-toggle" class="secondary-button compact" type="button" data-i18n="science.enable">Enable science</button>
+      </section>
       <div class="resource-toolbar">
         <div class="plugin-tabs" role="tablist" data-i18n-aria="shell.tabs.aria" aria-label="Resource type">
           <button id="skills-tab" type="button" role="tab" aria-controls="resource-list" aria-selected="true" data-i18n="tab.skills">Skills</button>

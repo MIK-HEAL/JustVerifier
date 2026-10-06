@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agnes.dev/schemas/research-verifier/report-v1.json",
+  "title": "Research verification report",
+  "type": "object",
+  "required": ["schema_version", "ruleset", "status", "results", "summary", "report_checksum"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "ruleset": { "type": "object", "required": ["version", "checksum"], "properties": { "version": { "type": "string" }, "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }, "additionalProperties": false },
+    "status": { "enum": ["pass", "warn", "fail", "unknown"] },
+    "results": { "type": "array", "items": { "$ref": "#/$defs/result" } },
+    "summary": { "type": "string" },
+    "report_checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "$defs": { "result": { "type": "object", "required": ["rule_id", "status", "message", "evidence_refs", "observed", "expected", "blocking"], "properties": { "rule_id": { "type": "string" }, "status": { "enum": ["pass", "warn", "fail", "unknown"] }, "message": { "type": "string" }, "evidence_refs": { "type": "array", "items": { "type": "string" } }, "observed": {}, "expected": {}, "blocking": { "type": "boolean" } }, "additionalProperties": false } }
+}

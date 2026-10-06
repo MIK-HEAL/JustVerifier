@@ -1,0 +1,97 @@
+# =============================================================================
+# JustVerifier — repository root .gitignore
+# =============================================================================
+# This repo is a monorepo with two subprojects:
+#   - agnes-harness/   (owns agnes-harness/.gitignore)
+#   - open-science/    (owns open-science/.gitignore)
+#
+# Those per-project files already own their build output, tests, packaging
+# resources, and vendored runtime rules. This root file therefore only covers
+# repo-wide noise, shared tooling state, and machine-local files — deliberately
+# avoiding broad `dist/` / `build/` / `out/` patterns so tracked sources such as
+# open-science/build/ and examples/**/dist/ are never hidden.
+
+# -----------------------------------------------------------------------------
+# Local package manager store (never commit)
+# -----------------------------------------------------------------------------
+.pnpm-store/
+.pnpm-store
+
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+node_modules/
+
+# -----------------------------------------------------------------------------
+# Environment files (keep checked-in examples)
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# -----------------------------------------------------------------------------
+# Logs
+# -----------------------------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# -----------------------------------------------------------------------------
+# TypeScript build metadata and tool caches
+# -----------------------------------------------------------------------------
+*.tsbuildinfo
+.cache/
+.vite/
+.eslintcache
+.stylelintcache
+
+# -----------------------------------------------------------------------------
+# Editors and IDEs
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# Operating system files
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+# Local AI assistant / agent state and scratch material
+# -----------------------------------------------------------------------------
+.claude/
+.cursor/
+.codex/
+.continue/
+.windsurf/
+.roo/
+.gemini/
+.qwen/
+.aider*
+.scratch/
+.superpowers/
+.agnes-tmp/
+.agnes-scratch/
+
+# -----------------------------------------------------------------------------
+# Python bytecode
+# -----------------------------------------------------------------------------
+__pycache__/
+*.pyc
+
+
+scripts/
+task/
