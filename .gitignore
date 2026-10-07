@@ -95,3 +95,7 @@ __pycache__/
 
 scripts/
 task/
+
+# Versioned project plans requested by the JustVerifier workflow.
+!task/
+!task/*.md

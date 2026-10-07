@@ -1,0 +1,56 @@
+{
+  "certificate": {
+    "schema_version": 1,
+    "claim": {
+      "id": "claim-1",
+      "text": "p is significant",
+      "kind": "derived-result",
+      "scope": { "dataset": "dataset@1", "variable": "p_value" }
+    },
+    "instance": {
+      "dataset_version_id": "dataset@1",
+      "dataset_checksum": "sha256:dataset",
+      "analysis_spec_checksum": "sha256:spec",
+      "assumption_ids": ["independent"]
+    },
+    "witness": {
+      "source_code_version_id": "code@1",
+      "execution_id": "run-1",
+      "input_version_ids": ["dataset@1"],
+      "output_version_ids": ["report@1"],
+      "environment_fingerprint": "sha256:env",
+      "result_fields": [{ "path": "table.p_value", "value": 0.031 }]
+    },
+    "evidence": [{ "kind": "ledger-event", "ref": "ev-1", "checksum": "sha256:ev", "coverage": "available" }],
+    "assumptions": [
+      {
+        "id": "independent",
+        "statement": "Samples are independent",
+        "required_for": ["claim-1"],
+        "observable_checks": ["independence-test"],
+        "status": "satisfied",
+        "evidence_refs": ["ev-1"]
+      }
+    ],
+    "skills": [{ "id": "research-run", "version": "1.0.0", "source": "open-science", "trust": "trusted" }]
+  },
+  "artifacts": [
+    { "id": "dataset", "version": "1", "checksum": "sha256:dataset", "kind": "dataset" },
+    {
+      "id": "report",
+      "version": "1",
+      "checksum": "sha256:report",
+      "result_fields": [{ "path": "table.p_value", "value": 0.031 }]
+    }
+  ],
+  "ledger": [
+    { "id": "start", "seq": 1, "type": "step/start", "data": { "execution_id": "run-1" } },
+    { "id": "tool", "seq": 2, "type": "tool/result", "data": { "execution_id": "run-1" } },
+    { "id": "end", "seq": 3, "type": "step/end", "data": { "execution_id": "run-1" } }
+  ],
+  "replay": {
+    "execution_id": "run-1",
+    "result_fields": [{ "path": "table.p_value", "value": 0.031 }],
+    "deterministic": true
+  }
+}

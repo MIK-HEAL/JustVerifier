@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agnes.dev/schemas/research-verifier/manifest-v1.json",
+  "title": "Research execution manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "execution_id", "events", "artifacts", "checksum"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "execution_id": { "type": "string", "minLength": 1 },
+    "events": { "type": "array", "items": { "type": "object" } },
+    "artifacts": { "type": "array", "items": { "$ref": "certificate-v1.json#/$defs/artifact-ref" } },
+    "certificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "ruleset_checksum": { "$ref": "certificate-v1.json#/$defs/checksum" },
+        "skills": { "type": "array", "items": { "$ref": "certificate-v1.json#/$defs/skill" } }
+      }
+    },
+    "checksum": { "$ref": "certificate-v1.json#/$defs/checksum" }
+  }
+}

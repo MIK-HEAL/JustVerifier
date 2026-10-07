@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": { ".": "./src/index.ts", "./schema/*": "./schema/*" },
-  "scripts": { "test": "vitest run", "typecheck": "tsc -b" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc -b", "verify": "tsx src/cli.ts" },
+  "bin": { "research-verifier": "./src/cli.ts" },
   "license": "Apache-2.0"
 }
