@@ -131,6 +131,21 @@ const en = {
   'trace.omittedNote': 'Turn {turn} · {label}',
   'trace.lightbox.close': 'Close image preview',
   'trace.empty': 'Send a task to see timing for each step.',
+  'trace.evidence.all': 'All activity',
+  'trace.evidence.only': 'Evidence only',
+  'trace.evidence.issues': 'Only issues',
+  'trace.field.evidence': 'Evidence status',
+  'trace.field.activity': 'Activity',
+  'trace.field.caller': 'Caller',
+  'trace.field.parameters': 'Parameter summary',
+  'trace.field.approval': 'Approval',
+  'trace.field.inputArtifacts': 'Input artifacts',
+  'trace.field.outputArtifacts': 'Output artifacts',
+  'trace.field.assumptions': 'Assumptions',
+  'trace.field.rules': 'Verification rules',
+  'trace.field.replay': 'Replay',
+  'trace.field.ledgerSeq': 'Ledger sequence',
+  'trace.field.evidenceUnavailable': 'Evidence is unavailable for this activity.',
 } as const
 
 const zh: Record<keyof typeof en, string> = {
@@ -265,6 +280,21 @@ const zh: Record<keyof typeof en, string> = {
   'trace.omittedNote': '第 {turn} 轮 · {label}',
   'trace.lightbox.close': '关闭图片预览',
   'trace.empty': '发送一条任务后，这里会按步骤显示耗时。',
+  'trace.evidence.all': '全部活动',
+  'trace.evidence.only': '仅证据',
+  'trace.evidence.issues': '仅问题',
+  'trace.field.evidence': '证据状态',
+  'trace.field.activity': '活动',
+  'trace.field.caller': '调用者',
+  'trace.field.parameters': '参数摘要',
+  'trace.field.approval': '审批',
+  'trace.field.inputArtifacts': '输入 artifact',
+  'trace.field.outputArtifacts': '输出 artifact',
+  'trace.field.assumptions': '假设影响',
+  'trace.field.rules': '验证规则',
+  'trace.field.replay': '重放',
+  'trace.field.ledgerSeq': '账本序号',
+  'trace.field.evidenceUnavailable': '此活动没有可用证据。',
 }
 
 export const traceCatalog = { en: { ...en }, 'zh-CN': { ...zh } }

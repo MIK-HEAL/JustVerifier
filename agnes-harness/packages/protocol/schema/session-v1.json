@@ -33,7 +33,12 @@
     "feedback/implicit": "FeedbackImplicit",
     "participant": "Participant",
     "harness/refine": "HarnessRefine",
-    "subagent/cost": "SubagentCost"
+    "subagent/cost": "SubagentCost",
+    "research/run-started": "ResearchEventData",
+    "research/activity": "ResearchEventData",
+    "research/assumption": "ResearchEventData",
+    "research/evidence": "ResearchEventData",
+    "research/run-finalized": "ResearchEventData"
   },
   "$ref": "#/$defs/EventEnvelope",
   "$defs": {
@@ -46,6 +51,14 @@
         { "type": "array", "items": { "$ref": "#/$defs/JsonValue" } },
         { "type": "object", "additionalProperties": { "$ref": "#/$defs/JsonValue" } }
       ]
+    },
+    "ResearchEventData": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/JsonValue" },
+      "required": ["run_id"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
     },
     "Actor": {
       "type": "object",
@@ -160,7 +173,12 @@
                 "feedback/implicit",
                 "participant",
                 "harness/refine",
-                "subagent/cost"
+                "subagent/cost",
+                "research/run-started",
+                "research/activity",
+                "research/assumption",
+                "research/evidence",
+                "research/run-finalized"
               ]
             },
             {

@@ -376,3 +376,27 @@ export type { ExecutionManifest, ResearchRunSnapshot } from './manifest.js'
 export { buildExecutionManifest, manifestEvidenceRefs } from './manifest.js'
 export type { EvidenceGraph, EvidenceGraphEdge, EvidenceGraphNode } from './projection.js'
 export { projectEvidenceGraph } from './projection.js'
+export type {
+  PackageCheck,
+  ReplayState,
+  ResearchActivity,
+  ResearchActivityKind,
+  ResearchArtifact,
+  ResearchAssumption,
+  ResearchCaller,
+  ResearchEvent,
+  ResearchEventPayload,
+  ResearchEventType,
+  ResearchEvidenceStatus,
+  ResearchRunManifest,
+  ResearchRunPackage,
+} from './run.js'
+export {
+  buildResearchRunManifest,
+  compareResearchReplay,
+  evidenceStatusFromVerification,
+  exportResearchRunPackage,
+  researchEvent,
+  validateResearchRunManifest,
+  verifyResearchRunPackage,
+} from './run.js'

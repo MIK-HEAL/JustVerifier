@@ -382,6 +382,7 @@ export type {
   RequestMediaManifest,
   RequestMediaManifestEntry,
   RequestSent,
+  ResearchEventData,
   ResolvedToolCallPolicy,
   ResponseMeta,
   SessionModelSelection,

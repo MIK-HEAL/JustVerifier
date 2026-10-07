@@ -23,3 +23,9 @@ pnpm --filter @agnes/research-verifier verify -- verify run.json --graph
 
 The two portable Skills in `skills/` are `research-run` and `assumption-audit`. They propose
 structured run fields and assumption checks; only the deterministic verifier can issue a report.
+
+The run contract also exposes `buildResearchRunManifest`, `researchEvent`, and
+`exportResearchRunPackage`. Packages contain only JSON/text bytes supplied by the caller and are
+checked with `verifyResearchRunPackage` before offline replay. `compareResearchReplay` reports
+input, artifact, Skill, MCP schema, command, and activity differences by field; an unavailable or
+failed receipt remains `unknown`/`failed` through `evidenceStatusFromVerification`.

@@ -55,7 +55,113 @@ const STATUS_KEY: Record<string, TraceMessageKey> = {
 }
 
 /** What the host knows beyond the loaded snapshot: whether older records exist, and how to load them. */
-export type TraceMeta = { hasEarlier: boolean; loadEarlier?: () => void; sessionId?: string }
+export type TraceMeta = {
+  hasEarlier: boolean
+  loadEarlier?: () => void
+  sessionId?: string
+  research?: TraceResearchSnapshot
+}
+
+/** Sidecar evidence projected from the immutable research ledger. It is optional so existing
+ * sessions and extensions keep the original Trace contract. */
+export type TraceResearchStatus = 'recorded' | 'verified' | 'partial' | 'unknown' | 'failed'
+export type TraceResearchActivity = Readonly<{
+  activityId: string
+  nodeId?: string
+  toolUseId?: string
+  ledgerSeq?: number
+  status: TraceResearchStatus
+  caller?: string
+  parameterSummary?: string
+  approval?: string
+  inputArtifacts?: readonly string[]
+  outputArtifacts?: readonly string[]
+  assumptions?: readonly string[]
+  verificationRules?: readonly string[]
+  replay?: string
+  error?: string
+}>
+export type TraceResearchSnapshot = Readonly<{
+  activities: readonly TraceResearchActivity[]
+  restoredFromLedger?: boolean
+}>
+
+/** Rehydrates the Trace sidecar from committed ledger rows after refresh/reopen. */
+export function projectTraceResearchFromLedger(
+  events: readonly Readonly<{ seq: number; type: string; data?: unknown }>[],
+): TraceResearchSnapshot {
+  const activities: TraceResearchActivity[] = []
+  for (const event of events) {
+    if (event.type !== 'research/activity') continue
+    const data = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : {}
+    const raw =
+      data.activity && typeof data.activity === 'object' ? (data.activity as Record<string, unknown>) : data
+    const activityId =
+      typeof raw.activity_id === 'string'
+        ? raw.activity_id
+        : typeof raw.activityId === 'string'
+          ? raw.activityId
+          : undefined
+    if (!activityId) continue
+    const status = raw.status
+    if (
+      status !== 'recorded' &&
+      status !== 'verified' &&
+      status !== 'partial' &&
+      status !== 'unknown' &&
+      status !== 'failed'
+    )
+      continue
+    activities.push({
+      activityId,
+      ...(typeof raw.node_id === 'string'
+        ? { nodeId: raw.node_id }
+        : typeof raw.nodeId === 'string'
+          ? { nodeId: raw.nodeId }
+          : {}),
+      ...(typeof raw.tool_use_id === 'string'
+        ? { toolUseId: raw.tool_use_id }
+        : typeof raw.toolUseId === 'string'
+          ? { toolUseId: raw.toolUseId }
+          : {}),
+      ledgerSeq: event.seq,
+      status,
+      ...(typeof raw.parameter_summary === 'string' ? { parameterSummary: raw.parameter_summary } : {}),
+      ...(typeof raw.approval === 'string' ? { approval: raw.approval } : {}),
+      ...(Array.isArray(raw.input_artifact_ids)
+        ? {
+            inputArtifacts: raw.input_artifact_ids.filter(
+              (value): value is string => typeof value === 'string',
+            ),
+          }
+        : {}),
+      ...(Array.isArray(raw.output_artifact_ids)
+        ? {
+            outputArtifacts: raw.output_artifact_ids.filter(
+              (value): value is string => typeof value === 'string',
+            ),
+          }
+        : {}),
+      ...(Array.isArray(raw.assumption_ids)
+        ? { assumptions: raw.assumption_ids.filter((value): value is string => typeof value === 'string') }
+        : {}),
+      ...(Array.isArray(raw.verification_rule_ids)
+        ? {
+            verificationRules: raw.verification_rule_ids.filter(
+              (value): value is string => typeof value === 'string',
+            ),
+          }
+        : {}),
+      ...(typeof raw.replay === 'string' ? { replay: raw.replay } : {}),
+      ...(raw.error &&
+      typeof raw.error === 'object' &&
+      typeof (raw.error as Record<string, unknown>).message === 'string'
+        ? { error: (raw.error as Record<string, unknown>).message as string }
+        : {}),
+    })
+  }
+  return Object.freeze({ activities: Object.freeze(activities), restoredFromLedger: true })
+}
 
 export type TraceHandle = {
   render(nodes: readonly UINode[], turns?: readonly UITurn[], meta?: TraceMeta): void
@@ -77,6 +183,7 @@ export type TracePanelOptions = {
     resultSeq?: number,
     signal?: AbortSignal,
   ) => Promise<{ call: ToolCall; result?: ToolResult }>
+  research?: TraceResearchSnapshot
 }
 
 export type TraceRow = {
@@ -100,6 +207,7 @@ export type TraceRow = {
   model?: string | undefined
   usage?: UITurn['usage'] | undefined
   callUsage?: UITurn['usage']['calls'][number] | undefined
+  research?: TraceResearchActivity | undefined
 }
 
 type GanttBar = {
@@ -198,7 +306,7 @@ const nodePreview = (node: UINode): string => {
       .filter(Boolean)
       .join(' · ')
   }
-  if (node.kind === 'assistant') return node.text || node.thinking || ''
+  if (node.kind === 'assistant') return node.text || ''
   if (node.kind === 'context') return node.text
   if (node.kind === 'tool') {
     const summary = node.summary && node.summary !== node.name ? ` · ${node.summary}` : ''
@@ -214,7 +322,7 @@ const nodePreview = (node: UINode): string => {
 }
 
 const nodeRaw = (node: UINode): string => {
-  if (node.kind === 'assistant') return [node.thinking, node.text].filter(Boolean).join('\n\n')
+  if (node.kind === 'assistant') return node.text || ''
   if (node.kind === 'tool')
     return [traceText('trace.raw.tool', { name: node.name }), node.argsPreview, node.resultPreview]
       .filter(Boolean)
@@ -304,8 +412,25 @@ const rowCache = new WeakMap<
   { locale: string; turn: UITurn | undefined; span: UISpan | undefined; row: TraceRow }
 >()
 
-export function buildTraceRows(nodes: readonly UINode[], turns: readonly UITurn[]): TraceRow[] {
+export function buildTraceRows(
+  nodes: readonly UINode[],
+  turns: readonly UITurn[],
+  research?: TraceResearchSnapshot,
+): TraceRow[] {
   const index = indexTrace(turns)
+  const byNode = new Map(
+    research?.activities.filter((activity) => activity.nodeId).map((activity) => [activity.nodeId, activity]),
+  )
+  const byTool = new Map(
+    research?.activities
+      .filter((activity) => activity.toolUseId)
+      .map((activity) => [activity.toolUseId, activity]),
+  )
+  const bySeq = new Map(
+    research?.activities
+      .filter((activity) => activity.ledgerSeq !== undefined)
+      .map((activity) => [activity.ledgerSeq, activity]),
+  )
   const rows: TraceRow[] = []
   for (const node of nodes) {
     if (node.kind === 'slot' || !LIST_KINDS.has(node.kind)) continue
@@ -323,6 +448,10 @@ export function buildTraceRows(nodes: readonly UINode[], turns: readonly UITurn[
       span?.callSeq === undefined
         ? undefined
         : turn?.usage?.calls.find((call) => call.seq === span.callSeq && !call.adjustment)
+    const researchActivity =
+      byNode.get(node.id) ??
+      (node.kind === 'tool' ? byTool.get(node.toolUseId) : undefined) ??
+      bySeq.get(node.seq)
     const locale = traceLocale()
     const cached = rowCache.get(node)
     if (
@@ -340,7 +469,8 @@ export function buildTraceRows(nodes: readonly UINode[], turns: readonly UITurn[
       cached.row.ttftMs === span?.ttftMs &&
       cached.row.errorCode === errorCode &&
       cached.row.usage === usage &&
-      cached.row.callUsage === callUsage
+      cached.row.callUsage === callUsage &&
+      cached.row.research === researchActivity
     ) {
       rows.push(cached.row)
       continue
@@ -366,6 +496,7 @@ export function buildTraceRows(nodes: readonly UINode[], turns: readonly UITurn[
       errorCode,
       usage,
       callUsage,
+      ...(researchActivity ? { research: researchActivity } : {}),
     }
     rowCache.set(node, { locale, turn, span, row })
     rows.push(row)
@@ -604,6 +735,7 @@ const PANE_KEY = {
 } as const satisfies Record<string, TraceMessageKey>
 
 type InspectorPane = keyof typeof PANE_KEY
+type ResearchFilter = 'all' | 'evidence' | 'issues'
 
 const laneName = (lane: 'input' | 'model' | 'tool'): string =>
   traceText(lane === 'input' ? 'trace.lane.input' : lane === 'model' ? 'trace.lane.model' : 'trace.lane.tool')
@@ -638,6 +770,7 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
   // While the panel is closed, render() only remembers the newest snapshot; opening shows it.
   const latest = useRef<Snapshot | undefined>(undefined)
   const [query, setQuery] = useState('')
+  const [researchFilter, setResearchFilter] = useState<ResearchFilter>('all')
   const [selected, setSelected] = useState<string | undefined>(undefined)
   const [pane, setPane] = useState<InspectorPane>('overview')
   const [toolDetail, setToolDetail] = useState<ToolDetailState | undefined>(undefined)
@@ -687,8 +820,8 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
   // buildTraceRows reads the document language itself. locale is only the subscription snapshot.
   // biome-ignore lint/correctness/useExhaustiveDependencies: locale changes the formatted row text
   const rows = useMemo(
-    () => traceRowBuilder.build(snapshot.nodes, snapshot.turns),
-    [snapshot.nodes, snapshot.turns, locale],
+    () => traceRowBuilder.build(snapshot.nodes, snapshot.turns, snapshot.meta?.research ?? options.research),
+    [snapshot.nodes, snapshot.turns, snapshot.meta?.research, options.research, locale],
   )
   const toolHierarchy = useMemo(() => buildTraceToolHierarchy(snapshot.nodes), [snapshot.nodes])
   const selectedRow = selected ? rows.find((row) => row.id === selected) : undefined
@@ -767,6 +900,7 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
           setSelected(undefined)
           setLightbox(null)
           setQuery('')
+          setResearchFilter('all')
           setTimelineRange(null)
           setTimelineViewport(null)
           setCollapsedTurns(new Set())
@@ -836,6 +970,7 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
             setSelected(undefined)
             setLightbox(null)
             setQuery('')
+            setResearchFilter('all')
             setTimelineRange(null)
             setTimelineViewport(null)
             setCollapsedTurns(new Set())
@@ -904,6 +1039,12 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
     () =>
       rows.filter((row) => {
         if (rangeIds && !rangeIds.has(row.id)) return false
+        if (researchFilter === 'evidence' && !row.research) return false
+        if (
+          researchFilter === 'issues' &&
+          (!row.research || !['unknown', 'partial', 'failed'].includes(row.research.status))
+        )
+          return false
         if (!query && !timelineRange && isTraceRowHiddenByTool(toolHierarchy, row.id, collapsedTools))
           return false
         if (!query) return true
@@ -911,7 +1052,7 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
           `${row.badge} ${row.step ?? ''} ${row.preview} ${row.raw} ${row.source} ${row.errorCode ?? ''}`.toLowerCase()
         return hay.includes(query)
       }),
-    [rows, rangeIds, query, timelineRange, toolHierarchy, collapsedTools],
+    [rows, rangeIds, query, timelineRange, toolHierarchy, collapsedTools, researchFilter],
   )
   const groups = useMemo(() => {
     const result: Array<{ turn: number | undefined; rows: TraceRow[] }> = []
@@ -1309,6 +1450,62 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
           { className: 'trace-inspector-pane', hidden: pane !== 'overview' },
           paneField(traceText('trace.field.source'), selectedRow.source),
           paneField(traceText('trace.field.status'), selectedRow.status),
+          ...(selectedRow.research
+            ? [
+                paneField(traceText('trace.field.evidence'), selectedRow.research.status),
+                paneField(traceText('trace.field.activity'), selectedRow.research.activityId),
+                ...(selectedRow.research.ledgerSeq === undefined
+                  ? []
+                  : [paneField(traceText('trace.field.ledgerSeq'), String(selectedRow.research.ledgerSeq))]),
+                ...(selectedRow.research.caller
+                  ? [paneField(traceText('trace.field.caller'), selectedRow.research.caller)]
+                  : []),
+                ...(selectedRow.research.parameterSummary
+                  ? [paneField(traceText('trace.field.parameters'), selectedRow.research.parameterSummary)]
+                  : []),
+                ...(selectedRow.research.approval
+                  ? [paneField(traceText('trace.field.approval'), selectedRow.research.approval)]
+                  : []),
+                ...(selectedRow.research.inputArtifacts?.length
+                  ? [
+                      paneField(
+                        traceText('trace.field.inputArtifacts'),
+                        selectedRow.research.inputArtifacts.join(traceText('trace.join.list')),
+                      ),
+                    ]
+                  : []),
+                ...(selectedRow.research.outputArtifacts?.length
+                  ? [
+                      paneField(
+                        traceText('trace.field.outputArtifacts'),
+                        selectedRow.research.outputArtifacts.join(traceText('trace.join.list')),
+                      ),
+                    ]
+                  : []),
+                ...(selectedRow.research.assumptions?.length
+                  ? [
+                      paneField(
+                        traceText('trace.field.assumptions'),
+                        selectedRow.research.assumptions.join(traceText('trace.join.list')),
+                      ),
+                    ]
+                  : []),
+                ...(selectedRow.research.verificationRules?.length
+                  ? [
+                      paneField(
+                        traceText('trace.field.rules'),
+                        selectedRow.research.verificationRules.join(traceText('trace.join.list')),
+                      ),
+                    ]
+                  : []),
+                ...(selectedRow.research.replay
+                  ? [paneField(traceText('trace.field.replay'), selectedRow.research.replay)]
+                  : []),
+                ...(selectedRow.research.error
+                  ? [paneField(traceText('trace.field.errorCode'), selectedRow.research.error)]
+                  : []),
+              ]
+            : []),
           ...(selectedRow.errorCode
             ? [paneField(traceText('trace.field.errorCode'), selectedRow.errorCode)]
             : []),
@@ -1558,6 +1755,24 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
         value: query,
         onInput: updateQuery,
       }),
+      ...(snapshot.meta?.research || options.research
+        ? [
+            createElement(
+              'select',
+              {
+                className: 'trace-evidence-filter',
+                key: 'evidence-filter',
+                value: researchFilter,
+                'aria-label': traceText('trace.field.evidence'),
+                onChange: (event: { currentTarget: HTMLSelectElement }) =>
+                  setResearchFilter(event.currentTarget.value as ResearchFilter),
+              },
+              createElement('option', { value: 'all' }, traceText('trace.evidence.all')),
+              createElement('option', { value: 'evidence' }, traceText('trace.evidence.only')),
+              createElement('option', { value: 'issues' }, traceText('trace.evidence.issues')),
+            ),
+          ]
+        : []),
     ),
     createElement(
       'div',
@@ -1797,7 +2012,7 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
             createElement(
               'span',
               { className: 'trace-row-preview' },
-              `${requestPrefix}${clip(row.preview, 160) || traceText('trace.emptyPreview')}${row.statusCode === 'completed' ? '' : ` · ${row.status}`}${row.errorCode ? ` · ${row.errorCode}` : ''}`,
+              `${requestPrefix}${clip(row.preview, 160) || traceText('trace.emptyPreview')}${row.statusCode === 'completed' ? '' : ` · ${row.status}`}${row.errorCode ? ` · ${row.errorCode}` : ''}${row.research ? ` · ${row.research.status}` : ''}`,
             ),
           )
           if (!nested) return createElement('div', { key: item.key, className: 'trace-row-entry' }, rowButton)

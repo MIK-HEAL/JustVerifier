@@ -35,6 +35,12 @@ export const EVENT_TYPES = [
   'participant',
   'harness/refine',
   'subagent/cost',
+  // Research run provenance (structured sidecar records for visible, reproducible runs)
+  'research/run-started',
+  'research/activity',
+  'research/assumption',
+  'research/evidence',
+  'research/run-finalized',
 ] as const
 export type EventType = (typeof EVENT_TYPES)[number]
 

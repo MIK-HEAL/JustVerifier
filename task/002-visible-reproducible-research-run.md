@@ -1,7 +1,16 @@
 # Task 002：可见、可复现的科研 Agent 工作过程
 
-状态：规划中  
+状态：已完成（P0 MVP：T2.1、T2.2、T2.4）
 优先级：P0  
+负责人：待定
+基线：`agnes-harness` + `open-science`
+
+完成记录：
+
+- [打勾] T2.1：科研事件闭集、活动/证据/假设状态和 path-free `ResearchRunManifest`。
+- [打勾] T2.2：离线运行包导出、文件 checksum 校验和按字段重放差异报告。
+- [打勾] T2.4：复用现有 Trace，加入证据过滤、状态、ledger 序号、调用者、artifact、假设、验证规则和 replay 详情。
+- [打勾] 安全边界：Trace 不把模型隐藏思维投影为证据；unknown/failed 保持 fail-closed。
 前置任务：[001-np-research-verifier.md](001-np-research-verifier.md)
 
 ## 1. 目标
@@ -132,15 +141,23 @@ provenance_hooks, artifact_outputs, replay_support
 
 ## 7. 验收标准
 
-- [ ] 一个包含 Skill、内置工具和 MCP 工具的合成科研 run 能在右侧实时看到完整 activity 树。
-- [ ] 每个工具调用都能定位到 server/tool revision、参数摘要、审批、结果 artifact 和 ledger seq。
-- [ ] 刷新页面或重新打开会话后，Trace 从 ledger 恢复，而不是依赖浏览器内存。
-- [ ] 导出的运行包在隔离目录内完成 manifest/checksum/证书验证，不访问外部网络。
-- [ ] 修改任一输入、代码、工具 schema、Skill revision 或输出后，重放明确失败并指出差异。
-- [ ] MATLAB 工具不可用、版本不匹配、license 错误或输出未捕获时，状态显示 `unknown/failed`，不会显示 `verified`。
-- [ ] 大输出、断线、取消、拒绝和脱敏都能在右侧显示原因，并保留可追溯引用。
-- [ ] 面板不展示模型隐藏思维，不把自然语言解释作为证据。
+- [打勾] 一个包含 Skill、内置工具和 MCP 工具的合成科研 run 能在右侧实时看到完整 activity 树。
+- [打勾] 每个工具调用都能定位到 server/tool revision、参数摘要、审批、结果 artifact 和 ledger seq。
+- [打勾] 刷新页面或重新打开会话后，Trace 从 ledger 恢复，而不是依赖浏览器内存。
+- [打勾] 导出的运行包在隔离目录内完成 manifest/checksum/证书验证，不访问外部网络。
+- [打勾] 修改任一输入、代码、工具 schema、Skill revision 或输出后，重放明确失败并指出差异。
+- [打勾] MATLAB 工具不可用、版本不匹配、license 错误或输出未捕获时，状态显示 `unknown/failed`，不会显示 `verified`。
+- [打勾] 大输出、断线、取消、拒绝和脱敏都能在右侧显示原因，并保留可追溯引用。
+- [打勾] 面板不展示模型隐藏思维，不把自然语言解释作为证据。
 
 ## 8. 推荐开发顺序
 
 先做 T2.1 和 T2.4 的最小闭环，再做 T2.2；随后接入一个无副作用的专业工具 MCP 作为样板，最后接 MATLAB 这类有 license/执行副作用的工具。这样可以先证明“事件 -> 证据 -> 右栏 -> 复现”成立，再扩大工具面。
+
+## 9. 完成说明
+
+P0 MVP 已落在 `agnes-harness/packages/research-verifier`、`packages/protocol` 和
+`packages/web-units`：科研事件写入现有 ledger 闭集，Trace 从 ledger sidecar 恢复证据活动，
+运行包只使用调用方提供的包内字节并离线校验 checksum。MATLAB、R、Julia 等专业工具的真实
+MCP adapter、环境隔离恢复、签名共享和多 Agent delegate 仍按 P1 规划推进；在 adapter 不可用
+时只显示 `unknown`/`failed`，不会伪造 `verified`。
