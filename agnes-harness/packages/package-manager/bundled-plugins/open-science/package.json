@@ -1,0 +1,158 @@
+{
+  "name": "@agnes/open-science",
+  "version": "0.35.1",
+  "description": "Bundled scientific research Skills and MCP service catalog for Agnes Harness",
+  "type": "module",
+  "license": "Apache-2.0",
+  "files": [
+    "package.json",
+    "index.mjs",
+    "skills",
+    "mcp",
+    "LICENSE",
+    "README.md"
+  ],
+  "agnes": {
+    "contributions": [
+      {
+        "kind": "preset",
+        "id": "open-science/mcp",
+        "path": "./mcp/servers.json"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/alphafold2",
+        "path": "./skills/alphafold2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/boltz",
+        "path": "./skills/boltz/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/borzoi",
+        "path": "./skills/borzoi/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/chai1",
+        "path": "./skills/chai1/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/compute-env-setup",
+        "path": "./skills/compute-env-setup/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/customize",
+        "path": "./skills/customize/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/diffdock",
+        "path": "./skills/diffdock/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/env-management",
+        "path": "./skills/env-management/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/esmfold2",
+        "path": "./skills/esmfold2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/evo2",
+        "path": "./skills/evo2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/fair-esm2",
+        "path": "./skills/fair-esm2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/figure-composer",
+        "path": "./skills/figure-composer/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/figure-style",
+        "path": "./skills/figure-style/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/indication-dossier",
+        "path": "./skills/indication-dossier/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/ligandmpnn",
+        "path": "./skills/ligandmpnn/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/literature-review",
+        "path": "./skills/literature-review/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/openfold3",
+        "path": "./skills/openfold3/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/paper-narrative",
+        "path": "./skills/paper-narrative/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/proteinmpnn",
+        "path": "./skills/proteinmpnn/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/remote-compute-ssh",
+        "path": "./skills/remote-compute-ssh/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/scgpt",
+        "path": "./skills/scgpt/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/scvi-tools",
+        "path": "./skills/scvi-tools/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/self-awareness",
+        "path": "./skills/self-awareness/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/skill-creator",
+        "path": "./skills/skill-creator/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "open-science/solublempnn",
+        "path": "./skills/solublempnn/SKILL.md"
+      }
+    ],
+    "plugins": [
+      {
+        "export": "openScience",
+        "id": "ext:open-science/main",
+        "inject": [
+          "extension"
+        ]
+      }
+    ]
+  }
+}

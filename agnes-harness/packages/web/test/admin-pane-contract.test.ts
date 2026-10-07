@@ -87,6 +87,15 @@ it('guides MCP setup through chat and hides the manual creation control', async 
   resetWebDom()
 })
 
+it('keeps the bundled resource action free of product branding in settings', async () => {
+  const runtime = await mountRenderedIndex()
+  const html = document.documentElement.outerHTML
+  expect(html).not.toMatch(/Open Science|科学扩展/i)
+  expect(html).toContain('资源套件')
+  await runtime.dispose()
+  resetWebDom()
+})
+
 it('the shared confirmation dialog exists in every host', () => {
   for (const file of ['index.html', 'admin.html', 'resources.html'])
     for (const id of [

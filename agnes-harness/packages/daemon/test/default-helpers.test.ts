@@ -48,7 +48,7 @@ function setup() {
   }
   return { root, profileDir, manager, exec, initializePolicy }
 }
-it('installs four release packages offline once and preserves disable/remove on subsequent starts', async () => {
+it('installs bundled release packages offline once and preserves disable/remove on subsequent starts', async () => {
   const s = setup()
   await initializeDefaultHelpers(s)
   expect(
@@ -60,6 +60,7 @@ it('installs four release packages offline once and preserves disable/remove on 
   ).toEqual([
     ['@agnes/document-reader', true, true],
     ['@agnes/mcp-helper', true, true],
+    ['@agnes/open-science', true, true],
     ['@agnes/plugin-helper', true, true],
     ['@agnes/skill-helper', true, true],
   ])
@@ -88,7 +89,7 @@ it('provisions old profiles and rejects damaged initialization records', async (
   const s = setup()
   await s.initializePolicy()
   await initializeDefaultHelpers(s)
-  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(4)
+  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(5)
   writeFileSync(join(s.profileDir, 'default-helpers', 'state.json'), '{}')
   await expect(initializeDefaultHelpers(s)).rejects.toThrow('Invalid helper initialization')
 })
@@ -164,12 +165,12 @@ it('migrates the earlier existing marker without enabling or replacing an instal
   await s.manager.setEnabled(s.profileDir, '@agnes/mcp-helper', false)
   await s.manager.remove(s.profileDir, '@agnes/mcp-helper')
   await initializeDefaultHelpers(s)
-  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(3)
+  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(4)
 })
 it('records completion without activation when all helpers are already installed', async () => {
   const s = setup()
   await s.initializePolicy()
-  for (const name of ['skill-helper', 'mcp-helper', 'plugin-helper', 'document-reader']) {
+  for (const name of ['skill-helper', 'mcp-helper', 'plugin-helper', 'document-reader', 'open-science']) {
     const source = parseSource(`file:./bundled-plugins/${name}`)
     const preview = await s.manager.inspect(s.profileDir, source)
     await s.manager.install(s.profileDir, source, { expectedIntegrity: preview.integrity })
@@ -198,7 +199,9 @@ it.each([1, 2])(
     )
     await initializeDefaultHelpers(s)
     expect((await s.manager.inventory(s.profileDir)).packages.map((p) => p.id)).toEqual(
-      version === 1 ? ['@agnes/document-reader', '@agnes/plugin-helper'] : ['@agnes/document-reader'],
+      version === 1
+        ? ['@agnes/document-reader', '@agnes/open-science', '@agnes/plugin-helper']
+        : ['@agnes/document-reader', '@agnes/open-science'],
     )
     await activateDefaultHelpers({
       profileDir: s.profileDir,
@@ -208,7 +211,7 @@ it.each([1, 2])(
     })
     expect(
       JSON.parse(readFileSync(join(s.profileDir, 'default-helpers', 'state.json'), 'utf8')).version,
-    ).toBe(3)
+    ).toBe(4)
     for (const pkg of (await s.manager.inventory(s.profileDir)).packages) {
       await s.manager.setEnabled(s.profileDir, pkg.id, false)
       await s.manager.remove(s.profileDir, pkg.id)

@@ -33,12 +33,14 @@ export async function copyBundledPlugins(outputDirectory: string): Promise<void>
     const source = join(repoPackages, 'package-manager', 'bundled-plugins', helper)
     const destination = join(outputDirectory, 'bundled-plugins', helper)
     await mkdir(destination, { recursive: true })
-    for (const name of ['package.json', 'index.mjs', 'src', 'README.md', 'LICENSE'])
+    for (const name of ['package.json', 'index.mjs', 'src', 'skills', 'mcp', 'README.md', 'LICENSE']) {
+      if (!existsSync(join(source, name))) continue
       await cp(join(source, name), join(destination, name), {
         recursive: true,
         force: false,
         errorOnExist: true,
       })
+    }
     if (helper === 'document-reader') await prepareDocumentReader(destination)
   }
 }

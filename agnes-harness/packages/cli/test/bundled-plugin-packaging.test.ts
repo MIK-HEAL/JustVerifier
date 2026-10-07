@@ -79,3 +79,17 @@ it.each([
   )
   expect(await readFile(new URL('../sea/build.mjs', import.meta.url), 'utf8')).toContain("'bundled-plugins'")
 })
+
+it('ships the bundled research catalog with its Skill support files', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agnes-open-science-delivery-'))
+  roots.push(root)
+  const output = join(root, 'runtime')
+  await copyBundledPlugins(output)
+  const packageRoot = join(output, 'bundled-plugins', 'open-science')
+  expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))).toMatchObject({
+    name: '@agnes/open-science',
+    version: '0.35.1',
+  })
+  expect((await readdir(join(packageRoot, 'skills'))).length).toBeGreaterThanOrEqual(20)
+  expect(await readFile(join(packageRoot, 'mcp', 'servers.json'), 'utf8')).toContain('open-science-notebook')
+})

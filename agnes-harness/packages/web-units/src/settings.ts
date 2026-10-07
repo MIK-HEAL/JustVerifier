@@ -42,7 +42,7 @@ const SETTINGS_MARKUP = `<form id="config-form">
 
 const SETTINGS_MARKUP_WITH_SCIENCE = SETTINGS_MARKUP.replace(
   '<p id="resource-notice" class="admin-notice" role="status" aria-live="polite"></p><div class="resource-toolbar">',
-  '<p id="resource-notice" class="admin-notice" role="status" aria-live="polite"></p><section class="science-extension-card" aria-labelledby="science-extension-title"><div><h2 id="science-extension-title" data-i18n="science.title">科学扩展</h2><p data-i18n="science.description">一键启用或停用 Open Science 科研 Skills 与 MCP 服务。</p><p id="science-status" class="admin-notice" role="status" aria-live="polite" data-i18n="science.state.unavailable">未安装</p></div><button id="science-toggle" class="secondary-button compact" type="button" data-i18n="science.enable">启用科学扩展</button></section><div class="resource-toolbar">',
+  '<p id="resource-notice" class="admin-notice" role="status" aria-live="polite"></p><section class="science-extension-card" aria-labelledby="science-extension-title"><div><h2 id="science-extension-title" data-i18n="science.title">资源套件</h2><p data-i18n="science.description">一键启用或停用已打包的 Skills 与 MCP 服务。</p><p id="science-status" class="admin-notice" role="status" aria-live="polite" data-i18n="science.state.unavailable">未安装</p></div><button id="science-toggle" class="secondary-button compact" type="button" data-i18n="science.enable">启用资源套件</button></section><div class="resource-toolbar">',
 )
 
 export const PANE_IDS: Record<SettingsPane, string> = {

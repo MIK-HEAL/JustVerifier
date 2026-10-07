@@ -32,17 +32,45 @@ export async function initializeDefaultHelpers(options: {
         if (
           state?.version === 1 &&
           state.phase !== 'existing' &&
-          !['plugin-helper', 'document-reader'].includes(helper.name)
+          !['plugin-helper', 'document-reader', 'open-science'].includes(helper.name)
         )
           continue
-        if (state?.version === 2 && helper.name !== 'document-reader') continue
+        if (state?.version === 2 && !['document-reader', 'open-science'].includes(helper.name)) continue
         if (inventory?.packages.some((pkg) => pkg.id === helper.id)) continue
         const root = bundledPluginSourceRoot(helper.ref)
         if (!root) throw new Error('Bundled helper source unavailable')
         integrity[helper.id] = hashDirectory(join(root, 'bundled-plugins', helper.name))
       }
-      state = { version: 3, phase: 'pending', integrity }
+      state = { version: 4, phase: 'pending', integrity }
       // This intent precedes policy creation, so a failed first startup can resume safely.
+      save(state)
+    } else if (state.version === 3) {
+      // Add newly shipped defaults without replaying the old helper set. This preserves a user's
+      // explicit removal/disable choices while making the new bundled research package available.
+      const science = BUNDLED_HELPERS.find((helper) => helper.name === 'open-science')
+      if (!science || Object.hasOwn(state.integrity, science.id)) state = { ...state, version: 4 }
+      else {
+        const root = bundledPluginSourceRoot(science.ref)
+        if (!root) throw new Error('Bundled helper source unavailable')
+        const inventory = existsSync(lockPath(options.profileDir))
+          ? await options.manager.inventory(options.profileDir)
+          : undefined
+        const installed = inventory?.packages.some((pkg) => pkg.id === science.id) ?? false
+        const integrity = {
+          ...(state.phase === 'complete' ? {} : state.integrity),
+          [science.id]: hashDirectory(join(root, 'bundled-plugins', science.name)),
+        }
+        state = {
+          version: 4,
+          phase:
+            state.phase === 'complete' && installed
+              ? 'complete'
+              : state.phase === 'complete'
+                ? 'pending'
+                : state.phase,
+          integrity,
+        }
+      }
       save(state)
     }
     await options.initializePolicy()

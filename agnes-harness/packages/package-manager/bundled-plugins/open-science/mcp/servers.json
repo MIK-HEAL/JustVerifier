@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "servers": [
+    { "serverId": "open-science-activity", "tools": ["begin_activity_group"] },
+    { "serverId": "open-science-artifacts", "tools": ["write_artifact_file"] },
+    { "serverId": "open-science-notebook", "tools": ["ask_user_question", "notebook_execute", "repl_execute", "bash_execute", "request_network_access", "notebook_state", "list_notebook_runtimes", "notebook_bind_runtime", "notebook_switch_runtime", "notebook_restart", "notebook_shutdown", "inspect_packages", "manage_packages", "manage_environments", "list_memory_categories", "search_memories"] },
+    { "serverId": "open-science-skills", "tools": ["request_skill_import"] },
+    { "serverId": "open-science-plan", "tools": ["generate_plan", "update_step_status"] },
+    { "serverId": "open-science-literature", "tools": ["read_document", "list_pdf_elements", "read_pdf_element"] },
+    { "serverId": "open-science-library", "tools": ["search_library", "read_library_abstract", "read_library_pdf", "format_references", "format_citation_document", "prepare_latex_bundle", "save_to_inbox", "acquire_pdf"] },
+    { "serverId": "open-science-host-message", "tools": ["send_message"] }
+  ]
+}

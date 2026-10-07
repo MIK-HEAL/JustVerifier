@@ -1,6 +1,6 @@
 export const SCIENCE_EXTENSION = Object.freeze({
   id: 'open-science',
-  name: 'Open Science',
+  name: 'Resource bundle',
   description: '科研分析、文献检索、Notebook 和可复现产物工具。',
   skills: Object.freeze([
     'literature-review',
