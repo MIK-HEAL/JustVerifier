@@ -1,6 +1,12 @@
 import type { PackageCatalogDescriptor, PackageInstalledDescriptor, PackageSource } from '@agnes/protocol'
 import type { JSX } from 'react'
-import { ADMIN_LOCALE_NAMESPACE, contributionText, type RuntimeStateView, sourceLabel } from './admin-text.js'
+import {
+  ADMIN_LOCALE_NAMESPACE,
+  contributionText,
+  displayPackageName,
+  type RuntimeStateView,
+  sourceLabel,
+} from './admin-text.js'
 import { adminLocaleCatalog } from './locales/admin.js'
 import { ADMIN_LIST_LOCALE_NAMESPACE, adminListLocaleCatalog } from './locales/admin-list.js'
 import { StateLights, StateSwitch } from './ui/state-lights.js'
@@ -152,6 +158,7 @@ function RowControl({
   tab,
   item,
   runtime,
+  displayName,
   primaryAction,
   switchDisabled,
   onToggleDesired,
@@ -160,6 +167,7 @@ function RowControl({
   tab: AdminTab
   item: PackageInstalledDescriptor | PackageCatalogDescriptor
   runtime: RuntimeStateView | undefined
+  displayName: string
   primaryAction: RowAction
   switchDisabled: boolean
   t: (key: string, vars?: Readonly<Record<string, string | number>>) => string
@@ -185,7 +193,7 @@ function RowControl({
       return (
         <div className="plugin-row-actions">
           <StateSwitch
-            label={t(enabled ? 'switch.disable' : 'switch.enable', { id: installed.id })}
+            label={t(enabled ? 'switch.disable' : 'switch.enable', { id: displayName })}
             checked={enabled}
             disabled={switchDisabled}
             onToggle={(next) => onToggleDesired(installed, next)}
@@ -196,7 +204,7 @@ function RowControl({
     }
     return (
       <StateSwitch
-        label={t(enabled ? 'switch.disable' : 'switch.enable', { id: installed.id })}
+        label={t(enabled ? 'switch.disable' : 'switch.enable', { id: displayName })}
         checked={enabled}
         disabled={switchDisabled}
         onToggle={(next) => onToggleDesired(installed, next)}
@@ -285,7 +293,7 @@ export function PluginList({
             data-tab={tab}
             tabIndex={0}
             role="button"
-            aria-label={t('row.details', { id: item.id })}
+            aria-label={t('row.details', { id: displayPackageName(item.id, adminText) })}
             onClick={(event) => {
               // 行内 Switch / 动作按钮自己处理点击；置灰控件在部分浏览器里不发 click，
               // 事件会落到行上，所以这里再挡一次，避免「拨开关顺带打开详情」。
@@ -302,10 +310,10 @@ export function PluginList({
             }}
           >
             <div className="plugin-row-content">
-              <h2>{item.id}</h2>
+              <h2>{displayPackageName(item.id, adminText)}</h2>
               <p>{contributionText(item, adminText)}</p>
               <p className="plugin-source">
-                {item.version} · {sourceLabel(item.source as PackageSource, adminText)}
+                {item.version} · {sourceLabel(item.source as PackageSource, adminText, item.id)}
               </p>
               {tab === 'installed' && (
                 <SurfaceLinks links={surfaceLinksOf(item.id)} packageId={item.id} t={t} />
@@ -317,6 +325,7 @@ export function PluginList({
               tab={tab}
               item={item}
               runtime={runtime}
+              displayName={displayPackageName(item.id, adminText)}
               primaryAction={primaryActionOf(item)}
               switchDisabled={
                 tab === 'installed' ? switchDisabledOf(item as PackageInstalledDescriptor) : true

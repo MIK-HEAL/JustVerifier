@@ -3,6 +3,7 @@
   "version": "0.35.1",
   "description": "Bundled scientific research Skills and MCP service catalog for Agnes Harness",
   "type": "module",
+  "exports": "./index.mjs",
   "license": "Apache-2.0",
   "files": [
     "package.json",

@@ -89,6 +89,7 @@ it('ships the bundled research catalog with its Skill support files', async () =
   expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))).toMatchObject({
     name: '@agnes/open-science',
     version: '0.35.1',
+    exports: './index.mjs',
   })
   expect((await readdir(join(packageRoot, 'skills'))).length).toBeGreaterThanOrEqual(20)
   expect(await readFile(join(packageRoot, 'mcp', 'servers.json'), 'utf8')).toContain('open-science-notebook')

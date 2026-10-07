@@ -47,4 +47,33 @@ describe('plugin list localization', () => {
 
     expect(text).toContain('尚未安装插件')
   })
+
+  it('keeps the scientific package actionable without exposing its internal id', () => {
+    const element = createElement(PluginList, {
+        ...listProps,
+        rows: [
+          {
+            id: '@agnes/open-science',
+            version: '0.35.1',
+            source: { type: 'file', ref: 'file:./bundled-plugins/open-science' },
+            contributions: [{ kind: 'skill', id: 'open-science/alphafold2' }],
+            desired: 'disabled',
+            actual: 'not-running',
+            blockers: [],
+            trusted: true,
+            capabilityHash: 'sha256-test',
+          },
+        ],
+      } as never)
+    const host = document.createElement('div')
+    document.body.append(host)
+    mountRegion(host, element)
+    const text = host.textContent ?? ''
+
+    expect(text).toContain('Scientific tools')
+    expect(text).not.toContain('open-science')
+    const toggle = host.querySelector<HTMLButtonElement>('button[role="switch"]')
+    expect(toggle?.getAttribute('aria-label')).toBe('Request to enable Scientific tools')
+    expect(toggle?.disabled).toBe(false)
+  })
 })

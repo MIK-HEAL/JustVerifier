@@ -23,6 +23,7 @@ import {
   contributionText,
   createDocumentLocaleSource,
   createUiTranslator,
+  displayPackageName,
   type DetailActionSpec,
   DetailContent,
   hasPermission,
@@ -581,7 +582,9 @@ class PluginAdminPage {
 
   sourceTitle(): string {
     return this.#sourceMode === 'update' && this.#sourcePackageId
-      ? this.#t('source.title.update', { id: this.#sourcePackageId })
+      ? this.#t('source.title.update', {
+          id: displayPackageName(this.#sourcePackageId, this.#adminT),
+        })
       : this.#t('source.title.inspect')
   }
 
@@ -710,7 +713,7 @@ class PluginAdminPage {
     const combined = !!installed && this.canCombineUpdate(installed, preview)
     this.configureConfirm({
       title: () =>
-        `${this.#t(mode === 'install' ? 'preview.title.install' : 'preview.title.update')} · ${preview.id}`,
+        `${this.#t(mode === 'install' ? 'preview.title.install' : 'preview.title.update')} · ${displayPackageName(preview.id, this.#adminT)}`,
       description: () =>
         this.#t(
           mode === 'install'
@@ -1164,7 +1167,7 @@ class PluginAdminPage {
     // 不传焦点目标：render 每 1.2 秒被刷新触发一次，抢焦点会打断弹窗里的操作。
     setDialog(this.#detail, true)
     const facts: (readonly [string, string])[] = [
-      [this.#t('fact.source'), sourceLabel(item.source as PackageSource, this.#adminT)],
+      [this.#t('fact.source'), sourceLabel(item.source as PackageSource, this.#adminT, item.id)],
       [this.#t('fact.integrity'), integrityLabel(item.integrity)],
       [this.#t('fact.contribution'), contributionText(item, this.#adminT)],
     ]
@@ -1199,7 +1202,7 @@ class PluginAdminPage {
       this.#detail,
       <UiLocaleProvider source={this.#locale}>
         <DetailContent
-          heading={item.id}
+          heading={displayPackageName(item.id, this.#adminT)}
           intro=""
           version={this.#t('version', { version: item.version })}
           stateText={'trusted' in item ? undefined : this.#t('compatibility', { value: item.compatibility })}
@@ -1591,7 +1594,7 @@ class PluginAdminPage {
       return Promise.resolve()
     }
     this.configureConfirm({
-      title: () => this.#t('confirm.enable.title', { id: item.id }),
+      title: () => this.#t('confirm.enable.title', { id: displayPackageName(item.id, this.#adminT) }),
       description: () => this.#t(item.trusted ? 'confirm.enable.trusted' : 'confirm.enable.verify'),
       label: () => this.#t('confirm.enable.action'),
       facts: !item.trusted ? <TrustConfirmationFacts item={item} leadKey="lead.trust-enable" /> : undefined,
@@ -1644,7 +1647,7 @@ class PluginAdminPage {
 
   confirmDisable(item: PackageInstalledDescriptor): Promise<void> {
     this.configureConfirm({
-      title: () => this.#t('confirm.disable.title', { id: item.id }),
+      title: () => this.#t('confirm.disable.title', { id: displayPackageName(item.id, this.#adminT) }),
       description: () => this.#t('confirm.disable.description'),
       label: () => this.#t('confirm.disable.action'),
       run: async () => {
@@ -1659,7 +1662,7 @@ class PluginAdminPage {
 
   confirmRemove(item: PackageInstalledDescriptor): void {
     this.configureConfirm({
-      title: () => this.#t('confirm.remove.title', { id: item.id }),
+      title: () => this.#t('confirm.remove.title', { id: displayPackageName(item.id, this.#adminT) }),
       description: () => this.#t('confirm.remove.description'),
       label: () => this.#t('confirm.remove.action'),
       run: async () => {
@@ -1676,7 +1679,11 @@ class PluginAdminPage {
     const activeIntegrity = this.activeIntegrity(item)
     if (!target || activeIntegrity === undefined || !this.supportsCompositeActivation()) return
     this.configureConfirm({
-      title: () => this.#t('confirm.rollback.title', { id: item.id, version: target.version }),
+      title: () =>
+        this.#t('confirm.rollback.title', {
+          id: displayPackageName(item.id, this.#adminT),
+          version: target.version,
+        }),
       description: () => this.#t('confirm.rollback.description'),
       label: () => this.#t('confirm.rollback.action'),
       facts: <RollbackActivationFacts installed={item} />,

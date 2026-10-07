@@ -23,6 +23,16 @@ export { ADMIN_LOCALE_NAMESPACE }
 
 const englishText = createCatalogTranslator(adminLocaleCatalog, 'en')
 
+const SCIENCE_PACKAGE_ID = '@agnes/open-science'
+
+/** Keep the bundled scientific package's implementation identity out of operator-facing text. */
+export function displayPackageName(
+  packageId: string,
+  t: LocaleTranslator = englishText,
+): string {
+  return packageId === SCIENCE_PACKAGE_ID ? t('package.science-name') : packageId
+}
+
 export function hasPermission(permissions: readonly string[], permission: string): boolean {
   return permissions.includes(permission)
 }
@@ -30,15 +40,18 @@ export function hasPermission(permissions: readonly string[], permission: string
 export function sourceLabel(
   source: { type: string; ref: string },
   t: LocaleTranslator = englishText,
+  packageId?: string,
 ): string {
   const sourceTypeKey = `source.${source.type}`
   const translatedType = t(sourceTypeKey)
   const type = translatedType === sourceTypeKey ? source.type : translatedType
+  if (packageId === SCIENCE_PACKAGE_ID || source.ref.toLocaleLowerCase().includes('open-science'))
+    return `${type} · ${t('package.science-source')}`
   return `${type} · ${source.ref}`
 }
 
 export function contributionText(
-  item: { contributions: readonly { kind: string; id: string }[] },
+  item: { id?: string; contributions: readonly { kind: string; id: string }[] },
   t: LocaleTranslator = englishText,
 ): string {
   if (!item.contributions.length) return t('contribution.none')
@@ -46,7 +59,11 @@ export function contributionText(
     const kindKey = `contribution.${contribution.kind}`
     const translatedKind = t(kindKey)
     const kind = translatedKind === kindKey ? contribution.kind : translatedKind
-    return `${kind} · ${contribution.id}`
+    const id =
+      item.id === SCIENCE_PACKAGE_ID && contribution.id.startsWith('open-science/')
+        ? contribution.id.slice('open-science/'.length)
+        : contribution.id
+    return `${kind} · ${id}`
   })
   const more = item.contributions.length - labels.length
   return more

@@ -385,7 +385,8 @@ export class MemoryPackageLoader implements PackageLoader {
 
 /**
  * The real loader: resolves a package's entry file from its package.json (`exports['.']`, a
- * string `exports`, or `main`, in that order, defaulting to `./index.js`) and evaluates it
+ * string `exports`, or `main`, in that order. Packages without an explicit entry use `index.js`,
+ * with an `index.mjs` fallback for older bundled ESM packages, and evaluates it
  * through the given module loader (in practice, ext-host's jiti-backed `createLoader`).
  */
 export function createJitiPackageLoader(loader: {
@@ -422,8 +423,7 @@ export function createJitiPackageLoader(loader: {
           detail: { id, reason: 'plugin-manifest' },
         })
       }
-      const rel =
-        typeof pkg.exports === 'string' ? pkg.exports : (pkg.exports?.['.'] ?? pkg.main ?? './index.js')
+      const rel = packageEntryPath(dir, pkg)
       if (typeof rel !== 'string')
         throw new HostError('E_EXT_LOAD', `${id}: package entry must be a string`, {
           detail: { id, reason: 'bad-package-entry' },
@@ -447,12 +447,25 @@ function packageEntry(id: string, dir: string): string {
     throw new HostError('E_EXT_LOAD', `${id}: package manifest name does not match`, {
       detail: { id, reason: 'package-name' },
     })
-  const rel = typeof pkg.exports === 'string' ? pkg.exports : (pkg.exports?.['.'] ?? pkg.main ?? './index.js')
+  const rel = packageEntryPath(dir, pkg)
   if (typeof rel !== 'string')
     throw new HostError('E_EXT_LOAD', `${id}: package entry must be a string`, {
       detail: { id, reason: 'bad-package-entry' },
     })
   return resolveEntry(dir, rel)
+}
+
+function packageEntryPath(
+  dir: string,
+  pkg: { exports?: Record<string, string> | string; main?: string },
+): string {
+  if (typeof pkg.exports === 'string') return pkg.exports
+  if (pkg.exports?.['.'] !== undefined) return pkg.exports['.']
+  if (pkg.main !== undefined) return pkg.main
+  // A few early bundled ESM packages shipped index.mjs before their manifest gained an exports
+  // field. Keep those immutable snapshots loadable while preserving the established index.js
+  // default for ordinary packages.
+  return existsSync(join(dir, 'index.js')) ? './index.js' : './index.mjs'
 }
 
 /**

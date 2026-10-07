@@ -164,6 +164,15 @@ describe('createJitiPackageLoader', () => {
     expect(Object.keys(m.seams ?? {})).toEqual(['approval'])
   })
 
+  it('loads an older ESM package with index.mjs when no entry is declared', async () => {
+    const d = dir()
+    writeFileSync(join(d, 'package.json'), JSON.stringify({ name: 'acme/esm-pkg', type: 'module' }))
+    writeFileSync(join(d, 'index.mjs'), 'export const seams = { approval: async () => ({}) }')
+    const m = await loader().importPackage('acme/esm-pkg', d)
+    expect(realpathSync(m.extensionEntry as string)).toBe(realpathSync(join(d, 'index.mjs')))
+    expect(Object.keys(m.seams ?? {})).toEqual(['approval'])
+  })
+
   it('refuses a package directory with no package.json', async () => {
     const d = dir()
     await expect(loader().importPackage('acme/missing', d)).rejects.toThrow(/E_DEP_MISSING/)

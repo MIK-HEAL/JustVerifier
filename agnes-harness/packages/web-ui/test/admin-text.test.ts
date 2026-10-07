@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest'
 import {
   blockerText,
   contributionText,
+  displayPackageName,
   installedState,
   operationName,
   runtimeStateLabel,
+  sourceLabel,
 } from '../src/admin-text.js'
 import { adminLocaleCatalog } from '../src/locales/admin.js'
 import { resourceDetailLocaleCatalog } from '../src/locales/resource-detail.js'
@@ -16,6 +18,24 @@ describe('admin text labels', () => {
   it('resolves operation names through the active locale', () => {
     expect(operationName('enable', createCatalogTranslator(adminLocaleCatalog, 'en'))).toBe('Enable')
     expect(operationName('enable', createCatalogTranslator(adminLocaleCatalog, 'zh-CN'))).toBe('启用')
+  })
+
+  it('uses a user-facing label for the bundled scientific package', () => {
+    const en = createCatalogTranslator(adminLocaleCatalog, 'en')
+    const zh = createCatalogTranslator(adminLocaleCatalog, 'zh-CN')
+    expect(displayPackageName('@agnes/open-science', en)).toBe('Scientific tools')
+    expect(displayPackageName('@agnes/open-science', zh)).toBe('科学扩展')
+    expect(sourceLabel({ type: 'file', ref: 'file:./bundled-plugins/open-science' }, zh)).toBe(
+      '本地文件 · 内置科学扩展',
+    )
+  })
+
+  it('removes the internal scientific namespace from contribution labels', () => {
+    const item = {
+      id: '@agnes/open-science',
+      contributions: [{ kind: 'skill', id: 'open-science/alphafold2' }],
+    }
+    expect(contributionText(item, createCatalogTranslator(adminLocaleCatalog, 'zh-CN'))).toBe('技能 · alphafold2')
   })
 
   it('resolves runtime states through the active locale', () => {

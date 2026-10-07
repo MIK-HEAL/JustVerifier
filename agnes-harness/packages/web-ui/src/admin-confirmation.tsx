@@ -8,7 +8,12 @@ import type {
 } from '@agnes/protocol'
 import { isWebClientModuleSlotName } from '@agnes/protocol'
 import type { JSX, ReactNode } from 'react'
-import { ADMIN_LOCALE_NAMESPACE, blockerText, sourceLabel } from './admin-text.js'
+import {
+  ADMIN_LOCALE_NAMESPACE,
+  blockerText,
+  displayPackageName,
+  sourceLabel,
+} from './admin-text.js'
 import { adminLocaleCatalog } from './locales/admin.js'
 import {
   ADMIN_CONFIRMATION_LOCALE_NAMESPACE,
@@ -125,11 +130,12 @@ function contributionLines(
   contribution: PackageContributionSummary,
   t: LocaleTranslator,
   adminText: LocaleTranslator,
+  packageId?: string,
 ): string[] {
   const contributionKey = `contribution.${contribution.kind}`
   const translatedKind = adminText(contributionKey)
   const kind = translatedKind === contributionKey ? contribution.kind : translatedKind
-  const lines = [`${kind} · ${contribution.id}`]
+  const lines = [`${kind} · ${displayContributionId(contribution.id, packageId)}`]
   switch (contribution.kind) {
     case 'client':
       return [
@@ -200,14 +206,22 @@ function contributionLines(
   }
 }
 
+function displayContributionId(id: string, packageId?: string): string {
+  return packageId === '@agnes/open-science' && id.startsWith('open-science/')
+    ? id.slice('open-science/'.length)
+    : id
+}
+
 function Contributions({
   values,
   t,
   adminText,
+  packageId,
 }: {
   values: readonly PackageContributionSummary[]
   t: LocaleTranslator
   adminText: LocaleTranslator
+  packageId?: string
 }): JSX.Element {
   if (!values.length) {
     return <TextList items={[]} empty={t('empty.contributions')} />
@@ -216,9 +230,9 @@ function Contributions({
     <ul className="confirm-contributions">
       {values.map((contribution) => (
         <li
-          key={`${contribution.kind}:${contribution.id}:${contributionLines(contribution, t, adminText).join('|')}`}
+          key={`${contribution.kind}:${contribution.id}:${contributionLines(contribution, t, adminText, packageId).join('|')}`}
         >
-          {contributionLines(contribution, t, adminText).map((line) => (
+          {contributionLines(contribution, t, adminText, packageId).map((line) => (
             <p key={line}>{line}</p>
           ))}
         </li>
@@ -289,7 +303,7 @@ export function PreviewConfirmationFacts({ preview }: { preview: PackagePreview 
       <FactsList
         items={[
           [t('fact.version'), preview.version],
-          [t('fact.source'), sourceLabel(preview.source, adminText)],
+          [t('fact.source'), sourceLabel(preview.source, adminText, preview.id)],
           [t('fact.integrity'), preview.integrity],
           [t('fact.capability-hash'), preview.capabilityHash ?? t('value.not-reported-cannot-trust')],
           [t('fact.license'), preview.license],
@@ -302,7 +316,7 @@ export function PreviewConfirmationFacts({ preview }: { preview: PackagePreview 
       <ReviewSection title={t('section.provenance')}>
         <FactsList
           items={[
-            [t('fact.provenance-source'), sourceLabel(preview.provenance.source, adminText)],
+            [t('fact.provenance-source'), sourceLabel(preview.provenance.source, adminText, preview.id)],
             [t('fact.provenance-integrity'), preview.provenance.integrity],
             [
               t('fact.release-time'),
@@ -320,7 +334,7 @@ export function PreviewConfirmationFacts({ preview }: { preview: PackagePreview 
         />
       </ReviewSection>
       <ReviewSection title={t('section.reported-contributions')}>
-        <Contributions values={preview.contributions} t={t} adminText={adminText} />
+        <Contributions values={preview.contributions} t={t} adminText={adminText} packageId={preview.id} />
       </ReviewSection>
       <ReviewSection title={t('section.capability-diff')}>
         <CapabilityDiff preview={preview} t={t} />
@@ -355,13 +369,13 @@ export function TrustConfirmationFacts({
       <FactsList
         items={[
           [t('fact.version'), item.version],
-          [t('fact.source'), sourceLabel(item.source, adminText)],
+          [t('fact.source'), sourceLabel(item.source, adminText, item.id)],
           [t('fact.integrity'), item.integrity],
           [t('fact.capability-hash'), item.capabilityHash ?? t('value.not-reported')],
         ]}
       />
       <ReviewSection title={t('section.trust-contributions')}>
-        <Contributions values={item.contributions} t={t} adminText={adminText} />
+        <Contributions values={item.contributions} t={t} adminText={adminText} packageId={item.id} />
       </ReviewSection>
       <ReviewSection title={t('section.current-blockers')}>
         <Blockers values={item.blockers} t={t} adminText={adminText} />
@@ -380,13 +394,13 @@ export function UntrustConfirmationFacts({ item }: { item: PackageInstalledDescr
       <FactsList
         items={[
           [t('fact.version'), item.version],
-          [t('fact.source'), sourceLabel(item.source, adminText)],
+          [t('fact.source'), sourceLabel(item.source, adminText, item.id)],
           [t('fact.integrity'), item.integrity],
           [t('fact.capability-hash'), item.capabilityHash ?? t('value.not-reported')],
         ]}
       />
       <ReviewSection title={t('section.revoked-contributions')}>
-        <Contributions values={item.contributions} t={t} adminText={adminText} />
+        <Contributions values={item.contributions} t={t} adminText={adminText} packageId={item.id} />
       </ReviewSection>
       <ReviewSection title={t('section.current-blockers')}>
         <Blockers values={item.blockers} t={t} adminText={adminText} />
