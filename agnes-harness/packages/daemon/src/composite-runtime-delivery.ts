@@ -48,9 +48,8 @@ export class CompositeRuntimeDelivery {
   recordBootFailure(generation: number, boot: RuntimeBootDelivery, error: Error): boolean {
     if (boot.source !== 'bootstrap') return false
     const detail = (error as { detail?: unknown }).detail
-    const detailReason = (detail as Readonly<Record<string, unknown> | undefined)?.reason
-    const reason =
-      isPublicErrorReason(detailReason) ? detailReason : undefined
+    const detailReason = (detail as Readonly<Record<string, unknown>> | undefined)?.reason
+    const reason = isPublicErrorReason(detailReason) ? detailReason : undefined
     const recorded = this.#store.qualifyFailed(generation, boot.artifact, {
       generation,
       digest: boot.artifact.digest,
