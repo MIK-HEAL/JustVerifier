@@ -4921,6 +4921,7 @@ const WorkerSamples: Record<string, Sample> = {
       identity: workerIdentity,
       phase: 'health',
       message: 'unhealthy',
+      reason: 'module-import',
     },
     invalid: [
       {
@@ -4932,8 +4933,19 @@ const WorkerSamples: Record<string, Sample> = {
         identity: workerIdentity,
         phase: 'health',
       },
+      {
+        type: 'runtime.apply_failed',
+        workerKind: 'session',
+        workerKey: '@shared',
+        generation: 1,
+        digest: workerArtifact.digest,
+        identity: workerIdentity,
+        phase: 'health',
+        message: 'unhealthy',
+        reason: 'x'.repeat(65),
+      },
     ],
-    note: 'apply_failed is qualified by generation/digest/identity and does not carry lastGood',
+    note: 'apply_failed is qualified by generation/digest/identity, may carry one safe reason, and does not carry lastGood',
   },
 }
 const bridgeJsonSample = TASK21_SAMPLES.bridge.JsonValue

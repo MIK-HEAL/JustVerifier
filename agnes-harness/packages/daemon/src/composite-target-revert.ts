@@ -58,7 +58,12 @@ export function createTargetReverter(options: TargetReverterOptions): {
       expectedDigest: desired.digest,
       target,
       packages,
-      failure: { digest: desired.digest, phase: failure.phase, message: failure.message },
+      failure: {
+        digest: desired.digest,
+        phase: failure.phase,
+        message: failure.message,
+        ...(failure.reason === undefined ? {} : { reason: failure.reason }),
+      },
       at: now(),
     })
     if (!applied) return
@@ -72,6 +77,7 @@ export function createTargetReverter(options: TargetReverterOptions): {
         unattributed,
         phase: failure.phase,
         message: failure.message,
+        ...(failure.reason === undefined ? {} : { reason: failure.reason }),
       },
     })
   }

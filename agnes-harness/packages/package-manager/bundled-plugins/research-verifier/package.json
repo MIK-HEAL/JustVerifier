@@ -5,7 +5,7 @@
   "type": "module",
   "exports": "./index.mjs",
   "license": "Apache-2.0",
-  "files": ["package.json", "index.mjs", "schema", "skills", "README.md", "LICENSE"],
+  "files": ["package.json", "index.mjs", "schema", "skills", "extensions", "README.md", "LICENSE"],
   "agnes": {
     "contributions": [
       { "kind": "skill", "id": "research-verifier/research-run", "path": "./skills/research-run/SKILL.md" },
@@ -19,8 +19,13 @@
       {
         "export": "researchVerifier",
         "id": "ext:research-verifier/main",
-        "inject": ["extension"]
+        "inject": ["extension"],
+        "runtime": "in-process",
+        "services": ["research.multi-agent.start"]
       }
+    ],
+    "clientDescriptors": [
+      { "rowId": "ext:research-verifier/main", "path": "./extensions/main/agnes.client.json" }
     ]
   }
 }

@@ -1,4 +1,5 @@
 import type { RuntimeTargetArtifact } from '@agnes/plugin-runtime/host'
+import { isPublicErrorReason } from '@agnes/error-sanitization'
 import {
   validateRuntimeApplyFailedFrame,
   validateRuntimeBootReadyFrame,
@@ -46,12 +47,17 @@ export class CompositeRuntimeDelivery {
    */
   recordBootFailure(generation: number, boot: RuntimeBootDelivery, error: Error): boolean {
     if (boot.source !== 'bootstrap') return false
+    const detail = (error as { detail?: unknown }).detail
+    const detailReason = (detail as Readonly<Record<string, unknown> | undefined)?.reason
+    const reason =
+      isPublicErrorReason(detailReason) ? detailReason : undefined
     const recorded = this.#store.qualifyFailed(generation, boot.artifact, {
       generation,
       digest: boot.artifact.digest,
       identity: boot.artifact.identity,
       phase: 'boot',
       message: error.message,
+      ...(reason === undefined ? {} : { reason }),
     })
     if (recorded) this.#failureRecorded()
     // Not recorded because the failure frame got there first and the target is already put back.
@@ -115,6 +121,7 @@ export class CompositeRuntimeDelivery {
         identity: value.identity,
         phase: value.phase,
         message: value.message,
+        ...(value.reason === undefined ? {} : { reason: value.reason }),
       })
       if (recorded) this.#failureRecorded()
       return recorded

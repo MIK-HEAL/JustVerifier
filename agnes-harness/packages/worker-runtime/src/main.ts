@@ -3,7 +3,7 @@ import { createReadStream, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { domainFailureFromUnknown } from '@agnes/error-sanitization'
+import { domainFailureFromUnknown, isPublicErrorReason } from '@agnes/error-sanitization'
 import { createSkillCordisService } from '@agnes/resource-control-runtime'
 import {
   bootstrapWorkerResources,
@@ -166,6 +166,16 @@ export function decodeArtifactMediaResponse(
   } catch {
     return undefined
   }
+}
+
+/** Extract the safe, operator-readable failure reason from a Host/Package error's detail payload. */
+function extractApplyFailureReason(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined
+  const detail = (error as { detail?: unknown }).detail
+  if (!detail || typeof detail !== 'object') return undefined
+  const reason = (detail as Readonly<Record<string, unknown>>).reason
+  if (typeof reason !== 'string' || !reason.length) return undefined
+  return isPublicErrorReason(reason) ? reason : undefined
 }
 
 /** This package's own install root, the same role `hostRootFrom()` plays in cli's boot path. */
@@ -575,6 +585,7 @@ export async function runWorker(
         return
       }
       if (outcome.status === 'failed') {
+        const reason = extractApplyFailureReason(outcome.error)
         send({
           type: 'runtime.apply_failed',
           workerKind: 'session',
@@ -584,6 +595,7 @@ export async function runWorker(
           identity: outcome.artifact.identity,
           phase: 'apply',
           message: outcome.error instanceof Error ? outcome.error.message : String(outcome.error),
+          ...(reason ? { reason } : {}),
         })
       }
       return

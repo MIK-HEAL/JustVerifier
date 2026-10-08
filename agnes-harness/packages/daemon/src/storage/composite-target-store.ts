@@ -16,12 +16,16 @@ export type CompositeTargetFailure = Readonly<{
   identity: RuntimeTargetIdentity
   phase: string
   message: string
+  /** Optional operator-readable underlying reason (e.g. `E_EXT_LOAD` detail) preserved for audit. */
+  reason?: string
 }>
 
 export type CompositePackageFailure = Readonly<{
   digest: string
   phase: string
   message: string
+  /** Optional operator-readable underlying reason preserved for audit. */
+  reason?: string
   at: string
 }>
 
@@ -30,7 +34,7 @@ export type CompositeTargetRevert = Readonly<{
   target: RuntimeTargetArtifact
   /** The packages the failure is held against; may be empty when nothing can be attributed. */
   packages: readonly string[]
-  failure: Readonly<{ digest: string; phase: string; message: string }>
+  failure: Readonly<{ digest: string; phase: string; message: string; reason?: string }>
   at: string
 }>
 
@@ -351,6 +355,7 @@ export class CompositeTargetStore {
           digest: input.failure.digest,
           phase: input.failure.phase,
           message: input.failure.message,
+          ...(input.failure.reason === undefined ? {} : { reason: input.failure.reason }),
           at: input.at,
         })
         this.#table.exec(
