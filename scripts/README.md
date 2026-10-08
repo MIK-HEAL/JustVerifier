@@ -37,7 +37,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\start-local.ps1 -
 已有脚本：
 
 - `fix-agh-acl.ps1`：仅移除 `CodexSandboxUsers` 的显式 Allow 权限，核对目录 owner 与 Allow 主体；其他异常权限会报错，凭据和配置保留。
-- `rebuild-local.ps1`：停止当前作用域的 daemon，保留并隔离遗留构建锁，然后重建并检查 CLI 版本。`-SkipBuild` 仅处理进程与锁，不会修复插件声明或启动记录。
+- `rebuild-local.ps1`：停止当前作用域的 daemon，清理旧的自动生成 verifier 快照与 `dist/local`，隔离遗留构建锁，然后重建并检查 CLI 版本。源码、会话和配置不会删除；`-KeepGeneratedProfile` 可保留 profile 包状态。`-SkipBuild` 仅处理进程、旧快照与锁，不会重建。
 
 ACL 修复应在普通终端执行；沙箱设置刷新可能再次添加读取权限。启动脚本在每次启动前修复已知权限，不放宽宿主凭据校验。
 

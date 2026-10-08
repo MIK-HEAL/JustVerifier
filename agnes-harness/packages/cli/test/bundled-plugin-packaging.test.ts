@@ -112,10 +112,18 @@ it('ships the research-verifier client extension into local builds', async () =>
   expect(descriptor.client).toMatchObject({
     entry: './client/index.js',
     styles: ['./client/index.css'],
-    slots: ['sidebar.workspaces', 'workbench.panel'],
+    slots: ['sidebar.footer.action', 'workbench.panel'],
     services: ['research.multiagent.start'],
   })
-  expect((await readdir(clientRoot)).sort()).toEqual(['index.css', 'index.js'])
+  expect((await readdir(clientRoot)).sort()).toEqual([
+    'agents.js',
+    'canvas.js',
+    'entry.js',
+    'index.css',
+    'index.js',
+    'plan.js',
+    'workbench.js',
+  ])
   const manager = createPackageManager({
     dataDir: root,
     cwd: root,
@@ -133,12 +141,50 @@ it('ships the research-verifier client extension into local builds', async () =>
         kind: 'client',
         rowId: 'ext:research-verifier/main',
         client: expect.objectContaining({
-          slots: ['sidebar.workspaces', 'workbench.panel'],
+          slots: ['sidebar.footer.action', 'workbench.panel'],
           services: ['research.multiagent.start'],
         }),
       }),
     ]),
   )
+  const plan = (await import(pathToFileURL(join(clientRoot, 'plan.js')).href)) as {
+    validateGraph: (
+      nodes: Array<{ id: string; role: string }>,
+      edges: Array<{ from: string; to: string }>,
+    ) => string[]
+    graphPlan: (
+      nodes: Array<{ id: string; role: string }>,
+      edges: Array<{ from: string; to: string }>,
+    ) => {
+      root_agent_id: string
+      agents: Array<{ agent_id: string }>
+      tasks: Array<{ task_id: string; depends_on?: string[] }>
+    }
+    digest: (value: unknown) => Promise<string>
+  }
+  expect(plan.validateGraph([], [])).toEqual(['至少拖入一个 Agent', '需要一个规划 Agent 作为根节点'])
+  const planner = { id: 'planner-1', role: 'planner', label: '规划 Agent', prompt: '', x: 0, y: 0 }
+  const executor = { id: 'executor-1', role: 'executor', label: '执行 Agent', prompt: '', x: 0, y: 0 }
+  expect(plan.validateGraph([planner], [])).toEqual([])
+  expect(plan.validateGraph([planner], [{ from: 'planner-1', to: 'planner-1' }])).toEqual([
+    '不能连接节点自身',
+    '编排图存在循环依赖',
+  ])
+  expect(
+    plan.validateGraph([planner, executor], [
+      { from: 'planner-1', to: 'executor-1' },
+      { from: 'executor-1', to: 'planner-1' },
+    ]),
+  ).toEqual(['编排图存在循环依赖'])
+  const built = plan.graphPlan([planner, executor], [{ from: 'planner-1', to: 'executor-1' }])
+  expect(built.root_agent_id).toBe('planner-1')
+  expect(built.agents.map((agent) => agent.agent_id)).toEqual(['planner-1', 'executor-1'])
+  expect(built.tasks.find((task) => task.task_id === 'task-executor-1')).toMatchObject({
+    depends_on: ['task-planner-1'],
+  })
+  const checksum = await plan.digest(built)
+  expect(checksum).toMatch(/^sha256:[0-9a-f]{64}$/)
+  expect(await plan.digest(built)).toBe(checksum)
   const { researchVerifier } = await import(pathToFileURL(join(packageRoot, 'index.mjs')).href)
   const services: unknown[] = []
   researchVerifier.apply({

@@ -86,6 +86,64 @@ export type TraceResearchSnapshot = Readonly<{
   restoredFromLedger?: boolean
 }>
 
+export type TraceResearchOverview = Readonly<{
+  activities: number
+  verified: number
+  issues: number
+  artifacts: number
+  assumptions: number
+  rules: number
+  replayable: number
+  lineageCoverage: 'complete' | 'partial' | 'unavailable'
+  credibility: 'pass' | 'warn' | 'fail'
+  reproducibility: 'ready' | 'partial' | 'unavailable'
+}>
+
+/** Stable, fail-closed summary used by the right-hand research workbench. */
+export function buildTraceResearchOverview(
+  research?: TraceResearchSnapshot,
+): TraceResearchOverview | undefined {
+  if (!research) return undefined
+  const activities = research.activities
+  const issues = activities.filter((activity) => ['partial', 'unknown', 'failed'].includes(activity.status)).length
+  const verified = activities.filter((activity) => activity.status === 'verified').length
+  const artifacts = new Set(
+    activities.flatMap((activity) => [...(activity.inputArtifacts ?? []), ...(activity.outputArtifacts ?? [])]),
+  ).size
+  const assumptions = new Set(activities.flatMap((activity) => activity.assumptions ?? [])).size
+  const rules = new Set(activities.flatMap((activity) => activity.verificationRules ?? [])).size
+  const replayable = activities.filter((activity) => Boolean(activity.replay)).length
+  const lineageCoverage = activities.length === 0
+    ? 'unavailable'
+    : activities.every((activity) => (activity.inputArtifacts?.length ?? 0) + (activity.outputArtifacts?.length ?? 0) > 0)
+      ? 'complete'
+      : 'partial'
+  const credibility = activities.some((activity) => activity.status === 'failed')
+    ? 'fail'
+    : issues > 0 || activities.some((activity) => !activity.verificationRules?.length)
+      ? 'warn'
+      : activities.length > 0
+        ? 'pass'
+        : 'fail'
+  const reproducibility = activities.length === 0
+    ? 'unavailable'
+    : replayable === activities.length
+      ? 'ready'
+      : 'partial'
+  return Object.freeze({
+    activities: activities.length,
+    verified,
+    issues,
+    artifacts,
+    assumptions,
+    rules,
+    replayable,
+    lineageCoverage,
+    credibility,
+    reproducibility,
+  })
+}
+
 /** Rehydrates the Trace sidecar from committed ledger rows after refresh/reopen. */
 export function projectTraceResearchFromLedger(
   events: readonly Readonly<{ seq: number; type: string; data?: unknown }>[],
@@ -822,6 +880,11 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
   const rows = useMemo(
     () => traceRowBuilder.build(snapshot.nodes, snapshot.turns, snapshot.meta?.research ?? options.research),
     [snapshot.nodes, snapshot.turns, snapshot.meta?.research, options.research, locale],
+  )
+  const researchSnapshot = snapshot.meta?.research ?? options.research
+  const researchOverview = useMemo(
+    () => buildTraceResearchOverview(researchSnapshot),
+    [researchSnapshot],
   )
   const toolHierarchy = useMemo(() => buildTraceToolHierarchy(snapshot.nodes), [snapshot.nodes])
   const selectedRow = selected ? rows.find((row) => row.id === selected) : undefined
@@ -1755,7 +1818,7 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
         value: query,
         onInput: updateQuery,
       }),
-      ...(snapshot.meta?.research || options.research
+          ...(researchSnapshot
         ? [
             createElement(
               'select',
@@ -1773,7 +1836,43 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
             ),
           ]
         : []),
-    ),
+      ),
+      ...(researchOverview
+        ? [
+            createElement(
+              'section',
+              { className: 'trace-research-summary', 'aria-label': traceText('trace.research.title') },
+              createElement('div', { className: 'trace-research-summary-head' },
+                createElement('strong', null, traceText('trace.research.title')),
+                createElement('span', { className: 'trace-research-ledger' },
+                  researchSnapshot?.restoredFromLedger ? traceText('trace.research.restored') : traceText('trace.research.live'),
+                ),
+              ),
+              createElement('div', { className: 'trace-research-cards' },
+                ...([
+                  ['lineage', traceText('trace.research.lineage'), `${researchOverview.artifacts} ${traceText('trace.research.artifacts')}`, researchOverview.lineageCoverage],
+                  ['credibility', traceText('trace.research.credibility'), `${researchOverview.verified}/${researchOverview.activities} ${traceText('trace.research.verified')}`, researchOverview.credibility],
+                  ['reproducibility', traceText('trace.research.reproducibility'), `${researchOverview.replayable}/${researchOverview.activities} ${traceText('trace.research.replayable')}`, researchOverview.reproducibility],
+                ] as const).map(([key, label, value, status]) =>
+                  createElement('button', {
+                    key,
+                    type: 'button',
+                    className: `trace-research-card status-${status}`,
+                    onClick: () => setResearchFilter(key === 'lineage' ? 'evidence' : key === 'credibility' ? 'issues' : 'evidence'),
+                    title: traceText('trace.research.filterHint'),
+                  },
+                    createElement('span', { className: 'trace-research-card-label' }, label),
+                    createElement('strong', null, value),
+                    createElement('small', null, status),
+                  ),
+                ),
+              ),
+              createElement('div', { className: 'trace-research-foot' },
+                `${researchOverview.issues} ${traceText('trace.research.issues')} · ${researchOverview.assumptions} ${traceText('trace.research.assumptions')} · ${researchOverview.rules} ${traceText('trace.research.rules')}`,
+              ),
+            ),
+          ]
+        : []),
     createElement(
       'div',
       {

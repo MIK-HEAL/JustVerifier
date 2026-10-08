@@ -1,3 +1,6 @@
+// 2026-10-08 verifier footer entry + fullscreen client page: v6→v7 bundled-verifier receipt
+// migration (default-helpers.ts refresh intent, default-helper-state.ts version-7 union).
+// Exact countLines daemon 27033; no exclusions or spare allocation.
 // 2026-10-08 reviewed helper receipt recovery, verifier migration and shipped client payload.
 // Exact countLines totals: daemon 26994, build-local 316; no exclusions or spare allocation.
 // 2026-10-06 attachment history reopening: bound authority replay so worker frames can be split.
@@ -1898,7 +1901,7 @@ const INITIAL_CEILING: Record<string, number> = {
   // An approval request carries the tool's ACP kind and name. Measured 26542 (+6), exact cap.
   // Approval reasons: the prompter router answers with a reason (+18). Measured 26758 (combined tree), exact cap.
   // 2026-10-06: bound image transport byte totals and split oversized worker scan ranges; 26818, exact.
-  'packages/daemon/src': 26994,
+  'packages/daemon/src': 27033,
   'packages/daemon/src/packages/admin-session': 46,
   // 2026-09-14: whole-branch review fix wave (Finding 1) adds the two missing
   // 'pins/inspect'/'pins/release' entries to the ACTIONS BFF route allowlist, which had been left

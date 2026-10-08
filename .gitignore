@@ -109,3 +109,7 @@ note/
 note/*.md
 # Local desired-state snapshot (machine-specific build baseline).
 .desired.json
+
+
+docs/
+.omo/

@@ -146,6 +146,19 @@ const en = {
   'trace.field.replay': 'Replay',
   'trace.field.ledgerSeq': 'Ledger sequence',
   'trace.field.evidenceUnavailable': 'Evidence is unavailable for this activity.',
+  'trace.research.title': 'Research assurance',
+  'trace.research.restored': 'Restored from ledger',
+  'trace.research.live': 'Live projection',
+  'trace.research.lineage': 'Full-chain lineage',
+  'trace.research.credibility': 'Credibility check',
+  'trace.research.reproducibility': 'Reproducibility',
+  'trace.research.artifacts': 'artifacts',
+  'trace.research.verified': 'verified',
+  'trace.research.replayable': 'replayable',
+  'trace.research.issues': 'issues',
+  'trace.research.assumptions': 'assumptions',
+  'trace.research.rules': 'rules',
+  'trace.research.filterHint': 'Filter the trace to inspect supporting evidence',
 } as const
 
 const zh: Record<keyof typeof en, string> = {
@@ -295,6 +308,19 @@ const zh: Record<keyof typeof en, string> = {
   'trace.field.replay': '重放',
   'trace.field.ledgerSeq': '账本序号',
   'trace.field.evidenceUnavailable': '此活动没有可用证据。',
+  'trace.research.title': '研究可信工作台',
+  'trace.research.restored': '已从账本恢复',
+  'trace.research.live': '实时投影',
+  'trace.research.lineage': '全链路追踪',
+  'trace.research.credibility': '可信度检查',
+  'trace.research.reproducibility': '可复现性',
+  'trace.research.artifacts': '个 artifact',
+  'trace.research.verified': '已验证',
+  'trace.research.replayable': '可重放',
+  'trace.research.issues': '个问题',
+  'trace.research.assumptions': '个假设',
+  'trace.research.rules': '条规则',
+  'trace.research.filterHint': '筛选轨迹，查看支撑证据',
 }
 
 export const traceCatalog = { en: { ...en }, 'zh-CN': { ...zh } }

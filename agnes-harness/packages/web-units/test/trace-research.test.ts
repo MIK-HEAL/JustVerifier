@@ -1,6 +1,6 @@
 import type { UINode } from '@agnes/protocol'
 import { describe, expect, it } from 'vitest'
-import { buildTraceRows, projectTraceResearchFromLedger } from '../src/trace.js'
+import { buildTraceResearchOverview, buildTraceRows, projectTraceResearchFromLedger } from '../src/trace.js'
 
 describe('research trace sidecar', () => {
   it('joins evidence by node, tool use, or ledger sequence', () => {
@@ -71,5 +71,33 @@ describe('research trace sidecar', () => {
     expect(row?.preview).toBe('published answer')
     expect(row?.raw).toBe('published answer')
     expect(row?.preview).not.toContain('private reasoning')
+  })
+
+  it('summarizes lineage, credibility, and replay with fail-closed statuses', () => {
+    const overview = buildTraceResearchOverview({
+      activities: [
+        {
+          activityId: 'a',
+          status: 'verified',
+          inputArtifacts: ['input@1'],
+          outputArtifacts: ['output@1'],
+          verificationRules: ['rule:checksum'],
+          replay: 'replay://a',
+        },
+        { activityId: 'b', status: 'partial', assumptions: ['assumption:sample'] },
+      ],
+    })
+    expect(overview).toMatchObject({
+      activities: 2,
+      verified: 1,
+      issues: 1,
+      artifacts: 2,
+      assumptions: 1,
+      rules: 1,
+      replayable: 1,
+      lineageCoverage: 'partial',
+      credibility: 'warn',
+      reproducibility: 'partial',
+    })
   })
 })

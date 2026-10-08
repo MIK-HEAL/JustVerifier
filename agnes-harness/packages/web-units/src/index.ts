@@ -95,6 +95,7 @@ export {
 export { Topbar, type TopbarConnectionState, type TopbarHandle } from './topbar.js'
 export {
   buildTraceRows,
+  buildTraceResearchOverview,
   durationLabel,
   projectTraceResearchFromLedger,
   TRACE_PANEL_STORAGE_KEY,
@@ -105,6 +106,7 @@ export {
   type TracePanelOptions,
   type TraceProps,
   type TraceResearchActivity,
+  type TraceResearchOverview,
   type TraceResearchSnapshot,
   type TraceResearchStatus,
   type TraceRow,

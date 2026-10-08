@@ -50,7 +50,7 @@ export async function initializeDefaultHelpers(options: {
         if (!root) throw new Error('Bundled helper source unavailable')
         integrity[helper.id] = hashDirectory(join(root, 'bundled-plugins', helper.name))
       }
-      state = { version: 6, phase: 'pending', integrity }
+      state = { version: 7, phase: 'pending', integrity }
       // This intent precedes policy creation, so a failed first startup can resume safely.
       save(state)
     } else if (state.version === 3) {
@@ -136,6 +136,79 @@ export async function initializeDefaultHelpers(options: {
       } else state = { ...state, version: 6 }
       save(state)
     }
+    if (state.version === 6) {
+      // Bundled verifier bytes changed again (sidebar footer entry + fullscreen page). A
+      // receipt refreshes only when its pin still matches the installed tree and the current
+      // source differs; foreign pins and absent pins stay fail-closed, preserving explicit
+      // removals and interrupted-integrity rejections.
+      const verifier = BUNDLED_HELPERS.find((helper) => helper.name === 'research-verifier')
+      if (!verifier) {
+        state = { ...state, version: 7 }
+        save(state)
+      } else {
+        const root = bundledPluginSourceRoot(verifier.ref)
+        if (!root) throw new Error('Bundled helper source unavailable')
+        const expectedIntegrity = hashDirectory(join(root, 'bundled-plugins', verifier.name))
+        const pinned = Object.hasOwn(state.integrity, verifier.id)
+        const inventory = existsSync(lockPath(options.profileDir))
+          ? await options.manager.inventory(options.profileDir)
+          : undefined
+        const installed = inventory?.packages.find((pkg) => pkg.id === verifier.id)
+        if (
+          pinned &&
+          installed !== undefined &&
+          installed.entry.integrity === state.integrity[verifier.id] &&
+          installed.entry.integrity !== expectedIntegrity
+        ) {
+          const integrity = { ...state.integrity, [verifier.id]: expectedIntegrity }
+          if (state.phase === 'complete') {
+            // Keep the v6 receipt until refreshVerifier has fully updated, trusted, and
+            // enabled the snapshot. Writing v7 here would make a failed update look complete
+            // on the next daemon start and permanently skip the retry path.
+            refreshVerifier = {
+              id: verifier.id,
+              source: parseSource(verifier.ref),
+              expectedIntegrity,
+              preserveEnabled: installed.entry.state.enabled ?? true,
+            }
+            // The new pin is committed together with the successful update below.
+          } else {
+            state = { ...state, version: 7, phase: 'pending', integrity }
+          }
+        } else {
+          state = { ...state, version: 7 }
+        }
+        save(state)
+      }
+    }
+    // Recover a v7 receipt written by an older migration implementation before its package
+    // update committed. The receipt already carries the current source pin, so a complete
+    // state with a same-source older snapshot is an interrupted refresh, not a user removal.
+    if (state.version === 7 && state.phase === 'complete') {
+      const verifier = BUNDLED_HELPERS.find((helper) => helper.name === 'research-verifier')
+      if (verifier && Object.hasOwn(state.integrity, verifier.id)) {
+        const root = bundledPluginSourceRoot(verifier.ref)
+        if (!root) throw new Error('Bundled helper source unavailable')
+        const expectedIntegrity = hashDirectory(join(root, 'bundled-plugins', verifier.name))
+        const inventory = existsSync(lockPath(options.profileDir))
+          ? await options.manager.inventory(options.profileDir)
+          : undefined
+        const installed = inventory?.packages.find((pkg) => pkg.id === verifier.id)
+        if (
+          installed !== undefined &&
+          installed.entry.source.ref === verifier.ref &&
+          state.integrity[verifier.id] === expectedIntegrity &&
+          installed.entry.integrity !== expectedIntegrity
+        ) {
+          refreshVerifier = {
+            id: verifier.id,
+            source: parseSource(verifier.ref),
+            expectedIntegrity,
+            preserveEnabled: installed.entry.state.enabled ?? true,
+          }
+        }
+      }
+    }
     await options.initializePolicy()
     if (refreshVerifier) {
       await options.manager.recover(options.profileDir)
@@ -163,6 +236,7 @@ export async function initializeDefaultHelpers(options: {
         },
       )
       state = { ...state, phase: 'complete' }
+      state = { ...state, version: 7, integrity: { ...state.integrity, [refreshVerifier.id]: refreshVerifier.expectedIntegrity } }
       save(state)
       return
     }

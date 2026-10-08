@@ -362,7 +362,14 @@ if (rightTraceRegion) {
     }
   }
 
-  rightTraceRegion.prepend(expandToggle)
+  // Keep the control in the session tab bar so it remains discoverable while the
+  // trace region is hidden behind the Conversation tab. A fallback inside the
+  // region preserves the no-shell/embedded host contract.
+  const tabBar = document.querySelector<HTMLElement>('.session-tabs-bar')
+  if (tabBar) {
+    tabBar.append(expandToggle)
+    expandToggle.classList.add('trace-expand-toggle-docked')
+  } else rightTraceRegion.prepend(expandToggle)
   expandToggle.addEventListener('click', () =>
     setTraceExpanded(!rightTraceRegion.classList.contains('trace-expanded')),
   )
