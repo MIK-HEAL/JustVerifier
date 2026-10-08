@@ -93,9 +93,19 @@ __pycache__/
 *.pyc
 
 
-scripts/
+# Keep reproducible PowerShell entry points; ignore machine-local script outputs.
+scripts/*
+!scripts/*.ps1
+!scripts/README.md
 task/
 
 # Versioned project plans requested by the JustVerifier workflow.
 !task/
 !task/*.md
+
+tmp/
+tmp/*
+note/
+note/*.md
+# Local desired-state snapshot (machine-specific build baseline).
+.desired.json

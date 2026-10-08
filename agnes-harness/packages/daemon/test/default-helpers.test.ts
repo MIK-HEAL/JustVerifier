@@ -62,6 +62,7 @@ it('installs bundled release packages offline once and preserves disable/remove 
     ['@agnes/mcp-helper', true, true],
     ['@agnes/open-science', true, true],
     ['@agnes/plugin-helper', true, true],
+    ['@agnes/research-verifier', true, true],
     ['@agnes/skill-helper', true, true],
   ])
   const publish = vi.fn(async () => {})
@@ -81,7 +82,9 @@ it('installs bundled release packages offline once and preserves disable/remove 
   ).toEqual([
     ['@agnes/document-reader', true],
     ['@agnes/mcp-helper', false],
+    ['@agnes/open-science', true],
     ['@agnes/plugin-helper', true],
+    ['@agnes/research-verifier', true],
   ])
   expect(s.exec).not.toHaveBeenCalled()
 })
@@ -89,7 +92,7 @@ it('provisions old profiles and rejects damaged initialization records', async (
   const s = setup()
   await s.initializePolicy()
   await initializeDefaultHelpers(s)
-  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(5)
+  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(6)
   writeFileSync(join(s.profileDir, 'default-helpers', 'state.json'), '{}')
   await expect(initializeDefaultHelpers(s)).rejects.toThrow('Invalid helper initialization')
 })
@@ -109,17 +112,92 @@ it('resumes interrupted first initialization without replacing already installed
   )
   spy.mockRestore()
 })
-it('does not trust an interrupted initialization with changed release hashes', async () => {
+it.each(['@agnes/skill-helper', '@agnes/open-science', '@agnes/research-verifier'])(
+  'does not trust an interrupted initialization with changed release hashes for %s',
+  async (id) => {
+    const s = setup()
+    const spy = vi.spyOn(s.manager, 'trust').mockRejectedValueOnce(new Error('interrupted'))
+    await expect(initializeDefaultHelpers(s)).rejects.toThrow('interrupted')
+    spy.mockRestore()
+    const file = join(s.profileDir, 'default-helpers', 'state.json')
+    const state = JSON.parse(readFileSync(file, 'utf8'))
+    state.integrity[id] = `sha256-${'0'.repeat(64)}`
+    writeFileSync(file, JSON.stringify(state))
+    await expect(initializeDefaultHelpers(s)).rejects.toThrow('verification failed')
+    const changed = (await s.manager.inventory(s.profileDir)).packages.find((p) => p.id === id)
+    expect(changed?.trusted ?? false).toBe(false)
+  },
+)
+
+it.each([
+  { enabled: true, version: 6 },
+  { enabled: false, version: 6 },
+  { enabled: true, version: 5 },
+])(
+  'resumes a stale receipt only from an already trusted snapshot (v$version, enabled=$enabled)',
+  async ({ enabled, version }) => {
+    const s = setup()
+    await initializeDefaultHelpers(s)
+    await s.manager.setEnabled(s.profileDir, '@agnes/open-science', enabled)
+    const file = join(s.profileDir, 'default-helpers', 'state.json')
+    const state = JSON.parse(readFileSync(file, 'utf8'))
+    const inventory = await s.manager.inventory(s.profileDir)
+    const science = inventory.packages.find((p) => p.id === '@agnes/open-science')
+    if (!science) throw new Error('Science helper was not installed')
+    state.version = version
+    state.phase = 'pending'
+    state.integrity = {
+      '@agnes/open-science': `sha256-${'0'.repeat(64)}`,
+      '@agnes/research-verifier':
+        version === 5 ? `sha256-${'0'.repeat(64)}` : state.integrity['@agnes/research-verifier'],
+    }
+    writeFileSync(file, JSON.stringify(state))
+
+    await initializeDefaultHelpers(s)
+    const resumed = await s.manager.inventory(s.profileDir)
+    expect(resumed.packages.find((p) => p.id === science.id)).toMatchObject({
+      trusted: true,
+      enabled,
+      entry: { integrity: science.entry.integrity },
+    })
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({
+      version: 6,
+      phase: 'installed',
+      integrity: { '@agnes/open-science': science.entry.integrity },
+    })
+    const publish = vi.fn(async () => {})
+    await activateDefaultHelpers({
+      profileDir: s.profileDir,
+      inventory: resumed,
+      previous: undefined,
+      publish,
+    })
+    expect(publish).toHaveBeenCalledOnce()
+    expect(JSON.parse(readFileSync(file, 'utf8')).phase).toBe('complete')
+    expect(s.exec).not.toHaveBeenCalled()
+  },
+)
+
+it('completes a pending receipt with disabled trusted packages without activating them', async () => {
   const s = setup()
-  const spy = vi.spyOn(s.manager, 'trust').mockRejectedValueOnce(new Error('interrupted'))
-  await expect(initializeDefaultHelpers(s)).rejects.toThrow('interrupted')
-  spy.mockRestore()
+  await initializeDefaultHelpers(s)
+  const inventory = await s.manager.inventory(s.profileDir)
+  for (const pkg of inventory.packages) await s.manager.setEnabled(s.profileDir, pkg.id, false)
   const file = join(s.profileDir, 'default-helpers', 'state.json')
   const state = JSON.parse(readFileSync(file, 'utf8'))
-  state.integrity['@agnes/skill-helper'] = `sha256-${'0'.repeat(64)}`
-  writeFileSync(file, JSON.stringify(state))
-  await expect(initializeDefaultHelpers(s)).rejects.toThrow('verification failed')
-  expect((await s.manager.inventory(s.profileDir)).packages.every((p) => !p.entry.state.trusted)).toBe(true)
+  writeFileSync(file, JSON.stringify({ ...state, phase: 'pending' }))
+  await initializeDefaultHelpers(s)
+  const publish = vi.fn(async () => {})
+  await activateDefaultHelpers({
+    profileDir: s.profileDir,
+    inventory: await s.manager.inventory(s.profileDir),
+    previous: undefined,
+    publish,
+  })
+  expect(publish).not.toHaveBeenCalled()
+  expect(JSON.parse(readFileSync(join(s.profileDir, 'default-helpers', 'state.json'), 'utf8')).phase).toBe(
+    'complete',
+  )
 })
 
 it('retries target publication after failure and never reactivates completed defaults', async () => {
@@ -165,12 +243,19 @@ it('migrates the earlier existing marker without enabling or replacing an instal
   await s.manager.setEnabled(s.profileDir, '@agnes/mcp-helper', false)
   await s.manager.remove(s.profileDir, '@agnes/mcp-helper')
   await initializeDefaultHelpers(s)
-  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(4)
+  expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(5)
 })
 it('records completion without activation when all helpers are already installed', async () => {
   const s = setup()
   await s.initializePolicy()
-  for (const name of ['skill-helper', 'mcp-helper', 'plugin-helper', 'document-reader', 'open-science']) {
+  for (const name of [
+    'skill-helper',
+    'mcp-helper',
+    'plugin-helper',
+    'document-reader',
+    'open-science',
+    'research-verifier',
+  ]) {
     const source = parseSource(`file:./bundled-plugins/${name}`)
     const preview = await s.manager.inspect(s.profileDir, source)
     await s.manager.install(s.profileDir, source, { expectedIntegrity: preview.integrity })
@@ -211,7 +296,7 @@ it.each([1, 2])(
     })
     expect(
       JSON.parse(readFileSync(join(s.profileDir, 'default-helpers', 'state.json'), 'utf8')).version,
-    ).toBe(4)
+    ).toBe(6)
     for (const pkg of (await s.manager.inventory(s.profileDir)).packages) {
       await s.manager.setEnabled(s.profileDir, pkg.id, false)
       await s.manager.remove(s.profileDir, pkg.id)

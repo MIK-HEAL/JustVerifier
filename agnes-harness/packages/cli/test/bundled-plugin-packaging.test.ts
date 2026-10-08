@@ -2,7 +2,9 @@ import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { checkServiceDef } from '@agnes/extension-api'
+import { createPackageManager, parseSource } from '@agnes/package-manager'
 import { build } from 'esbuild'
 import { afterEach, expect, it } from 'vitest'
 import { copyBundledPlugins } from '../tools/build-local.js'
@@ -93,4 +95,57 @@ it('ships the bundled research catalog with its Skill support files', async () =
   })
   expect((await readdir(join(packageRoot, 'skills'))).length).toBeGreaterThanOrEqual(20)
   expect(await readFile(join(packageRoot, 'mcp', 'servers.json'), 'utf8')).toContain('open-science-notebook')
+})
+
+it('ships the research-verifier client extension into local builds', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agnes-research-verifier-delivery-'))
+  roots.push(root)
+  const output = join(root, 'runtime')
+  await copyBundledPlugins(output)
+
+  const packageRoot = join(output, 'bundled-plugins', 'research-verifier')
+  const clientRoot = join(packageRoot, 'extensions', 'main', 'client')
+  const descriptor = JSON.parse(
+    await readFile(join(packageRoot, 'extensions', 'main', 'agnes.client.json'), 'utf8'),
+  ) as { client?: { entry?: string; styles?: string[]; services?: string[]; slots?: string[] } }
+
+  expect(descriptor.client).toMatchObject({
+    entry: './client/index.js',
+    styles: ['./client/index.css'],
+    slots: ['sidebar.workspaces', 'workbench.panel'],
+    services: ['research.multiagent.start'],
+  })
+  expect((await readdir(clientRoot)).sort()).toEqual(['index.css', 'index.js'])
+  const manager = createPackageManager({
+    dataDir: root,
+    cwd: root,
+    agnesVersion: '0.0.0',
+    references: async () => [],
+  })
+  const preview = await manager.inspect(
+    join(root, 'profiles', 'local-dev'),
+    parseSource('file:./runtime/bundled-plugins/research-verifier'),
+  )
+  expect(preview.blockers).toEqual([])
+  expect(preview.contributions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'client',
+        rowId: 'ext:research-verifier/main',
+        client: expect.objectContaining({
+          slots: ['sidebar.workspaces', 'workbench.panel'],
+          services: ['research.multiagent.start'],
+        }),
+      }),
+    ]),
+  )
+  const { researchVerifier } = await import(pathToFileURL(join(packageRoot, 'index.mjs')).href)
+  const services: unknown[] = []
+  researchVerifier.apply({
+    services: { register: (service: unknown) => services.push(service) },
+    extension: () => ({ registerTool() {} }),
+  })
+  expect(services).toHaveLength(1)
+  expect(services[0]).toMatchObject({ name: 'research.multiagent.start' })
+  expect(checkServiceDef(services[0])).toEqual({ ok: true })
 })

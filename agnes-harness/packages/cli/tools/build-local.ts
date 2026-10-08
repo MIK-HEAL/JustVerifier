@@ -43,6 +43,7 @@ export async function copyBundledPlugins(outputDirectory: string): Promise<void>
       'manifest.lock.json',
       'README.md',
       'LICENSE',
+      'extensions',
     ]) {
       if (!existsSync(join(source, name))) continue
       await cp(join(source, name), join(destination, name), {

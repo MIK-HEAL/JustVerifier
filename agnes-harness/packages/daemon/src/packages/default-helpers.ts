@@ -6,6 +6,7 @@ import {
   hashDirectory,
   type InstalledInventory,
   isRuntimePackageEligible,
+  isSnapshotPackageEligible,
   lockPath,
   type PackageManager,
   parseSource,
@@ -21,6 +22,14 @@ export async function initializeDefaultHelpers(options: {
   manager: PackageManager
   initializePolicy(): Promise<void>
 }): Promise<void> {
+  let refreshVerifier:
+    | {
+        id: string
+        source: ReturnType<typeof parseSource>
+        expectedIntegrity: string
+        preserveEnabled: boolean
+      }
+    | undefined
   await withDefaultHelperState(options.profileDir, async (state, save) => {
     if (!state || state.phase === 'existing' || state.version < 3) {
       const inventory = existsSync(lockPath(options.profileDir))
@@ -41,7 +50,7 @@ export async function initializeDefaultHelpers(options: {
         if (!root) throw new Error('Bundled helper source unavailable')
         integrity[helper.id] = hashDirectory(join(root, 'bundled-plugins', helper.name))
       }
-      state = { version: 4, phase: 'pending', integrity }
+      state = { version: 6, phase: 'pending', integrity }
       // This intent precedes policy creation, so a failed first startup can resume safely.
       save(state)
     } else if (state.version === 3) {
@@ -73,36 +82,137 @@ export async function initializeDefaultHelpers(options: {
       }
       save(state)
     }
+    // Version 4 profiles were released before the research-verifier client module existed.
+    // Add only helpers absent from the receipt: an absent id means it was not part of the
+    // user's previous default set, while a present id preserves an explicit removal/disable.
+    if (state?.version === 4) {
+      const verifier = BUNDLED_HELPERS.find((helper) => helper.name === 'research-verifier')
+      if (verifier) {
+        const root = bundledPluginSourceRoot(verifier.ref)
+        if (!root) throw new Error('Bundled helper source unavailable')
+        const expectedIntegrity = hashDirectory(join(root, 'bundled-plugins', verifier.name))
+        const inventory = existsSync(lockPath(options.profileDir))
+          ? await options.manager.inventory(options.profileDir)
+          : undefined
+        const installed = inventory?.packages.find((pkg) => pkg.id === verifier.id)
+        const hadVerifier = Object.hasOwn(state.integrity, verifier.id)
+        const packageChanged = installed !== undefined && installed.entry.integrity !== expectedIntegrity
+        const integrity = { ...state.integrity, [verifier.id]: expectedIntegrity }
+        state = {
+          version: 5,
+          phase: state.phase === 'complete' && !hadVerifier ? 'pending' : state.phase,
+          integrity,
+        }
+        if (state.phase === 'complete' && packageChanged)
+          refreshVerifier = {
+            id: verifier.id,
+            source: parseSource(verifier.ref),
+            expectedIntegrity,
+            preserveEnabled: installed?.entry.state.enabled ?? true,
+          }
+        save(state)
+      } else {
+        state = { ...state, version: 5 }
+        save(state)
+      }
+    }
+    if (state.version === 5) {
+      // v5 pinned a verifier service name that the host refuses (multi-agent).
+      // Supersede only that unfinished release-owned intent; completed profiles
+      // and every other helper retain their pins and the user's lifecycle choices.
+      const verifier = BUNDLED_HELPERS.find((helper) => helper.name === 'research-verifier')
+      if (verifier && state.phase !== 'complete' && Object.hasOwn(state.integrity, verifier.id)) {
+        const root = bundledPluginSourceRoot(verifier.ref)
+        if (!root) throw new Error('Bundled helper source unavailable')
+        state = {
+          ...state,
+          version: 6,
+          phase: 'pending',
+          integrity: {
+            ...state.integrity,
+            [verifier.id]: hashDirectory(join(root, 'bundled-plugins', verifier.name)),
+          },
+        }
+      } else state = { ...state, version: 6 }
+      save(state)
+    }
     await options.initializePolicy()
+    if (refreshVerifier) {
+      await options.manager.recover(options.profileDir)
+      const preview = await options.manager.inspect(options.profileDir, refreshVerifier.source)
+      if (
+        preview.id !== refreshVerifier.id ||
+        preview.integrity !== refreshVerifier.expectedIntegrity ||
+        preview.blockers.length ||
+        !preview.capabilityHash
+      )
+        throw new Error('Bundled helper verification failed')
+      await options.manager.update(options.profileDir, refreshVerifier.id, refreshVerifier.source, {
+        expectedIntegrity: refreshVerifier.expectedIntegrity,
+      })
+      await options.manager.trust(options.profileDir, refreshVerifier.id, {
+        integrity: preview.integrity,
+        capabilityHash: preview.capabilityHash,
+      })
+      await options.manager.setEnabled(
+        options.profileDir,
+        refreshVerifier.id,
+        refreshVerifier.preserveEnabled,
+        {
+          expectedInstalledIntegrity: preview.integrity,
+        },
+      )
+      state = { ...state, phase: 'complete' }
+      save(state)
+      return
+    }
     if (state.phase !== 'pending') return
     await options.manager.recover(options.profileDir)
     for (const helper of BUNDLED_HELPERS) {
       if (!Object.hasOwn(state.integrity, helper.id)) continue
       const source = parseSource(helper.ref)
       const preview = await options.manager.inspect(options.profileDir, source)
-      if (
-        preview.id !== helper.id ||
-        preview.version !== helper.version ||
-        preview.integrity !== state.integrity[helper.id] ||
-        preview.blockers.length ||
-        !preview.capabilityHash
-      )
-        throw new Error('Bundled helper verification failed')
       const installed = (await options.manager.inventory(options.profileDir)).packages.find(
         (p) => p.id === helper.id,
       )
       if (
-        installed &&
-        (installed.entry.integrity !== preview.integrity || installed.entry.source.ref !== helper.ref)
+        preview.id !== helper.id ||
+        preview.version !== helper.version ||
+        preview.blockers.length ||
+        !preview.capabilityHash
       )
-        throw new Error('Existing helper differs from initialization intent')
+        throw new Error('Bundled helper verification failed')
+      if (preview.integrity !== state.integrity[helper.id]) {
+        // A separately approved package update can outlive an interrupted bootstrap receipt.
+        // Reconcile only against verified, trusted bytes with the same source and capabilities;
+        // a changed release alone never grants authority to replace the pinned receipt.
+        if (
+          !installed ||
+          !isSnapshotPackageEligible(installed) ||
+          installed.entry.source.ref !== helper.ref ||
+          installed.entry.version !== helper.version ||
+          installed.entry.integrity !== preview.integrity ||
+          installed.capabilityHash !== preview.capabilityHash
+        )
+          throw new Error('Bundled helper verification failed')
+        state = { ...state, integrity: { ...state.integrity, [helper.id]: preview.integrity } }
+        save(state)
+      }
+      const refreshExisting =
+        installed !== undefined &&
+        (installed.entry.integrity !== preview.integrity || installed.entry.source.ref !== helper.ref)
+      const enabled = installed && isSnapshotPackageEligible(installed) ? installed.enabled : true
+      if (refreshExisting)
+        await options.manager.update(options.profileDir, helper.id, source, {
+          expectedIntegrity: preview.integrity,
+        })
       if (!installed)
         await options.manager.install(options.profileDir, source, { expectedIntegrity: preview.integrity })
       await options.manager.trust(options.profileDir, helper.id, {
         integrity: preview.integrity,
         capabilityHash: preview.capabilityHash,
       })
-      await options.manager.setEnabled(options.profileDir, helper.id, true, {
+      await options.manager.setEnabled(options.profileDir, helper.id, enabled, {
         expectedInstalledIntegrity: preview.integrity,
       })
     }
@@ -124,8 +234,9 @@ export async function activateDefaultHelpers(options: {
     for (const helper of BUNDLED_HELPERS) {
       if (!Object.hasOwn(state.integrity, helper.id)) continue
       const pkg = options.inventory.packages.find((p) => p.id === helper.id)
-      if (!pkg || !isRuntimePackageEligible(pkg) || pkg.entry.integrity !== state.integrity[helper.id])
+      if (!pkg || !isSnapshotPackageEligible(pkg) || pkg.entry.integrity !== state.integrity[helper.id])
         throw new Error('Bundled helper activation verification failed')
+      if (!isRuntimePackageEligible(pkg)) continue
       target = rebuildDesiredFromInventory({
         previous: target,
         inventory: options.inventory,
@@ -133,8 +244,7 @@ export async function activateDefaultHelpers(options: {
         operation: 'enable',
       })
     }
-    if (!target) throw new Error('Bundled helper target unavailable')
-    await options.publish(target)
+    if (target) await options.publish(target)
     save({ ...state, phase: 'complete' })
   })
 }

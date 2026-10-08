@@ -8,7 +8,6 @@ const parameters = {
 }
 
 const multiAgentStartInput = {
-  [Kind]: 'Object',
   type: 'object',
   additionalProperties: false,
   required: ['prompt', 'plan'],
@@ -16,12 +15,19 @@ const multiAgentStartInput = {
     prompt: { type: 'string', minLength: 1, maxLength: 32_000 },
     session_id: { type: 'string', minLength: 1, maxLength: 256 },
     agent_prompts: { type: 'object', additionalProperties: { type: 'string', maxLength: 8_000 } },
-    plan: { type: 'object', additionalProperties: true },
+    plan: {
+      type: 'object',
+      additionalProperties: true,
+      maxProperties: 16,
+      properties: {
+        agents: { type: 'array', maxItems: 256 },
+        tasks: { type: 'array', maxItems: 256 },
+      },
+    },
   },
 }
 
 const multiAgentStartOutput = {
-  [Kind]: 'Object',
   type: 'object',
   additionalProperties: false,
   required: ['run_id', 'status', 'plan_checksum'],
@@ -53,23 +59,52 @@ function planErrors(plan) {
   const errors = []
   if (!plan || typeof plan !== 'object') return ['plan']
   const agentRows = Array.isArray(plan.agents) ? plan.agents : []
-  const agents = new Set(agentRows.map((agent) => agent?.agent_id))
-  const tasks = new Map(Array.isArray(plan.tasks) ? plan.tasks.map((task) => [task?.task_id, task]) : [])
+  const agents = new Set()
+  for (const [index, agent] of agentRows.entries()) {
+    const id = agent?.agent_id
+    if (!id) errors.push(`agents[${index}].agent_id`)
+    else if (agents.has(id)) errors.push(`${id}.agent_id.duplicate`)
+    else agents.add(id)
+  }
+  const taskRows = Array.isArray(plan.tasks) ? plan.tasks : []
+  const tasks = new Map()
+  for (const [index, task] of taskRows.entries()) {
+    if (!task || typeof task !== 'object') {
+      errors.push(`tasks[${index}]`)
+      continue
+    }
+    const id = task.task_id
+    if (!id) {
+      errors.push(`tasks[${index}].task_id`)
+      continue
+    }
+    if (tasks.has(id)) {
+      errors.push(`${id}.task_id.duplicate`)
+      continue
+    }
+    tasks.set(id, task)
+  }
   if (!agents.has(plan.root_agent_id)) errors.push('root_agent_id')
   else if (agentRows.find((agent) => agent?.agent_id === plan.root_agent_id)?.role !== 'planner') errors.push('root_agent_id.role')
   for (const task of tasks.values()) {
     if (!task?.agent_id || !agents.has(task.agent_id)) errors.push(`${task?.task_id ?? 'task'}.agent_id`)
     if (!task?.output_namespace?.startsWith(`${task?.agent_id}/`)) errors.push(`${task?.task_id ?? 'task'}.output_namespace`)
-    for (const dependency of task?.depends_on ?? []) if (!tasks.has(dependency)) errors.push(`${task.task_id}.depends_on`)
+    for (const dependency of Array.isArray(task.depends_on) ? task.depends_on : [])
+      if (!tasks.has(dependency)) errors.push(`${task.task_id}.depends_on`)
   }
-  const pending = new Map([...tasks].map(([id, task]) => [id, (task.depends_on ?? []).length]))
+  const pending = new Map([...tasks].map(([id, task]) => [id, Array.isArray(task.depends_on) ? task.depends_on.length : 0]))
+  const dependents = new Map([...tasks].map(([id]) => [id, []]))
+  for (const [taskId, task] of tasks) {
+    for (const dependency of Array.isArray(task.depends_on) ? task.depends_on : []) {
+      dependents.get(dependency)?.push(taskId)
+    }
+  }
   const ready = [...pending].filter(([, count]) => count === 0).map(([id]) => id)
   let visited = 0
   while (ready.length) {
     const id = ready.shift()
     visited += 1
-    for (const [taskId, task] of tasks) {
-      if (!(task.depends_on ?? []).includes(id)) continue
+    for (const taskId of dependents.get(id) ?? []) {
       const count = (pending.get(taskId) ?? 0) - 1
       pending.set(taskId, count)
       if (count === 0) ready.push(taskId)
@@ -88,7 +123,7 @@ export const researchVerifier = {
   inject: ['extension'],
   apply(ctx) {
     ctx.services.register({
-      name: 'research.multi-agent.start',
+      name: 'research.multiagent.start',
       kind: 'effect',
       inputSchema: multiAgentStartInput,
       outputSchema: multiAgentStartOutput,

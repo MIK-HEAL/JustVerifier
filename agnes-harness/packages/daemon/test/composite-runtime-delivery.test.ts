@@ -256,6 +256,28 @@ describe('CompositeRuntimeDelivery failure handling', () => {
       expect(calls).toBe(1)
     })
 
+    it('preserves a public failure reason from the boot error detail', () => {
+      const { store, delivery } = withDelivery()
+      const bad = artifact('ext:bad')
+      store.publishDesired(bad)
+      const boot = delivery.bootFor(3)
+      if (!boot) throw new Error('expected a boot target')
+      const error = Object.assign(new Error('did not boot'), { detail: { reason: 'missing-runtime' } })
+      expect(delivery.recordBootFailure(3, boot, error)).toBe(true)
+      expect(store.lastFailure()).toMatchObject({ reason: 'missing-runtime' })
+    })
+
+    it('does not persist a sensitive failure reason from the boot error detail', () => {
+      const { store, delivery } = withDelivery()
+      const bad = artifact('ext:bad')
+      store.publishDesired(bad)
+      const boot = delivery.bootFor(3)
+      if (!boot) throw new Error('expected a boot target')
+      const error = Object.assign(new Error('did not boot'), { detail: { reason: 'token=secret' } })
+      expect(delivery.recordBootFailure(3, boot, error)).toBe(true)
+      expect(store.lastFailure()?.reason).toBeUndefined()
+    })
+
     it('still says it was the target when the failure frame already got the target put back', () => {
       const { store, delivery } = withDelivery()
       const bad = artifact('ext:bad')

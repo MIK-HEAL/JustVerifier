@@ -39,13 +39,14 @@ import { decodeRuntimeTargetArtifact } from '@agnes/plugin-runtime/host'
 
 const decode = (artifact: ReturnType<typeof target>) => decodeRuntimeTargetArtifact(artifact).tree.rows
 
-const fail = (store: CompositeTargetStore, artifact: ReturnType<typeof target>, message = 'did not start') =>
+const fail = (store: CompositeTargetStore, artifact: ReturnType<typeof target>, message = 'did not start', reason?: string) =>
   store.qualifyFailed(1, artifact, {
     generation: 1,
     digest: artifact.digest,
     identity: artifact.identity,
     phase: 'apply',
     message,
+    ...(reason === undefined ? {} : { reason }),
   })
 
 function setup(loadable: Record<string, string>) {
@@ -98,6 +99,22 @@ describe('revertFailedDesired', () => {
     expect(store.lastFailure()).toBeUndefined()
     expect(events.map((e) => e.kind)).toEqual(['plugin.tree.reverted'])
     expect(events[0]?.detail).toMatchObject({ packages: ['pkg-b'], level: 'previous' })
+  })
+
+  it('preserves a failure reason in package records and revert audit events', async () => {
+    const a = `pkg-a@${snapshot('1')}`
+    const { store, events, reverter } = setup({ [a]: snapshot('1') })
+    const good = target([])
+    store.publishDesired(good)
+    confirm(store, good)
+    const bad = target([row('ext:pkg-a/main', 'pkg-a', snapshot('1'))])
+    store.publishDesired(bad)
+    fail(store, bad, 'pkg-a threw', 'missing-runtime')
+
+    await reverter.revertFailedDesired()
+
+    expect(store.packageFailure('pkg-a')).toMatchObject({ reason: 'missing-runtime' })
+    expect(events[0]?.detail).toMatchObject({ reason: 'missing-runtime' })
   })
 
   it('leaves out a package whose earlier version is no longer installed when its update failed', async () => {

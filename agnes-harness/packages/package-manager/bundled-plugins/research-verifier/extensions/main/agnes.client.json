@@ -2,9 +2,9 @@
   "client": {
     "entry": "./client/index.js",
     "styles": ["./client/index.css"],
-    "slots": ["sidebar.panellist", "workbench.panel"],
+    "slots": ["sidebar.workspaces", "workbench.panel"],
     "slotCatalogVersion": "dsh-client-slots/v1",
-    "services": ["research.multi-agent.start"],
+    "services": ["research.multiagent.start"],
     "projections": [],
     "publicConfig": {
       "label": "多 Agent 协作验证",

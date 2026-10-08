@@ -1,3 +1,5 @@
+// 2026-10-08 reviewed helper receipt recovery, verifier migration and shipped client payload.
+// Exact countLines totals: daemon 26994, build-local 316; no exclusions or spare allocation.
 // 2026-10-06 attachment history reopening: bound authority replay so worker frames can be split.
 // Reviewed exact countLines daemon 26847 (+5); no exclusions or spare allocation.
 // 2026-10-06 bundled document reader: default-helper migration and release payload preparation.
@@ -655,7 +657,7 @@ const INITIAL_CEILING: Record<string, number> = {
   // SEA reuses that exact directory. Measured build-local total: 203; exact cap.
   // W5a merges pinned XMarkdown CSS and ships its MIT license with the local Web assets.
   // Measured with countLines(): 287, exact cap.
-  'packages/cli/tools/build-local': 295,
+  'packages/cli/tools/build-local': 316,
   // The PM5 bootstrap fallback retains the existing scoped owner/data-dir contract when a selected
   // Profile has not yet been materialized. The final recovery retry admits only an explicit
   // E_LOCK_MISMATCH path and re-resolves with an empty package lock; this is exact compatibility
@@ -1896,7 +1898,7 @@ const INITIAL_CEILING: Record<string, number> = {
   // An approval request carries the tool's ACP kind and name. Measured 26542 (+6), exact cap.
   // Approval reasons: the prompter router answers with a reason (+18). Measured 26758 (combined tree), exact cap.
   // 2026-10-06: bound image transport byte totals and split oversized worker scan ranges; 26818, exact.
-  'packages/daemon/src': 26847,
+  'packages/daemon/src': 26994,
   'packages/daemon/src/packages/admin-session': 46,
   // 2026-09-14: whole-branch review fix wave (Finding 1) adds the two missing
   // 'pins/inspect'/'pins/release' entries to the ACTIONS BFF route allowlist, which had been left

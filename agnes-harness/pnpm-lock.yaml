@@ -524,6 +524,8 @@ importers:
         specifier: 0.34.33
         version: 0.34.33
 
+  packages/research-verifier: {}
+
   packages/resource-control-cli:
     dependencies:
       '@agnes/daemon':

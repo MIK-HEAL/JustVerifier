@@ -141,7 +141,10 @@ function Workbench({ sessionId, ctx }) {
   const addNode = (role, position) => {
     setNodes((current) => {
       const index = current.filter((node) => node.role === role).length
-      const node = { ...newNode(role, index), id: `${role}-${Date.now().toString(36)}`, ...position }
+      const used = new Set(current.map((node) => node.id))
+      let suffix = index + 1
+      while (used.has(`${role}-${suffix}`)) suffix += 1
+      const node = { ...newNode(role, suffix - 1), id: `${role}-${suffix}`, ...position }
       setSelected(node.id)
       return [...current, node]
     })
@@ -176,19 +179,23 @@ function Workbench({ sessionId, ctx }) {
     setTrace((current) => [{ message: `plan.created · ${plan.checksum}`, time: now }, ...current])
     try {
       const agent_prompts = Object.fromEntries(nodes.filter((node) => node.prompt).map((node) => [node.id, node.prompt]))
-      const result = await ctx.agnes.services.call('research.multi-agent.start', { prompt, plan, agent_prompts, session_id: sessionId })
+      const result = await ctx.agnes.services.call('research.multiagent.start', { prompt, plan, agent_prompts, session_id: sessionId })
       const output = result?.output ?? result
       const resultTrace = Array.isArray(output?.trace) ? output.trace : []
       setTrace((current) => [
         ...resultTrace.map((item) => ({ message: item.kind ?? 'verification.queued', time: new Date().toLocaleTimeString() })),
         ...current,
       ])
-      setStatus(`已排队 · ${output?.run_id ?? 'run pending'}`)
+      setStatus(`已排队（尚无执行器） · ${output?.run_id ?? 'run pending'}`)
       setStatusKind('success')
     } catch (error) {
-      setStatus(`后端编排服务不可用：${error?.message ?? 'unknown error'}`)
+      const code = error?.code ?? error?.cause?.code
+      const invalidPlan = code === 'INVALID_MULTI_AGENT_PLAN'
+      setStatus(invalidPlan
+        ? `编排计划非法：${error?.message ?? '请检查节点和依赖关系'}`
+        : `后端编排服务不可用：${error?.message ?? 'unknown error'}`)
       setStatusKind('error')
-      setTrace((current) => [{ message: 'verification.blocked · service unavailable', time: new Date().toLocaleTimeString() }, ...current])
+      setTrace((current) => [{ message: invalidPlan ? 'verification.blocked · invalid plan' : 'verification.blocked · service unavailable', time: new Date().toLocaleTimeString() }, ...current])
     } finally { setRunning(false) }
   }
 
@@ -249,7 +256,7 @@ function Workbench({ sessionId, ctx }) {
 }
 
 export function apply(ctx) {
-  ctx.slots.register('sidebar.panellist', Entry, { priority: -2 })
+  ctx.slots.register('sidebar.workspaces', Entry, { priority: -2 })
   ctx.slots.register('workbench.panel', (props) => createElement(Workbench, { ...props, ctx }), { priority: -2 })
 }
 

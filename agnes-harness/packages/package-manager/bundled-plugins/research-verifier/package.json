@@ -9,11 +9,7 @@
   "agnes": {
     "contributions": [
       { "kind": "skill", "id": "research-verifier/research-run", "path": "./skills/research-run/SKILL.md" },
-      { "kind": "skill", "id": "research-verifier/assumption-audit", "path": "./skills/assumption-audit/SKILL.md" },
-      { "kind": "kb", "id": "research-verifier/certificate-schema", "path": "./schema/certificate.schema.json" },
-      { "kind": "kb", "id": "research-verifier/manifest-schema", "path": "./schema/manifest.schema.json" },
-      { "kind": "kb", "id": "research-verifier/report-schema", "path": "./schema/report.schema.json" },
-      { "kind": "kb", "id": "research-verifier/multi-agent-plan-schema", "path": "./schema/multi-agent-plan.schema.json" }
+      { "kind": "skill", "id": "research-verifier/assumption-audit", "path": "./skills/assumption-audit/SKILL.md" }
     ],
     "plugins": [
       {
@@ -21,7 +17,7 @@
         "id": "ext:research-verifier/main",
         "inject": ["extension"],
         "runtime": "in-process",
-        "services": ["research.multi-agent.start"]
+        "services": ["research.multiagent.start"]
       }
     ],
     "clientDescriptors": [
