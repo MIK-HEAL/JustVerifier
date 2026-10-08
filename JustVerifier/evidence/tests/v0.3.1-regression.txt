@@ -1,0 +1,29 @@
+[32m✔ 正常候选解必须 PASS [90m(1.713666ms)[39m[39m
+[32m✔ 篡改历史排班必须拒绝 [90m(0.280561ms)[39m[39m
+[32m✔ 破坏最低班次覆盖必须拒绝 [90m(0.200231ms)[39m[39m
+[32m✔ 违反员工不可用日期必须拒绝 [90m(0.23211ms)[39m[39m
+[32m✔ 违反连续工作上限必须拒绝 [90m(0.229415ms)[39m[39m
+[32m✔ 违反夜班上限必须拒绝 [90m(0.203003ms)[39m[39m
+[32m✔ 篡改问题元数据必须拒绝 [90m(0.17727ms)[39m[39m
+[32m✔ 伪造修改数量必须拒绝 [90m(0.220291ms)[39m[39m
+[32m✔ 没有候选解不能伪称通过 [90m(0.181409ms)[39m[39m
+[32m✔ NORMAL: no minimum coverage violations [90m(0.714772ms)[39m[39m
+[32m✔ FAILURE: missing minimum staff generates counterexample [90m(0.505753ms)[39m[39m
+[32m✔ REPAIR: preserve coverage by reassigning available worker [90m(0.585282ms)[39m[39m
+[32m✔ FAILURE: no local repair is not a proof of infeasibility [90m(0.163468ms)[39m[39m
+[32m✔ ERROR: malformed minimum staff requirements rejected [90m(0.265362ms)[39m[39m
+[32m✔ TOOL: both tools declare complete meta and register [90m(0.279983ms)[39m[39m
+[32m✔ NORMAL: 合法排班 [90m(0.632999ms)[39m[39m
+[32m✔ BOUNDARY: 夜班与早班之间有休息日 [90m(0.112293ms)[39m[39m
+[32m✔ FAILURE: 夜班后接早班并自动修复 [90m(0.937775ms)[39m[39m
+[32m✔ MULTI: 多处违规需要多轮修复 [90m(0.322427ms)[39m[39m
+[32m✔ ERROR: 非法班次必须拒绝 [90m(0.272682ms)[39m[39m
+[32m✔ ERROR: 员工名称重复必须拒绝 [90m(0.097068ms)[39m[39m
+[34mℹ tests 21[39m
+[34mℹ suites 0[39m
+[34mℹ pass 21[39m
+[34mℹ fail 0[39m
+[34mℹ cancelled 0[39m
+[34mℹ skipped 0[39m
+[34mℹ todo 0[39m
+[34mℹ duration_ms 132.658734[39m

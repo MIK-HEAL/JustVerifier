@@ -1,0 +1,33 @@
+{
+  "name": "@justverifier/verification",
+  "version": "0.3.1",
+  "type": "module",
+  "private": true,
+  "exports": "./index.mjs",
+  "agnes": {
+    "plugins": [
+      {
+        "export": "justVerifierPlugin",
+        "id": "ext:justverifier/verification",
+        "inject": [
+          "extension"
+        ]
+      },
+      {
+        "export": "cpSatPlugin",
+        "id": "ext:justverifier/cp-sat",
+        "inject": [
+          "extension"
+        ]
+      },
+      {
+        "export": "auditPlugin",
+        "id": "ext:justverifier/audit",
+        "inject": [
+          "extension"
+        ]
+      }
+    ]
+  },
+  "license": "MIT"
+}

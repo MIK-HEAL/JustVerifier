@@ -1,0 +1,18 @@
+{
+  "status": "FAIL",
+  "checked_rules": [
+    "NIGHT_TO_MORNING",
+    "COVERAGE_SHORTAGE",
+    "PROBLEM_METADATA_UNCHANGED",
+    "FIXED_DAYS",
+    "UNAVAILABLE",
+    "MAX_CONSECUTIVE_DAYS",
+    "MAX_NIGHT_SHIFTS",
+    "CHANGE_COUNT"
+  ],
+  "changed_assignments": 3,
+  "violations": [
+    "FIXED_DAY_CHANGED:Alice:Mon",
+    "CHANGE_COUNT_MISMATCH"
+  ]
+}

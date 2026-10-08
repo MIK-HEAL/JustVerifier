@@ -1,0 +1,54 @@
+{
+  "status": "OPTIMAL",
+  "wall_time_seconds": 0.006976824,
+  "changed_assignments": 2,
+  "optimality_proven": true,
+  "changes": [
+    {
+      "employee": "Alice",
+      "day": "Wed",
+      "from": "M",
+      "to": "OFF"
+    },
+    {
+      "employee": "Bob",
+      "day": "Wed",
+      "from": "OFF",
+      "to": "M"
+    }
+  ],
+  "repaired_schedule": {
+    "days": [
+      "Mon",
+      "Tue",
+      "Wed"
+    ],
+    "employees": [
+      {
+        "name": "Alice",
+        "shifts": [
+          "M",
+          "N",
+          "OFF"
+        ]
+      },
+      {
+        "name": "Bob",
+        "shifts": [
+          "OFF",
+          "D",
+          "M"
+        ]
+      }
+    ],
+    "coverage_requirements": {
+      "Wed": {
+        "M": 1
+      }
+    },
+    "fixed_days": [
+      "Mon",
+      "Tue"
+    ]
+  }
+}

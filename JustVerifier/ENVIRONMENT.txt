@@ -1,0 +1,22 @@
+=== Operating System ===
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+VERSION_ID="22.04"
+=== Python ===
+Python 3.10.12
+=== Node.js ===
+v24.21.0
+=== pnpm ===
+10.34.5
+=== AGH Source ===
+Repository: https://github.com/AgnesAI-Labs/agnes-harness
+Git Commit: Unavailable (source snapshot without Git metadata)
+AGH Package Version:
+unavailable
+AGH CLI SHA256:
+2b7bbe100d9d4a71f8e6a697902152360b531a38f466fa10dade2c7ac7616674  /home/lzh/Desktop/agnes-harness/packages/cli/dist/local/agnes.mjs
+=== OR-Tools ===
+Name: ortools
+Version: 9.15.6755
+=== Streamlit ===
+Name: streamlit
+Version: 1.65.0

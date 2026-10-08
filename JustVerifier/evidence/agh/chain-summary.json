@@ -1,0 +1,30 @@
+{
+  "turn": 5,
+  "source": "four-tool-session.jsonl",
+  "steps": [
+    {
+      "seq": 177,
+      "tool": "verify_schedule",
+      "status": "FAIL",
+      "is_error": false
+    },
+    {
+      "seq": 194,
+      "tool": "cp_sat_repair",
+      "status": "OPTIMAL",
+      "is_error": false
+    },
+    {
+      "seq": 211,
+      "tool": "verify_schedule",
+      "status": "PASS",
+      "is_error": false
+    },
+    {
+      "seq": 228,
+      "tool": "audit_schedule",
+      "status": "PASS",
+      "is_error": false
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "days": [
+    "Mon",
+    "Tue",
+    "Wed"
+  ],
+  "employees": [
+    {
+      "name": "Alice",
+      "shifts": [
+        "D",
+        "N",
+        "M"
+      ]
+    }
+  ],
+  "coverage_requirements": {
+    "Wed": {
+      "M": 1
+    }
+  },
+  "fixed_days": [
+    "Mon",
+    "Tue"
+  ]
+}
