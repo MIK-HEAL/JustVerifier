@@ -58,6 +58,15 @@ export async function buildWeb(options: { clean?: boolean } = {}): Promise<Build
       platform: 'browser',
       target: ['es2023'],
       sourcemap: true,
+      alias: {
+        '@agnes/package-manager/open-science-manifest': join(
+          root,
+          '..',
+          'package-manager',
+          'src',
+          'open-science-manifest.ts',
+        ),
+      },
       external: platformExternals,
       metafile: true,
     }),

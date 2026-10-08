@@ -7,10 +7,12 @@
     "node": ">=24.10"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./open-science-manifest": "./src/open-science-manifest.ts"
   },
   "scripts": {
     "test": "vitest run",
+    "audit:open-science": "node tools/open-science-audit.mjs",
     "typecheck": "tsc -b"
   },
   "dependencies": {

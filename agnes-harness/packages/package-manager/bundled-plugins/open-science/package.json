@@ -10,6 +10,7 @@
     "index.mjs",
     "skills",
     "mcp",
+    "manifest.lock.json",
     "LICENSE",
     "README.md"
   ],

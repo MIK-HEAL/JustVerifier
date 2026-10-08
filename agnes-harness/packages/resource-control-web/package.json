@@ -15,6 +15,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@agnes/package-manager": "workspace:*",
     "@agnes/protocol": "workspace:*",
     "@agnes/web-ui": "workspace:*",
     "react": "18.3.1"

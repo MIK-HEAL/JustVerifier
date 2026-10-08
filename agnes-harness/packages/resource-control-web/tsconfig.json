@@ -10,6 +10,7 @@
   "exclude": ["dist", "node_modules"],
   "references": [
     { "path": "../../tsconfig.config.json" },
+    { "path": "../package-manager" },
     { "path": "../protocol" },
     { "path": "../web-ui" },
     { "path": "../web-admin-frame" }

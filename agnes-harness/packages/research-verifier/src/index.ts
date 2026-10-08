@@ -400,3 +400,28 @@ export {
   validateResearchRunManifest,
   verifyResearchRunPackage,
 } from './run.js'
+export type {
+  AgentAttempt,
+  AgentDescriptor,
+  AgentFinding,
+  ReviewerSnapshot,
+  AgentTask,
+  AttemptStatus,
+  MultiAgentAggregation,
+  MultiAgentPlan,
+  MultiAgentRole,
+  MultiAgentState,
+  TaskMode,
+} from './multi-agent.js'
+export {
+  aggregateMultiAgentFindings,
+  attemptArtifactRef,
+  buildMultiAgentPlan,
+  buildMultiAgentResearchManifest,
+  createReviewerSnapshot,
+  multiAgentActivities,
+  queueAgentAttempt,
+  readyMultiAgentTasks,
+  submitAgentFinding,
+  validateMultiAgentPlan,
+} from './multi-agent.js'

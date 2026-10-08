@@ -33,7 +33,17 @@ export async function copyBundledPlugins(outputDirectory: string): Promise<void>
     const source = join(repoPackages, 'package-manager', 'bundled-plugins', helper)
     const destination = join(outputDirectory, 'bundled-plugins', helper)
     await mkdir(destination, { recursive: true })
-    for (const name of ['package.json', 'index.mjs', 'src', 'skills', 'mcp', 'README.md', 'LICENSE']) {
+    for (const name of [
+      'package.json',
+      'index.mjs',
+      'src',
+      'skills',
+      'mcp',
+      'schema',
+      'manifest.lock.json',
+      'README.md',
+      'LICENSE',
+    ]) {
       if (!existsSync(join(source, name))) continue
       await cp(join(source, name), join(destination, name), {
         recursive: true,
@@ -191,6 +201,16 @@ export async function buildLocalWeb(webOut: string): Promise<void> {
     legalComments: 'none',
     charset: 'utf8',
     logLevel: 'warning',
+    alias: {
+      // The local rebuild can run before pnpm has refreshed workspace links after a package
+      // manifest change. Resolve this browser-safe projection directly from the checkout.
+      '@agnes/package-manager/open-science-manifest': join(
+        repoPackages,
+        'package-manager',
+        'src',
+        'open-science-manifest.ts',
+      ),
+    },
     external: platformExternals,
   })
   // Keep the local launcher's import-map targets and platform singleton graph identical to the

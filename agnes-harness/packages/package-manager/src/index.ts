@@ -1,9 +1,11 @@
 export type { PackageAuditEvent, PackageAuditSink } from './audit.js'
 export {
   BUNDLED_HELPERS,
+  BUNDLED_RESEARCH_VERIFIER_REF,
   BUNDLED_SKILL_HELPER_REF,
   bundledPluginSourceRoot,
 } from './bundled-plugin-source.js'
+export { OPEN_SCIENCE_MANIFEST, type OpenScienceManifest } from './open-science-manifest.js'
 export * from './capabilities.js'
 export * from './catalog.js'
 export * from './client-assets.js'

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 declare const AGNES_PACKAGED_BUILTINS: boolean | undefined
 export const BUNDLED_SKILL_HELPER_REF = 'file:./bundled-plugins/skill-helper'
 export const BUNDLED_OPEN_SCIENCE_REF = 'file:./bundled-plugins/open-science'
+export const BUNDLED_RESEARCH_VERIFIER_REF = 'file:./bundled-plugins/research-verifier'
 
 export const BUNDLED_HELPERS = Object.freeze([
   {
@@ -40,6 +41,13 @@ export const BUNDLED_HELPERS = Object.freeze([
     version: '0.35.1',
     license: 'Apache-2.0',
     ref: BUNDLED_OPEN_SCIENCE_REF,
+  },
+  {
+    name: 'research-verifier',
+    id: '@agnes/research-verifier',
+    version: '0.1.0',
+    license: 'Apache-2.0',
+    ref: BUNDLED_RESEARCH_VERIFIER_REF,
   },
 ])
 

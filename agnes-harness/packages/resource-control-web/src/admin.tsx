@@ -32,7 +32,7 @@ import { ResourceAdminApi, ResourceAdminApiError } from './api.js'
 import { RESOURCE_ADMIN_LOCALE_NAMESPACE, resourceAdminLocaleCatalog } from './locales/admin.js'
 import { type McpFormFieldId, type McpFormFieldSnapshot, mcpFormIssues } from './mcp-form-validation.js'
 import { watchMcpPanel } from './mcp-refresh.js'
-import { SCIENCE_EXTENSION, scienceExtensionState } from './science-extension.js'
+import { scienceExtensionResources, scienceExtensionState } from './science-extension.js'
 import { SKILL_LOCATION_HINTS } from './skill-copy.js'
 import type { ResourceAdminContext, ResourceAdminError } from './types.js'
 
@@ -551,14 +551,12 @@ class ResourceAdminPage {
       readAll((cursor) => this.api().skills(cursor)),
       readAll((cursor) => this.api().mcp(cursor)),
     ])
-    const skills = allSkills.filter(
-      (item): item is SkillDescriptor =>
-        item.kind === 'skill' && SCIENCE_EXTENSION.skills.includes(item.name),
+    const selected = scienceExtensionResources(
+      allSkills.filter((item): item is SkillDescriptor => item.kind === 'skill'),
+      allMcp.filter((item): item is McpServerDescriptor => item.kind === 'mcp'),
     )
-    const mcp = allMcp.filter(
-      (item): item is McpServerDescriptor =>
-        item.kind === 'mcp' && SCIENCE_EXTENSION.mcp.includes(item.serverId),
-    )
+    const skills = selected.skills
+    const mcp = selected.mcp
     const state = scienceExtensionState(skills, mcp)
     const enable = state !== 'enabled'
     if (!(await this.confirm(this.#t(enable ? 'science.confirm-enable' : 'science.confirm-disable')))) return

@@ -204,6 +204,9 @@ const claimSlotCard: ClaimResolver = (entry, extId) =>
   entry.owner !== undefined && (moduleExtIds.get(entry.owner)?.includes(extId) ?? false)
 const computerUseStatus = createComputerUsePaneController(client)
 addEventListener('pagehide', () => computerUseStatus.dispose(), { once: true })
+// The settings form is mounted by the client-module bootstrap. Defer its action until both the
+// pane and form controller exist so startup cannot query an empty dialog.
+let openSettingsAction: (() => void) | undefined
 const clientModules = await startClientModules({
   agnes: client,
   claim: claimSlotCard,
@@ -266,8 +269,7 @@ const clientModules = await startClientModules({
           openNewSessionDialog()
         }),
       openSettings: () => {
-        settingsRegion.open('model')
-        run(() => settings.open())
+        openSettingsAction?.()
       },
       openSession: (id) =>
         run(async () => {
@@ -335,6 +337,43 @@ const clientModules = await startClientModules({
 })
 const tracePanel = clientModules.trace as NonNullable<typeof clientModules.trace>
 if (!tracePanel) throw new Error('missing trace region')
+
+// The trace pane owns this presentation preference. It is deliberately kept out of the session
+// ledger: expanding the right side changes the view, not the research run's evidence.
+const rightTraceRegion = document.getElementById('trace-panel')
+if (rightTraceRegion) {
+  const storageKey = 'agnes.web.tracePanel.expanded'
+  const expandToggle = document.createElement('button')
+  expandToggle.type = 'button'
+  expandToggle.id = 'trace-expand-toggle'
+  expandToggle.className = 'trace-expand-toggle'
+  expandToggle.setAttribute('aria-controls', 'trace-panel')
+  expandToggle.setAttribute('aria-expanded', 'false')
+  expandToggle.textContent = '展开右侧'
+
+  const setTraceExpanded = (expanded: boolean): void => {
+    rightTraceRegion.classList.toggle('trace-expanded', expanded)
+    expandToggle.setAttribute('aria-expanded', String(expanded))
+    expandToggle.textContent = expanded ? '收起右侧' : '展开右侧'
+    try {
+      sessionStorage.setItem(storageKey, expanded ? 'true' : 'false')
+    } catch {
+      // A restricted storage implementation must not disable the trace panel.
+    }
+  }
+
+  rightTraceRegion.prepend(expandToggle)
+  expandToggle.addEventListener('click', () =>
+    setTraceExpanded(!rightTraceRegion.classList.contains('trace-expanded')),
+  )
+  let initiallyExpanded = false
+  try {
+    initiallyExpanded = sessionStorage.getItem(storageKey) === 'true'
+  } catch {
+    initiallyExpanded = false
+  }
+  setTraceExpanded(initiallyExpanded)
+}
 const settingsRegion = clientModules.settings as NonNullable<typeof clientModules.settings>
 if (!settingsRegion) throw new Error('missing settings region')
 const topbarRuntime = clientModules.topbar as NonNullable<typeof clientModules.topbar>
@@ -483,6 +522,10 @@ async function stopWithTimeout(stop: (() => Promise<void>) | undefined): Promise
   }
 }
 const settings = createSettingsController({ client, onSaved: savedConfiguration, onError: showError })
+openSettingsAction = () => {
+  settingsRegion.open('model')
+  run(() => settings.open())
+}
 clientModules.locale.subscribe(() => settings.refreshLocale())
 const sessionActions = createSessionActions({
   client,
