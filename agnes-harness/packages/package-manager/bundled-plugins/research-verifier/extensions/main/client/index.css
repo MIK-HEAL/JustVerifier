@@ -183,6 +183,40 @@
   padding: 10px;
   overflow: auto;
 }
+.ma-palette-section-label {
+  margin: 4px 2px 0;
+  color: var(--ma-muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.ma-template-card,
+.ma-agnes-link {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  border: 1px solid var(--ma-border);
+  border-radius: 9px;
+  padding: 9px;
+  background: color-mix(in srgb, var(--ma-accent) 4%, var(--ma-card));
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.ma-template-card span { color: var(--ma-muted); font-size: 10px; }
+.ma-template-card:hover,
+.ma-agnes-link:hover { border-color: color-mix(in srgb, var(--ma-accent) 50%, transparent); }
+.ma-agnes-link {
+  display: block;
+  border: 0;
+  padding: 7px 2px;
+  background: transparent;
+  color: var(--ma-accent);
+  font-size: 11px;
+  text-align: center;
+}
 .ma-agent-card {
   display: flex;
   align-items: center;
@@ -337,27 +371,96 @@
   color: var(--ma-muted);
   font-size: 11px;
 }
-.ma-node-delete {
+.ma-node-actions {
   position: absolute;
-  top: -8px;
+  top: -10px;
   right: -8px;
-  width: 18px;
-  height: 18px;
-  display: none;
+  display: flex;
+  gap: 3px;
+  padding: 2px;
+  border: 1px solid var(--ma-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ma-card) 88%, transparent);
+  box-shadow: 0 2px 8px rgb(16 24 40 / 10%);
+  backdrop-filter: blur(4px);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(2px) scale(0.96);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease,
+    visibility 0.14s ease;
+  z-index: 2;
+}
+.ma-node:hover .ma-node-actions,
+.ma-node[data-selected='true'] .ma-node-actions,
+.ma-node-actions:focus-within {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+}
+.ma-node-action {
+  width: 22px !important;
+  min-width: 22px !important;
+  max-width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  max-height: 22px !important;
+  display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid var(--ma-border);
+  border: 1px solid transparent;
   border-radius: 50%;
-  background: var(--ma-card);
-  color: var(--ma-danger);
+  aspect-ratio: 1 / 1;
+  flex: 0 0 22px;
+  background: transparent;
+  color: var(--ma-muted);
   cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  z-index: 1;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    color 0.14s ease,
+    transform 0.14s ease;
 }
-.ma-node:hover .ma-node-delete,
-.ma-node[data-selected='true'] .ma-node-delete {
-  display: grid;
+.ma-node-delete {
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 22px !important;
+  min-height: 22px !important;
+  max-width: 22px !important;
+  max-height: 22px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  aspect-ratio: 1 / 1 !important;
+  line-height: 1 !important;
+}
+.ma-node-action svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+.ma-node-action:hover,
+.ma-node-action:focus-visible {
+  transform: scale(1.08);
+}
+.ma-node-action:active {
+  transform: scale(0.94);
+}
+.ma-node-action:focus-visible {
+  outline: 2px solid var(--ma-accent);
+  outline-offset: 2px;
+}
+.ma-node-action-run:hover,
+.ma-node-action-run:focus-visible {
+  background: color-mix(in srgb, var(--ma-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ma-accent) 24%, transparent);
+  color: var(--ma-accent);
+}
+.ma-node-action-delete:hover,
+.ma-node-action-delete:focus-visible {
+  background: color-mix(in srgb, var(--ma-danger) 12%, transparent);
+  border-color: color-mix(in srgb, var(--ma-danger) 24%, transparent);
+  color: var(--ma-danger);
 }
 .ma-node-port {
   position: absolute;

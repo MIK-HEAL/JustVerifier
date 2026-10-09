@@ -39,6 +39,32 @@ const multiAgentStartOutput = {
   },
 }
 
+const multiAgentDirectInput = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['prompt', 'agent_id', 'role'],
+  properties: {
+    prompt: { type: 'string', minLength: 1, maxLength: 32_000 },
+    agent_id: { type: 'string', minLength: 1, maxLength: 256 },
+    role: { type: 'string', enum: ['planner', 'executor', 'reviewer', 'verifier'] },
+    revision: { type: 'string', minLength: 1, maxLength: 128 },
+    session_id: { type: 'string', minLength: 1, maxLength: 256 },
+    agent_prompt: { type: 'string', maxLength: 8_000 },
+  },
+}
+
+const multiAgentDirectOutput = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['run_id', 'status', 'request_checksum'],
+  properties: {
+    run_id: { type: 'string' },
+    status: { type: 'string', enum: ['queued'] },
+    request_checksum: { type: 'string' },
+    trace: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+}
+
 function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
   if (value && typeof value === 'object')
@@ -85,14 +111,18 @@ function planErrors(plan) {
     tasks.set(id, task)
   }
   if (!agents.has(plan.root_agent_id)) errors.push('root_agent_id')
-  else if (agentRows.find((agent) => agent?.agent_id === plan.root_agent_id)?.role !== 'planner') errors.push('root_agent_id.role')
+  else if (agentRows.find((agent) => agent?.agent_id === plan.root_agent_id)?.role !== 'planner')
+    errors.push('root_agent_id.role')
   for (const task of tasks.values()) {
     if (!task?.agent_id || !agents.has(task.agent_id)) errors.push(`${task?.task_id ?? 'task'}.agent_id`)
-    if (!task?.output_namespace?.startsWith(`${task?.agent_id}/`)) errors.push(`${task?.task_id ?? 'task'}.output_namespace`)
+    if (!task?.output_namespace?.startsWith(`${task?.agent_id}/`))
+      errors.push(`${task?.task_id ?? 'task'}.output_namespace`)
     for (const dependency of Array.isArray(task.depends_on) ? task.depends_on : [])
       if (!tasks.has(dependency)) errors.push(`${task.task_id}.depends_on`)
   }
-  const pending = new Map([...tasks].map(([id, task]) => [id, Array.isArray(task.depends_on) ? task.depends_on.length : 0]))
+  const pending = new Map(
+    [...tasks].map(([id, task]) => [id, Array.isArray(task.depends_on) ? task.depends_on.length : 0]),
+  )
   const dependents = new Map([...tasks].map(([id]) => [id, []]))
   for (const [taskId, task] of tasks) {
     for (const dependency of Array.isArray(task.depends_on) ? task.depends_on : []) {
@@ -137,7 +167,9 @@ export const researchVerifier = {
           throw error
         }
         const plan = { ...input.plan }
-        const planChecksum = await checksum(Object.fromEntries(Object.entries(plan).filter(([key]) => key !== 'checksum')))
+        const planChecksum = await checksum(
+          Object.fromEntries(Object.entries(plan).filter(([key]) => key !== 'checksum')),
+        )
         const runId = `research-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
         return {
           run_id: runId,
@@ -146,6 +178,33 @@ export const researchVerifier = {
           trace: [
             { kind: 'plan.accepted', run_id: runId, plan_checksum: planChecksum },
             { kind: 'verification.queued', run_id: runId, task_count: plan.tasks?.length ?? 0 },
+          ],
+        }
+      },
+    })
+    ctx.services.register({
+      name: 'research.multiagent.direct',
+      kind: 'effect',
+      inputSchema: multiAgentDirectInput,
+      outputSchema: multiAgentDirectOutput,
+      timeoutMs: 10_000,
+      maxResultBytes: 32_768,
+      async handler(input) {
+        const requestChecksum = await checksum(input)
+        const runId = `research-direct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+        return {
+          run_id: runId,
+          status: 'queued',
+          request_checksum: requestChecksum,
+          trace: [
+            {
+              kind: 'agent.direct.accepted',
+              run_id: runId,
+              agent_id: input.agent_id,
+              role: input.role,
+              request_checksum: requestChecksum,
+            },
+            { kind: 'agent.direct.queued', run_id: runId, agent_id: input.agent_id },
           ],
         }
       },

@@ -1,19 +1,13 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AGENTS, createNode, nextNodeId } from './agents.js'
-import { digest, graphPlan, validateGraph } from './plan.js'
+import { AgentPalette } from './agent-palette.js'
+import { createNode, nextNodeId } from './agents.js'
 import { Canvas } from './canvas.js'
+import { Inspector } from './inspector.js'
+import { validateGraph } from './plan.js'
+import { useVerificationRun } from './use-verification-run.js'
 
 export const OPEN_EVENT = 'agnes:multi-agent-open'
 export const CLOSE_EVENT = 'agnes:multi-agent-close'
-
-function TraceItem({ item }) {
-  return createElement(
-    'div',
-    { className: 'ma-trace-item', 'data-kind': item.kind ?? '' },
-    createElement('div', { className: 'ma-trace-message' }, item.message),
-    createElement('div', { className: 'ma-trace-time' }, item.time),
-  )
-}
 
 export function Workbench({ sessionId, ctx }) {
   const [open, setOpen] = useState(false)
@@ -22,17 +16,25 @@ export function Workbench({ sessionId, ctx }) {
   const [selected, setSelected] = useState(null)
   const [connectFrom, setConnectFrom] = useState(null)
   const [prompt, setPrompt] = useState('请验证这项科研结论，检查数据、统计假设与证据链。')
-  const [status, setStatus] = useState('等待编排')
-  const [statusKind, setStatusKind] = useState('')
-  const [trace, setTrace] = useState([])
-  const [running, setRunning] = useState(false)
   const canvasRef = useRef(null)
   const closeRef = useRef(null)
-  const selectedNode =
-    selected?.kind === 'node' ? nodes.find((node) => node.id === selected.id) : undefined
+  const selectedNode = selected?.kind === 'node' ? nodes.find((node) => node.id === selected.id) : undefined
   const errors = useMemo(() => validateGraph(nodes, edges), [nodes, edges])
+  const { status, statusKind, trace, running, start, startSingleAgent } = useVerificationRun({
+    nodes,
+    edges,
+    prompt,
+    sessionId,
+    ctx,
+    errors,
+  })
+  const selection =
+    selected?.kind === 'node'
+      ? { kind: 'node', node: selectedNode }
+      : selected?.kind === 'edge'
+        ? { kind: 'edge', edge: selected }
+        : undefined
 
-  const now = () => new Date().toLocaleTimeString()
   const closeOverlay = useCallback(() => {
     setOpen(false)
     window.dispatchEvent(new CustomEvent(CLOSE_EVENT))
@@ -65,10 +67,31 @@ export function Workbench({ sessionId, ctx }) {
     setSelected(null)
   }, [])
 
+  const updateNodePrompt = useCallback((id, value) => {
+    setNodes((current) => current.map((node) => (node.id === id ? { ...node, prompt: value } : node)))
+  }, [])
+
   const addNode = (role, position) => {
     const id = nextNodeId(nodes, role)
     setNodes((current) => [...current, createNode(role, id, position)])
     setSelected({ kind: 'node', id })
+  }
+
+  const applyTemplate = (kind) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    const center = { x: Math.max(32, (rect?.width ?? 640) / 2 - 78), y: Math.max(32, (rect?.height ?? 400) / 2 - 30) }
+    if (kind === 'single') {
+      const id = nextNodeId(nodes, 'agnes')
+      setNodes([createNode('agnes', id, center)])
+      setEdges([])
+      setSelected({ kind: 'node', id })
+      return
+    }
+    const roles = ['planner', 'executor', 'reviewer', 'verifier']
+    const nextNodes = roles.map((role, index) => createNode(role, `${role}-1`, { x: center.x + (index % 2) * 190, y: center.y + Math.floor(index / 2) * 120 }))
+    setNodes(nextNodes)
+    setEdges([{ from: 'planner-1', to: 'executor-1' }, { from: 'executor-1', to: 'reviewer-1' }, { from: 'reviewer-1', to: 'verifier-1' }])
+    setSelected({ kind: 'node', id: 'planner-1' })
   }
 
   const paletteAdd = (role) => {
@@ -87,69 +110,9 @@ export function Workbench({ sessionId, ctx }) {
       return
     }
     setEdges((current) =>
-      current.some((edge) => edge.from === from && edge.to === to)
-        ? current
-        : [...current, { from, to }],
+      current.some((edge) => edge.from === from && edge.to === to) ? current : [...current, { from, to }],
     )
     setConnectFrom(null)
-  }
-
-  const start = async () => {
-    if (errors.length) {
-      setStatus(errors[0])
-      setStatusKind('error')
-      return
-    }
-    setRunning(true)
-    setStatus('正在生成不可变编排快照…')
-    setStatusKind('')
-    const base = graphPlan(nodes, edges)
-    const plan = { ...base, checksum: await digest(base) }
-    setTrace((current) => [{ message: `plan.created · ${plan.checksum}`, time: now() }, ...current])
-    try {
-      const agent_prompts = Object.fromEntries(
-        nodes.filter((node) => node.prompt).map((node) => [node.id, node.prompt]),
-      )
-      const result = await ctx.agnes.services.call('research.multiagent.start', {
-        prompt,
-        plan,
-        agent_prompts,
-        session_id: sessionId,
-      })
-      const output = result?.output ?? result
-      const resultTrace = Array.isArray(output?.trace) ? output.trace : []
-      setTrace((current) => [
-        ...resultTrace.map((item) => ({
-          message: item.kind ?? 'verification.queued',
-          kind: item.kind,
-          time: now(),
-        })),
-        ...current,
-      ])
-      setStatus(`已排队（尚无执行器） · ${output?.run_id ?? 'run pending'}`)
-      setStatusKind('success')
-    } catch (error) {
-      const code = error?.code ?? error?.cause?.code
-      const invalidPlan = code === 'INVALID_MULTI_AGENT_PLAN'
-      setStatus(
-        invalidPlan
-          ? `编排计划非法：${error?.message ?? '请检查节点和依赖关系'}`
-          : `后端编排服务不可用：${error?.message ?? 'unknown error'}`,
-      )
-      setStatusKind('error')
-      setTrace((current) => [
-        {
-          message: invalidPlan
-            ? 'verification.blocked · invalid plan'
-            : 'verification.blocked · service unavailable',
-          kind: 'verification.blocked',
-          time: now(),
-        },
-        ...current,
-      ])
-    } finally {
-      setRunning(false)
-    }
   }
 
   useEffect(() => {
@@ -220,7 +183,7 @@ export function Workbench({ sessionId, ctx }) {
             className: 'ma-button ma-button-primary',
             type: 'button',
             disabled: running,
-            onClick: start,
+            onClick: () => void start(),
           },
           running ? '验证中…' : '开始验证',
         ),
@@ -231,32 +194,7 @@ export function Workbench({ sessionId, ctx }) {
     createElement(
       'div',
       { className: 'ma-layout' },
-      createElement(
-        'aside',
-        { className: 'ma-panel' },
-        createElement('div', { className: 'ma-panel-heading' }, 'Agent 工具箱'),
-        createElement(
-          'div',
-          { className: 'ma-palette' },
-          AGENTS.map((agent) =>
-            createElement(
-              'div',
-              {
-                key: agent.role,
-                className: 'ma-agent-card',
-                'data-role': agent.role,
-                draggable: true,
-                title: '拖到画布放置，或点击添加',
-                onDragStart: (event) =>
-                  event.dataTransfer.setData('application/x-agnes-agent', agent.role),
-                onClick: () => paletteAdd(agent.role),
-              },
-              createElement('span', { className: 'ma-agent-dot' }, agent.icon),
-              createElement('span', null, agent.label),
-            ),
-          ),
-        ),
-      ),
+      createElement(AgentPalette, { onAdd: paletteAdd, onTemplate: applyTemplate }),
       createElement(Canvas, {
         nodes,
         edges,
@@ -268,86 +206,20 @@ export function Workbench({ sessionId, ctx }) {
           setNodes((current) => current.map((node) => (node.id === id ? { ...node, x, y } : node))),
         onDeleteNode: deleteNode,
         onDeleteEdge: deleteEdge,
+        onRunNode: startSingleAgent,
         onDropRole: addNode,
         onConnectFromChange: setConnectFrom,
         onConnectEnd: connect,
       }),
-      createElement(
-        'aside',
-        { className: 'ma-panel' },
-        createElement('div', { className: 'ma-panel-heading' }, '配置与 Trace'),
-        createElement(
-          'div',
-          { className: 'ma-inspector' },
-          selectedNode
-            ? createElement(
-                'div',
-                { className: 'ma-fieldset' },
-                createElement(
-                  'div',
-                  { className: 'ma-field' },
-                  createElement('span', { className: 'ma-field-label' }, '当前 Agent'),
-                  createElement('input', { value: selectedNode.label, readOnly: true }),
-                ),
-                createElement(
-                  'label',
-                  { className: 'ma-field' },
-                  createElement('span', { className: 'ma-field-label' }, '专属指令'),
-                  createElement('textarea', {
-                    value: selectedNode.prompt,
-                    placeholder: '给这个 Agent 的专属指令…',
-                    onChange: (event) =>
-                      setNodes((current) =>
-                        current.map((node) =>
-                          node.id === selectedNode.id ? { ...node, prompt: event.target.value } : node,
-                        ),
-                      ),
-                  }),
-                ),
-                createElement(
-                  'button',
-                  {
-                    className: 'ma-button',
-                    type: 'button',
-                    disabled: running,
-                    onClick: () => {
-                      setTrace((current) => [
-                        { message: `agent.message · ${selectedNode.id}`, time: now() },
-                        ...current,
-                      ])
-                      void start()
-                    },
-                  },
-                  '发送并开始',
-                ),
-              )
-            : selected?.kind === 'edge'
-              ? createElement(
-                  'div',
-                  { className: 'ma-status' },
-                  `选中连线：${selected.from} → ${selected.to}（按 Delete 删除）`,
-                )
-              : createElement('div', { className: 'ma-status' }, '点击节点查看配置'),
-          createElement(
-            'label',
-            { className: 'ma-field' },
-            createElement('span', { className: 'ma-field-label' }, '验证任务'),
-            createElement('textarea', {
-              value: prompt,
-              onChange: (event) => setPrompt(event.target.value),
-              placeholder: '描述需要验证的科研内容…',
-            }),
-          ),
-        ),
-        createElement('div', { className: 'ma-panel-heading' }, '过程留痕'),
-        createElement(
-          'div',
-          { className: 'ma-trace' },
-          trace.length
-            ? trace.map((item, index) => createElement(TraceItem, { key: `${item.time}-${index}`, item }))
-            : createElement('div', { className: 'ma-status' }, '启动后将在这里显示计划、执行与证据事件。'),
-        ),
-      ),
+      createElement(Inspector, {
+        selection,
+        prompt,
+        running,
+        trace,
+        onPromptChange: setPrompt,
+        onNodePromptChange: updateNodePrompt,
+        onRunSingleAgent: startSingleAgent,
+      }),
     ),
   )
 }

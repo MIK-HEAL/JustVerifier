@@ -17,7 +17,7 @@
         "id": "ext:research-verifier/main",
         "inject": ["extension"],
         "runtime": "in-process",
-        "services": ["research.multiagent.start"]
+        "services": ["research.multiagent.start", "research.multiagent.direct"]
       }
     ],
     "clientDescriptors": [

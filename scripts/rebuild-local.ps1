@@ -41,9 +41,12 @@
     Only perform the stop + quarantine + verification steps.
 
 .PARAMETER KeepGeneratedProfile
-    Keep the installed profile package state. By default a legacy generated
-    research-verifier snapshot (the old sidebar.workspaces client) is removed
-    together with its lock entry so the rebuilt bundle is installed fresh.
+    Keep the installed profile package state. By default the generated
+    research-verifier installation and snapshots are reset so the rebuilt
+    bundle is installed fresh, even when its package version is unchanged.
+
+.PARAMETER Rebuild
+    Compatibility switch. This script rebuilds by default unless SkipBuild is set.
 
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\rebuild-local.ps1
@@ -59,7 +62,8 @@ param(
     [switch]$SkipStop,
     [switch]$ForceStop,
     [switch]$SkipBuild,
-    [switch]$KeepGeneratedProfile
+    [switch]$KeepGeneratedProfile,
+    [switch]$Rebuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -184,15 +188,19 @@ function Remove-StaleDaemonRecords([string]$dataDir) {
 }
 
 function Remove-GeneratedDirectory([string]$path) {
+    $path = [System.IO.Path]::GetFullPath($path)
+    $dataPrefix = [System.IO.Path]::GetFullPath($DataDir).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $path.StartsWith($dataPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "generated cache path is outside the data directory: $path"
+    }
     if (-not (Test-Path -LiteralPath $path -PathType Container)) { return }
     Write-Output ("removing generated runtime cache: {0}" -f $path)
     for ($attempt = 0; $attempt -lt 50; $attempt++) {
         try {
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
         } catch {
-            # A private runtime cache can be held briefly by a worker while its
-            # parent daemon is shutting down. Use the native Windows directory
-            # deletion path, then retry before treating it as a real failure.
+            # A worker can briefly hold this directory during shutdown.
+            # Use the native Windows directory deletion path, then retry.
             $command = 'rmdir /s /q "' + $path + '"'
             & $env:ComSpec /d /c $command 2>$null | Out-Null
         }
@@ -231,7 +239,7 @@ function Write-JsonNoBom([string]$file, $value) {
     [System.IO.File]::WriteAllText($file, "$json`r`n", $utf8)
 }
 
-function Reset-LegacyGeneratedVerifier {
+function Reset-GeneratedVerifier {
     if ($KeepGeneratedProfile) {
         Write-Output 'keeping generated profile package state'
         return
@@ -243,7 +251,6 @@ function Reset-LegacyGeneratedVerifier {
     $lockFile = Join-Path $profileDir 'agnes-lock.json'
     $verifierId = '@agnes/research-verifier'
     $packageDir = Join-Path $packageRoot '@agnes__research-verifier'
-    $legacy = $false
     $snapshotIds = @()
 
     $stopRequest = Join-Path $DataDir 'daemon\stop-request.json'
@@ -264,16 +271,12 @@ function Reset-LegacyGeneratedVerifier {
         $lock = Get-Content -LiteralPath $lockFile -Raw | ConvertFrom-Json
         $entry = $lock.packages.PSObject.Properties[$verifierId].Value
         if ($null -ne $entry) {
-            $legacy = ($entry.integrity -eq 'sha256-0d396fb74f3f92bcccddd1bb2fd5cd9949c38fa4482d9d92e66a56444862d3c5')
-            foreach ($contribution in @($entry.contributions)) {
-                if ($contribution.kind -eq 'client' -and @($contribution.client.slots) -contains 'sidebar.workspaces') {
-                    $legacy = $true
-                }
-            }
-            if ($legacy) {
-                $lock.packages.PSObject.Properties.Remove($verifierId)
-                Write-JsonNoBom $lockFile $lock
-            }
+            # A rebuilt bundle does not update an already-installed package of
+            # the same version. Reset every verifier revision, not just the
+            # original sidebar.workspaces revision.
+            $lock.packages.PSObject.Properties.Remove($verifierId)
+            Write-JsonNoBom $lockFile $lock
+            Write-Output "resetting installed verifier lock entry: $($entry.integrity)"
         }
     }
 
@@ -291,7 +294,9 @@ function Reset-LegacyGeneratedVerifier {
                 $runtime.pins.PSObject.Properties.Remove($pin.Name)
             }
         }
-        if ($legacy) { Write-JsonNoBom $runtimeFile $runtime }
+        if ($snapshotIds.Count -gt 0) {
+            Write-JsonNoBom $runtimeFile $runtime
+        }
     }
 
     $runtimeTargetScript = Join-Path $PSScriptRoot 'reset-runtime-target.mjs'
@@ -300,17 +305,12 @@ function Reset-LegacyGeneratedVerifier {
     if ((Test-Path -LiteralPath $runtimeTargetScript -PathType Leaf) -and
         (Test-Path -LiteralPath $runtimeTargetDatabase -PathType Leaf) -and
         (Test-Path -LiteralPath $runtimeTargetModule -PathType Leaf)) {
-        & node $runtimeTargetScript $runtimeTargetDatabase $Profile
+        & node $runtimeTargetScript $runtimeTargetDatabase $Profile --all-verifier-revisions
         if ($LASTEXITCODE -ne 0) { Fail "runtime target cleanup failed with exit code $LASTEXITCODE" }
     }
 
-    if (-not $legacy) {
-        Write-Output 'no legacy generated verifier snapshot detected'
-        return
-    }
-
     if (Test-Path -LiteralPath $packageDir) {
-        Write-Output "removing legacy generated verifier: $packageDir"
+        Write-Output "removing generated verifier installation: $packageDir"
         Remove-Item -LiteralPath $packageDir -Recurse -Force
     }
     foreach ($snapshotId in $snapshotIds) {
@@ -389,8 +389,8 @@ if ($holders.Count -gt 0) {
         '. Stop it (agnes daemon stop, or Ctrl+C the serve terminal) and retry, or pass -ForceStop.')
 }
 
-# 3. remove the known stale generated verifier state --------------------------
-Reset-LegacyGeneratedVerifier
+# 3. reset the installed verifier so startup installs the rebuilt bundle -------
+Reset-GeneratedVerifier
 
 # 4. quarantine a leftover lock as evidence -----------------------------------
 if (Test-Path -LiteralPath $LockDir) {
@@ -435,6 +435,21 @@ if (-not (Test-Path -LiteralPath $Entry)) {
     Fail "build reported success but $Entry is missing"
 }
 & node $Entry --version
+
+# Check plugin bytes as well as the CLI entry: a valid CLI can still ship an
+# outdated client bundle, which would silently recreate the old page.
+$sourcePlugin = Join-Path $HarnessDir 'packages\package-manager\bundled-plugins\research-verifier'
+$builtPlugin = Join-Path $TargetDir 'bundled-plugins\research-verifier'
+foreach ($file in @(Get-ChildItem -LiteralPath $sourcePlugin -File -Recurse)) {
+    $relative = $file.FullName.Substring($sourcePlugin.Length).TrimStart('\', '/')
+    $builtFile = Join-Path $builtPlugin $relative
+    if (-not (Test-Path -LiteralPath $builtFile -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $builtFile -Algorithm SHA256).Hash) {
+        Fail "rebuilt verifier differs from source: $relative"
+    }
+}
+Write-Output 'verified: bundled research-verifier matches source (including client JS and CSS)'
 
 Write-Output ''
 Write-Output "built and verified: $Entry"

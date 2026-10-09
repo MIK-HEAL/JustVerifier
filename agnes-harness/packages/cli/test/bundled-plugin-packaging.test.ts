@@ -113,15 +113,19 @@ it('ships the research-verifier client extension into local builds', async () =>
     entry: './client/index.js',
     styles: ['./client/index.css'],
     slots: ['sidebar.footer.action', 'workbench.panel'],
-    services: ['research.multiagent.start'],
+    services: ['research.multiagent.start', 'research.multiagent.direct'],
   })
   expect((await readdir(clientRoot)).sort()).toEqual([
+    'agent-palette.js',
     'agents.js',
     'canvas.js',
     'entry.js',
     'index.css',
     'index.js',
+    'inspector.js',
+    'node-actions.js',
     'plan.js',
+    'use-verification-run.js',
     'workbench.js',
   ])
   const manager = createPackageManager({
@@ -142,7 +146,7 @@ it('ships the research-verifier client extension into local builds', async () =>
         rowId: 'ext:research-verifier/main',
         client: expect.objectContaining({
           slots: ['sidebar.footer.action', 'workbench.panel'],
-          services: ['research.multiagent.start'],
+          services: ['research.multiagent.direct', 'research.multiagent.start'],
         }),
       }),
     ]),
@@ -171,10 +175,13 @@ it('ships the research-verifier client extension into local builds', async () =>
     '编排图存在循环依赖',
   ])
   expect(
-    plan.validateGraph([planner, executor], [
-      { from: 'planner-1', to: 'executor-1' },
-      { from: 'executor-1', to: 'planner-1' },
-    ]),
+    plan.validateGraph(
+      [planner, executor],
+      [
+        { from: 'planner-1', to: 'executor-1' },
+        { from: 'executor-1', to: 'planner-1' },
+      ],
+    ),
   ).toEqual(['编排图存在循环依赖'])
   const built = plan.graphPlan([planner, executor], [{ from: 'planner-1', to: 'executor-1' }])
   expect(built.root_agent_id).toBe('planner-1')
@@ -191,7 +198,9 @@ it('ships the research-verifier client extension into local builds', async () =>
     services: { register: (service: unknown) => services.push(service) },
     extension: () => ({ registerTool() {} }),
   })
-  expect(services).toHaveLength(1)
+  expect(services).toHaveLength(2)
   expect(services[0]).toMatchObject({ name: 'research.multiagent.start' })
+  expect(services[1]).toMatchObject({ name: 'research.multiagent.direct' })
   expect(checkServiceDef(services[0])).toEqual({ ok: true })
+  expect(checkServiceDef(services[1])).toEqual({ ok: true })
 })

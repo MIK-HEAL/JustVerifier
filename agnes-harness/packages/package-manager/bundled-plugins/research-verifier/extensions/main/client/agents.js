@@ -3,6 +3,8 @@ export const AGENTS = [
   { role: 'executor', label: '执行 Agent', icon: '▶', capability: 'research.execute' },
   { role: 'reviewer', label: '审查 Agent', icon: '✓', capability: 'research.review' },
   { role: 'verifier', label: '验证 Agent', icon: '∴', capability: 'research.verify' },
+  { role: 'agnes', label: '当前 Agnes Agent', icon: '✦', capability: 'agnes.current' },
+  { role: 'synthesizer', label: '综合 Agent', icon: '⊕', capability: 'research.synthesize' },
 ]
 
 export const roleInfo = (role) => AGENTS.find((agent) => agent.role === role) ?? AGENTS[3]

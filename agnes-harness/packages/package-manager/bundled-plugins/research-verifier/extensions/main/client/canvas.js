@@ -1,5 +1,6 @@
 import { createElement, useRef, useState } from 'react'
 import { roleInfo } from './agents.js'
+import { NodeActions } from './node-actions.js'
 
 export function Canvas({
   nodes,
@@ -11,6 +12,7 @@ export function Canvas({
   onMoveNode,
   onDeleteNode,
   onDeleteEdge,
+  onRunNode,
   onDropRole,
   onConnectFromChange,
   onConnectEnd,
@@ -156,8 +158,7 @@ export function Canvas({
       edges.map((edge) => {
         const geometry = edgeGeometry(edge)
         if (!geometry) return null
-        const isSelected =
-          selected?.kind === 'edge' && selected.from === edge.from && selected.to === edge.to
+        const isSelected = selected?.kind === 'edge' && selected.from === edge.from && selected.to === edge.to
         return createElement(
           'g',
           { key: `${edge.from}>${edge.to}` },
@@ -212,21 +213,11 @@ export function Canvas({
           onPointerUp: endNodeDrag,
           onPointerCancel: endNodeDrag,
         },
-        createElement(
-          'button',
-          {
-            className: 'ma-node-delete',
-            type: 'button',
-            title: '删除节点',
-            'aria-label': `删除 ${node.label}`,
-            onPointerDown: (event) => event.stopPropagation(),
-            onClick: (event) => {
-              event.stopPropagation()
-              onDeleteNode(node.id)
-            },
-          },
-          '×',
-        ),
+        createElement(NodeActions, {
+          node,
+          onDelete: onDeleteNode,
+          onRun: onRunNode,
+        }),
         createElement(
           'div',
           { className: 'ma-node-head' },
