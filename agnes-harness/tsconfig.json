@@ -107,6 +107,9 @@
       "path": "packages/daemon"
     },
     {
+      "path": "packages/open-science-core"
+    },
+    {
       "path": "packages/research-verifier"
     },
     {

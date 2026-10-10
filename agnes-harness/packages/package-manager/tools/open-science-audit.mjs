@@ -29,6 +29,7 @@ const snapshot = {
   version: manifest.version,
   license: manifest.license,
   source: 'bundled-plugins/open-science',
+  upstream: manifest.source ?? null,
   contributions: (manifest.agnes?.contributions ?? []).map(({ kind, id, path }) => ({ kind, id, path })),
   files,
 }

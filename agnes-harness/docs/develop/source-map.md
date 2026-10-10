@@ -24,6 +24,7 @@ Links point to source at the same revision as this document. See [verification](
 | Models / stream parsing | [ai](../../packages/ai/src) | [AI tests](../../packages/ai/test) |
 | Standard tools / seams | [base extensions](../../packages/base/extensions), [base](../../packages/base/src) | [Base tests](../../packages/base/test) |
 | Code workflows | [code](../../packages/code/src) | [Code tests](../../packages/code/test) |
+| Open-Science research contracts | [open-science-core](../../packages/open-science-core/src), [research-verifier](../../packages/research-verifier/src) | [Portable contract tests](../../packages/open-science-core/test), [Verifier tests](../../packages/research-verifier/test) |
 | Cordis lifecycle | [cordis](../../packages/cordis/src), [cordis-loader](../../packages/cordis-loader/src), [plugin-runtime](../../packages/plugin-runtime/src) | [Incremental reconciliation](../../packages/host/test/assemble/incremental-apply.test.ts) |
 | Package governance | [package-manager](../../packages/package-manager/src), [package-isolation](../../packages/package-isolation/src) | [Package-manager tests](../../packages/package-manager/test) |
 | Resource governance | [resource-control-store](../../packages/resource-control-store/src), [resource-control-runtime](../../packages/resource-control-runtime/src), [resource-control-worker](../../packages/resource-control-worker/src) | [Skills Cordis](../../packages/resource-control-runtime/test/skills-cordis.test.ts) |

@@ -6,5 +6,8 @@
   "exports": { ".": "./src/index.ts", "./schema/*": "./schema/*" },
   "scripts": { "test": "vitest run", "typecheck": "tsc -b", "verify": "tsx src/cli.ts" },
   "bin": { "research-verifier": "./src/cli.ts" },
+  "dependencies": {
+    "@agnes/open-science-core": "workspace:*"
+  },
   "license": "Apache-2.0"
 }

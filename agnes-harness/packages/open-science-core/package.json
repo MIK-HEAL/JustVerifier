@@ -1,0 +1,22 @@
+{
+  "name": "@agnes/open-science-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Portable Open-Science provenance, replay, literature, notebook and compute contracts for Agnes Harness",
+  "exports": {
+    ".": "./src/index.ts",
+    "./artifacts": "./src/artifacts.ts",
+    "./compute": "./src/compute.ts",
+    "./evidence": "./src/evidence.ts",
+    "./literature": "./src/literature.ts",
+    "./notebook": "./src/notebook.ts",
+    "./reproducibility": "./src/reproducibility.ts",
+    "./skills": "./src/skills.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b"
+  },
+  "license": "Apache-2.0"
+}

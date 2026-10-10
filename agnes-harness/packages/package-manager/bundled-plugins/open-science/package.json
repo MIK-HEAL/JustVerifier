@@ -5,6 +5,12 @@
   "type": "module",
   "exports": "./index.mjs",
   "license": "Apache-2.0",
+  "source": {
+    "project": "open-science",
+    "version": "0.35.1",
+    "manifest": "./skills/manifest.json",
+    "license": "Apache-2.0"
+  },
   "files": [
     "package.json",
     "index.mjs",

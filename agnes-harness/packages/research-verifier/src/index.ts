@@ -425,3 +425,11 @@ export {
   submitAgentFinding,
   validateMultiAgentPlan,
 } from './multi-agent.js'
+
+/** Portable Open-Science contracts. These build evidence; this package remains the final verifier. */
+export * as openScience from '@agnes/open-science-core'
+export {
+  buildProvenanceGraph,
+  createArtifactVersionLocator,
+  parseArtifactVersionLocator,
+} from '@agnes/open-science-core'

@@ -524,7 +524,13 @@ importers:
         specifier: 0.34.33
         version: 0.34.33
 
-  packages/research-verifier: {}
+  packages/open-science-core: {}
+
+  packages/research-verifier:
+    dependencies:
+      '@agnes/open-science-core':
+        specifier: workspace:*
+        version: link:../open-science-core
 
   packages/resource-control-cli:
     dependencies:
