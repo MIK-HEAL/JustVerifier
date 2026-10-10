@@ -6,6 +6,14 @@ function parseScalar(value: string): string | undefined {
   const trimmed = value.trim()
   if (!trimmed) return undefined
   if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) return trimmed.slice(1, -1)
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    const values = trimmed
+      .slice(1, -1)
+      .split(',')
+      .map((entry) => entry.trim().replace(/^['"]|['"]$/gu, ''))
+      .filter(Boolean)
+    return values.length ? values.join(', ') : undefined
+  }
   return trimmed
 }
 

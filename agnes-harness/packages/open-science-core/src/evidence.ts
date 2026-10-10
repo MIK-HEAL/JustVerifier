@@ -62,7 +62,9 @@ export type ExecutionFileEvidenceSummary = Readonly<{
   reasonCodes: readonly EvidenceReason[]
 }>
 
-const SHA256 = /^sha256:[a-f0-9]{64}$/u
+// Open-Science persisted both bare hex and `sha256:`-prefixed checksums over its lifetime.
+// Accept both at the adapter boundary; newly emitted Agnes records use the prefixed form.
+const SHA256 = /^(?:sha256:)?[a-f0-9]{64}$/u
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
 const REASONS = new Set<string>([
   'file-reads-not-observed', 'initial-file-generations-not-captured', 'external-paths-not-observed',

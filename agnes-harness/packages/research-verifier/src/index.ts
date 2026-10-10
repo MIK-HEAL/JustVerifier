@@ -433,3 +433,9 @@ export {
   createArtifactVersionLocator,
   parseArtifactVersionLocator,
 } from '@agnes/open-science-core'
+export {
+  researchActivityFromComputeJob,
+  researchActivityFromNotebookRun,
+  researchActivityFromProvenanceActivity,
+  researchArtifactFromOpenScience,
+} from './open-science-adapter.js'
