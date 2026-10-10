@@ -18,7 +18,7 @@ export const resourceAdminShellLocaleCatalog: LocaleCatalog = {
     'shell.embedded.description':
       'Review source, trust, and runtime state. Credentials are stored only as SecretRef references.',
     'shell.embedded.add-description':
-      'Want to add MCP? In chat, ask Agnes to connect it and provide the service address or connection details.',
+      'Review MCP connections here, or use Add MCP service to register a managed connection.',
     'shell.document-title': 'Skills and MCP · Agnes',
     'shell.tabs.aria': 'Resource type',
     'shell.list.aria': 'Resource catalog',
@@ -77,7 +77,7 @@ export const resourceAdminShellLocaleCatalog: LocaleCatalog = {
     'shell.eyebrow': '系统设置',
     'shell.heading': '技能与 MCP',
     'shell.embedded.description': '查看来源、信任和运行状态；凭据只以 SecretRef 引用保存。',
-    'shell.embedded.add-description': '想添加 MCP？在聊天中说“帮我接入这个 MCP”，并提供服务地址或连接信息。',
+    'shell.embedded.add-description': '可以在这里查看 MCP 连接，也可以使用“添加 MCP 服务”登记受控连接。',
     'shell.document-title': '技能与 MCP · Agnes',
     'shell.tabs.aria': '资源类型',
     'shell.list.aria': '资源目录',

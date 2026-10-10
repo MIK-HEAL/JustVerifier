@@ -16,6 +16,7 @@ export function Canvas({
   onDropRole,
   onConnectFromChange,
   onConnectEnd,
+  onTemplate,
 }) {
   const [cursor, setCursor] = useState(null)
   const dragRef = useRef(null)
@@ -191,8 +192,27 @@ export function Canvas({
       }),
       preview && createElement('path', { className: 'ma-edge-preview', d: preview }),
     ),
+    createElement('div', { className: 'ma-canvas-toolbar' },
+      createElement('div', { className: 'ma-canvas-title' },
+        createElement('span', { className: 'ma-canvas-indicator', 'aria-hidden': 'true' }),
+        '验证链路',
+      ),
+      createElement('span', { className: 'ma-canvas-summary' }, `${nodes.length} 个 Agent · ${edges.length} 条依赖`),
+    ),
     !nodes.length &&
-      createElement('div', { className: 'ma-canvas-hint' }, '把左侧 Agent 拖到这里，或点击卡片添加'),
+      createElement('div', { className: 'ma-canvas-hint' },
+        createElement('div', { className: 'ma-empty-mark', 'aria-hidden': 'true' },
+          createElement('svg', { viewBox: '0 0 64 64', fill: 'none' },
+            createElement('path', { d: 'M22 18h20M18 22v20m28-20v20M22 46h20', stroke: 'currentColor', strokeWidth: 2, strokeDasharray: '4 4' }),
+            ...[[10, 10], [38, 10], [10, 38], [38, 38]].map(([x, y]) => createElement('rect', { key: `${x}-${y}`, x, y, width: 16, height: 16, rx: 5, fill: 'currentColor', fillOpacity: 0.1, stroke: 'currentColor', strokeWidth: 1.5 })),
+          ),
+        ),
+        createElement('h2', null, '构建你的验证链路'),
+        createElement('p', null, '从左侧添加 Agent，连接每一步的依赖关系。', createElement('br'), '也可以从完整的证据链模板开始。'),
+        createElement('button', { className: 'ma-button ma-button-primary', type: 'button', onClick: () => onTemplate('evidence') }, '使用证据链模板', createElement('span', { 'aria-hidden': 'true' }, '→')),
+        createElement('small', null, '规划 → 执行 → 审查 → 验证'),
+      ),
+    nodes.length > 0 && createElement('div', { className: 'ma-canvas-guide' }, '拖动节点调整位置 · 从右侧端口拖出连线'),
     nodes.map((node) => {
       const info = roleInfo(node.role)
       const isSelected = selected?.kind === 'node' && selected.id === node.id

@@ -349,12 +349,17 @@ if (rightTraceRegion) {
   expandToggle.className = 'trace-expand-toggle'
   expandToggle.setAttribute('aria-controls', 'trace-panel')
   expandToggle.setAttribute('aria-expanded', 'false')
-  expandToggle.textContent = '展开右侧'
+  expandToggle.innerHTML = `<svg class="icon icon-fill" data-agnes-region="icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M16.4516 4.58065C16.4516 4.45594 16.3361 4.35484 16.1935 4.35484H3.80645C3.66393 4.35484 3.54839 4.45594 3.54839 4.58065V15.4194C3.54839 15.5441 3.66393 15.6452 15.4194H16.1935C16.3361 15.6452 16.4516 15.5441 16.4516 15.4194V4.58065ZM18 15.4194C18 16.2923 17.1912 17 16.1935 17H3.80645C2.80878 17 2 16.2923 2 15.4194V4.58065C2 3.70768 2.80878 3 3.80645 3H16.1935C17.1912 3 18 3.70768 18 4.58065V15.4194Z"></path><path d="M8.45161 16.3226H6.90322L6.90323 3.67742H8.45161L8.45161 16.3226Z"></path></svg>`
 
   const setTraceExpanded = (expanded: boolean): void => {
     rightTraceRegion.classList.toggle('trace-expanded', expanded)
     expandToggle.setAttribute('aria-expanded', String(expanded))
-    expandToggle.textContent = expanded ? '收起右侧' : '展开右侧'
+    expandToggle.setAttribute('aria-label', expanded ? '收起右侧' : '展开右侧')
+    const label = expandToggle.querySelector('.trace-expand-label')
+    if (label) label.textContent = expanded ? '收起右侧' : '展开右侧'
+    // The trace implementation owns visibility. Explicitly open it here so this
+    // control also works while the conversation tab is active.
+    tracePanel.setOpen(expanded)
     try {
       sessionStorage.setItem(storageKey, expanded ? 'true' : 'false')
     } catch {
@@ -370,9 +375,14 @@ if (rightTraceRegion) {
     tabBar.append(expandToggle)
     expandToggle.classList.add('trace-expand-toggle-docked')
   } else rightTraceRegion.prepend(expandToggle)
-  expandToggle.addEventListener('click', () =>
-    setTraceExpanded(!rightTraceRegion.classList.contains('trace-expanded')),
-  )
+  expandToggle.addEventListener('click', () => {
+    const expanded = !rightTraceRegion.classList.contains('trace-expanded')
+    if (expanded) button('view-trace').click()
+    setTraceExpanded(expanded)
+  })
+  // Returning to conversation hides the trace surface and resets the docked
+  // control. The control remains available there and can reopen the trace.
+  button('view-chat').addEventListener('click', () => setTraceExpanded(false))
   let initiallyExpanded = false
   try {
     initiallyExpanded = sessionStorage.getItem(storageKey) === 'true'

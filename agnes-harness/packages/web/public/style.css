@@ -6608,13 +6608,26 @@ body.admin-page {
   z-index: 2;
   top: 8px;
   right: 8px;
-  min-height: 28px;
-  padding: 4px 10px;
+  display: inline-flex;
+  align-items: center;
+  width: 1.75rem;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  min-height: 1.75rem;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
   border: 1px solid var(--agnes-line-primary);
-  border-radius: 6px;
+  border-radius: 999px;
   background: var(--agnes-bg-surface);
   color: var(--agnes-text-primary);
   cursor: pointer;
+}
+
+.trace-expand-toggle .icon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .trace-expand-toggle:focus-visible {
@@ -6624,7 +6637,7 @@ body.admin-page {
 
 .trace-expand-toggle-docked {
   position: static;
-  margin-left: 0.75rem;
+  margin-left: auto;
 }
 
 @media (max-width: 720px) {

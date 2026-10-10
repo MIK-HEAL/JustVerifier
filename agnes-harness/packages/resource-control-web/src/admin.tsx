@@ -32,7 +32,7 @@ import { ResourceAdminApi, ResourceAdminApiError } from './api.js'
 import { RESOURCE_ADMIN_LOCALE_NAMESPACE, resourceAdminLocaleCatalog } from './locales/admin.js'
 import { type McpFormFieldId, type McpFormFieldSnapshot, mcpFormIssues } from './mcp-form-validation.js'
 import { watchMcpPanel } from './mcp-refresh.js'
-import { scienceExtensionResources, scienceExtensionState } from './science-extension.js'
+import { OPEN_SCIENCE_MCP_CATALOG, openScienceMcpDefinition, scienceExtensionResources, scienceExtensionState } from './science-extension.js'
 import { SKILL_LOCATION_HINTS } from './skill-copy.js'
 import type { ResourceAdminContext, ResourceAdminError } from './types.js'
 
@@ -389,6 +389,19 @@ class ResourceAdminPage {
     return false
   }
 
+  async importOpenScienceMcp(): Promise<void> {
+    const existing = new Set(
+      this.#items.filter((item): item is McpServerDescriptor => item.kind === 'mcp').map((item) => item.serverId),
+    )
+    const pending = OPEN_SCIENCE_MCP_CATALOG.filter(([serverId]) => !existing.has(serverId))
+    if (!pending.length) return
+    if (!(await this.confirm(this.#t('button.importOpenScience')))) return
+    for (const [serverId, tools] of pending) {
+      const receipt = await this.api().mcpCreate(openScienceMcpDefinition(serverId, tools))
+      if (!(await this.track(receipt))) break
+    }
+  }
+
   render(): void {
     notice.textContent = this.#notice.key
       ? this.#t(this.#notice.key, this.#notice.vars)
@@ -403,8 +416,12 @@ class ResourceAdminPage {
     $('skill-refresh', 'button').hidden = this.#tab !== 'skills'
     const busy = this.#reloadPromise !== undefined || this.#loadMorePromise !== undefined
     $('skill-refresh', 'button').disabled = !this.writable() || busy
-    $('mcp-create', 'button').hidden = true
+    // MCP management is a first-class resource surface. Keep the create action visible only
+    // for the MCP tab so the Skills toolbar stays focused while the MCP tab remains actionable.
+    $('mcp-create', 'button').hidden = this.#tab !== 'mcp'
     $('mcp-create', 'button').disabled = !this.writable() || busy
+    $('mcp-import-open-science', 'button').hidden = this.#tab !== 'mcp'
+    $('mcp-import-open-science', 'button').disabled = !this.writable() || busy
     const scienceState = scienceExtensionState(
       this.#items.filter((item): item is SkillDescriptor => item.kind === 'skill'),
       this.#items.filter((item): item is McpServerDescriptor => item.kind === 'mcp'),
@@ -1044,6 +1061,10 @@ export function mountResourceAdmin(options: ResourceAdminOptions = {}): Resource
       })().catch((error) => page.showError(error)),
   )
   $('mcp-create', 'button').addEventListener('click', () => openMcpDialog(undefined, activeResourceText))
+  $('mcp-import-open-science', 'button').addEventListener(
+    'click',
+    () => void page.importOpenScienceMcp().catch((error) => page.showError(error)),
+  )
   scienceToggle.addEventListener(
     'click',
     () => void page.toggleScience().catch((error) => page.showError(error)),

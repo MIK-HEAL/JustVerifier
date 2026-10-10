@@ -58,6 +58,7 @@ export const resourceAdminLocaleCatalog: LocaleCatalog = {
       'Refresh the Skill catalog\nThe host rescans controlled roots and keeps the last safe catalog until the new result passes validation.',
     'action.edit-mcp': 'Edit {name}',
     'action.create-mcp': 'Add MCP service',
+    'button.importOpenScience': 'Import Open-Science MCP',
     'action.update-mcp-summary':
       'Update MCP “{name}”\nVersion: {revision}\nThe service must be enabled again after updating.',
     'action.create-mcp-summary':
@@ -151,6 +152,7 @@ export const resourceAdminLocaleCatalog: LocaleCatalog = {
       '刷新 Skill 目录\n后台将重新扫描受控根目录，并保留最近一次安全目录直到新结果通过校验。',
     'action.edit-mcp': '编辑 {name}',
     'action.create-mcp': '添加 MCP 服务',
+    'button.importOpenScience': '导入 Open-Science MCP',
     'action.update-mcp-summary': '更新 MCP「{name}」\n版本：{revision}\n更新后需要重新启用。',
     'action.create-mcp-summary': '创建 MCP「{name}」\n它将以停用状态保存，可在检查后直接启用。',
     'action.adjust-priority': '调整同名 Skill「{name}」的覆盖优先级：{current} → {next}。不会改变启用状态。',

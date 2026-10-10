@@ -78,11 +78,11 @@ it('embedded resource pane and resources.html carry the same surface ids', async
   expect(embedded).toEqual(standalone)
 })
 
-it('guides MCP setup through chat and hides the manual creation control', async () => {
+it('exposes MCP setup and creation controls in the embedded settings pane', async () => {
   const runtime = await mountRenderedIndex()
   const pane = document.getElementById('resource-settings-pane') as HTMLElement
-  expect(pane.querySelector('.config-heading')?.textContent).toContain('在聊天中说“帮我接入这个 MCP”')
-  expect(pane.querySelector<HTMLButtonElement>('#mcp-create')?.hidden).toBe(true)
+  expect(pane.querySelector('.config-heading')?.textContent).toContain('添加 MCP 服务')
+  expect(pane.querySelector<HTMLButtonElement>('#mcp-create')?.hidden).toBe(false)
   await runtime.dispose()
   resetWebDom()
 })

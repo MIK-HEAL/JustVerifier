@@ -196,7 +196,9 @@ beforeEach(async () => {
   await vi.waitFor(() => expect(byId('resource-detail').textContent).toContain('Fixture MCP'))
 })
 
-it('keeps manual MCP creation hidden when the MCP tab is selected', () => {
+it('shows MCP creation only when the MCP tab is selected', () => {
+  expect(byId<HTMLButtonElement>('mcp-create').hidden).toBe(false)
+  byId('skills-tab').click()
   expect(byId<HTMLButtonElement>('mcp-create').hidden).toBe(true)
 })
 

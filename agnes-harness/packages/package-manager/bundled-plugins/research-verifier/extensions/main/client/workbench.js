@@ -9,6 +9,11 @@ import { useVerificationRun } from './use-verification-run.js'
 export const OPEN_EVENT = 'agnes:multi-agent-open'
 export const CLOSE_EVENT = 'agnes:multi-agent-close'
 
+const Icon = ({ path, className = 'ma-icon' }) => createElement(
+  'svg', { className, viewBox: '0 0 20 20', 'aria-hidden': 'true' },
+  createElement('path', { d: path, fill: 'currentColor' }),
+)
+
 export function Workbench({ sessionId, ctx }) {
   const [open, setOpen] = useState(false)
   const [nodes, setNodes] = useState([])
@@ -152,74 +157,76 @@ export function Workbench({ sessionId, ctx }) {
       'aria-label': '多 Agent 协作验证',
     },
     createElement(
-      'header',
-      { className: 'ma-overlay-header' },
-      createElement(
-        'div',
-        { className: 'ma-overlay-heading' },
-        createElement('h1', { className: 'ma-overlay-title' }, '多 Agent 协作验证'),
-        createElement(
-          'p',
-          { className: 'ma-overlay-subtitle' },
-          '拖入 Agent，连接依赖，查看完整验证链路与可复现证据。',
-        ),
-      ),
-      createElement(
-        'div',
-        { className: 'ma-overlay-status', 'data-kind': statusKind, title: status },
-        status,
-      ),
-      createElement(
-        'div',
-        { className: 'ma-actions' },
-        createElement(
-          'button',
-          { ref: closeRef, className: 'ma-button', type: 'button', onClick: closeOverlay },
-          '返回会话',
-        ),
-        createElement(
-          'button',
-          {
-            className: 'ma-button ma-button-primary',
-            type: 'button',
-            disabled: running,
-            onClick: () => void start(),
-          },
-          running ? '验证中…' : '开始验证',
-        ),
-      ),
-    ),
-    errors.length > 0 &&
-      createElement('div', { className: 'ma-error-bar', role: 'status' }, `校验未通过：${errors.join('；')}`),
-    createElement(
       'div',
       { className: 'ma-layout' },
-      createElement(AgentPalette, { onAdd: paletteAdd, onTemplate: applyTemplate }),
-      createElement(Canvas, {
-        nodes,
-        edges,
-        selected,
-        connectFrom,
-        canvasRef,
-        onSelect: setSelected,
-        onMoveNode: (id, x, y) =>
-          setNodes((current) => current.map((node) => (node.id === id ? { ...node, x, y } : node))),
-        onDeleteNode: deleteNode,
-        onDeleteEdge: deleteEdge,
-        onRunNode: startSingleAgent,
-        onDropRole: addNode,
-        onConnectFromChange: setConnectFrom,
-        onConnectEnd: connect,
-      }),
-      createElement(Inspector, {
-        selection,
-        prompt,
-        running,
-        trace,
-        onPromptChange: setPrompt,
-        onNodePromptChange: updateNodePrompt,
-        onRunSingleAgent: startSingleAgent,
-      }),
+      createElement('div', { className: 'ma-workspace-head' },
+        createElement(
+          'header',
+          { className: 'ma-overlay-header' },
+        createElement('div', { className: 'ma-overlay-heading' },
+          createElement('div', { className: 'ma-heading-copy' },
+            createElement('h1', { className: 'ma-overlay-title' }, '多 Agent 协作验证'),
+          ),
+        ),
+        createElement(
+          'div',
+          { className: 'ma-overlay-status', 'data-kind': statusKind, 'data-running': running, title: status, role: 'status' },
+          status,
+        ),
+        createElement(
+          'div',
+          { className: 'ma-actions' },
+          createElement(
+            'button',
+            { ref: closeRef, className: 'ma-button', type: 'button', onClick: closeOverlay },
+            Icon({ path: 'M11.5 4.5 8 8l3.5 3.5-1 1L6 8l4.5-4.5 1 1ZM14 3v10h-1.5V3H14Z' }),
+            '返回会话',
+          ),
+          createElement(
+            'button',
+            {
+              className: 'ma-button ma-button-primary',
+              type: 'button',
+              disabled: running,
+              onClick: () => void start(),
+            },
+            Icon({ path: 'M6 4.5 15 10l-9 5.5v-11Z' }),
+            running ? '验证中…' : '开始验证',
+          ),
+        ),
+        ),
+        nodes.length > 0 && errors.length > 0 &&
+          createElement('div', { className: 'ma-error-bar', role: 'status' }, `校验未通过：${errors.join('；')}`),
+      ),
+      createElement('div', { className: 'ma-layout-panels' },
+        createElement(AgentPalette, { onAdd: paletteAdd, onTemplate: applyTemplate }),
+        createElement(Canvas, {
+          nodes,
+          edges,
+          selected,
+          connectFrom,
+          canvasRef,
+          onSelect: setSelected,
+          onMoveNode: (id, x, y) =>
+            setNodes((current) => current.map((node) => (node.id === id ? { ...node, x, y } : node))),
+          onDeleteNode: deleteNode,
+          onDeleteEdge: deleteEdge,
+          onRunNode: startSingleAgent,
+          onDropRole: addNode,
+          onConnectFromChange: setConnectFrom,
+          onConnectEnd: connect,
+          onTemplate: applyTemplate,
+        }),
+        createElement(Inspector, {
+          selection,
+          prompt,
+          running,
+          trace,
+          onPromptChange: setPrompt,
+          onNodePromptChange: updateNodePrompt,
+          onRunSingleAgent: startSingleAgent,
+        }),
+      ),
     ),
   )
 }

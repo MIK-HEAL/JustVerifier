@@ -16,6 +16,29 @@ export const SCIENCE_EXTENSION: ScienceExtensionManifest = Object.freeze({
   id: 'open-science',
   ...OPEN_SCIENCE_MANIFEST,
 })
+
+/** Application-owned Open-Science MCP identities. The runtime supplies session endpoints. */
+export const OPEN_SCIENCE_MCP_CATALOG = Object.freeze([
+  ['open-science-activity', ['begin_activity_group']],
+  ['open-science-artifacts', ['write_artifact_file']],
+  ['open-science-notebook', ['ask_user_question', 'notebook_execute', 'repl_execute', 'bash_execute', 'request_network_access', 'notebook_state', 'list_notebook_runtimes', 'notebook_bind_runtime', 'notebook_switch_runtime', 'notebook_restart', 'notebook_shutdown', 'inspect_packages', 'manage_packages', 'manage_environments', 'list_memory_categories', 'search_memories']],
+  ['open-science-skills', ['request_skill_import']],
+  ['open-science-plan', ['generate_plan', 'update_step_status']],
+  ['open-science-literature', ['read_document', 'list_pdf_elements', 'read_pdf_element']],
+  ['open-science-library', ['search_library', 'read_library_abstract', 'read_library_pdf', 'format_references', 'format_citation_document', 'prepare_latex_bundle', 'save_to_inbox', 'acquire_pdf']],
+  ['open-science-host-message', ['send_message']],
+] as const)
+
+export function openScienceMcpDefinition(serverId: string, tools: readonly string[]): import('@agnes/protocol').McpServerDefinitionInput {
+  return {
+    serverId,
+    displayName: `Open-Science ${serverId.slice('open-science-'.length)}`,
+    // The desktop runtime replaces this session-scoped endpoint when a session is active.
+    transport: { kind: 'http', url: `http://127.0.0.1:0/mcp/${serverId}` },
+    secretBinding: { kind: 'none' },
+    toolPolicy: { allow: [...tools] },
+  }
+}
 export type ScienceExtensionState = 'enabled' | 'partial' | 'disabled' | 'unavailable'
 
 type SkillResource = Readonly<{
