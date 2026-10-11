@@ -225,6 +225,8 @@ export type TraceHandle = {
   render(nodes: readonly UINode[], turns?: readonly UITurn[], meta?: TraceMeta): void
   setOpen(open: boolean): void
   isOpen(): boolean
+  setExpanded(expanded: boolean): void
+  isExpanded(): boolean
 }
 
 export type TracePanel = TraceHandle
@@ -232,6 +234,8 @@ export type TracePanel = TraceHandle
 export type TracePanelOptions = {
   root: HTMLElement
   toggle: HTMLButtonElement
+  /** Optional host-owned control for widening the trace surface. */
+  expandToggle?: HTMLButtonElement
   chatToggle?: HTMLButtonElement
   conversation?: HTMLElement
   store?: Pick<Storage, 'getItem' | 'setItem'>
@@ -243,6 +247,8 @@ export type TracePanelOptions = {
   ) => Promise<{ call: ToolCall; result?: ToolResult }>
   research?: TraceResearchSnapshot
 }
+
+export const TRACE_PANEL_EXPANDED_STORAGE_KEY = 'agnes.web.tracePanel.expanded'
 
 export type TraceRow = {
   id: string
@@ -823,6 +829,7 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
 ) {
   const store = options.store ?? sessionStorage
   const open = useRef(store.getItem(TRACE_PANEL_STORAGE_KEY) === 'open')
+  const expanded = useRef(store.getItem(TRACE_PANEL_EXPANDED_STORAGE_KEY) === 'true')
   type Snapshot = { nodes: readonly UINode[]; turns: readonly UITurn[]; meta?: TraceMeta | undefined }
   const [snapshot, setSnapshot] = useState<Snapshot>({ nodes: [], turns: [] })
   // While the panel is closed, render() only remembers the newest snapshot; opening shows it.
@@ -999,6 +1006,46 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
     }
   }, [options.chatToggle, options.toggle])
 
+  const applyExpanded = (next: boolean, persist: boolean): void => {
+    expanded.current = next
+    root.classList.toggle('trace-expanded', next)
+    const toggle = options.expandToggle
+    if (toggle) {
+      const label = traceText(next ? 'trace.collapseRight' : 'trace.expandRight')
+      toggle.setAttribute('aria-controls', root.id || 'trace-panel')
+      toggle.setAttribute('aria-expanded', String(next))
+      toggle.setAttribute('aria-label', label)
+      toggle.setAttribute('title', label)
+      toggle.dataset.expanded = String(next)
+    }
+    if (persist) {
+      try {
+        store.setItem(TRACE_PANEL_EXPANDED_STORAGE_KEY, next ? 'true' : 'false')
+      } catch {
+        // A restricted storage implementation must not disable the trace panel.
+      }
+    }
+  }
+  const applyExpandedRef = useRef(applyExpanded)
+  applyExpandedRef.current = applyExpanded
+  useLayoutEffect(() => {
+    const toggle = options.expandToggle
+    applyExpandedRef.current(expanded.current, false)
+    if (!toggle) return
+    const onClick = (): void => {
+      const next = !expanded.current
+      applyExpandedRef.current(next, true)
+      // Expanding from the Conversation tab should reveal the trace. Collapsing only
+      // restores the narrow trace width and keeps the current view intact.
+      if (next) applyOpenRef.current(true, true)
+    }
+    toggle.addEventListener('click', onClick)
+    return () => toggle.removeEventListener('click', onClick)
+  }, [options.expandToggle, locale])
+  useLayoutEffect(() => {
+    if (expanded.current) applyOpenRef.current(true, false)
+  }, [])
+
   useImperativeHandle(
     ref,
     () => ({
@@ -1058,6 +1105,12 @@ export const Trace = forwardRef<TraceHandle, TraceProps>(function Trace(
       },
       isOpen() {
         return open.current
+      },
+      setExpanded(next) {
+        applyExpandedRef.current(next, true)
+      },
+      isExpanded() {
+        return expanded.current
       },
     }),
     [],

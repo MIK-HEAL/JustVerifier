@@ -1094,6 +1094,12 @@ export function mountTraceRegion(
     isOpen() {
       return handle.current?.isOpen() ?? false
     },
+    setExpanded(expanded) {
+      handle.current?.setExpanded(expanded)
+    },
+    isExpanded() {
+      return handle.current?.isExpanded() ?? false
+    },
     dispose() {
       if (disposed) return
       disposed = true
