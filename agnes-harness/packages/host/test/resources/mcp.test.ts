@@ -645,7 +645,7 @@ describe('MCP catalog and observed generation', () => {
         enabled: true,
         signal: new AbortController().signal,
       }),
-    ).resolves.toMatchObject({ error: { code: 'MCP_CONNECT_FAILED' } })
+    ).resolves.toMatchObject({ error: { code: 'MCP_HTTP_POLICY_DENIED' } })
 
     // `default` is a normal local profile name. Locality comes only from the daemon
     // deployment policy, never from a profile-string convention.
@@ -685,7 +685,7 @@ describe('MCP catalog and observed generation', () => {
         enabled: true,
         signal: new AbortController().signal,
       }),
-    ).resolves.toMatchObject({ error: { code: 'MCP_CONNECT_FAILED' } })
+    ).resolves.toMatchObject({ error: { code: 'MCP_URL_CREDENTIALS_DENIED' } })
 
     // A remote daemon must not turn a stored request definition into a clear-text tunnel,
     // even when that definition points at a syntactic loopback URL.
@@ -703,7 +703,7 @@ describe('MCP catalog and observed generation', () => {
         enabled: true,
         signal: new AbortController().signal,
       }),
-    ).resolves.toMatchObject({ error: { code: 'MCP_CONNECT_FAILED' } })
+    ).resolves.toMatchObject({ error: { code: 'MCP_HTTP_POLICY_DENIED' } })
   })
 
   it('validates an sse transport url with the same HTTPS/loopback policy as http', async () => {
@@ -723,7 +723,7 @@ describe('MCP catalog and observed generation', () => {
         enabled: true,
         signal: new AbortController().signal,
       }),
-    ).resolves.toMatchObject({ error: { code: 'MCP_CONNECT_FAILED' } })
+    ).resolves.toMatchObject({ error: { code: 'MCP_HTTP_POLICY_DENIED' } })
 
     const overHttps = managed({
       definition: definition({

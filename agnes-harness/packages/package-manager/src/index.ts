@@ -5,7 +5,6 @@ export {
   BUNDLED_SKILL_HELPER_REF,
   bundledPluginSourceRoot,
 } from './bundled-plugin-source.js'
-export { OPEN_SCIENCE_MANIFEST, type OpenScienceManifest } from './open-science-manifest.js'
 export * from './capabilities.js'
 export * from './catalog.js'
 export * from './client-assets.js'
@@ -21,6 +20,7 @@ export * from './local-examples-catalog.js'
 export * from './lock-state.js'
 export * from './lockfile.js'
 export * from './manager.js'
+export { OPEN_SCIENCE_MANIFEST, type OpenScienceManifest } from './open-science-manifest.js'
 export * from './package-plugin-loader.js'
 export * from './plugin-manifest.js'
 export * from './ports.js'

@@ -37,23 +37,30 @@ describe('multi-agent research contract', () => {
     expect(readyMultiAgentTasks(plan, []).map((task) => task.task_id)).toEqual(['execute'])
     const attempt = queueAgentAttempt(plan, 'execute', { attempt_id: 'attempt-1' })
     expect(readyMultiAgentTasks(plan, [attempt])).toEqual([])
-    expect(readyMultiAgentTasks(plan, [{ ...attempt, status: 'completed' }]).map((task) => task.task_id)).toEqual([
-      'review',
-    ])
+    expect(
+      readyMultiAgentTasks(plan, [{ ...attempt, status: 'completed' }]).map((task) => task.task_id),
+    ).toEqual(['review'])
   })
 
   it('keeps findings advisory and signs the aggregate as the harness', () => {
-    const attempt = { ...queueAgentAttempt(plan, 'execute', { attempt_id: 'attempt-1' }), status: 'completed' as const }
-    const result = aggregateMultiAgentFindings(plan, [attempt], [
-      {
-        finding_id: 'finding-1',
-        attempt_id: attempt.attempt_id,
-        agent_id: attempt.agent_id,
-        status: 'warn',
-        message: 'review required',
-        evidence_refs: ['artifact:executor/output@1'],
-      },
-    ])
+    const attempt = {
+      ...queueAgentAttempt(plan, 'execute', { attempt_id: 'attempt-1' }),
+      status: 'completed' as const,
+    }
+    const result = aggregateMultiAgentFindings(
+      plan,
+      [attempt],
+      [
+        {
+          finding_id: 'finding-1',
+          attempt_id: attempt.attempt_id,
+          agent_id: attempt.agent_id,
+          status: 'warn',
+          message: 'review required',
+          evidence_refs: ['artifact:executor/output@1'],
+        },
+      ],
+    )
     expect(result.issued_by).toBe('harness')
     expect(result.status).toBe('warn')
     expect(result.report_checksum).toMatch(/^sha256:/)

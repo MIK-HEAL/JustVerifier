@@ -372,8 +372,46 @@ export function verifyCertificate(input: VerificationInput): VerificationReport 
 export const verificationExitCode = (status: Status): number =>
   status === 'pass' ? 0 : status === 'warn' ? 2 : status === 'unknown' ? 3 : 1
 
+/** Portable Open-Science contracts. These build evidence; this package remains the final verifier. */
+export * as openScience from '@agnes/open-science-core'
+export {
+  buildProvenanceGraph,
+  createArtifactVersionLocator,
+  parseArtifactVersionLocator,
+} from '@agnes/open-science-core'
 export type { ExecutionManifest, ResearchRunSnapshot } from './manifest.js'
 export { buildExecutionManifest, manifestEvidenceRefs } from './manifest.js'
+export type {
+  AgentAttempt,
+  AgentDescriptor,
+  AgentFinding,
+  AgentTask,
+  AttemptStatus,
+  MultiAgentAggregation,
+  MultiAgentPlan,
+  MultiAgentRole,
+  MultiAgentState,
+  ReviewerSnapshot,
+  TaskMode,
+} from './multi-agent.js'
+export {
+  aggregateMultiAgentFindings,
+  attemptArtifactRef,
+  buildMultiAgentPlan,
+  buildMultiAgentResearchManifest,
+  createReviewerSnapshot,
+  multiAgentActivities,
+  queueAgentAttempt,
+  readyMultiAgentTasks,
+  submitAgentFinding,
+  validateMultiAgentPlan,
+} from './multi-agent.js'
+export {
+  researchActivityFromComputeJob,
+  researchActivityFromNotebookRun,
+  researchActivityFromProvenanceActivity,
+  researchArtifactFromOpenScience,
+} from './open-science-adapter.js'
 export type { EvidenceGraph, EvidenceGraphEdge, EvidenceGraphNode } from './projection.js'
 export { projectEvidenceGraph } from './projection.js'
 export type {
@@ -400,42 +438,3 @@ export {
   validateResearchRunManifest,
   verifyResearchRunPackage,
 } from './run.js'
-export type {
-  AgentAttempt,
-  AgentDescriptor,
-  AgentFinding,
-  ReviewerSnapshot,
-  AgentTask,
-  AttemptStatus,
-  MultiAgentAggregation,
-  MultiAgentPlan,
-  MultiAgentRole,
-  MultiAgentState,
-  TaskMode,
-} from './multi-agent.js'
-export {
-  aggregateMultiAgentFindings,
-  attemptArtifactRef,
-  buildMultiAgentPlan,
-  buildMultiAgentResearchManifest,
-  createReviewerSnapshot,
-  multiAgentActivities,
-  queueAgentAttempt,
-  readyMultiAgentTasks,
-  submitAgentFinding,
-  validateMultiAgentPlan,
-} from './multi-agent.js'
-
-/** Portable Open-Science contracts. These build evidence; this package remains the final verifier. */
-export * as openScience from '@agnes/open-science-core'
-export {
-  buildProvenanceGraph,
-  createArtifactVersionLocator,
-  parseArtifactVersionLocator,
-} from '@agnes/open-science-core'
-export {
-  researchActivityFromComputeJob,
-  researchActivityFromNotebookRun,
-  researchActivityFromProvenanceActivity,
-  researchArtifactFromOpenScience,
-} from './open-science-adapter.js'

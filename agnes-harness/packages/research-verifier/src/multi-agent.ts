@@ -1,9 +1,9 @@
 import { type ArtifactRef, type Status, sha256 } from './index.js'
 import {
+  buildResearchRunManifest,
   type ResearchActivity,
   type ResearchArtifact,
   type ResearchRunManifest,
-  buildResearchRunManifest,
 } from './run.js'
 
 /** Roles are capabilities, not identities. Only the harness may issue a final report. */
@@ -101,13 +101,15 @@ function unique(items: readonly string[]): readonly string[] {
 }
 
 /** Creates a path-free plan. The checksum covers all declarations but not itself. */
-export function buildMultiAgentPlan(input: Readonly<{
-  plan_id: string
-  run_id: string
-  root_agent_id: string
-  agents: readonly AgentDescriptor[]
-  tasks: readonly AgentTask[]
-}>): MultiAgentPlan {
+export function buildMultiAgentPlan(
+  input: Readonly<{
+    plan_id: string
+    run_id: string
+    root_agent_id: string
+    agents: readonly AgentDescriptor[]
+    tasks: readonly AgentTask[]
+  }>,
+): MultiAgentPlan {
   const base = {
     schema_version: 1 as const,
     plan_id: input.plan_id,
@@ -189,9 +191,7 @@ export function readyMultiAgentTasks(
   return Object.freeze(
     plan.tasks
       .filter((task) => !terminal.has(task.task_id))
-      .filter((task) =>
-        (task.depends_on ?? []).every((id) => terminal.get(id) === 'completed'),
-      )
+      .filter((task) => (task.depends_on ?? []).every((id) => terminal.get(id) === 'completed'))
       .sort((a, b) => stableCompare(a.task_id, b.task_id)),
   )
 }
@@ -219,12 +219,14 @@ export function queueAgentAttempt(
 }
 
 /** Freezes the evidence a reviewer may inspect. No workspace path or mutable object is retained. */
-export function createReviewerSnapshot(input: Readonly<{
-  snapshot_id: string
-  certificate_checksum: string
-  artifacts: readonly ArtifactRef[]
-  ledger_refs: readonly string[]
-}>): ReviewerSnapshot {
+export function createReviewerSnapshot(
+  input: Readonly<{
+    snapshot_id: string
+    certificate_checksum: string
+    artifacts: readonly ArtifactRef[]
+    ledger_refs: readonly string[]
+  }>,
+): ReviewerSnapshot {
   const base = {
     snapshot_id: input.snapshot_id,
     certificate_checksum: input.certificate_checksum,
@@ -332,12 +334,14 @@ export function multiAgentActivities(
 }
 
 /** Adds multi-agent activities and plan artifacts to a normal research manifest. */
-export function buildMultiAgentResearchManifest(input: Readonly<{
-  plan: MultiAgentPlan
-  attempts: readonly AgentAttempt[]
-  artifacts: readonly ResearchArtifact[]
-  base: Omit<Parameters<typeof buildResearchRunManifest>[0], 'activities' | 'artifacts'>
-}>): ResearchRunManifest {
+export function buildMultiAgentResearchManifest(
+  input: Readonly<{
+    plan: MultiAgentPlan
+    attempts: readonly AgentAttempt[]
+    artifacts: readonly ResearchArtifact[]
+    base: Omit<Parameters<typeof buildResearchRunManifest>[0], 'activities' | 'artifacts'>
+  }>,
+): ResearchRunManifest {
   const planArtifact: ResearchArtifact = {
     id: `plan:${input.plan.plan_id}`,
     version: input.plan.checksum,

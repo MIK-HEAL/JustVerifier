@@ -51,6 +51,16 @@ type Journal = Readonly<{
   legacyPresetImported: boolean
 }>
 const terminal = new Set<ResourceOperation['state']>(['succeeded', 'failed', 'cancelled'])
+const DEPRECATED_OPEN_SCIENCE_SERVER_IDS = new Set([
+  'open-science-activity',
+  'open-science-artifacts',
+  'open-science-notebook',
+  'open-science-skills',
+  'open-science-plan',
+  'open-science-literature',
+  'open-science-library',
+  'open-science-host-message',
+])
 const windows = process.platform === 'win32' // guards-allow-platform: Windows journal replacement and read handle lifetime.
 const digest = (value: unknown) => createHash('sha256').update(jcs(value), 'utf8').digest('hex')
 const copy = <T>(value: T): T => structuredClone(value)
@@ -278,6 +288,17 @@ const status = (
   ...(error ? { lastSafeError: error } : {}),
 })
 
+function isDeprecatedOpenSciencePlaceholder(row: McpRow): boolean {
+  if (!DEPRECATED_OPEN_SCIENCE_SERVER_IDS.has(row.definition.serverId)) return false
+  if (row.definition.transport.kind !== 'http') return false
+  try {
+    const url = new URL(row.definition.transport.url)
+    return url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port === '0'
+  } catch {
+    return false
+  }
+}
+
 /** Durable MCP control plane. It passes definitions/SecretRefs unchanged to the Host lifecycle adapter. */
 export class McpResourceStore {
   private readonly journal: McpJournalStore
@@ -358,6 +379,21 @@ export class McpResourceStore {
   }
   async recover(beforeTerminal?: (profile: string) => Promise<void>): Promise<void> {
     for (const profile of await this.journal.profiles()) {
+      const removedDeprecatedRows = await this.journal.txn(profile, (journal) => {
+        const servers = Object.fromEntries(
+          Object.entries(journal.servers).filter(([, row]) => !isDeprecatedOpenSciencePlaceholder(row)),
+        ) as Record<string, McpRow>
+        return {
+          next:
+            Object.keys(servers).length === Object.keys(journal.servers).length
+              ? journal
+              : { ...journal, servers },
+          result: Object.keys(servers).length !== Object.keys(journal.servers).length,
+        }
+      })
+      // The supervisor writes the worker snapshot before recovery installs adapters. Refresh it
+      // immediately when this one-way cleanup removes the retired Open-Science HTTP placeholders.
+      if (removedDeprecatedRows) await beforeTerminal?.(profile)
       // A journal records the last Host observation, never a live connection. A new daemon has no
       // active generation yet, so it must not surface the departed process's ready catalog while it
       // restores the current Host. Disabled rows are safe without a connection; every other live

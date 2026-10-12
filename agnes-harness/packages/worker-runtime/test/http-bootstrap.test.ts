@@ -313,9 +313,10 @@ describe('worker official SDK HTTP and SecretRef bootstrap', () => {
       )
     })
     const state = await bootstrap(`http://127.0.0.1:${redirectAddress.port}/mcp`)
+    // The refusing hop is reported with its own transport-policy code, not the generic connect failure.
     expect(state?.mcp[0]).toMatchObject({
       connectionState: 'unavailable',
-      lastSafeError: { code: 'MCP_CONNECT_FAILED' },
+      lastSafeError: { code: 'MCP_HTTP_POLICY_DENIED' },
     })
     expect(state?.runtime.mcpResources().list()).toEqual([])
   })

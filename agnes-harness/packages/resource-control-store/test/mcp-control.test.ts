@@ -664,4 +664,29 @@ describe('MCP durable resource control', () => {
     const collisionJournal = JSON.parse(await readFile(join(directory, `${profile}.mcp.json`), 'utf8'))
     expect(collisionJournal.legacyPresetImported).toBe(false)
   })
+
+  it('removes retired Open-Science port-zero MCP rows during recovery', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'agnes-mcp-legacy-open-science-'))
+    const store = new McpResourceStore(directory, scope)
+    await store.seedLegacyPreset(profile, [
+      {
+        serverId: 'open-science-plan',
+        displayName: 'Open-Science plan',
+        transport: { kind: 'http', url: 'http://127.0.0.1:0/mcp/open-science-plan' },
+        secretBinding: { kind: 'none' },
+      },
+      {
+        serverId: 'custom-service',
+        displayName: 'Custom service',
+        transport: { kind: 'http', url: 'http://127.0.0.1:0/mcp/custom-service' },
+        secretBinding: { kind: 'none' },
+      },
+    ])
+
+    await store.recover()
+
+    expect(await store.workerManaged(profile)).toEqual([
+      expect.objectContaining({ definition: expect.objectContaining({ serverId: 'custom-service' }) }),
+    ])
+  })
 })

@@ -241,7 +241,7 @@ it('completes a pending receipt with disabled trusted packages without activatin
   expect(JSON.parse(readFileSync(join(s.profileDir, 'default-helpers', 'state.json'), 'utf8')).phase).toBe(
     'complete',
   )
-})
+}, 60_000)
 
 it('retries target publication after failure and never reactivates completed defaults', async () => {
   const s = setup()

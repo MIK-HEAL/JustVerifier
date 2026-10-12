@@ -115,7 +115,7 @@ it('ships the research-verifier client extension into local builds', async () =>
   expect(descriptor.client).toMatchObject({
     entry: './client/index.js',
     styles: ['./client/index.css'],
-    slots: ['sidebar.footer.action', 'workbench.panel'],
+    slots: ['sidebar.footer.action', 'workbench.panel', 'rightbar.session'],
     services: ['research.multiagent.start', 'research.multiagent.direct'],
   })
   expect((await readdir(clientRoot)).sort()).toEqual([
@@ -148,7 +148,7 @@ it('ships the research-verifier client extension into local builds', async () =>
         kind: 'client',
         rowId: 'ext:research-verifier/main',
         client: expect.objectContaining({
-          slots: ['sidebar.footer.action', 'workbench.panel'],
+          slots: ['rightbar.session', 'sidebar.footer.action', 'workbench.panel'],
           services: ['research.multiagent.direct', 'research.multiagent.start'],
         }),
       }),

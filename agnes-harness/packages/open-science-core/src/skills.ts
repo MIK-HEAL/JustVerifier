@@ -1,11 +1,21 @@
 import { freezeDeep, sha256 } from './canonical.js'
 
-export type SkillFrontmatter = Readonly<{ name?: string; description?: string; metadata: Readonly<Record<string, string>>; body: string; hasFrontmatter: boolean }>
+export type SkillFrontmatter = Readonly<{
+  name?: string
+  description?: string
+  metadata: Readonly<Record<string, string>>
+  body: string
+  hasFrontmatter: boolean
+}>
 
 function parseScalar(value: string): string | undefined {
   const trimmed = value.trim()
   if (!trimmed) return undefined
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) return trimmed.slice(1, -1)
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  )
+    return trimmed.slice(1, -1)
   if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
     const values = trimmed
       .slice(1, -1)
@@ -31,15 +41,47 @@ export function parseSkillFrontmatter(raw: string): SkillFrontmatter {
     if (key && value) fields[key] = value
   }
   const { name, description, ...metadata } = fields
-  return { ...(name ? { name } : {}), ...(description ? { description } : {}), metadata, body: normalized.slice(match[0].length).replace(/^\n+/u, ''), hasFrontmatter: true }
+  return {
+    ...(name ? { name } : {}),
+    ...(description ? { description } : {}),
+    metadata,
+    body: normalized.slice(match[0].length).replace(/^\n+/u, ''),
+    hasFrontmatter: true,
+  }
 }
 
 export function isSafeSkillReferenceName(name: string): boolean {
-  return name.length > 0 && !/[<>:"/\\|?*]/u.test(name) && !Array.from(name).some((character) => character.charCodeAt(0) < 32) && !/[. ]$/u.test(name) && !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(name)
+  return (
+    name.length > 0 &&
+    !/[<>:"/\\|?*]/u.test(name) &&
+    !Array.from(name).some((character) => character.charCodeAt(0) < 32) &&
+    !/[. ]$/u.test(name) &&
+    !/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(name)
+  )
 }
 
-export type SkillProvenance = Readonly<{ id: string; version: string; source: string; trust: 'trusted' | 'untrusted'; contentChecksum: string }>
-export function buildSkillProvenance(input: Readonly<{ id: string; version: string; source: string; trust: SkillProvenance['trust']; content: string }>): SkillProvenance {
+export type SkillProvenance = Readonly<{
+  id: string
+  version: string
+  source: string
+  trust: 'trusted' | 'untrusted'
+  contentChecksum: string
+}>
+export function buildSkillProvenance(
+  input: Readonly<{
+    id: string
+    version: string
+    source: string
+    trust: SkillProvenance['trust']
+    content: string
+  }>,
+): SkillProvenance {
   if (!isSafeSkillReferenceName(input.id)) throw new Error('skill id is not a safe portable reference')
-  return freezeDeep({ id: input.id, version: input.version, source: input.source, trust: input.trust, contentChecksum: sha256(input.content) })
+  return freezeDeep({
+    id: input.id,
+    version: input.version,
+    source: input.source,
+    trust: input.trust,
+    contentChecksum: sha256(input.content),
+  })
 }
