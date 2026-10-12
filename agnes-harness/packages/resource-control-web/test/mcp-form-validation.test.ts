@@ -81,6 +81,10 @@ describe('MCP form live validation mirrors the runtime schema', () => {
   it('rejects credential material in URLs without banning loopback http', () => {
     expect(messages(http('http://localhost:3000/mcp'))).toEqual([])
     expect(messages(http('http://127.0.0.1:3000/mcp'))).toEqual([])
+    expect(messages(http('http://127.0.0.1:0/mcp'))).toEqual([
+      'Port 0 is a placeholder. Enter the port the MCP service is listening on.',
+    ])
+    expect(messages(http('https://example.com:0/mcp'))).toHaveLength(1)
     expect(messages(http('https://user@example.com/mcp'))).toHaveLength(1)
     expect(messages(http('https://example.com/mcp#frag'))).toHaveLength(1)
     expect(messages(http('https://example.com/mcp?token=x'))).toHaveLength(1)

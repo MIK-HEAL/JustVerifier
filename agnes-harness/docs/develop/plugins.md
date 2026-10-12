@@ -38,6 +38,8 @@ For CSS and token customization, see [skin development](skins.md).
 
 Choose the path closest to your need. [Plugin management](../guide/packages.md) covers the shared installation and trust flow, so each interface does not need its own backend infrastructure.
 
+The bundled scientific tools run as an ordinary Agnes plugin. Execution, document reading, artifacts, plans, and literature requests use the current session's `ctx` capabilities directly; they do not register an external MCP URL or depend on another desktop application. Do not create a `127.0.0.1` or port `0` placeholder for these tools. External services still use the [MCP integration](../guide/mcp.md) flow and must provide a real HTTPS endpoint or an explicitly permitted local loopback endpoint.
+
 See [MHS and devices](../guide/mhs.md) for the physical-device direction; integration documentation and examples are coming soon. The table covers existing software extension entry points.
 
 <a id="cordis-在其中做什么"></a>

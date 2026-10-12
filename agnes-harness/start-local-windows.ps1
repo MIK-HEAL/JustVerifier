@@ -5,6 +5,12 @@
 $ErrorActionPreference = 'Stop'
 $repoDir = $PSScriptRoot
 
+# This launcher runs a local daemon. Explicitly admit reviewed loopback MCP endpoints;
+# retain an administrator's existing setting (including an explicit opt-out).
+if ($null -eq $env:AGNES_MCP_ALLOW_LOOPBACK_HTTP) {
+    $env:AGNES_MCP_ALLOW_LOOPBACK_HTTP = '1'
+}
+
 # Same order as @agnes/host agnesHome(): AGH_HOME, then the deprecated AGNES_HOME, then HOME\.agh,
 # then %USERPROFILE%\.agh (os.homedir() on Windows). The data directory is passed explicitly below,
 # so it must not name a different root than the CLI resolves for the same environment.

@@ -101,6 +101,7 @@ function urlIssues(url: string, t: LocaleTranslator): McpFormFieldIssue[] {
   } catch {
     return [{ field: 'mcp-url', message: t('validation.url-format') }]
   }
+  if (parsed.port === '0') return [{ field: 'mcp-url', message: t('validation.url-port') }]
   if (parsed.username || parsed.password || parsed.hash)
     return [
       {

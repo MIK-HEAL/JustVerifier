@@ -8,6 +8,7 @@ import { connectMcp, type McpConnection, type McpServerOpener, mcpLocalToolPrefi
 import type { Host } from '@agnes/host'
 import { createTestHost } from '@agnes/host/testkit'
 import { type McpServerDefinitionInput, validateResourceControlData } from '@agnes/protocol'
+import { McpTransportPolicyError } from '@agnes/resource-control-runtime'
 import {
   createWorkerMcpServerOpener,
   syncManagedMcpExecutableAllowlist,
@@ -914,18 +915,24 @@ describe('a session MCP row whose catalog holds tools the model cannot be shown'
     expect(page?.catalogRevision).toBe(status?.catalogRevision)
   })
 
-  it('reports a connection failure with an empty message as a valid status', async () => {
+  it.each([
+    ['', { code: 'MCP_CONNECT_FAILED', message: 'MCP connection failed' }],
+    [
+      new McpTransportPolicyError('MCP_ENDPOINT_INVALID', 'MCP port 0 is a placeholder.'),
+      { code: 'MCP_ENDPOINT_INVALID', message: 'MCP port 0 is a placeholder.' },
+    ],
+  ])('reports connection failure %j as a valid status', async (error, lastSafeError) => {
     const host = await testHost()
     const failing: McpServerOpener = {
       connect: async () => {
-        throw ''
+        throw error
       },
     }
     const result = await createMcpRowRuntime({ host, opener: failing }).apply([entry('alpha')])
     const status = result.statuses.get('alpha')
     expect(status).toMatchObject({
       connectionState: 'unavailable',
-      lastSafeError: { code: 'MCP_CONNECT_FAILED', message: 'MCP connection failed' },
+      lastSafeError,
     })
     expect(validateResourceControlData('McpStatus', status).ok).toBe(true)
   })

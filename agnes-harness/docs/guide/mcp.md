@@ -8,6 +8,8 @@ English | [简体中文](mcp.zh-CN.md)
 
 Connect an existing MCP tool service to AGH's task flow. This guide covers adding a service, reviewing its tool scope, connecting, and checking actual state after configuration changes.
 
+The bundled scientific tools run inside the Agnes session and do not require a configured MCP service. Only external services belong in this guide; a `127.0.0.1` or port `0` placeholder for bundled tools is rejected.
+
 Definitions, security approval, desired enablement, and actual connection state remain separate in the control plane. In Web, users review the definition and choose Enable once; AGH completes the approval check before enabling. Inspect the catalog, then verify a real tool call.
 
 **Current implementation:** Session MCP services run as individual Host rows. OAuth bindings are still skipped on this session path; see [runtime behavior and versions](#runtime-behavior-and-versions). See [verification](../maintainers/verification.md) for versioned results.

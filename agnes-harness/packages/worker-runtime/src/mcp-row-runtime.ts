@@ -6,6 +6,7 @@ import {
   type McpToolCatalogPage,
   validateResourceControlData,
 } from '@agnes/protocol'
+import { McpTransportPolicyError } from '@agnes/resource-control-runtime'
 import {
   type McpServerRowsResult,
   type McpServerSnapshotEntry,
@@ -59,11 +60,14 @@ function toMcpStatus(serverId: string, revision: string, event: ConnectionStatus
       catalogRevision: null,
       toolCount: 0,
       observedAt: observedAt(),
-      lastSafeError: {
-        code,
-        // SafeError.message is 1..256 chars; an arbitrary error's own message can be longer or empty.
-        message: String(event.error).slice(0, 256) || 'MCP connection failed',
-      },
+      lastSafeError:
+        event.error instanceof McpTransportPolicyError
+          ? event.error.safeError
+          : {
+              code,
+              // SafeError.message is 1..256 chars; an arbitrary error's own message can be longer or empty.
+              message: String(event.error).slice(0, 256) || 'MCP connection failed',
+            },
     }
   }
   return {

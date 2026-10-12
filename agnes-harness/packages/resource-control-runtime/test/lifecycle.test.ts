@@ -323,5 +323,14 @@ describe('validateManagedHttpUrl message wording', () => {
     expect(() => validateManagedHttpUrl(new URL('http://remote.example/mcp'), undefined)).toThrow(
       'this MCP transport requires HTTPS, or a local daemon with explicit loopback policy',
     )
+    const localPolicy = { localDaemon: true, allowLoopbackHttp: true }
+    expect(() => validateManagedHttpUrl(new URL('http://127.0.0.1:3000/mcp'), localPolicy)).not.toThrow()
+    expect(() => validateManagedHttpUrl(new URL('http://127.0.0.1:0/mcp'), localPolicy)).toThrow('port 0')
+    expect(() => validateManagedHttpUrl(new URL('http://remote.example/mcp'), localPolicy)).toThrow(
+      'requires HTTPS',
+    )
+    expect(() =>
+      validateManagedHttpUrl(new URL('http://localhost:3000/mcp'), { allowLoopbackHttp: true }),
+    ).toThrow('requires HTTPS')
   })
 })

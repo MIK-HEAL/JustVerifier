@@ -26,11 +26,13 @@ const englishText = createCatalogTranslator(adminLocaleCatalog, 'en')
 const SCIENCE_PACKAGE_ID = '@agnes/open-science'
 
 /** Keep the bundled scientific package's implementation identity out of operator-facing text. */
-export function displayPackageName(
-  packageId: string,
-  t: LocaleTranslator = englishText,
-): string {
+export function displayPackageName(packageId: string, t: LocaleTranslator = englishText): string {
   return packageId === SCIENCE_PACKAGE_ID ? t('package.science-name') : packageId
+}
+
+/** Display legacy bundled MCP labels without changing their persisted service identity. */
+export function displayMcpLabel(label: string): string {
+  return label.replace(/^(?:Open-Science |open-science-)/, '')
 }
 
 export function hasPermission(permissions: readonly string[], permission: string): boolean {

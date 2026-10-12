@@ -208,6 +208,32 @@ export async function initializeDefaultHelpers(options: {
           }
         }
       }
+      // The scientific tools moved from a forwarding catalog to Agnes-owned tools. Refresh an
+      // existing release-owned snapshot once its recorded pin still matches the installed bytes;
+      // absent or foreign rows remain untouched so explicit removals and user packages survive.
+      const science = BUNDLED_HELPERS.find((helper) => helper.name === 'open-science')
+      if (science && Object.hasOwn(state.integrity, science.id)) {
+        const root = bundledPluginSourceRoot(science.ref)
+        if (!root) throw new Error('Bundled helper source unavailable')
+        const inventory = existsSync(lockPath(options.profileDir))
+          ? await options.manager.inventory(options.profileDir)
+          : undefined
+        const installed = inventory?.packages.find((pkg) => pkg.id === science.id)
+        if (
+          installed !== undefined &&
+          installed.entry.source.ref === science.ref &&
+          installed.entry.integrity === state.integrity[science.id] &&
+          installed.entry.version !== science.version
+        ) {
+          const expectedIntegrity = hashDirectory(join(root, 'bundled-plugins', science.name))
+          state = {
+            ...state,
+            phase: 'pending',
+            integrity: { ...state.integrity, [science.id]: expectedIntegrity },
+          }
+          save(state)
+        }
+      }
     }
     await options.initializePolicy()
     if (refreshVerifier) {
@@ -236,7 +262,11 @@ export async function initializeDefaultHelpers(options: {
         },
       )
       state = { ...state, phase: 'complete' }
-      state = { ...state, version: 7, integrity: { ...state.integrity, [refreshVerifier.id]: refreshVerifier.expectedIntegrity } }
+      state = {
+        ...state,
+        version: 7,
+        integrity: { ...state.integrity, [refreshVerifier.id]: refreshVerifier.expectedIntegrity },
+      }
       save(state)
       return
     }

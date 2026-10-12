@@ -1,7 +1,7 @@
 {
   "name": "@agnes/open-science",
-  "version": "0.35.1",
-  "description": "Bundled scientific research Skills and MCP service catalog for Agnes Harness",
+  "version": "0.35.2",
+  "description": "Bundled scientific research tools for Agnes Harness",
   "type": "module",
   "exports": "./index.mjs",
   "license": "Apache-2.0",
@@ -14,19 +14,14 @@
   "files": [
     "package.json",
     "index.mjs",
+    "src",
     "skills",
-    "mcp",
     "manifest.lock.json",
     "LICENSE",
     "README.md"
   ],
   "agnes": {
     "contributions": [
-      {
-        "kind": "preset",
-        "id": "open-science/mcp",
-        "path": "./mcp/servers.json"
-      },
       {
         "kind": "skill",
         "id": "open-science/alphafold2",

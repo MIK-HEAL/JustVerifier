@@ -1,6 +1,7 @@
 import type { McpServerDescriptor, SkillDescriptor } from '@agnes/protocol'
 import type { JSX } from 'react'
 import { useState } from 'react'
+import { displayMcpLabel } from './admin-text.js'
 import { RESOURCE_DETAIL_LOCALE_NAMESPACE, resourceDetailLocaleCatalog } from './locales/resource-detail.js'
 import { useUiText } from './ui-locale.js'
 
@@ -234,8 +235,8 @@ export function McpDetailContent({
     <>
       <DetailHead
         kindLabel={t('mcp.kind')}
-        title={server.displayName}
-        subtitle={`${server.serverId} · ${server.transportKind.toUpperCase()} · ${t('mcp.credentials', { kind: server.secretBindingKind })}`}
+        title={displayMcpLabel(server.displayName)}
+        subtitle={`${displayMcpLabel(server.serverId)} · ${server.transportKind.toUpperCase()} · ${t('mcp.credentials', { kind: server.secretBindingKind })}`}
         onClose={onClose}
       />
       <div className="admin-detail-scroll">

@@ -61,6 +61,16 @@ const initial = (): Journal => ({
   legacyPresetImported: false,
 })
 const fail = (code: string, message: string): SafeError => ({ code, message })
+/** Only validated, explicitly returned adapter errors may reach the durable operation. */
+class McpAdapterFailure extends Error {
+  readonly safeError: SafeError
+  constructor(error: SafeError) {
+    super('MCP lifecycle adapter returned a failure')
+    this.safeError = validateResourceControlData('SafeError', error).ok
+      ? copy(error)
+      : fail('MCP_RECONCILE_FAILED', 'MCP lifecycle adapter failed safely')
+  }
+}
 const bad = (): never => {
   throw rpcError('INTERNAL_ERROR', { code: 'MCP_JOURNAL_CORRUPT' })
 }
@@ -782,7 +792,7 @@ export class McpResourceStore {
       try {
         afterSuccess?.()
       } catch {}
-    } catch {
+    } catch (error) {
       if (!ac.signal.aborted) {
         await this.restorePrevious(profile, op)
         await beforeTerminal?.().catch(() => undefined)
@@ -790,7 +800,9 @@ export class McpResourceStore {
           profile,
           id,
           'failed',
-          fail('MCP_RECONCILE_FAILED', 'MCP lifecycle adapter failed safely'),
+          error instanceof McpAdapterFailure
+            ? error.safeError
+            : fail('MCP_RECONCILE_FAILED', 'MCP lifecycle adapter failed safely'),
         )
       }
     } finally {
@@ -817,7 +829,7 @@ export class McpResourceStore {
     })
     if (op.operation.kind === '_agnes/v1/mcp.servers.test') {
       const tested = await this.adapter.test({ profile, serverId, definition: row.definition, signal })
-      if (tested.error) throw new Error('MCP test failed')
+      if (tested.error) throw new McpAdapterFailure(tested.error)
       return { toolCount: tested.toolCount, catalogRevision: tested.catalogRevision }
     }
     if (op.operation.kind === '_agnes/v1/mcp.servers.reconnect') {
@@ -826,7 +838,7 @@ export class McpResourceStore {
       // prior active generation alive; publishing the candidate's unavailable observation here
       // would make the durable catalog reject that still-safe active generation. The terminal
       // operation records the safe failure while the previous ready observation remains usable.
-      if (result.error) throw new Error('MCP reconnect failed')
+      if (result.error) throw new McpAdapterFailure(result.error)
       await this.observe(profile, serverId, result.status)
       return
     }
@@ -847,7 +859,7 @@ export class McpResourceStore {
       signal,
     })
     await this.observe(profile, serverId, result.status)
-    if (result.error) throw new Error('MCP reconcile failed')
+    if (result.error) throw new McpAdapterFailure(result.error)
   }
   private async observe(profile: string, serverId: string, observed: McpStatus): Promise<void> {
     if (!validateResourceControlData('McpStatus', observed).ok) throw new Error('invalid MCP observation')

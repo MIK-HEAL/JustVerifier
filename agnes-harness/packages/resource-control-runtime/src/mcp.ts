@@ -245,6 +245,15 @@ function isLoopbackHost(hostname: string): boolean {
   return host === 'localhost' || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'))
 }
 
+export class McpTransportPolicyError extends Error {
+  readonly safeError: SafeError
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'McpTransportPolicyError'
+    this.safeError = Object.freeze({ code, message })
+  }
+}
+
 /**
  * The HTTPS/loopback + credential-in-URL policy `validateManagedTransport` applies to a definition's
  * configured URL. Exported so the HTTP transport can re-run the identical check against an HTTP
@@ -260,7 +269,15 @@ export function validateManagedHttpUrl(url: URL, httpPolicy: McpHttpPolicy | und
     url.hash ||
     queryNames.some((name) => /(?:token|secret|password|api[_-]?key|credential)/i.test(name))
   )
-    throw new Error('MCP HTTP URL contains prohibited credential material')
+    throw new McpTransportPolicyError(
+      'MCP_URL_CREDENTIALS_DENIED',
+      'MCP HTTP URL contains prohibited credential material',
+    )
+  if (url.port === '0')
+    throw new McpTransportPolicyError(
+      'MCP_ENDPOINT_INVALID',
+      'MCP port 0 is a placeholder, not a listening endpoint. Edit the service to use its actual MCP URL.',
+    )
   if (url.protocol === 'https:') return
   if (
     url.protocol === 'http:' &&
@@ -272,7 +289,10 @@ export function validateManagedHttpUrl(url: URL, httpPolicy: McpHttpPolicy | und
   // Message is deliberately transport-agnostic: this function is shared by both the 'http' and 'sse'
   // transport.kind cases in validateManagedTransport() below, and a Web/CLI user who picked SSE and
   // hit this rejection should not be told they picked the wrong transport.
-  throw new Error('this MCP transport requires HTTPS, or a local daemon with explicit loopback policy')
+  throw new McpTransportPolicyError(
+    'MCP_HTTP_POLICY_DENIED',
+    'this MCP transport requires HTTPS, or a local daemon with explicit loopback policy. For local HTTP, start the local daemon with AGNES_MCP_ALLOW_LOOPBACK_HTTP=1; remote endpoints require HTTPS.',
+  )
 }
 
 function validateManagedTransport(
@@ -683,6 +703,8 @@ export function createMcpResourceManager(options: Options) {
     try {
       next = await candidate(input, signal)
     } catch (error) {
+      if (error instanceof McpTransportPolicyError)
+        return failed(serverId, error.safeError.code, error.safeError.message, input)
       // A distinct SafeError code for the oauth-needs-reauthorization case (this IS the
       // "resolvedConfig()'s caller" the brief's §Step-4 instruction pointed at -- traced, not
       // guessed): downstream reporting (onStatus -> worker hello/resourceStatus -> daemon) carries
@@ -782,11 +804,14 @@ export function createMcpResourceManager(options: Options) {
           toolCount: transient.tools.length,
           catalogRevision: transient.catalogRevision,
         })
-      } catch {
+      } catch (error) {
         return Object.freeze({
           toolCount: 0,
           catalogRevision: ZERO_REVISION,
-          error: safeError('MCP_TEST_FAILED', 'MCP test health check failed'),
+          error:
+            error instanceof McpTransportPolicyError
+              ? error.safeError
+              : safeError('MCP_TEST_FAILED', 'MCP test health check failed'),
         })
       }
     },

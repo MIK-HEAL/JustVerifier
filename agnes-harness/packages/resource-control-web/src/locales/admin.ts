@@ -58,7 +58,6 @@ export const resourceAdminLocaleCatalog: LocaleCatalog = {
       'Refresh the Skill catalog\nThe host rescans controlled roots and keeps the last safe catalog until the new result passes validation.',
     'action.edit-mcp': 'Edit {name}',
     'action.create-mcp': 'Add MCP service',
-    'button.importOpenScience': 'Import Open-Science MCP',
     'action.update-mcp-summary':
       'Update MCP “{name}”\nVersion: {revision}\nThe service must be enabled again after updating.',
     'action.create-mcp-summary':
@@ -72,6 +71,7 @@ export const resourceAdminLocaleCatalog: LocaleCatalog = {
     'error.form.url': 'Enter an HTTPS address or a loopback HTTP address allowed by local policy.',
     'error.form.secret': 'Enter an existing SecretRef.',
     'validation.url-format': 'Enter a complete URL.',
+    'validation.url-port': 'Port 0 is a placeholder. Enter the port the MCP service is listening on.',
     'validation.url-no-credentials':
       'The address cannot include a username, password, or #fragment. Use a SecretRef for credentials.',
     'validation.url-no-secret-query':
@@ -152,7 +152,6 @@ export const resourceAdminLocaleCatalog: LocaleCatalog = {
       '刷新 Skill 目录\n后台将重新扫描受控根目录，并保留最近一次安全目录直到新结果通过校验。',
     'action.edit-mcp': '编辑 {name}',
     'action.create-mcp': '添加 MCP 服务',
-    'button.importOpenScience': '导入 Open-Science MCP',
     'action.update-mcp-summary': '更新 MCP「{name}」\n版本：{revision}\n更新后需要重新启用。',
     'action.create-mcp-summary': '创建 MCP「{name}」\n它将以停用状态保存，可在检查后直接启用。',
     'action.adjust-priority': '调整同名 Skill「{name}」的覆盖优先级：{current} → {next}。不会改变启用状态。',
@@ -163,6 +162,7 @@ export const resourceAdminLocaleCatalog: LocaleCatalog = {
     'error.form.url': '请填写 HTTPS 地址，或获本地策略允许的 loopback HTTP 地址。',
     'error.form.secret': '请填写已有的 SecretRef。',
     'validation.url-format': '地址格式不正确，请填写完整 URL。',
+    'validation.url-port': '端口 0 是占位值，请填写 MCP 服务实际监听的端口。',
     'validation.url-no-credentials': '地址不能携带用户名、密码或 #fragment（凭据请用 SecretRef）。',
     'validation.url-no-secret-query':
       '地址查询参数不能包含 token / secret / password / api-key / credential（凭据请用 SecretRef）。',

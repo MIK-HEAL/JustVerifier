@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "@agnes/open-science",
-  "version": "0.35.1",
+  "version": "0.35.2",
   "license": "Apache-2.0",
   "source": "bundled-plugins/open-science",
   "upstream": {
@@ -11,11 +11,6 @@
     "license": "Apache-2.0"
   },
   "contributions": [
-    {
-      "kind": "preset",
-      "id": "open-science/mcp",
-      "path": "./mcp/servers.json"
-    },
     {
       "kind": "skill",
       "id": "open-science/alphafold2",
@@ -144,10 +139,9 @@
   ],
   "files": {
     "LICENSE": "sha256:b038148f912bdd6e61e33e56214d02c4d8a9640f7a637e21dfcf939332816979",
-    "README.md": "sha256:e5a4987a89c26a670260c08f7c7d0bc76ff58e2a2217037fb9f7ae2291bb112c",
-    "index.mjs": "sha256:1ce422259052691470dd7f007c574f0c9a0b7396a74e06c94711cb8e895bdf68",
-    "mcp/servers.json": "sha256:fea860441b9edb9cb9c45da0cc42bf585d01bf8d2ae432e304e53f4eea4e68e1",
-    "package.json": "sha256:7fb7f11e81ed61c108a979d0aaecff7c71d9debf8f6a59db948253797cdcdd39",
+    "README.md": "sha256:a29d3faff1eeede6a674989c81d369c28e3df40b83dc4b95d4034b9ae2996c36",
+    "index.mjs": "sha256:e0a70db96366731d935e9b520ae94608bebe93c8a3f5f2ae5dd0bab33c668962",
+    "package.json": "sha256:06c8a1925cd03c2ca59b1174a868fafb6706dba210f775a4e3eade440158375c",
     "skills/alphafold2/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
     "skills/alphafold2/SKILL.md": "sha256:984cfa7956ac50d878e3714563af881f8430b2281f1a927887a5f18304b81cee",
     "skills/boltz/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
@@ -227,6 +221,10 @@
     "skills/skill-creator/scripts/run-loop.js": "sha256:04550cacf241e9a33fe31040c5d3fb65205925718f8c3d4e7d7bb91a8e2652ba",
     "skills/skill-creator/scripts/utils.js": "sha256:a20cd0b00dc73b76754318ae52004329d4a202353dc48dfc328e6fa89907918d",
     "skills/solublempnn/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
-    "skills/solublempnn/SKILL.md": "sha256:c5c9b5cba2668bfafc54e899e5165a68e07a1425ab25667cab8c86807d3f6e0c"
+    "skills/solublempnn/SKILL.md": "sha256:c5c9b5cba2668bfafc54e899e5165a68e07a1425ab25667cab8c86807d3f6e0c",
+    "src/core.mjs": "sha256:20e94c7c3acd0f79d409a8cc386d0f40f6feb3afda6bfc3e6487fe2bd15c6016",
+    "src/library.mjs": "sha256:4e4198e2c7baba0b429f7790ea7b1db4f02ddcf27652ffb5f30d243b705b2492",
+    "src/notebook.mjs": "sha256:9f726be8f806f644b9c21dedd1bef36928c440374a7f574658e99e6f4d9d0709",
+    "src/schema.mjs": "sha256:579c7f3eea3aa14bb85c957fddc362d305922180ac736df73b3e79b19d251474"
   }
 }

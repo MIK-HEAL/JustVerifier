@@ -1,5 +1,6 @@
 import type { SkillDescriptor, SkillRootStatus } from '@agnes/protocol'
 import type { JSX } from 'react'
+import { displayMcpLabel } from './admin-text.js'
 import { RESOURCE_LIST_LOCALE_NAMESPACE, resourceListLocaleCatalog } from './locales/resource-list.js'
 import { StateSwitch } from './ui/state-lights.js'
 import { useUiText } from './ui-locale.js'
@@ -239,7 +240,7 @@ export function ResourceRow({
           </>
         ) : (
           <>
-            <p>{`${item.serverId} · ${item.transportKind.toUpperCase()}`}</p>
+            <p>{`${displayMcpLabel(item.serverId)} · ${item.transportKind.toUpperCase()}`}</p>
             <p className="plugin-source">
               {`${t('row.secret', { kind: item.secretBindingKind })} · ${
                 item.definition.toolPolicy?.allow?.length

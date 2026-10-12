@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -82,7 +83,7 @@ it.each([
   expect(await readFile(new URL('../sea/build.mjs', import.meta.url), 'utf8')).toContain("'bundled-plugins'")
 })
 
-it('ships the bundled research catalog with its Skill support files', async () => {
+it('ships the bundled scientific tools with their Skill support files', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agnes-open-science-delivery-'))
   roots.push(root)
   const output = join(root, 'runtime')
@@ -90,11 +91,13 @@ it('ships the bundled research catalog with its Skill support files', async () =
   const packageRoot = join(output, 'bundled-plugins', 'open-science')
   expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))).toMatchObject({
     name: '@agnes/open-science',
-    version: '0.35.1',
+    version: '0.35.2',
     exports: './index.mjs',
   })
   expect((await readdir(join(packageRoot, 'skills'))).length).toBeGreaterThanOrEqual(20)
-  expect(await readFile(join(packageRoot, 'mcp', 'servers.json'), 'utf8')).toContain('open-science-notebook')
+  expect(await readFile(join(packageRoot, 'src', 'core.mjs'), 'utf8')).toContain('write_artifact_file')
+  expect(await readFile(join(packageRoot, 'src', 'notebook.mjs'), 'utf8')).toContain('notebook_execute')
+  expect(existsSync(join(packageRoot, 'mcp'))).toBe(false)
 })
 
 it('ships the research-verifier client extension into local builds', async () => {

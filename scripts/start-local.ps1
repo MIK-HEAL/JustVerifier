@@ -40,10 +40,14 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 $Entry = Join-Path $OutputDir 'agnes.mjs'
 $DataDir = Join-Path $AghHome 'data'
 $previousAghHome = $env:AGH_HOME
+$previousMcpLoopbackHttp = $env:AGNES_MCP_ALLOW_LOOPBACK_HTTP
 
 Push-Location -LiteralPath $HarnessDir
 try {
     $env:AGH_HOME = $AghHome
+    if ($null -eq $env:AGNES_MCP_ALLOW_LOOPBACK_HTTP) {
+        $env:AGNES_MCP_ALLOW_LOOPBACK_HTTP = '1'
+    }
     if ($Rebuild) {
         & (Join-Path $PSScriptRoot 'rebuild-local.ps1') -DataDir $DataDir -Profile $Profile -Workspace $HarnessDir -OutputDir $OutputDir
         if ($LASTEXITCODE -ne 0) { throw "Local build failed (exit $LASTEXITCODE)." }
@@ -65,5 +69,6 @@ try {
     }
 } finally {
     $env:AGH_HOME = $previousAghHome
+    $env:AGNES_MCP_ALLOW_LOOPBACK_HTTP = $previousMcpLoopbackHttp
     Pop-Location
 }

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   blockerText,
   contributionText,
+  displayMcpLabel,
   displayPackageName,
   installedState,
   operationName,
@@ -25,6 +26,9 @@ describe('admin text labels', () => {
     const zh = createCatalogTranslator(adminLocaleCatalog, 'zh-CN')
     expect(displayPackageName('@agnes/open-science', en)).toBe('Scientific tools')
     expect(displayPackageName('@agnes/open-science', zh)).toBe('科学扩展')
+    expect(displayMcpLabel('Open-Science notebook')).toBe('notebook')
+    expect(displayMcpLabel('open-science-notebook')).toBe('notebook')
+    expect(displayMcpLabel('Custom notebook')).toBe('Custom notebook')
     expect(sourceLabel({ type: 'file', ref: 'file:./bundled-plugins/open-science' }, zh)).toBe(
       '本地文件 · 内置科学扩展',
     )
@@ -35,7 +39,9 @@ describe('admin text labels', () => {
       id: '@agnes/open-science',
       contributions: [{ kind: 'skill', id: 'open-science/alphafold2' }],
     }
-    expect(contributionText(item, createCatalogTranslator(adminLocaleCatalog, 'zh-CN'))).toBe('技能 · alphafold2')
+    expect(contributionText(item, createCatalogTranslator(adminLocaleCatalog, 'zh-CN'))).toBe(
+      '技能 · alphafold2',
+    )
   })
 
   it('resolves runtime states through the active locale', () => {

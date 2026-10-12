@@ -1,7 +1,7 @@
 /** Browser-safe projection of the bundled scientific plugin manifest. */
 export const OPEN_SCIENCE_MANIFEST = Object.freeze({
   packageId: '@agnes/open-science',
-  version: '0.35.1',
+  version: '0.35.2',
   source: 'file:./bundled-plugins/open-science',
   license: 'Apache-2.0',
   skillRootKey: 'package',

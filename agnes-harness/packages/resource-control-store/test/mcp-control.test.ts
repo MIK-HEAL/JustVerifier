@@ -60,6 +60,48 @@ afterEach(async () => {
 })
 
 describe('MCP durable resource control', () => {
+  it('preserves a validated lifecycle SafeError in the failed operation', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'agnes-mcp-control-'))
+    const safeError = { code: 'MCP_HTTP_POLICY_DENIED', message: 'HTTPS is required for this endpoint.' }
+    const store = new McpResourceStore(directory, scope, {
+      reconcile: async ({ serverId }) => ({ status: ready(serverId) }),
+      reconnect: async ({ serverId }) => ({
+        status: {
+          serverId,
+          connectionState: 'unavailable' as const,
+          observedRevision: null,
+          catalogRevision: null,
+          toolCount: 0,
+          observedAt: new Date().toISOString(),
+          lastSafeError: safeError,
+        },
+        error: safeError,
+      }),
+      test: async () => ({ toolCount: 1, catalogRevision: 'a'.repeat(64) }),
+      tools: async ({ serverId }) => ({ serverId, catalogRevision: 'a'.repeat(64), items: [] }),
+    })
+    const service = testService(createResourceControlService(store))
+    const create = await service.call(
+      '_agnes/v1/mcp.servers.create',
+      { profile, definition, clientId: 'client', commandId: 'safe-create' },
+      authority,
+    )
+    await settled(service, create.operationId)
+    const reconnect = await service.call(
+      '_agnes/v1/mcp.servers.reconnect',
+      {
+        profile,
+        serverId: definition.serverId,
+        expectedRevision: revision(definition),
+        clientId: 'client',
+        commandId: 'safe-reconnect',
+      },
+      authority,
+    )
+    const operation = await settled(service, reconnect.operationId)
+    expect(operation).toMatchObject({ state: 'failed', lastSafeError: safeError })
+  })
+
   it('adopts one command once, rejects conflicting replay and blocks removal while enabled', async () => {
     directory = await mkdtemp(join(tmpdir(), 'agnes-mcp-control-'))
     const store = new McpResourceStore(directory, scope, {

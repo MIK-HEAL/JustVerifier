@@ -38,7 +38,7 @@ export const BUNDLED_HELPERS = Object.freeze([
   {
     name: 'open-science',
     id: '@agnes/open-science',
-    version: '0.35.1',
+    version: '0.35.2',
     license: 'Apache-2.0',
     ref: BUNDLED_OPEN_SCIENCE_REF,
   },
