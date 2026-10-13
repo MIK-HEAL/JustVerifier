@@ -2,7 +2,7 @@
   "client": {
     "entry": "./client/index.js",
     "styles": ["./client/index.css"],
-    "slots": ["sidebar.footer.action", "workbench.panel", "rightbar.session"],
+    "slots": ["sidebar.footer.action", "workbench.panel"],
     "slotCatalogVersion": "dsh-client-slots/v1",
     "services": ["research.multiagent.start", "research.multiagent.direct"],
     "projections": [],

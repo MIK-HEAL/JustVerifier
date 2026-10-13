@@ -1241,8 +1241,13 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
 }
+.workbench-split:has([data-agnes-region="rightbar"]:not([hidden])) {
+  grid-template-columns: minmax(0, 1fr) var(--agnes-rightbar-width, min(32vw, 520px));
+}
 /* 页签行：tablist 与「报告问题」按钮同级，按钮不进 tablist，以免破坏 tab 语义。 */
 .session-tabs-bar {
+  grid-column: 1 / -1;
+  grid-row: 1;
   display: flex;
   align-items: center;
   padding: 0 1.25rem;
@@ -1271,6 +1276,8 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
 }
 .conversation-shell {
   position: relative;
+  grid-column: 1;
+  grid-row: 2;
   width: 100%;
   min-height: 0;
   overflow: hidden;
@@ -1282,6 +1289,8 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
   min-height: 0;
 }
 [data-agnes-region="trace"] {
+  grid-column: 1;
+  grid-row: 2;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
@@ -1300,22 +1309,178 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
   display: contents;
 }
 [data-agnes-region="rightbar"] {
-  position: fixed;
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
   z-index: 5;
-  inset: 4.75rem 1rem 1rem auto;
-  width: min(26rem, calc(100vw - 2rem));
-  overflow: auto;
-  border: 1px solid var(--agnes-line-primary);
-  border-radius: 1rem;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--agnes-line-primary);
   background: var(--agnes-bg-page);
-  box-shadow: var(--shadow-elevation-prominent);
-}
-[data-agnes-region="rightbar"] > [data-slot="rightbar"] {
-  min-height: 100%;
+  box-shadow: -8px 0 24px rgb(16 24 40 / 5%);
 }
 #rightbar-content,
 #rightbar-session {
   min-height: 100%;
+}
+#rightbar-content {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  min-height: 100%;
+  flex-direction: column;
+}
+.rightbar-header {
+  display: flex;
+  min-height: 3.25rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid var(--agnes-line-primary);
+  color: var(--agnes-text-primary);
+}
+.rightbar-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+}
+.rightbar-resize-handle:focus-visible {
+  outline: 2px solid var(--agnes-brand-focus-ring);
+  outline-offset: 2px;
+}
+.rightbar-body {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+.rightbar-overview {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  color: var(--agnes-text-primary);
+}
+.rightbar-overview-title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+}
+.rightbar-overview-description {
+  margin: -0.35rem 0 0;
+  color: var(--agnes-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+.rightbar-overview-cards,
+.rightbar-overview-detail {
+  display: grid;
+  gap: 0.65rem;
+}
+.rightbar-overview-card {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.7rem;
+  background: var(--agnes-bg-surface);
+}
+.rightbar-overview-card strong {
+  font-size: var(--font-size-sm);
+}
+.rightbar-overview-card p {
+  margin: 0;
+  color: var(--agnes-text-tertiary);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+}
+.rightbar-overview-card button,
+.rightbar-back-button {
+  justify-self: start;
+  margin-top: 0.25rem;
+  padding: 0.25rem 0.4rem;
+  border: 0;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--agnes-text-emphasis);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+}
+.rightbar-overview-card button:hover,
+.rightbar-overview-card button:focus-visible,
+.rightbar-back-button:hover,
+.rightbar-back-button:focus-visible {
+  background: var(--agnes-bg-hover);
+}
+.rightbar-overview-detail h3 {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+.rightbar-overview-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+.rightbar-overview-stats span {
+  min-width: 0;
+  padding: 0.55rem 0.45rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.5rem;
+  color: var(--agnes-text-secondary);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+.rightbar-tool-list {
+  display: grid;
+  gap: 0.5rem;
+}
+.rightbar-tool-list h3 {
+  margin: 0;
+  color: var(--agnes-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+.rightbar-tool-item {
+  min-width: 0;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.6rem;
+  background: var(--agnes-bg-surface);
+}
+.rightbar-tool-item strong,
+.rightbar-tool-item p {
+  display: block;
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rightbar-tool-item strong {
+  font-size: var(--font-size-xs);
+}
+.rightbar-tool-item p,
+.rightbar-empty {
+  margin-top: 0.25rem;
+  color: var(--agnes-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+.rightbar-empty {
+  margin-bottom: 0;
+}
+.rightbar-resize-handle {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: -0.25rem;
+  width: 0.5rem;
+  cursor: ew-resize;
 }
 #rightbar-session {
   display: flex;
@@ -6603,7 +6768,8 @@ body.admin-page {
   flex-basis: min(48vw, 720px);
 }
 
-.trace-expand-toggle {
+.trace-expand-toggle,
+.rightbar-expand-toggle {
   position: absolute;
   z-index: 2;
   top: 8px;
@@ -6624,23 +6790,36 @@ body.admin-page {
   cursor: pointer;
 }
 
-.trace-expand-toggle .icon {
+.trace-expand-toggle .icon,
+.rightbar-expand-toggle .icon {
   width: 1rem;
   height: 1rem;
   flex: 0 0 auto;
 }
 
-.trace-expand-toggle:focus-visible {
+.trace-expand-toggle:focus-visible,
+.rightbar-expand-toggle:focus-visible {
   outline: 2px solid var(--agnes-brand-focus-ring);
   outline-offset: 2px;
 }
 
-.trace-expand-toggle-docked {
+.trace-expand-toggle-docked,
+.rightbar-expand-toggle-docked {
   position: static;
   margin-left: auto;
 }
 
 @media (max-width: 720px) {
+  .workbench-split:has([data-agnes-region="rightbar"]:not([hidden])) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  [data-agnes-region="rightbar"] {
+    position: absolute;
+    z-index: 20;
+    inset: 0 0 0 auto;
+    width: min(var(--agnes-rightbar-width, 520px), calc(100vw - 2rem));
+    border-left: 1px solid var(--agnes-line-primary);
+  }
   #trace-panel.trace-expanded {
     position: fixed;
     inset: 0;

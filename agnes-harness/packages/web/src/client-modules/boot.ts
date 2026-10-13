@@ -135,6 +135,7 @@ export async function startClientModules(options: {
   traceContainer?: HTMLElement | undefined
   trace?: import('../region-slots.js').TraceRegionOptions | undefined
   rightbarContainer?: HTMLElement | undefined
+  rightbar?: import('../region-slots.js').RightbarRegionOptions | undefined
   settingsPaneContainer?: HTMLElement | undefined
   settings?: import('../region-slots.js').SettingsRegionOptions | undefined
   /** Host permission bridge for plugin-contributed browser commands. Defaults to deny. */
@@ -316,7 +317,12 @@ export async function startClientModules(options: {
       : undefined
   if (trace) builtinUnits.mount('@agnes/web-trace', () => trace.dispose())
   const rightbar = options.rightbarContainer
-    ? mountRightbarRegion(registry, options.rightbarContainer, { session, resources }, locale)
+    ? mountRightbarRegion(
+        registry,
+        options.rightbarContainer,
+        { session, resources, ...(options.rightbar ?? {}) },
+        locale,
+      )
     : undefined
   if (rightbar) builtinUnits.mount('@agnes/web-rightbar', () => rightbar.dispose())
   const settingsPane = options.settingsPaneContainer

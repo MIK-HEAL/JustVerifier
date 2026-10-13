@@ -14,43 +14,6 @@
   color: var(--agnes-text-primary, #182230);
 }
 
-/* Embedded rightbar surface. It reuses the workbench's complete content without taking over
-   the page like the legacy full-screen workbench entry. */
-.ma-rightbar-workbench {
-  display: flex;
-  min-height: 0;
-  height: 100%;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--agnes-bg-page, #f8fafc);
-}
-.ma-rightbar-workbench .ma-layout {
-  min-height: 0;
-  flex: 1;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-.ma-rightbar-workbench .ma-layout-panels {
-  min-height: 0;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(180px, 1fr) auto;
-  overflow: auto;
-}
-.ma-rightbar-workbench .ma-layout-panels > .ma-panel + .ma-panel {
-  border-top: 1px solid var(--ma-border);
-  border-left: 0;
-}
-.ma-rightbar-workbench .ma-panel {
-  min-height: 0;
-}
-.ma-rightbar-workbench .ma-palette,
-.ma-rightbar-workbench .ma-inspector,
-.ma-rightbar-workbench .ma-trace {
-  overflow: auto;
-}
 [data-agnes-multi-agent] *,
 [data-agnes-multi-agent] *::before,
 [data-agnes-multi-agent] *::after {

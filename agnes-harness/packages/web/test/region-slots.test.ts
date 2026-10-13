@@ -46,6 +46,8 @@ afterEach(async () => {
   while (contexts.length) await contexts.pop()?.fiber.dispose()
   document.documentElement.lang = 'en'
   document.body.replaceChildren()
+  localStorage.removeItem('agnes.web.rightbar.collapsed')
+  localStorage.removeItem('agnes.web.rightbar.width')
 })
 
 describe('DSH top-level shell', () => {
@@ -629,12 +631,53 @@ describe('DSH rightbar region', () => {
       expect(rightbar.hidden).toBe(false)
       expect(rightbar.querySelector('#fixture-rightbar-content')?.textContent).toBe('右侧扩展面板')
       expect(rightbar.querySelector('[data-slot="rightbar.session"]')).toBeTruthy()
+      expect(rightbar.querySelector('[data-rightbar-resize="true"]')).toBeTruthy()
     }, committed)
 
     remove()
     await vi.waitFor(() => {
       expect(rightbar.hidden).toBe(true)
     }, committed)
+  })
+
+  it('uses the existing host toggle to open an empty rightbar and close contributed content', async () => {
+    const slots = await registry()
+    const rightbar = document.createElement('aside')
+    const toggle = document.createElement('button')
+    rightbar.id = 'rightbar-panel'
+    document.body.append(rightbar, toggle)
+    const mount = mountRightbarRegion(slots, rightbar, { toggle }, zhLocaleService())
+    mounts.push(mount)
+
+    expect(rightbar.hidden).toBe(true)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    toggle.click()
+    expect(rightbar.hidden).toBe(false)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(toggle.getAttribute('aria-controls')).toBe('rightbar-panel')
+    toggle.click()
+    expect(rightbar.hidden).toBe(true)
+
+    const remove = slots.register(
+      { name: 'rightbar.session', id: 'fixture-rightbar-toggle', owner: 'fixture' },
+      () => createElement('section', {}, '右侧扩展面板'),
+    )
+    slots.setSession('session-1')
+    await vi.waitFor(() => expect(rightbar.textContent).toContain('右侧扩展面板'), committed)
+    expect(rightbar.hidden).toBe(true)
+    toggle.click()
+    expect(rightbar.hidden).toBe(false)
+    toggle.click()
+    expect(rightbar.hidden).toBe(true)
+    expect(localStorage.getItem('agnes.web.rightbar.collapsed')).toBe('true')
+    remove()
+    mount.dispose()
+    const restored = mountRightbarRegion(slots, rightbar, { toggle }, zhLocaleService())
+    mounts.push(restored)
+    expect(rightbar.hidden).toBe(true)
+    toggle.click()
+    expect(rightbar.hidden).toBe(false)
+    expect(localStorage.getItem('agnes.web.rightbar.collapsed')).toBe('false')
   })
 
   it('mounts document and guide child slots with a safe document renderer fallback', async () => {

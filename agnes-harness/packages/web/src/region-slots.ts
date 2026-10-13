@@ -59,7 +59,15 @@ import {
   type TranscriptDependencies,
   type TranscriptHandle,
 } from '@agnes/web-units'
-import { createElement, type ReactNode, useLayoutEffect, useMemo, useState } from 'react'
+import {
+  createElement,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from 'react'
+import type { UITimeline } from '@agnes/protocol'
 import { flushSync } from 'react-dom'
 import type { ClaimResolver } from './client-modules/boot.js'
 import { observeSlotCards } from './client-modules/timeline-slot.js'
@@ -708,6 +716,7 @@ export interface RightbarRegionOptions {
   session?: SessionService
   resources?: ClientResourceService
   document?: RightbarDocument
+  toggle?: HTMLButtonElement
 }
 
 export interface RightbarRegionMount extends EmptyStateRegionMount {}
@@ -881,9 +890,11 @@ function RightbarTabBuiltin({
 
 function RightbarSessionBuiltin({
   document,
+  session,
   t = (key) => key,
 }: {
   document: RightbarDocument | undefined
+  session?: SessionService
   t?: (key: string) => string
 }): ReturnType<typeof createElement> {
   const activeTab = document === undefined ? 'guide' : 'document'
@@ -923,14 +934,229 @@ function RightbarSessionBuiltin({
         hideWhenEmpty: true,
       }),
     ),
+    createElement(RightbarSessionOverview, session ? { session } : {}),
   )
 }
 
+function RightbarSessionOverview({
+  session,
+}: {
+  session?: SessionService
+}): ReturnType<typeof createElement> {
+  const [timeline, setTimeline] = useState<UITimeline | undefined>()
+  const [activeView, setActiveView] = useState<'home' | 'files' | 'compute' | 'library'>('home')
+  useLayoutEffect(() => {
+    if (!session) {
+      setTimeline(undefined)
+      return
+    }
+    let active = true
+    const refresh = (): void => {
+      void session.projection.read().then((result) => {
+        if (!active || !result || typeof result !== 'object' || !('status' in result)) return
+        const value = (result as { status?: string; value?: unknown }).value
+        if ((result as { status?: string }).status === 'available' && value && typeof value === 'object')
+          setTimeline(value as UITimeline)
+        else setTimeline(undefined)
+      })
+    }
+    const stopProjection = session.projection.subscribe(refresh)
+    const stopSession = session.subscribe(refresh)
+    refresh()
+    return () => {
+      active = false
+      stopProjection()
+      stopSession()
+    }
+  }, [session])
+
+  const nodes = timeline?.nodes ?? []
+  const tools = nodes.filter((node) => node.kind === 'tool')
+  const artifacts = nodes.filter((node) => node.kind === 'artifact')
+  const messages = nodes.filter((node) => node.kind === 'user' || node.kind === 'assistant')
+  const lastTools = tools.slice(-5).reverse()
+  const cards = [
+    {
+      id: 'files' as const,
+      title: '内容追踪',
+      description: '查看对话中产生的文件、来源和产物。',
+      action: '打开文件',
+      count: artifacts.length,
+    },
+    {
+      id: 'compute' as const,
+      title: '可验证研究',
+      description: '检查工具执行记录和验证信号。',
+      action: '打开验证',
+      count: tools.length,
+    },
+    {
+      id: 'library' as const,
+      title: '来源与证据',
+      description: '保持消息和证据记录靠近当前对话。',
+      action: '打开来源',
+      count: messages.length,
+    },
+  ]
+  return createElement(
+    'section',
+    { className: 'rightbar-overview', 'data-rightbar-overview': 'true' },
+    createElement('h2', { className: 'rightbar-overview-title' }, '研究工作台'),
+    createElement(
+      'p',
+      { className: 'rightbar-overview-description' },
+      '在对话旁查看会话内容、证据和执行记录。',
+    ),
+    activeView === 'home'
+      ? createElement(
+          'div',
+          { className: 'rightbar-overview-cards' },
+          ...cards.map((card) =>
+            createElement(
+              'article',
+              { className: 'rightbar-overview-card', key: card.id },
+              createElement('strong', {}, card.title),
+              createElement('p', {}, card.description),
+              createElement(
+                'button',
+                { type: 'button', onClick: () => setActiveView(card.id) },
+                `${card.action} · ${card.count}`,
+              ),
+            ),
+          ),
+        )
+      : createElement(
+          'div',
+          { className: 'rightbar-overview-detail' },
+          createElement(
+            'button',
+            { type: 'button', className: 'rightbar-back-button', onClick: () => setActiveView('home') },
+            '← 返回研究工作台',
+          ),
+          createElement('h3', {}, cards.find((card) => card.id === activeView)?.title),
+          activeView === 'compute'
+            ? lastTools.length > 0
+              ? lastTools.map((node, index) =>
+                  createElement(
+                    'article',
+                    { className: 'rightbar-tool-item', key: `${node.id}-${index}` },
+                    createElement('strong', {}, node.name || '工具调用'),
+                    createElement(
+                      'p',
+                      {},
+                      node.summary || node.resultPreview || node.argsPreview || '已记录',
+                    ),
+                  ),
+                )
+              : createElement('p', { className: 'rightbar-empty' }, '还没有工具调用记录。')
+            : createElement(
+                'p',
+                { className: 'rightbar-empty' },
+                activeView === 'files'
+                  ? `当前会话记录了 ${artifacts.length} 个产物。`
+                  : `当前会话记录了 ${messages.length} 条消息。`,
+              ),
+        ),
+    createElement(
+      'div',
+      { className: 'rightbar-overview-stats' },
+      createElement('span', {}, `消息 ${messages.length}`),
+      createElement('span', {}, `工具 ${tools.length}`),
+      createElement('span', {}, `产物 ${artifacts.length}`),
+    ),
+    lastTools.length > 0
+      ? createElement(
+          'div',
+          { className: 'rightbar-tool-list' },
+          createElement('h3', {}, '最近工具调用'),
+          ...lastTools.map((node, index) =>
+            createElement(
+              'article',
+              { className: 'rightbar-tool-item', key: `${node.id}-${index}` },
+              createElement('strong', {}, node.name || '工具调用'),
+              createElement('p', {}, node.summary || node.resultPreview || node.argsPreview || '已记录'),
+            ),
+          ),
+        )
+      : createElement('p', { className: 'rightbar-empty' }, '对话或工具调用后，这里会显示会话信息。'),
+  )
+}
+
+const RIGHTBAR_WIDTH_STORAGE_KEY = 'agnes.web.rightbar.width'
+const RIGHTBAR_COLLAPSED_STORAGE_KEY = 'agnes.web.rightbar.collapsed'
+const RIGHTBAR_DEFAULT_WIDTH = 520
+const RIGHTBAR_MIN_WIDTH = 280
+const RIGHTBAR_MAX_WIDTH = 760
+
+function clampRightbarWidth(value: number): number {
+  return Math.max(RIGHTBAR_MIN_WIDTH, Math.min(RIGHTBAR_MAX_WIDTH, Math.round(value)))
+}
+
+function storedRightbarWidth(): number {
+  try {
+    const stored = localStorage.getItem(RIGHTBAR_WIDTH_STORAGE_KEY)
+    if (stored === null) return RIGHTBAR_DEFAULT_WIDTH
+    const value = Number(stored)
+    return Number.isFinite(value) ? clampRightbarWidth(value) : RIGHTBAR_DEFAULT_WIDTH
+  } catch {
+    return RIGHTBAR_DEFAULT_WIDTH
+  }
+}
+
 function RightbarBuiltin(): ReturnType<typeof createElement> {
+  const [width, setWidth] = useState(storedRightbarWidth)
+
+  useLayoutEffect(() => {
+    const containers = Array.from(document.querySelectorAll<HTMLElement>('[data-agnes-region="rightbar"]'))
+    if (containers.length === 0) return
+    for (const container of containers) {
+      container.parentElement?.style.setProperty('--agnes-rightbar-width', `${width}px`)
+    }
+    try {
+      localStorage.setItem(RIGHTBAR_WIDTH_STORAGE_KEY, String(width))
+    } catch {
+      // Storage is optional; the live panel still works for this page.
+    }
+  }, [width])
+
+  const beginResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = width
+    const onMove = (move: PointerEvent): void => {
+      setWidth(clampRightbarWidth(startWidth + startX - move.clientX))
+    }
+    const stop = (): void => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
+  }
+
   return createElement(
     'div',
     { id: 'rightbar-content', 'data-agnes-region-unit': 'rightbar' },
-    createElement(SlotOutlet, { name: 'rightbar.session', hideWhenEmpty: true }),
+    createElement(
+      'header',
+      { className: 'rightbar-header' },
+      createElement('strong', { className: 'rightbar-title' }, '右侧面板'),
+    ),
+    createElement(
+      'div',
+      { className: 'rightbar-body' },
+      createElement(SlotOutlet, { name: 'rightbar.session', hideWhenEmpty: true }),
+    ),
+    createElement('div', {
+      className: 'rightbar-resize-handle',
+      role: 'separator',
+      'aria-label': '调整右侧面板宽度',
+      'aria-orientation': 'vertical',
+      'data-rightbar-resize': 'true',
+      onPointerDown: beginResize,
+    }),
   )
 }
 
@@ -941,6 +1167,7 @@ export function mountRightbarRegion(
   options: RightbarRegionOptions = {},
   locale?: LocaleService,
 ): RightbarRegionMount {
+  if (!container.hasAttribute('data-agnes-region')) container.setAttribute('data-agnes-region', 'rightbar')
   const t = locale ? (key: string) => locale.t(key) : undefined
   const rootSpec = dshSlotSpec('rightbar')
   const sessionSpec = dshSlotSpec('rightbar.session')
@@ -967,6 +1194,7 @@ export function mountRightbarRegion(
     () =>
       createElement(RightbarSessionBuiltin, {
         document: options.document,
+        ...(options.session ? { session: options.session } : {}),
         ...(t ? { t } : {}),
       }),
   )
@@ -1036,9 +1264,37 @@ export function mountRightbarRegion(
   const hasCustomRightbarEntry = (): boolean =>
     options.document !== undefined ||
     watchedSlots.some((name) => registry.entries(name).some((entry) => entry.owner !== '@agnes/web-rightbar'))
-  const syncVisibility = (): void => {
-    container.hidden = !hasCustomRightbarEntry()
+  let openOverride: boolean | undefined
+  if (options.toggle) {
+    options.toggle.setAttribute('aria-controls', container.id || 'rightbar-panel')
+    try {
+      const collapsed = localStorage.getItem(RIGHTBAR_COLLAPSED_STORAGE_KEY)
+      if (collapsed !== null) openOverride = collapsed !== 'true'
+    } catch {
+      // The toggle also works when browser storage is unavailable.
+    }
   }
+  const syncToggle = (): void => {
+    if (!options.toggle) return
+    const open = !container.hidden
+    options.toggle.setAttribute('aria-expanded', String(open))
+    options.toggle.setAttribute('aria-label', open ? '收起右侧面板' : '展开右侧面板')
+    options.toggle.setAttribute('title', open ? '收起右侧面板' : '展开右侧面板')
+  }
+  const syncVisibility = (): void => {
+    container.hidden = !(openOverride ?? hasCustomRightbarEntry())
+    syncToggle()
+  }
+  const onToggle = (): void => {
+    openOverride = Boolean(container.hidden)
+    try {
+      localStorage.setItem(RIGHTBAR_COLLAPSED_STORAGE_KEY, String(!openOverride))
+    } catch {
+      // Storage is optional; retain the state for this page.
+    }
+    syncVisibility()
+  }
+  options.toggle?.addEventListener('click', onToggle)
   const stops = watchedSlots.map((name) => registry.subscribeBatched(name, syncVisibility))
   flushSync(() => {
     root.render(
@@ -1056,6 +1312,7 @@ export function mountRightbarRegion(
       if (disposed) return
       disposed = true
       for (const stop of stops) stop()
+      options.toggle?.removeEventListener('click', onToggle)
       root.unmount()
       for (const remove of documentRenderers) remove()
       removeGuideTab()
@@ -1063,6 +1320,7 @@ export function mountRightbarRegion(
       removeSessionBuiltin()
       removeBuiltin()
       container.hidden = true
+      syncToggle()
     },
   }
 }

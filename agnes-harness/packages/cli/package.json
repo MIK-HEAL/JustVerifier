@@ -15,6 +15,8 @@
     "dist/local/bundled-plugins",
     "dist/sea/daemon.mjs",
     "dist/sea/worker.mjs",
+    "dist/sea/research-metadata-server.cjs",
+    "dist/sea/research-metadata-notices",
     "dist/sea/web",
     "dist/sea/native",
     "dist/sea/runtime",

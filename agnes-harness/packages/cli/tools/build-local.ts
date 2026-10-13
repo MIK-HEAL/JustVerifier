@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { BUNDLED_HELPERS } from '@agnes/package-manager'
 import { type BuildOptions, type BuildResult, build, type Plugin } from 'esbuild'
+import { buildResearchMcp } from '../../../tools/local-mcp/build.mjs'
 import { collectThirdPartyNotices } from '../../../tools/third-party-notices.mjs'
 import { beginRuntimeDirectory } from '../../base/tools/runtime-directory.js'
 import { buildConversationCss } from '../../web-ui/tools/build-conversation-css.js'
@@ -303,6 +304,7 @@ async function buildLocal(out: string, nativeOutput?: string): Promise<void> {
   await mkdir(join(out, 'native'), { recursive: true })
   await copyComputerUseNotice(out)
   await copyBundledPlugins(out)
+  await buildResearchMcp(out)
   const packageJson = JSON.parse(await readFile(join(cliRoot, 'package.json'), 'utf8')) as {
     version?: unknown
   }

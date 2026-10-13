@@ -14,8 +14,8 @@ const Icon = ({ path, className = 'ma-icon' }) => createElement(
   createElement('path', { d: path, fill: 'currentColor' }),
 )
 
-export function Workbench({ sessionId, ctx, embedded = false }) {
-  const [open, setOpen] = useState(embedded)
+export function Workbench({ sessionId, ctx }) {
+  const [open, setOpen] = useState(false)
   const [nodes, setNodes] = useState([])
   const [edges, setEdges] = useState([])
   const [selected, setSelected] = useState(null)
@@ -46,7 +46,6 @@ export function Workbench({ sessionId, ctx, embedded = false }) {
   }, [])
 
   useEffect(() => {
-    if (embedded) return
     const openPanel = () => setOpen(true)
     const closePanel = () => setOpen(false)
     window.addEventListener(OPEN_EVENT, openPanel)
@@ -55,7 +54,7 @@ export function Workbench({ sessionId, ctx, embedded = false }) {
       window.removeEventListener(OPEN_EVENT, openPanel)
       window.removeEventListener(CLOSE_EVENT, closePanel)
     }
-  }, [embedded])
+  }, [])
 
   useEffect(() => {
     if (open) closeRef.current?.focus()
@@ -122,7 +121,7 @@ export function Workbench({ sessionId, ctx, embedded = false }) {
   }
 
   useEffect(() => {
-    if (!open || embedded) return
+    if (!open) return
     const onKey = (event) => {
       if (event.key === 'Escape') {
         if (connectFrom) {
@@ -145,16 +144,16 @@ export function Workbench({ sessionId, ctx, embedded = false }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [embedded, open, connectFrom, selected, deleteNode, deleteEdge, closeOverlay])
+  }, [open, connectFrom, selected, deleteNode, deleteEdge, closeOverlay])
 
   if (!open) return null
   return createElement(
     'section',
     {
-      className: embedded ? 'ma-rightbar-workbench' : 'ma-overlay',
+      className: 'ma-overlay',
       'data-agnes-multi-agent': true,
-      role: embedded ? 'region' : 'dialog',
-      ...(embedded ? {} : { 'aria-modal': 'true' }),
+      role: 'dialog',
+      'aria-modal': 'true',
       'aria-label': '多 Agent 协作验证',
     },
     createElement(
@@ -177,7 +176,7 @@ export function Workbench({ sessionId, ctx, embedded = false }) {
         createElement(
           'div',
           { className: 'ma-actions' },
-          !embedded && createElement(
+          createElement(
             'button',
             { ref: closeRef, className: 'ma-button', type: 'button', onClick: closeOverlay },
             Icon({ path: 'M11.5 4.5 8 8l3.5 3.5-1 1L6 8l4.5-4.5 1 1ZM14 3v10h-1.5V3H14Z' }),
