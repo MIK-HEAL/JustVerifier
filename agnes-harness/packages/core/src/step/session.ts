@@ -344,6 +344,7 @@ export type TurnEndReason =
 export type TurnOutcome = { reason: TurnEndReason; lastSeq: Seq; error?: { code: string; message: string } }
 
 export type SessionDeps = {
+  readonly toolAccess?: 'none'
   log: SessionLogImpl
   tracker: StateTracker
   surface: SurfaceCache

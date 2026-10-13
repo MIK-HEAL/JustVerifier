@@ -9,8 +9,11 @@ function TraceItem({ item }) {
   )
 }
 
-const PlayIcon = createElement('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' },
-  createElement('path', { d: 'M6 4.5 11.5 8 6 11.5Z', fill: 'currentColor' }))
+const PlayIcon = createElement(
+  'svg',
+  { viewBox: '0 0 16 16', 'aria-hidden': 'true' },
+  createElement('path', { d: 'M6 4.5 11.5 8 6 11.5Z', fill: 'currentColor' }),
+)
 
 function AgentFields({ node, running, onNodePromptChange, onRunSingleAgent }) {
   return createElement(
@@ -51,6 +54,7 @@ export function Inspector({
   prompt,
   running,
   trace,
+  result,
   onPromptChange,
   onNodePromptChange,
   onRunSingleAgent,
@@ -77,7 +81,9 @@ export function Inspector({
               { className: 'ma-status' },
               `选中连线：${selectedEdge.from} → ${selectedEdge.to}（按 Delete 删除）`,
             )
-          : createElement('div', { className: 'ma-selection-hint' },
+          : createElement(
+              'div',
+              { className: 'ma-selection-hint' },
               createElement('strong', null, '先定义你的研究问题'),
               createElement('span', null, '选中画布中的 Agent，可进一步设置专属指令。'),
             ),
@@ -93,7 +99,36 @@ export function Inspector({
         }),
       ),
     ),
-    createElement('div', { className: 'ma-panel-heading' },
+    result &&
+      createElement(
+        'div',
+        { className: 'ma-inspector' },
+        createElement('strong', null, `执行结果 · ${result.status}`),
+        result.report &&
+          createElement(
+            'p',
+            null,
+            `验证结论：${result.report.status}${result.report.status === 'unknown' ? '（缺少可重放的证书或证据）' : ''}`,
+          ),
+        ...(result.attempts ?? []).map((attempt) =>
+          createElement(
+            'div',
+            { key: attempt.attempt_id, className: 'ma-status' },
+            `${attempt.task_id} · ${attempt.status}${attempt.error ? ` · ${attempt.error.code}` : ''}`,
+          ),
+        ),
+        ...(result.artifacts ?? []).map((artifact) =>
+          createElement(
+            'details',
+            { key: artifact.id },
+            createElement('summary', null, artifact.id),
+            createElement('code', null, artifact.checksum),
+          ),
+        ),
+      ),
+    createElement(
+      'div',
+      { className: 'ma-panel-heading' },
       createElement('span', null, '过程留痕'),
       createElement('span', { className: 'ma-count' }, trace.length),
     ),
@@ -102,7 +137,9 @@ export function Inspector({
       { className: 'ma-trace' },
       trace.length
         ? trace.map((item, index) => createElement(TraceItem, { key: `${item.time}-${index}`, item }))
-        : createElement('div', { className: 'ma-trace-empty' },
+        : createElement(
+            'div',
+            { className: 'ma-trace-empty' },
             createElement('span', { className: 'ma-trace-empty-icon', 'aria-hidden': 'true' }, '≡'),
             createElement('strong', null, '验证过程将在这里记录'),
             createElement('p', null, '开始验证后，查看每一步的计划、执行与证据事件。'),

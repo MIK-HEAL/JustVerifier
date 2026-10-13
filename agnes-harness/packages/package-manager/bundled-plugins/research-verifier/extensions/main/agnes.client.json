@@ -4,7 +4,12 @@
     "styles": ["./client/index.css"],
     "slots": ["sidebar.footer.action", "workbench.panel"],
     "slotCatalogVersion": "dsh-client-slots/v1",
-    "services": ["research.multiagent.start", "research.multiagent.direct"],
+    "services": [
+      "research.multiagent.start",
+      "research.multiagent.direct",
+      "research.multiagent.status",
+      "research.multiagent.cancel"
+    ],
     "projections": [],
     "publicConfig": {
       "label": "多 Agent 协作验证",

@@ -11,6 +11,16 @@ import { afterEach, expect, it } from 'vitest'
 import { copyBundledPlugins } from '../tools/build-local.js'
 
 const roots: string[] = []
+type RunView = {
+  run_id: string
+  status: string
+  attempts: Array<{ status: string; output_artifact_ids: readonly string[]; error?: { code?: string } }>
+  report?: { status: string; issued_by: string }
+}
+type RunTool = {
+  name: string
+  execute: (input: unknown, context: unknown) => Promise<{ structured: RunView }>
+}
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
@@ -108,6 +118,21 @@ it('ships the research-verifier client extension into local builds', async () =>
 
   const packageRoot = join(output, 'bundled-plugins', 'research-verifier')
   const clientRoot = join(packageRoot, 'extensions', 'main', 'client')
+  expect(await readFile(join(packageRoot, 'src/verifier.mjs'), 'utf8')).toBe(
+    await readFile(
+      new URL('../../package-manager/bundled-plugins/research-verifier/src/verifier.mjs', import.meta.url),
+      'utf8',
+    ),
+  )
+  const clientBuild = await build({
+    entryPoints: [join(clientRoot, 'index.js')],
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    write: false,
+    external: ['react'],
+  })
+  expect(clientBuild.outputFiles).toHaveLength(1)
   const descriptor = JSON.parse(
     await readFile(join(packageRoot, 'extensions', 'main', 'agnes.client.json'), 'utf8'),
   ) as { client?: { entry?: string; styles?: string[]; services?: string[]; slots?: string[] } }
@@ -116,7 +141,12 @@ it('ships the research-verifier client extension into local builds', async () =>
     entry: './client/index.js',
     styles: ['./client/index.css'],
     slots: ['sidebar.footer.action', 'workbench.panel'],
-    services: ['research.multiagent.start', 'research.multiagent.direct'],
+    services: [
+      'research.multiagent.start',
+      'research.multiagent.direct',
+      'research.multiagent.status',
+      'research.multiagent.cancel',
+    ],
   })
   expect((await readdir(clientRoot)).sort()).toEqual([
     'agent-palette.js',
@@ -149,7 +179,12 @@ it('ships the research-verifier client extension into local builds', async () =>
         rowId: 'ext:research-verifier/main',
         client: expect.objectContaining({
           slots: ['sidebar.footer.action', 'workbench.panel'],
-          services: ['research.multiagent.direct', 'research.multiagent.start'],
+          services: [
+            'research.multiagent.cancel',
+            'research.multiagent.direct',
+            'research.multiagent.start',
+            'research.multiagent.status',
+          ],
         }),
       }),
     ]),
@@ -197,23 +232,35 @@ it('ships the research-verifier client extension into local builds', async () =>
   expect(await plan.digest(built)).toBe(checksum)
   const { researchVerifier } = await import(pathToFileURL(join(packageRoot, 'index.mjs')).href)
   const services: unknown[] = []
+  const tools: RunTool[] = []
+  const events: unknown[] = []
   researchVerifier.apply({
     services: { register: (service: unknown) => services.push(service) },
-    extension: () => ({ registerTool() {} }),
+    extension: () => ({
+      registerTool: (tool: RunTool) => tools.push(tool),
+      events: {
+        append: async (...args: unknown[]) => {
+          events.push(args)
+        },
+      },
+    }),
   })
-  expect(services).toHaveLength(2)
+  expect(services).toHaveLength(4)
   expect(services[0]).toMatchObject({ name: 'research.multiagent.start' })
   expect(services[1]).toMatchObject({ name: 'research.multiagent.direct' })
   expect(checkServiceDef(services[0])).toEqual({ ok: true })
   expect(checkServiceDef(services[1])).toEqual({ ok: true })
   const start = services[0] as {
-    handler: (input: unknown) => Promise<{ status: string; reason: string; plan_checksum: string }>
+    handler: (input: unknown, context?: unknown) => Promise<RunView>
   }
-  const direct = services[1] as { handler: (input: unknown) => Promise<{ status: string; reason: string }> }
+  const direct = services[1] as typeof start
+  const status = services[2] as typeof start
+  const cancel = services[3] as typeof start
+  const session = { sessionId: 'research-session' }
   const signed = { ...built, checksum }
-  expect(await start.handler({ prompt: 'verify the research', plan: signed })).toMatchObject({
-    status: 'blocked',
-    reason: 'EXECUTOR_UNAVAILABLE',
+  const accepted = await start.handler({ prompt: 'verify the research', plan: signed }, session)
+  expect(accepted).toMatchObject({
+    status: 'queued',
     plan_checksum: checksum,
   })
   for (const invalid of [
@@ -228,9 +275,109 @@ it('ships the research-verifier client extension into local builds', async () =>
     await expect(start.handler({ prompt: 'verify', plan: invalid })).rejects.toMatchObject({
       code: 'INVALID_MULTI_AGENT_PLAN',
     })
-  expect(await direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' })).toMatchObject({
-    status: 'blocked',
-    reason: 'EXECUTOR_UNAVAILABLE',
+  expect(await status.handler({ run_id: accepted.run_id }, { sessionId: 'other-session' })).toMatchObject({
+    status: 'unknown',
+    reason: 'RUN_NOT_FOUND_OR_RECOVERY_REQUIRED',
+    attempts: [],
+  })
+  await expect(start.handler({ prompt: 'verify', plan: signed }, session)).rejects.toMatchObject({
+    code: 'RUN_BUSY',
+  })
+  const bytes = new Map<string, Uint8Array>()
+  const children: string[] = []
+  const context = {
+    session: { key: session.sessionId },
+    signal: new AbortController().signal,
+    subagent: {
+      capabilities: { toolAccess: 'none' },
+      spawn: async (text: string) => {
+        children.push(text)
+        return { childKey: `child-${children.length}` }
+      },
+      collect: async () => ({ status: 'completed', text: 'observation' }),
+      cancel: async () => ({ status: 'cancelled' }),
+    },
+    artifacts: {
+      put: async (value: Uint8Array) => {
+        const ref = `ref-${bytes.size}`
+        bytes.set(ref, value)
+        return ref
+      },
+      get: async (ref: string) => bytes.get(ref),
+    },
+  }
+  const execute = tools.find((tool) => tool.name === 'research_multiagent_run')
+  if (!execute) throw new Error('missing research runner tool')
+  const completed = await execute.execute({ run_id: accepted.run_id }, context)
+  expect(completed.structured).toMatchObject({
+    status: 'completed',
+    report: { status: 'unknown', issued_by: 'harness' },
+  })
+  expect(completed.structured.attempts.map((attempt) => attempt.status)).toEqual(['completed', 'completed'])
+  expect(JSON.parse(children[1] ?? '{}').evidence[0].text).toBe('observation')
+  expect(events.length).toBeGreaterThan(0)
+  await execute.execute({ run_id: accepted.run_id }, context)
+  expect(children).toHaveLength(2)
+  const review = await direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' }, session)
+  expect(review).toMatchObject({ status: 'queued' })
+  let reviewerOptions: unknown
+  context.subagent.spawn = async (_text: string, options?: unknown) => {
+    reviewerOptions = options
+    return { childKey: 'reviewer' }
+  }
+  expect((await execute.execute({ run_id: review.run_id }, context)).structured.status).toBe('completed')
+  expect(reviewerOptions).toMatchObject({ toolAccess: 'none' })
+  const queued = await direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' }, session)
+  expect(await cancel.handler({ run_id: queued.run_id }, session)).toMatchObject({ status: 'cancelled' })
+  expect((await execute.execute({ run_id: queued.run_id }, context)).structured.status).toBe('cancelled')
+  const unavailable = await direct.handler(
+    { prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' },
+    session,
+  )
+  const { capabilities: _, ...legacy } = context.subagent
+  const refused = await execute.execute({ run_id: unavailable.run_id }, { ...context, subagent: legacy })
+  expect(refused.structured.attempts[0]?.error?.code).toBe('REVIEWER_ISOLATION_UNAVAILABLE')
+  let releaseSpawn: ((value: { childKey: string }) => void) | undefined
+  let notifySpawn: (() => void) | undefined
+  const spawned = new Promise<void>((resolve) => {
+    notifySpawn = resolve
+  })
+  const cancellations: string[] = []
+  const delayed = await direct.handler(
+    { prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' },
+    session,
+  )
+  const inFlight = execute.execute(
+    { run_id: delayed.run_id },
+    {
+      ...context,
+      subagent: {
+        ...context.subagent,
+        spawn: async () => {
+          notifySpawn?.()
+          return new Promise((resolve) => {
+            releaseSpawn = resolve
+          })
+        },
+        cancel: async (childKey: string) => {
+          cancellations.push(childKey)
+          return { status: 'cancelled' }
+        },
+      },
+    },
+  )
+  await spawned
+  expect(await cancel.handler({ run_id: delayed.run_id }, session)).toMatchObject({ status: 'cancelling' })
+  releaseSpawn?.({ childKey: 'late-child' })
+  expect((await inFlight).structured).toMatchObject({ status: 'cancelled' })
+  expect(cancellations).toContain('late-child')
+  expect(
+    (await status.handler({ run_id: delayed.run_id }, session)).attempts[0]?.output_artifact_ids,
+  ).toEqual([])
+  await expect(
+    direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' }),
+  ).rejects.toMatchObject({
+    code: 'SESSION_REQUIRED',
   })
   await expect(
     direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'unsupported' }),
@@ -245,7 +392,33 @@ it('ships the research-verifier client extension into local builds', async () =>
   )
   const extraChecksum = await plan.digest(extraRoles)
   expect(
-    await start.handler({ prompt: 'verify', plan: { ...extraRoles, checksum: extraChecksum } }),
-  ).toMatchObject({ status: 'blocked', reason: 'EXECUTOR_UNAVAILABLE' })
+    await start.handler({ prompt: 'verify', plan: { ...extraRoles, checksum: extraChecksum } }, session),
+  ).toMatchObject({ status: 'queued' })
   expect(plan.validateGraph([planner, planner], [])).toContain('Agent 节点 ID 不能重复')
+  const stuckSession = { sessionId: 'stuck-session' }
+  const stuck = await direct.handler(
+    { prompt: 'verify', agent_id: 'executor-1', role: 'executor' },
+    stuckSession,
+  )
+  const stuckController = new AbortController()
+  const unresolved = execute.execute(
+    { run_id: stuck.run_id },
+    {
+      ...context,
+      session: { key: stuckSession.sessionId },
+      signal: stuckController.signal,
+      timeoutMs: 5,
+      subagent: {
+        ...context.subagent,
+        spawn: async () => {
+          stuckController.abort()
+          return new Promise(() => {})
+        },
+      },
+    },
+  )
+  expect((await unresolved).structured).toMatchObject({ status: 'unknown' })
+  await expect(
+    direct.handler({ prompt: 'retry', agent_id: 'executor-1', role: 'executor' }, stuckSession),
+  ).rejects.toMatchObject({ code: 'RUN_BUSY' })
 })

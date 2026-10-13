@@ -18,7 +18,7 @@ import {
   type TreeUsage,
 } from '@agnes/core'
 
-const CHILD_CONTROL_FORMAT = 4
+const CHILD_CONTROL_FORMAT = 5
 const ACTIVE = new Set(['creating', 'ready', 'running', 'waiting_approval', 'recovery_pending', 'cancelling'])
 type ReservationRecord = {
   permitId: string
@@ -133,6 +133,7 @@ function parseTask(row: Record<string, unknown>): ChildTaskRecord {
     boundarySeq: Number(row.boundary_seq ?? 0),
     inputHash: String(row.input_hash),
     inputText: String(row.input_text ?? ''),
+    ...(row.tool_access != null ? { toolAccess: 'none' as const } : {}),
     cwd: String(row.cwd),
     actorId: String(row.actor_id),
     budgetScopeId: String(row.budget_scope_id),
@@ -186,6 +187,10 @@ export function sqliteChildControl(
     db.prepare(
       'INSERT INTO child_control_meta (id, version) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET version = excluded.version',
     ).run(CHILD_CONTROL_FORMAT)
+    db.prepare('UPDATE child_tasks SET control_format = ? WHERE control_format < ?').run(
+      CHILD_CONTROL_FORMAT,
+      CHILD_CONTROL_FORMAT,
+    )
   })
   const q = {
     meta: db.prepare('SELECT version FROM child_control_meta WHERE id = 1'),
@@ -199,10 +204,10 @@ export function sqliteChildControl(
     creating: db.prepare(`${TASK_SELECT} WHERE t.creation_phase = 'creating'`),
     insertTask: db.prepare(
       `INSERT INTO child_tasks (child_key, creation_id, parent_key, root_task_id, runtime_owner, kind,
-        generation_depth, generation_limit, input_hash, input_text, cwd, actor_id, budget_scope_id, ancestor_scope_ids,
+        generation_depth, generation_limit, input_hash, input_text, tool_access, cwd, actor_id, budget_scope_id, ancestor_scope_ids,
         workspace_id, isolation, state, state_revision, control_format, attempt_id, creation_phase,
         creation_revision, attempt_started_at, deferred_fact, cancelled_fact)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     beginAttempt: db.prepare(
       `UPDATE child_tasks
@@ -560,6 +565,7 @@ export function sqliteChildControl(
           input.generationLimit,
           input.inputHash,
           input.inputText,
+          input.toolAccess ?? null,
           input.cwd,
           input.actorId,
           budgetScopeId,

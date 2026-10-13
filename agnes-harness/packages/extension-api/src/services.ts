@@ -6,6 +6,8 @@ import type { ToolContext } from './tool.js'
 export type { ServiceCapability } from '@agnes/protocol'
 export type ServiceKind = ServiceCapability['kind']
 export interface ServiceContext {
+  /** Host-validated session identity; never taken from service input. */
+  readonly sessionId?: string
   readonly actor: Actor
   readonly source: string
   readonly requestId: string

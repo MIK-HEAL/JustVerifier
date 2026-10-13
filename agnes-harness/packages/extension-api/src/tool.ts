@@ -232,6 +232,7 @@ export interface ToolContext {
     cancel(id: string): Promise<void>
   }
   readonly subagent: {
+    readonly capabilities?: Readonly<{ toolAccess: 'none' }>
     fork(question: string, opts?: { model?: string }): Promise<string>
     spawn(
       task: string,
@@ -241,6 +242,8 @@ export interface ToolContext {
         budget?: number
         cwd?: string
         start?: boolean
+        /** Disable every tool in the child, including undisclosed and nested calls. */
+        toolAccess?: 'none'
       },
     ): Promise<{ childKey: string; worktree?: string }>
     collect(childKey: string, opts?: { wait?: boolean }): Promise<ChildStatus>

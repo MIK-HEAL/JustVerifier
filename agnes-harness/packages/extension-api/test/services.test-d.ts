@@ -7,6 +7,7 @@ describe('service context surface', () => {
       | 'actor'
       | 'source'
       | 'requestId'
+      | 'sessionId'
       | 'cwd'
       | 'exec'
       | 'fs'

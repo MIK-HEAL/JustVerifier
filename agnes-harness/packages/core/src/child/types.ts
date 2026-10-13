@@ -1,7 +1,7 @@
 import type { Seq, SessionKey } from '../types.js'
 
 /** Data-domain version written with child identity and budget rows. */
-export const CHILD_CONTROL_FORMAT = 4
+export const CHILD_CONTROL_FORMAT = 5
 
 export type ChildCreationPhase = 'creating' | 'deferred' | 'committed' | 'cancelled'
 
@@ -53,6 +53,7 @@ export type ChildTaskRecord = {
   boundarySeq: Seq
   inputHash: string
   inputText: string
+  toolAccess?: 'none'
   cwd: string
   actorId: string
   budgetScopeId: string
@@ -121,6 +122,7 @@ export type CreateDelegatedChildInput = {
   maxFanOut: number
   inputHash: string
   inputText: string
+  toolAccess?: 'none'
   cwd: string
   actorId: string
   isolation: 'worktree' | 'shared'

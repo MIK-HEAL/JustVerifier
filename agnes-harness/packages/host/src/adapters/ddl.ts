@@ -32,7 +32,7 @@ export const DDL = [
      child_key TEXT PRIMARY KEY, creation_id TEXT NOT NULL UNIQUE, parent_key TEXT NOT NULL,
      root_task_id TEXT NOT NULL, runtime_owner TEXT NOT NULL, kind TEXT NOT NULL,
      generation_depth INTEGER NOT NULL, generation_limit INTEGER NOT NULL, input_hash TEXT NOT NULL,
-     input_text TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL, actor_id TEXT NOT NULL, budget_scope_id TEXT NOT NULL,
+     input_text TEXT NOT NULL DEFAULT '', tool_access TEXT, cwd TEXT NOT NULL, actor_id TEXT NOT NULL, budget_scope_id TEXT NOT NULL,
      ancestor_scope_ids TEXT NOT NULL, workspace_id TEXT, isolation TEXT NOT NULL,
      state TEXT NOT NULL, state_revision INTEGER NOT NULL, control_format INTEGER NOT NULL,
      attempt_id TEXT NOT NULL, creation_phase TEXT NOT NULL, creation_revision INTEGER NOT NULL,

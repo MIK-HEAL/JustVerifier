@@ -33,6 +33,7 @@ describe('sqlite child control', () => {
       maxFanOut: 4,
       inputHash: 'abc',
       inputText: 'task',
+      toolAccess: 'none',
       cwd: '/w',
       actorId: 'u',
       isolation: 'shared',
@@ -42,6 +43,7 @@ describe('sqlite child control', () => {
       writerRunId: 'r1/child',
     })
     expect(created.status).toBe('created')
+    expect(await s.lookupByKey('parent/child')).toMatchObject({ toolAccess: 'none' })
     const again = await s.createDelegatedChild({
       childKey: 'parent/other',
       parentKey: 'parent',
@@ -309,7 +311,7 @@ describe('sqlite child control', () => {
     legacy.close()
 
     s = createSqliteStorage({ file, tablesDir: join(dir, 'tables-legacy') })
-    expect(s.childControlFormat()).toBe(4)
+    expect(s.childControlFormat()).toBe(5)
     await expect(s.lookupReservationByIdentity?.('root', 'duplicate', 'a'.repeat(64))).resolves.toMatchObject(
       {
         permitId: 'p1',
@@ -330,14 +332,14 @@ describe('sqlite child control', () => {
     const file = join(dir, 'future.db')
     const future = new DatabaseSync(file)
     for (const ddl of DDL) future.exec(ddl)
-    future.prepare('INSERT INTO child_control_meta (id, version) VALUES (1, ?)').run(5)
+    future.prepare('INSERT INTO child_control_meta (id, version) VALUES (1, ?)').run(6)
     future.close()
 
     // The refused file is closed again: Windows cannot delete a directory holding an open database.
     const closes = vi.spyOn(DatabaseSync.prototype, 'close')
     try {
       expect(() => createSqliteStorage({ file, tablesDir: join(dir, 'tables-future') })).toThrow(
-        /newer than runtime 4/,
+        /newer than runtime 5/,
       )
       expect(closes).toHaveBeenCalledOnce()
     } finally {
@@ -467,7 +469,7 @@ describe('sqlite child control', () => {
     ).rejects.toMatchObject({ code: 'E_CAS' })
   })
 
-  it('migrates format-3 child rows to committed format-4 creation records', async () => {
+  it('migrates format-3 child rows to committed format-5 creation records', async () => {
     await s.close()
     const file = join(dir, 'format-3.db')
     const legacy = new DatabaseSync(file)
@@ -512,13 +514,13 @@ describe('sqlite child control', () => {
     legacy.close()
 
     s = createSqliteStorage({ file, tablesDir: join(dir, 'tables-format-3') })
-    expect(s.childControlFormat()).toBe(4)
+    expect(s.childControlFormat()).toBe(5)
     await expect(s.lookupByKey('parent/legacy')).resolves.toMatchObject({
       attemptId: 'legacy:creation:legacy',
       creationPhase: 'committed',
       creationRevision: 1,
       attemptStartedAt: 0,
-      controlFormat: 4,
+      controlFormat: 5,
     })
   })
 })

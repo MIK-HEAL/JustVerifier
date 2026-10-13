@@ -9,10 +9,12 @@ import { useVerificationRun } from './use-verification-run.js'
 export const OPEN_EVENT = 'agnes:multi-agent-open'
 export const CLOSE_EVENT = 'agnes:multi-agent-close'
 
-const Icon = ({ path, className = 'ma-icon' }) => createElement(
-  'svg', { className, viewBox: '0 0 20 20', 'aria-hidden': 'true' },
-  createElement('path', { d: path, fill: 'currentColor' }),
-)
+const Icon = ({ path, className = 'ma-icon' }) =>
+  createElement(
+    'svg',
+    { className, viewBox: '0 0 20 20', 'aria-hidden': 'true' },
+    createElement('path', { d: path, fill: 'currentColor' }),
+  )
 
 export function Workbench({ sessionId, ctx }) {
   const [open, setOpen] = useState(false)
@@ -25,7 +27,7 @@ export function Workbench({ sessionId, ctx }) {
   const closeRef = useRef(null)
   const selectedNode = selected?.kind === 'node' ? nodes.find((node) => node.id === selected.id) : undefined
   const errors = useMemo(() => validateGraph(nodes, edges), [nodes, edges])
-  const { status, statusKind, trace, running, start, startSingleAgent } = useVerificationRun({
+  const { status, statusKind, trace, running, result, start, startSingleAgent, cancel } = useVerificationRun({
     nodes,
     edges,
     prompt,
@@ -84,7 +86,10 @@ export function Workbench({ sessionId, ctx }) {
 
   const applyTemplate = (kind) => {
     const rect = canvasRef.current?.getBoundingClientRect()
-    const center = { x: Math.max(32, (rect?.width ?? 640) / 2 - 78), y: Math.max(32, (rect?.height ?? 400) / 2 - 30) }
+    const center = {
+      x: Math.max(32, (rect?.width ?? 640) / 2 - 78),
+      y: Math.max(32, (rect?.height ?? 400) / 2 - 30),
+    }
     if (kind === 'single') {
       const id = nextNodeId(nodes, 'agnes')
       setNodes([createNode('agnes', id, center)])
@@ -93,9 +98,18 @@ export function Workbench({ sessionId, ctx }) {
       return
     }
     const roles = ['planner', 'executor', 'reviewer', 'verifier']
-    const nextNodes = roles.map((role, index) => createNode(role, `${role}-1`, { x: center.x + (index % 2) * 190, y: center.y + Math.floor(index / 2) * 120 }))
+    const nextNodes = roles.map((role, index) =>
+      createNode(role, `${role}-1`, {
+        x: center.x + (index % 2) * 190,
+        y: center.y + Math.floor(index / 2) * 120,
+      }),
+    )
     setNodes(nextNodes)
-    setEdges([{ from: 'planner-1', to: 'executor-1' }, { from: 'executor-1', to: 'reviewer-1' }, { from: 'reviewer-1', to: 'verifier-1' }])
+    setEdges([
+      { from: 'planner-1', to: 'executor-1' },
+      { from: 'executor-1', to: 'reviewer-1' },
+      { from: 'reviewer-1', to: 'verifier-1' },
+    ])
     setSelected({ kind: 'node', id: 'planner-1' })
   }
 
@@ -159,46 +173,71 @@ export function Workbench({ sessionId, ctx }) {
     createElement(
       'div',
       { className: 'ma-layout' },
-      createElement('div', { className: 'ma-workspace-head' },
+      createElement(
+        'div',
+        { className: 'ma-workspace-head' },
         createElement(
           'header',
           { className: 'ma-overlay-header' },
-        createElement('div', { className: 'ma-overlay-heading' },
-          createElement('div', { className: 'ma-heading-copy' },
-            createElement('h1', { className: 'ma-overlay-title' }, '多 Agent 协作验证'),
-          ),
-        ),
-        createElement(
-          'div',
-          { className: 'ma-overlay-status', 'data-kind': statusKind, 'data-running': running, title: status, role: 'status' },
-          status,
-        ),
-        createElement(
-          'div',
-          { className: 'ma-actions' },
           createElement(
-            'button',
-            { ref: closeRef, className: 'ma-button', type: 'button', onClick: closeOverlay },
-            Icon({ path: 'M11.5 4.5 8 8l3.5 3.5-1 1L6 8l4.5-4.5 1 1ZM14 3v10h-1.5V3H14Z' }),
-            '返回会话',
+            'div',
+            { className: 'ma-overlay-heading' },
+            createElement(
+              'div',
+              { className: 'ma-heading-copy' },
+              createElement('h1', { className: 'ma-overlay-title' }, '多 Agent 协作验证'),
+            ),
           ),
           createElement(
-            'button',
+            'div',
             {
-              className: 'ma-button ma-button-primary',
-              type: 'button',
-              disabled: running,
-              onClick: () => void start(),
+              className: 'ma-overlay-status',
+              'data-kind': statusKind,
+              'data-running': running,
+              title: status,
+              role: 'status',
             },
-            Icon({ path: 'M6 4.5 15 10l-9 5.5v-11Z' }),
-            running ? '验证中…' : '开始验证',
+            status,
+          ),
+          createElement(
+            'div',
+            { className: 'ma-actions' },
+            createElement(
+              'button',
+              { ref: closeRef, className: 'ma-button', type: 'button', onClick: closeOverlay },
+              Icon({ path: 'M11.5 4.5 8 8l3.5 3.5-1 1L6 8l4.5-4.5 1 1ZM14 3v10h-1.5V3H14Z' }),
+              '返回会话',
+            ),
+            createElement(
+              'button',
+              {
+                className: 'ma-button ma-button-primary',
+                type: 'button',
+                disabled: running,
+                onClick: () => void start(),
+              },
+              Icon({ path: 'M6 4.5 15 10l-9 5.5v-11Z' }),
+              running ? '验证中…' : '开始验证',
+            ),
+            running &&
+              createElement(
+                'button',
+                { className: 'ma-button', type: 'button', onClick: () => void cancel() },
+                '取消运行',
+              ),
           ),
         ),
-        ),
-        nodes.length > 0 && errors.length > 0 &&
-          createElement('div', { className: 'ma-error-bar', role: 'status' }, `校验未通过：${errors.join('；')}`),
+        nodes.length > 0 &&
+          errors.length > 0 &&
+          createElement(
+            'div',
+            { className: 'ma-error-bar', role: 'status' },
+            `校验未通过：${errors.join('；')}`,
+          ),
       ),
-      createElement('div', { className: 'ma-layout-panels' },
+      createElement(
+        'div',
+        { className: 'ma-layout-panels' },
         createElement(AgentPalette, { onAdd: paletteAdd, onTemplate: applyTemplate }),
         createElement(Canvas, {
           nodes,
@@ -222,6 +261,7 @@ export function Workbench({ sessionId, ctx }) {
           prompt,
           running,
           trace,
+          result,
           onPromptChange: setPrompt,
           onNodePromptChange: updateNodePrompt,
           onRunSingleAgent: startSingleAgent,

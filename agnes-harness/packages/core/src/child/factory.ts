@@ -26,6 +26,7 @@ type CreateOpts = Parameters<ChildrenFactory['create']>[0] & {
 }
 
 export class KernelChildren implements ChildrenFactory {
+  readonly supportsToolAccess = true
   private readonly handles = new Map<string, ChildHandle>()
   private readonly opening = new Map<string, Promise<ChildHandle>>()
   /** Each attached handle's run without Host admission, for callers already inside one. */
@@ -42,6 +43,9 @@ export class KernelChildren implements ChildrenFactory {
 
   async createWithKind(kind: ChildKind, opts: CreateOpts): Promise<ChildHandle> {
     const parent = this.parent()
+    if (opts.toolAccess !== undefined && opts.toolAccess !== 'none')
+      throw new CoreError('E_ENVELOPE', 'invalid child tool access')
+    const toolAccess = parent.d.toolAccess ?? opts.toolAccess
     if (opts.parent !== parent.key)
       throw new CoreError('E_DEPTH_EXCEEDED', 'child factory parent mismatch', {
         expected: parent.key,
@@ -61,7 +65,7 @@ export class KernelChildren implements ChildrenFactory {
       throw new CoreError('E_ENVELOPE', 'child create requires task input')
 
     const effectId = opts.parentEffectId ?? 'direct'
-    const inputHash = sha256Hex(opts.input)
+    const inputHash = sha256Hex(toolAccess ? JSON.stringify([opts.input, toolAccess]) : opts.input)
     const prefix = `${parent.key}:${parent.lane}:${effectId}:`
     const reused = (await store.listByParent(parent.key)).find(
       (row) => row.creationId.startsWith(prefix) && row.inputHash === inputHash,
@@ -118,6 +122,7 @@ export class KernelChildren implements ChildrenFactory {
       maxFanOut: parent.preset.maxFanOut,
       inputHash,
       inputText: opts.input,
+      ...(toolAccess ? { toolAccess } : {}),
       cwd: opts.cwd,
       actorId: parent.d.actor.id,
       isolation: opts.isolation ?? 'shared',
@@ -467,6 +472,7 @@ export class KernelChildren implements ChildrenFactory {
       actor: parent.d.actor,
       resolvedProfileHash: parent.d.resolvedProfileHash,
       preset: childPreset,
+      ...(record.toolAccess ? { toolAccess: record.toolAccess } : {}),
       parent: {
         key: parent.key,
         boundarySeq: record.boundarySeq || parentBoundary(parent, opts, kind),
@@ -555,7 +561,11 @@ export class KernelChildren implements ChildrenFactory {
         if (durable && (isTerminalChildState(durable.state) || durable.state === 'cancelling'))
           throw new CoreError('E_UNSUPPORTED', `child ${record.childKey} is ${durable.state}`)
         if (state !== 'ready') throw new CoreError('E_LANE_BUSY', `child ${record.childKey} already started`)
-        if (input !== undefined && sha256Hex(input) !== record.inputHash)
+        if (
+          input !== undefined &&
+          sha256Hex(record.toolAccess ? JSON.stringify([input, record.toolAccess]) : input) !==
+            record.inputHash
+        )
           throw new CoreError('E_CHILD_CONFLICT', 'run input does not match persisted create input')
         const live = await store.lookupByKey(record.childKey)
         if (live && !(await store.casState(record.childKey, live.stateRevision, 'running')))

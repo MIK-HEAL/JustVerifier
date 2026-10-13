@@ -312,6 +312,15 @@ export async function approveAndExecute(
   const op = s.op() as OpStateObj
   const t = s.turn
   if (!t) return { result: errorResult('no open turn') }
+  if (s.d.toolAccess === 'none')
+    return {
+      result: await refuse(
+        s,
+        call.toolUseId,
+        'TOOL_ACCESS_DENIED',
+        'tools are disabled in this child session',
+      ),
+    }
   // A recovered attempt may already have reached the OS and must finish its exactly-once
   // settlement. New/planned calls are still refused before hooks, approval, or effect intent.
   if (!o.resumeDispatch && call.name === 'computer_use' && !s.computerUseAllowed())

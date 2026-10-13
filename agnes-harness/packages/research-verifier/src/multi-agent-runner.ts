@@ -36,6 +36,10 @@ export async function runMultiAgentPlan(
     verification?: VerificationInput
     max_concurrency?: number
     signal?: AbortSignal
+    /** A trusted execution id isolates outputs from repeated runs of the same plan. */
+    attempt_prefix?: string
+    on_attempt?: (attempt: AgentAttempt) => void
+    collect_verification?: () => Promise<VerificationInput | undefined>
   }>,
 ): Promise<MultiAgentAggregation> {
   const plan = immutable(input.plan)
@@ -43,17 +47,23 @@ export async function runMultiAgentPlan(
   if (errors.length) throw new Error(`invalid multi-agent plan: ${errors.join(', ')}`)
   const concurrency = input.max_concurrency ?? 4
   if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('invalid max_concurrency')
+  if (input.verification && input.collect_verification) throw new Error('ambiguous verification source')
+  const attemptId = (task: AgentTask): string => `${input.attempt_prefix ?? 'attempt'}-${task.task_id}`
+  // Validate execution identifiers before dispatch, including cancelled runs.
+  for (const task of plan.tasks) queueAgentAttempt(plan, task.task_id, { attempt_id: attemptId(task) })
   // Copy verification evidence before delegates run, preventing later mutation of the final witness.
   const verification = input.verification ? immutable(input.verification) : undefined
   const attempts: AgentAttempt[] = []
   const findings: AgentFinding[] = []
   const snapshots: ReviewerSnapshot[] = []
   const execute = async (task: AgentTask): Promise<void> => {
-    const queued = queueAgentAttempt(plan, task.task_id, { attempt_id: `attempt-${task.task_id}` })
+    const queued = queueAgentAttempt(plan, task.task_id, { attempt_id: attemptId(task) })
     const index = attempts.length
     attempts.push(queued)
     if (input.signal?.aborted) {
-      attempts[index] = immutable({ ...queued, status: 'cancelled' })
+      const cancelled = immutable({ ...queued, status: 'cancelled' as const })
+      attempts[index] = cancelled
+      input.on_attempt?.(cancelled)
       return
     }
     const dependencies = immutable(attempts.filter((attempt) => task.depends_on?.includes(attempt.task_id)))
@@ -68,6 +78,7 @@ export async function runMultiAgentPlan(
       ].sort(),
     })
     attempts[index] = running
+    input.on_attempt?.(running)
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     let onAbort: (() => void) | undefined
@@ -77,6 +88,7 @@ export async function runMultiAgentPlan(
         reject(new Error('CANCELLED'))
       }
       input.signal?.addEventListener('abort', onAbort, { once: true })
+      if (input.signal?.aborted) onAbort()
       if (task.budget?.timeout_ms !== undefined)
         timer = setTimeout(() => {
           controller.abort(new Error('TIMEOUT'))
@@ -139,6 +151,8 @@ export async function runMultiAgentPlan(
     } finally {
       if (timer !== undefined) clearTimeout(timer)
       if (onAbort) input.signal?.removeEventListener('abort', onAbort)
+      const settled = attempts[index]
+      if (settled) input.on_attempt?.(settled)
     }
   }
   while (attempts.length < plan.tasks.length) {
@@ -149,7 +163,7 @@ export async function runMultiAgentPlan(
       )) {
         attempts.push(
           immutable({
-            ...queueAgentAttempt(plan, task.task_id, { attempt_id: `attempt-${task.task_id}` }),
+            ...queueAgentAttempt(plan, task.task_id, { attempt_id: attemptId(task) }),
             status: input.signal?.aborted ? 'cancelled' : 'blocked',
             error: {
               code: input.signal?.aborted ? 'CANCELLED' : 'DEPENDENCY_FAILED',
@@ -157,13 +171,18 @@ export async function runMultiAgentPlan(
             },
           }),
         )
+        const settled = attempts.at(-1)
+        if (settled) input.on_attempt?.(settled)
       }
       break
     }
     await Promise.all(ready.map(execute))
   }
+  const finalVerification = input.collect_verification
+    ? immutable(await input.collect_verification())
+    : verification
   return aggregateMultiAgentFindings(plan, attempts, findings, {
-    ...(verification ? { verification } : {}),
+    ...(finalVerification ? { verification: finalVerification } : {}),
     reviewer_snapshots: snapshots,
   })
 }

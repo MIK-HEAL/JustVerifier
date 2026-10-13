@@ -287,6 +287,7 @@ function openSqliteStorage(db: DatabaseSync, opts: Parameters<typeof createSqlit
   )
   if (!childTaskColumns.has('input_text'))
     db.exec(`ALTER TABLE child_tasks ADD COLUMN input_text TEXT NOT NULL DEFAULT ''`)
+  if (!childTaskColumns.has('tool_access')) db.exec('ALTER TABLE child_tasks ADD COLUMN tool_access TEXT')
   for (const [name, declaration] of [
     ['attempt_id', 'TEXT'],
     ['creation_phase', 'TEXT'],

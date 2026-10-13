@@ -364,6 +364,7 @@ export function resolveModel(s: SessionImpl, slot: string): { route: string; mod
 
 /** What the core contribution discloses, which is the preset's disclosure policy read as names. */
 export function discloseTools(s: SessionImpl): string[] {
+  if (s.d.toolAccess === 'none') return []
   const snap = s.turn?.snapshot
   if (!snap) return []
   const eager = (): string[] => snap.defs.filter((d) => d.meta.deferLoading !== true).map((d) => d.name)

@@ -29,6 +29,7 @@ export type ChildHandle = {
   cancel?(): Promise<void>
 }
 export type ChildrenFactory = {
+  readonly supportsToolAccess?: boolean
   create(opts: {
     parent: string
     forkAt?: Seq
@@ -40,6 +41,7 @@ export type ChildrenFactory = {
     input?: string
     parentEffectId?: string
     start?: boolean
+    toolAccess?: 'none'
   }): Promise<ChildHandle>
   /** Optional richer entry used by the built-in factory without changing third-party create args. */
   createWithKind?(
@@ -239,6 +241,7 @@ export function buildToolContext(
       cancel: (id) => d.runtime.artifactCancel(id),
     },
     subagent: {
+      ...(d.children.supportsToolAccess ? { capabilities: { toolAccess: 'none' as const } } : {}),
       fork: async (question, opts) => {
         const childOpts = {
           parent: d.sessionKey,
@@ -266,6 +269,7 @@ export function buildToolContext(
           ...(opts?.budget !== undefined ? { budget: opts.budget } : {}),
           ...(opts?.isolation !== undefined ? { isolation: opts.isolation } : {}),
           ...(opts?.start === false ? { start: false as const } : {}),
+          ...(opts?.toolAccess ? { toolAccess: opts.toolAccess } : {}),
         }
         const child = d.children.createWithKind
           ? await d.children.createWithKind('spawn', childOpts)

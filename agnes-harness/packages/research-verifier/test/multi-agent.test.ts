@@ -481,6 +481,22 @@ describe('multi-agent DAG execution', () => {
     const serial = queueAgentAttempt(independent, 'c', { attempt_id: 'c1' })
     expect(readyMultiAgentTasks(independent, [first]).map((task) => task.task_id)).toEqual(['b'])
     expect(readyMultiAgentTasks(independent, [serial])).toEqual([])
+    const observed: string[] = []
+    const isolated = await runMultiAgentPlan({
+      plan: independent,
+      attempt_prefix: 'run-two',
+      on_attempt: (attempt) => {
+        observed.push(attempt.status)
+      },
+      delegate: async () => ({}),
+      collect_verification: async () => undefined,
+    })
+    expect(isolated.attempts.every((attempt) => attempt.attempt_id.startsWith('run-two-'))).toBe(true)
+    expect(observed.filter((status) => status === 'completed')).toHaveLength(3)
+    expect(observed.filter((status) => status === 'running')).toHaveLength(3)
+    await expect(
+      runMultiAgentPlan({ plan: independent, attempt_prefix: '../bad', delegate: async () => ({}) }),
+    ).rejects.toThrow('invalid attempt_id')
   })
 
   it('cancels before dispatch and times out delegates without accepting late results', async () => {
@@ -498,6 +514,18 @@ describe('multi-agent DAG execution', () => {
     expect(calls).toBe(0)
     expect(cancelled.status).toBe('unknown')
     expect(cancelled.attempts.every((attempt) => attempt.status === 'cancelled')).toBe(true)
+    const synchronous = new AbortController()
+    const cancelledByObserver = await runMultiAgentPlan({
+      plan: executionPlan(),
+      signal: synchronous.signal,
+      on_attempt: () => synchronous.abort(),
+      delegate: async () => {
+        calls++
+        return {}
+      },
+    })
+    expect(calls).toBe(0)
+    expect(cancelledByObserver.attempts.every((attempt) => attempt.status === 'cancelled')).toBe(true)
     const timed = buildMultiAgentPlan({
       ...plan,
       tasks: [

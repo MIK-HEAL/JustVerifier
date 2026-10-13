@@ -12,6 +12,7 @@ import { collectThirdPartyNotices } from '../../../tools/third-party-notices.mjs
 import { beginRuntimeDirectory } from '../../base/tools/runtime-directory.js'
 import { buildConversationCss } from '../../web-ui/tools/build-conversation-css.js'
 import { prepareDocumentReader } from './document-reader.js'
+import { prepareResearchVerifier } from './research-verifier.js'
 import { copySystemRuntime, withBuiltSystemRuntime } from './windows-runtime.js'
 
 const cliRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -54,6 +55,7 @@ export async function copyBundledPlugins(outputDirectory: string): Promise<void>
       })
     }
     if (helper === 'document-reader') await prepareDocumentReader(destination)
+    if (helper === 'research-verifier') await prepareResearchVerifier(destination)
   }
 }
 

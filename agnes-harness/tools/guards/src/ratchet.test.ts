@@ -660,7 +660,8 @@ const INITIAL_CEILING: Record<string, number> = {
   // SEA reuses that exact directory. Measured build-local total: 203; exact cap.
   // W5a merges pinned XMarkdown CSS and ships its MIT license with the local Web assets.
   // Measured with countLines(): 287, exact cap.
-  'packages/cli/tools/build-local': 316,
+  // Research verifier packaging adds exactly two lines; the existing two-line overage remains visible.
+  'packages/cli/tools/build-local': 318,
   // The PM5 bootstrap fallback retains the existing scoped owner/data-dir contract when a selected
   // Profile has not yet been materialized. The final recovery retry admits only an explicit
   // E_LOCK_MISMATCH path and re-resolves with an empty package lock; this is exact compatibility
@@ -1038,7 +1039,8 @@ const INITIAL_CEILING: Record<string, number> = {
   // 2026-10-05 the two sides coexist on the merged tree, so neither side's number holds. Re-measured
   // with countLines() after the merge: 26102, exact, no spare.
   // 2026-10-06: reject oversized inbox records before durable append; 26424, exact.
-  'packages/core/src': 26546,
+  // Multi-agent reviewers: durable tool prohibition, disclosure/execution gates and recovery (+34).
+  'packages/core/src': 26580,
   // 2026-09-15: DeepSeek V4 Pro/Flash ship a known-thinking-corrections table (new file) so the
   // product corrects pi-ai's verified-wrong reasoning_effort data out of the box, instead of
   // requiring every deployment to hand-edit thinkingEfforts once they notice. Measured 3347.
@@ -1465,7 +1467,7 @@ const INITIAL_CEILING: Record<string, number> = {
   // exported as constants. Measured 981 (+3), exact, no spare.
   // Optional ExecResult.timedOut and the soft-deadline note on timeoutMs. Measured 987 (+6), exact cap.
   // Optional ToolContext.defaultTimeoutMs. Measured 988 (+1), exact cap.
-  'packages/extension-api/src': 997, // SKILL-INSTALL-CORE: optional request port and bounded DTO, no admin grant.
+  'packages/extension-api/src': 1000, // +3: session identity and child tool-access capability; no execution grant.
   // Optional author fixture entry; no production runtime code belongs here.
   // B1-A: measured 229 lines on the shared tree; public transport contract, config and wiring/testkit.
   // B1 review repair: exact measured 246; startup cancellation / cwd contract coverage.
@@ -2635,8 +2637,9 @@ const INITIAL_CEILING: Record<string, number> = {
   // read-only under full file access: the fence guard, the roots helper and their wiring (+40).
   // Measured 38359, exact.
   // Approval reasons: the Prompter type may answer with a reason (+2). Measured 38398 (combined tree), exact cap.
-  'packages/host/src': 38398,
-  'packages/host/src/ext-host/service-invocation': 247,
+  // +14 for multi-agent session identity and durable child restriction. Existing +8 remains visible.
+  'packages/host/src': 38412,
+  'packages/host/src/ext-host/service-invocation': 254,
   // T5.2's permission projector is kept independently bounded so later extension-host work cannot
   // hide in the package-wide increment. Measured source: 86 lines.
   // 2026-09-15: project resume onto the capability fence. Measured 90.
@@ -2803,7 +2806,8 @@ const INITIAL_CEILING: Record<string, number> = {
   // The fence refuses writes to the installation's own state under full file access. Measured 5053,
   // exact, no spare (+19).
   // Approval reasons: the Prompter type may answer with a reason (+2). Measured 5055, exact cap.
-  'packages/host/src/adapters': 5055,
+  // +7: child tool-access storage/migration with fail-closed format 5.
+  'packages/host/src/adapters': 5062,
 
   // C1b Task 5 persists child creation attempts and deferred recovery; exact total, no spare.
   // Task 17 review: sqlite_master scan + table-name refuse. Re-measured: 674, exact.
@@ -2824,7 +2828,7 @@ const INITIAL_CEILING: Record<string, number> = {
   // open. Measured on this tree: 632, exact, no spare (-48).
   // Durable WAL checkpoints on darwin: the ledger and table-store connections call the checkpoint
   // sync helper. Measured 635, exact, no spare (+3).
-  'packages/host/src/adapters/storage-sqlite': 635,
+  'packages/host/src/adapters/storage-sqlite': 636,
   // 2026-09-11: Base Task 19 adds the after-core queue drain, T0 gate integration, verifier and
   // compact triggers, human gate, and production tool/operation sharing. Measured: 394; cap at 400.
   'packages/base/extensions/refine': 400,

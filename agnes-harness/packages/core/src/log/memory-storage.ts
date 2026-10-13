@@ -630,6 +630,7 @@ export class MemoryStorage implements StorageAdapter, ChildControlStore {
       boundarySeq: input.boundarySeq,
       inputHash: input.inputHash,
       inputText: input.inputText,
+      ...(input.toolAccess ? { toolAccess: input.toolAccess } : {}),
       cwd: input.cwd,
       actorId: input.actorId,
       budgetScopeId,

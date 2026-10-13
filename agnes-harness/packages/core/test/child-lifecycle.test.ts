@@ -1,11 +1,12 @@
 import type { ModelRecord } from '@agnes/protocol'
+import { Type } from '@sinclair/typebox'
 import { describe, expect, it, vi } from 'vitest'
 import { CHILD_CONTROL_FORMAT } from '../src/child/types.js'
 import { Kernel } from '../src/kernel.js'
 import { MemoryStorage } from '../src/log/memory-storage.js'
 import { presetDefaults } from '../src/step/preset.js'
 import { CoreError } from '../src/types.js'
-import { fakeProvider, textTurn } from './helpers/fake-provider.js'
+import { fakeProvider, textTurn, toolTurn } from './helpers/fake-provider.js'
 
 const catalogue = (): ModelRecord => ({
   id: 'm1',
@@ -57,6 +58,53 @@ function kernel(
 const sessionOpts = { actor, resolvedProfileHash: 'h1', cwd: '/w', writerRunId: 'r1' }
 
 describe('Kernel child lifecycle (generation, fan-out, budget)', () => {
+  it('denies every tool in restricted reviewers and retains the restriction on direct reopen', async () => {
+    const provider = fakeProvider([toolTurn('mutate', {}), textTurn('review complete')])
+    const k = kernel({
+      provider,
+      preset: { ...presetDefaults(), treeBudgetCredits: 100, generationLimit: 2, maxFanOut: 4 },
+    })
+    let mutations = 0
+    k.tools.add(
+      {
+        name: 'mutate',
+        description: 'mutate workspace',
+        parameters: Type.Object({}),
+        meta: {
+          isReadOnly: false,
+          isDestructive: false,
+          isConcurrencySafe: false,
+          isOpenWorld: false,
+          replay: 'never',
+          costHint: undefined,
+          deferLoading: false,
+          requiresApproval: 'never',
+        },
+        execute: async () => {
+          mutations++
+          return { content: [{ type: 'text', text: 'mutated' }] }
+        },
+      },
+      { source: 'test', trust: 'builtin' },
+    )
+    const parent = await k.session('review-parent', sessionOpts)
+    const child = await parent.d.children.create({
+      parent: parent.key,
+      cwd: '/w',
+      input: 'review',
+      toolAccess: 'none',
+    })
+    await child.run('review')
+    expect(mutations).toBe(0)
+    expect(provider.requests.every((request) => request.tools.length === 0)).toBe(true)
+    expect(await (k.o.storage as MemoryStorage).lookupByKey(child.key)).toMatchObject({ toolAccess: 'none' })
+    await k.get(child.key)?.close()
+    const reopened = await k.session(child.key, { ...sessionOpts, writerRunId: 'review-reopen' })
+    expect(reopened.d.toolAccess).toBe('none')
+    const nested = await reopened.d.children.create({ parent: reopened.key, cwd: '/w', input: 'nested' })
+    expect(k.get(nested.key)?.d.toolAccess).toBe('none')
+    await k.close()
+  })
   it('refuses a child when generationLimit is 0 and does not start a model', async () => {
     const provider = fakeProvider([textTurn('should not run')])
     const k = kernel({

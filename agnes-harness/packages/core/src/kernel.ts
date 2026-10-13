@@ -132,6 +132,7 @@ export type KernelOptions = {
 }
 export type { RuntimePromptPreload } from './runtime/current.js'
 export type SessionOptions = {
+  toolAccess?: 'none'
   actor: Actor
   preset?: PresetView
   resolvedProfileHash: string | null
@@ -318,6 +319,9 @@ export class Kernel {
   }
 
   async session(key: SessionKey, so: SessionOptions): Promise<SessionImpl> {
+    // Child restrictions are durable facts, including when Host opens a child directly on recovery.
+    const childRecord = hasChildControl(this.o.storage) ? await this.o.storage.lookupByKey(key) : null
+    const toolAccess = childRecord?.toolAccess ?? so.toolAccess
     const preset = so.preset ?? this.o.preset
     const lane = so.lane ?? 'main'
     let existing = this.sessions.get(key)
@@ -344,6 +348,7 @@ export class Kernel {
         writerRunId: so.writerRunId,
         parentKey: so.parent?.key,
         parentBoundary: so.parent?.boundarySeq,
+        toolAccess,
       }
       const have = {
         actor: existing.d.actor.id,
@@ -355,6 +360,7 @@ export class Kernel {
         writerRunId: existing.writerRunId,
         parentKey: existing.d.log.parent?.key,
         parentBoundary: existing.d.log.parent?.boundarySeq,
+        toolAccess: existing.d.toolAccess,
       }
       for (const [k, v] of Object.entries(want))
         if (v !== (have as Record<string, unknown>)[k])
@@ -474,6 +480,7 @@ export class Kernel {
       contract: this.o.contract,
       ...(this.o.contractForModel ? { contractForModel: this.o.contractForModel } : {}),
       children,
+      ...(toolAccess ? { toolAccess } : {}),
       ...(workspaceIdentity ? { workspaceIdentity } : {}),
       ...(workspaceInvocation ? { workspaceInvocation } : {}),
       ...(this.o.workspacePublication ? { workspacePublication: this.o.workspacePublication } : {}),

@@ -5,23 +5,50 @@
   "type": "module",
   "exports": "./index.mjs",
   "license": "Apache-2.0",
-  "files": ["package.json", "index.mjs", "schema", "skills", "extensions", "README.md", "LICENSE"],
+  "files": [
+    "package.json",
+    "index.mjs",
+    "src",
+    "schema",
+    "skills",
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
   "agnes": {
     "contributions": [
-      { "kind": "skill", "id": "research-verifier/research-run", "path": "./skills/research-run/SKILL.md" },
-      { "kind": "skill", "id": "research-verifier/assumption-audit", "path": "./skills/assumption-audit/SKILL.md" }
+      {
+        "kind": "skill",
+        "id": "research-verifier/research-run",
+        "path": "./skills/research-run/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "research-verifier/assumption-audit",
+        "path": "./skills/assumption-audit/SKILL.md"
+      }
     ],
     "plugins": [
       {
         "export": "researchVerifier",
         "id": "ext:research-verifier/main",
-        "inject": ["extension"],
+        "inject": [
+          "extension"
+        ],
         "runtime": "in-process",
-        "services": ["research.multiagent.start", "research.multiagent.direct"]
+        "services": [
+          "research.multiagent.start",
+          "research.multiagent.direct",
+          "research.multiagent.status",
+          "research.multiagent.cancel"
+        ]
       }
     ],
     "clientDescriptors": [
-      { "rowId": "ext:research-verifier/main", "path": "./extensions/main/agnes.client.json" }
+      {
+        "rowId": "ext:research-verifier/main",
+        "path": "./extensions/main/agnes.client.json"
+      }
     ]
   }
 }
