@@ -206,4 +206,46 @@ it('ships the research-verifier client extension into local builds', async () =>
   expect(services[1]).toMatchObject({ name: 'research.multiagent.direct' })
   expect(checkServiceDef(services[0])).toEqual({ ok: true })
   expect(checkServiceDef(services[1])).toEqual({ ok: true })
+  const start = services[0] as {
+    handler: (input: unknown) => Promise<{ status: string; reason: string; plan_checksum: string }>
+  }
+  const direct = services[1] as { handler: (input: unknown) => Promise<{ status: string; reason: string }> }
+  const signed = { ...built, checksum }
+  expect(await start.handler({ prompt: 'verify the research', plan: signed })).toMatchObject({
+    status: 'blocked',
+    reason: 'EXECUTOR_UNAVAILABLE',
+    plan_checksum: checksum,
+  })
+  for (const invalid of [
+    { ...signed, checksum: `sha256:${'0'.repeat(64)}` },
+    { ...signed, tasks: [] },
+    { ...signed, schema_version: 2 },
+    { ...signed, tasks: [{ ...built.tasks[0], output_namespace: 'planner-1/../other' }] },
+    { ...signed, tasks: [{ ...built.tasks[0], budget: { timeout_ms: -1 } }] },
+    { ...signed, tasks: [{ ...built.tasks[0], input_artifact_ids: 42 }] },
+    { ...signed, agents: [{ agent_id: 'planner-1', role: 'unsupported' }] },
+  ])
+    await expect(start.handler({ prompt: 'verify', plan: invalid })).rejects.toMatchObject({
+      code: 'INVALID_MULTI_AGENT_PLAN',
+    })
+  expect(await direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' })).toMatchObject({
+    status: 'blocked',
+    reason: 'EXECUTOR_UNAVAILABLE',
+  })
+  await expect(
+    direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'unsupported' }),
+  ).rejects.toMatchObject({ code: 'INVALID_AGENT_REQUEST' })
+  const extraRoles = plan.graphPlan(
+    [
+      planner,
+      { ...executor, id: 'agnes-1', role: 'agnes' },
+      { ...executor, id: 'synthesizer-1', role: 'synthesizer' },
+    ],
+    [],
+  )
+  const extraChecksum = await plan.digest(extraRoles)
+  expect(
+    await start.handler({ prompt: 'verify', plan: { ...extraRoles, checksum: extraChecksum } }),
+  ).toMatchObject({ status: 'blocked', reason: 'EXECUTOR_UNAVAILABLE' })
+  expect(plan.validateGraph([planner, planner], [])).toContain('Agent 节点 ID 不能重复')
 })

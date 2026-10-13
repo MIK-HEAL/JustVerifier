@@ -1233,6 +1233,27 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
 #notice[data-kind="error"] {
   color: var(--agnes-status-danger-text);
 }
+.workbench-layout {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.workbench-layout:has([data-agnes-region="rightbar"]:not([hidden])) {
+  grid-template-columns: minmax(0, 1fr) min(
+      var(--agnes-rightbar-width, min(32vw, 520px)),
+      max(0px, calc(100% - 20rem))
+    );
+}
+.conversation-column {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .workbench-split {
   position: relative;
   min-height: 0;
@@ -1240,19 +1261,6 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
-}
-.workbench-split:has([data-agnes-region="rightbar"]:not([hidden])) {
-  grid-template-columns: minmax(0, 1fr) min(
-      var(--agnes-rightbar-width, min(32vw, 520px)),
-      max(0px, calc(100% - 20rem))
-    );
-}
-/* Composer lives outside the split. Match its queue/input to the conversation column,
-   keeping at least 20rem for the conversation when the viewport can accommodate it. */
-@media (min-width: 721px) {
-  main:has([data-agnes-region="rightbar"]:not([hidden])) > #composer-mount {
-    width: min(100%, max(20rem, calc(100% - var(--agnes-rightbar-width, min(32vw, 520px)))));
-  }
 }
 /* 页签行：tablist 与「报告问题」按钮同级，按钮不进 tablist，以免破坏 tab 语义。 */
 .session-tabs-bar {
@@ -1320,7 +1328,7 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
 }
 [data-agnes-region="rightbar"] {
   grid-column: 2;
-  grid-row: 2;
+  grid-row: 1;
   position: relative;
   z-index: 5;
   min-width: 0;
@@ -2596,7 +2604,7 @@ body:has(#empty-state:not([hidden])) .conversation-shell {
 body:has(#empty-state:not([hidden])) #transcript {
   display: none;
 }
-/* 下边那份 auto 必须挂在 main 的 flex 子项上：挂到 #composer 上会被 #composer-mount
+/* 下边那份 auto 必须挂在 .conversation-column 的 flex 子项上：挂到 #composer 上会被 #composer-mount
    挡住，块级上下文里的纵向 auto 外边距会算成 0，居中就只剩上面那一份。 */
 body:has(#empty-state:not([hidden])) #composer-mount {
   margin-bottom: auto;
@@ -6829,10 +6837,11 @@ body.admin-page {
 }
 
 @media (max-width: 720px) {
-  .workbench-split:has([data-agnes-region="rightbar"]:not([hidden])) {
+  .workbench-layout:has([data-agnes-region="rightbar"]:not([hidden])) {
     grid-template-columns: minmax(0, 1fr);
   }
   [data-agnes-region="rightbar"] {
+    grid-column: 1;
     position: absolute;
     z-index: 20;
     inset: 0 0 0 auto;

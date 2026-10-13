@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react'
+import { protocolRole } from './agents.js'
 import { digest, graphPlan } from './plan.js'
 
 const START_SERVICE = 'research.multiagent.start'
@@ -29,13 +30,13 @@ export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, error
       setStatusKind('error')
       return
     }
-    const base = graphPlan(nodes, edges)
-    const plan = { ...base, checksum: await digest(base) }
     setRunning(true)
     setStatus('正在生成不可变编排快照…')
     setStatusKind('')
-    setTrace((current) => [{ message: `plan.created · ${plan.checksum}`, time: now() }, ...current])
     try {
+      const base = graphPlan(nodes, edges)
+      const plan = { ...base, checksum: await digest(base) }
+      setTrace((current) => [{ message: `plan.created · ${plan.checksum}`, time: now() }, ...current])
       const agent_prompts = Object.fromEntries(
         nodes.filter((node) => node.prompt).map((node) => [node.id, node.prompt]),
       )
@@ -46,9 +47,9 @@ export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, error
         session_id: sessionId,
       })
       const output = result?.output ?? result
-      setTrace((current) => [...traceFromResult(output, 'verification.queued'), ...current])
-      setStatus(`已排队（尚无执行器） · ${output?.run_id ?? 'run pending'}`)
-      setStatusKind('success')
+      setTrace((current) => [...traceFromResult(output, 'verification.blocked'), ...current])
+      setStatus(`编排已阻塞：执行器不可用 · ${output?.run_id ?? 'run pending'}`)
+      setStatusKind('error')
     } catch (error) {
       const code = error?.code ?? error?.cause?.code
       const invalidPlan = code === 'INVALID_MULTI_AGENT_PLAN'
@@ -87,15 +88,15 @@ export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, error
         const result = await ctx.agnes.services.call(DIRECT_SERVICE, {
           prompt,
           agent_id: node.role === 'agnes' ? 'current-session-agent' : node.id,
-          role: node.role,
+          role: protocolRole(node.role),
           revision: 'ui-v1',
           session_id: sessionId,
           agent_prompt: node.prompt,
         })
         const output = result?.output ?? result
-        setTrace((current) => [...traceFromResult(output, 'agent.direct.queued'), ...current])
-        setStatus(`单 Agent 已排队 · ${output?.run_id ?? 'run pending'}`)
-        setStatusKind('success')
+        setTrace((current) => [...traceFromResult(output, 'agent.direct.blocked'), ...current])
+        setStatus(`单 Agent 已阻塞：执行器不可用 · ${output?.run_id ?? 'run pending'}`)
+        setStatusKind('error')
       } catch (error) {
         setStatus(`单 Agent 运行失败：${error?.message ?? 'unknown error'}`)
         setStatusKind('error')

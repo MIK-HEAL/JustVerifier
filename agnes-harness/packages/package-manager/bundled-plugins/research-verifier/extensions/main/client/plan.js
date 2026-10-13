@@ -1,9 +1,12 @@
-import { roleInfo } from './agents.js'
+import { protocolRole, roleInfo } from './agents.js'
 
 export function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
   if (value && typeof value === 'object')
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(',')}}`
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stable(value[key])}`)
+      .join(',')}}`
   return JSON.stringify(value)
 }
 
@@ -13,15 +16,13 @@ export async function digest(value) {
     const bytes = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', source))
     return `sha256:${[...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`
   }
-  let hash = 2166136261
-  for (const byte of source) hash = Math.imul(hash ^ byte, 16777619)
-  return `fnv1a:${(hash >>> 0).toString(16).padStart(8, '0')}`
+  throw new Error('当前环境无法生成 SHA-256 编排快照，请使用安全连接打开工作台')
 }
 
 export function graphPlan(nodes, edges) {
   const agents = nodes.map((node) => ({
     agent_id: node.id,
-    role: node.role,
+    role: protocolRole(node.role),
     revision: 'ui-v1',
     capabilities: [roleInfo(node.role).capability],
     trust: 'trusted',
@@ -51,6 +52,10 @@ export function validateGraph(nodes, edges) {
   if (!nodes.length) errors.push('至少拖入一个 Agent')
   if (!nodes.some((node) => node.role === 'planner')) errors.push('需要一个规划 Agent 作为根节点')
   const ids = new Set(nodes.map((node) => node.id))
+  if (ids.size !== nodes.length) errors.push('Agent 节点 ID 不能重复')
+  for (const node of nodes)
+    if (!['planner', 'executor', 'reviewer', 'verifier'].includes(protocolRole(node.role)))
+      errors.push('Agent 角色不受支持')
   for (const edge of edges) {
     if (!ids.has(edge.from) || !ids.has(edge.to)) errors.push('连线引用了不存在的节点')
     if (edge.from === edge.to) errors.push('不能连接节点自身')

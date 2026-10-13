@@ -32,6 +32,14 @@ describe('empty session layout', () => {
     expect(transcript?.querySelector('#transcript-content')).toBeTruthy()
     expect(transcript?.childElementCount).toBeGreaterThan(0)
 
+    // Rightbar shares the full workbench height; composer/approval only consume the left column.
+    const workbench = document.querySelector('.workbench-layout')
+    const column = workbench?.querySelector('.conversation-column')
+    expect(workbench?.querySelector(':scope > #rightbar-panel')).toBeTruthy()
+    expect(column?.querySelector(':scope > .workbench-split')).toBeTruthy()
+    expect(column?.querySelector(':scope > #composer-mount #composer')).toBeTruthy()
+    expect(column?.querySelector(':scope > #approval')).toBeTruthy()
+
     expect(css).not.toMatch(/body:has\(#transcript:empty\)/)
     expect(css).toContain('body:has(#empty-state:not([hidden]))')
   })
@@ -43,6 +51,10 @@ describe('empty session layout', () => {
     expect(rule('#transcript')).not.toMatch(/padding/)
     expect(rule('#transcript-content')).toMatch(/width: min\(100%, var\(--chat-content-width\)\)/)
     expect(rule('#transcript-content')).toMatch(/margin-inline: auto/)
+    expect(rule('.workbench-layout')).toMatch(/min-height: 0/)
+    expect(rule('.workbench-layout')).toMatch(/flex: 1/)
+    expect(rule('.conversation-column')).toMatch(/min-height: 0/)
+    expect(rule('.conversation-column')).toMatch(/flex-direction: column/)
   })
 
   it('shows the connection state only while the connection is unhealthy', () => {

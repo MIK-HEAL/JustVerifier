@@ -1,4 +1,21 @@
-import { type ArtifactRef, type Status, sha256 } from './index.js'
+import {
+  type ArtifactRef,
+  type Status,
+  sha256,
+  type VerificationInput,
+  type VerificationReport,
+  verifyCertificate,
+} from './index.js'
+import {
+  budgetValid,
+  digest,
+  immutable,
+  namespace,
+  nonempty,
+  strings,
+  validateAgentAttempts,
+  validateReviewerSnapshot,
+} from './multi-agent-validation.js'
 import {
   buildResearchRunManifest,
   type ResearchActivity,
@@ -64,6 +81,8 @@ export type AgentFinding = Readonly<{
   rule_id?: string
   evidence_refs: readonly string[]
   artifact_ids?: readonly string[]
+  snapshot_checksum?: string
+  certificate_checksum?: string
 }>
 
 export type ReviewerSnapshot = Readonly<{
@@ -81,6 +100,8 @@ export type MultiAgentAggregation = Readonly<{
   findings: readonly AgentFinding[]
   attempts: readonly AgentAttempt[]
   issued_by: 'harness'
+  validation_errors: readonly string[]
+  verification?: VerificationReport
   report_checksum: string
 }>
 
@@ -90,7 +111,7 @@ export type MultiAgentState = Readonly<{
   findings: readonly AgentFinding[]
 }>
 
-const stableCompare = (a: string, b: string): number => a.localeCompare(b)
+const stableCompare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 
 function sorted<T>(items: readonly T[], key: (item: T) => string): readonly T[] {
   return Object.freeze([...items].sort((a, b) => stableCompare(key(a), key(b))))
@@ -125,41 +146,88 @@ export function buildMultiAgentPlan(
       ...(task.input_artifact_ids?.length ? { input_artifact_ids: unique(task.input_artifact_ids) } : {}),
     })),
   }
-  return Object.freeze({ ...base, checksum: sha256(base) })
+  const plan = immutable({ ...base, checksum: sha256(base) })
+  const errors = validateMultiAgentPlan(plan)
+  if (errors.length) throw new Error(`invalid multi-agent plan: ${errors.join(', ')}`)
+  return plan
 }
 
 /** Structural and authority checks performed before any delegate can run. */
 export function validateMultiAgentPlan(plan: MultiAgentPlan): readonly string[] {
   const errors: string[] = []
+  if (!plan || typeof plan !== 'object' || !Array.isArray(plan.agents) || !Array.isArray(plan.tasks))
+    return ['plan.structure']
+  if (
+    plan.agents.some((agent) => !agent || typeof agent !== 'object') ||
+    plan.tasks.some((task) => !task || typeof task !== 'object')
+  )
+    return ['plan.structure']
+  if (plan.schema_version !== 1) errors.push('schema_version')
+  if (!nonempty(plan.plan_id)) errors.push('plan_id')
+  if (!nonempty(plan.run_id)) errors.push('run_id')
+  if (!plan.agents.length) errors.push('agents.empty')
+  if (!plan.tasks.length) errors.push('tasks.empty')
   const withoutChecksum = { ...plan }
   delete (withoutChecksum as { checksum?: string }).checksum
-  if (sha256(withoutChecksum) !== plan.checksum) errors.push('checksum')
+  if (!digest(plan.checksum) || sha256(withoutChecksum) !== plan.checksum) errors.push('checksum')
   const agents = new Map(plan.agents.map((agent) => [agent.agent_id, agent]))
   const tasks = new Map(plan.tasks.map((task) => [task.task_id, task]))
   const seenAgents = new Set<string>()
   const seenTasks = new Set<string>()
   for (const agent of plan.agents) {
-    if (!agent.agent_id) errors.push('agents.agent_id')
+    if (!namespace(agent.agent_id) || agent.agent_id.includes('/')) errors.push('agents.agent_id')
     if (seenAgents.has(agent.agent_id)) errors.push(`agents.${agent.agent_id}.duplicate`)
     seenAgents.add(agent.agent_id)
-    if (!agent.revision) errors.push(`agents.${agent.agent_id}.revision`)
+    if (!nonempty(agent.revision)) errors.push(`agents.${agent.agent_id}.revision`)
+    if (!['planner', 'executor', 'reviewer', 'verifier'].includes(agent.role))
+      errors.push(`agents.${agent.agent_id}.role`)
+    if (!strings(agent.capabilities)) errors.push(`agents.${agent.agent_id}.capabilities`)
+    if (agent.trust !== undefined && !['trusted', 'untrusted'].includes(agent.trust))
+      errors.push(`agents.${agent.agent_id}.trust`)
   }
   if (!agents.has(plan.root_agent_id)) errors.push('root_agent_id')
   else if (agents.get(plan.root_agent_id)?.role !== 'planner') errors.push('root_agent_id.role')
   for (const task of plan.tasks) {
+    if (!namespace(task.task_id) || task.task_id.includes('/')) errors.push('tasks.task_id')
+    if (!['serial', 'parallel'].includes(task.mode)) errors.push(`tasks.${task.task_id}.mode`)
+    if (!budgetValid(task.budget)) errors.push(`tasks.${task.task_id}.budget`)
+    if (
+      task.depends_on !== undefined &&
+      (!strings(task.depends_on) || new Set(task.depends_on).size !== task.depends_on.length)
+    )
+      errors.push(`tasks.${task.task_id}.depends_on`)
+    if (task.input_artifact_ids !== undefined && !strings(task.input_artifact_ids))
+      errors.push(`tasks.${task.task_id}.input_artifact_ids`)
+    if (
+      strings(task.input_artifact_ids) &&
+      new Set(task.input_artifact_ids).size !== task.input_artifact_ids.length
+    )
+      errors.push(`tasks.${task.task_id}.input_artifact_ids.duplicate`)
     if (seenTasks.has(task.task_id)) errors.push(`tasks.${task.task_id}.duplicate`)
     seenTasks.add(task.task_id)
     if (!agents.has(task.agent_id)) errors.push(`tasks.${task.task_id}.agent_id`)
-    if (!task.output_namespace || !task.output_namespace.startsWith(`${task.agent_id}/`))
+    if (!namespace(task.output_namespace) || !task.output_namespace.startsWith(`${task.agent_id}/`))
       errors.push(`tasks.${task.task_id}.output_namespace`)
-    for (const dependency of task.depends_on ?? []) {
+    for (const other of plan.tasks) {
+      if (other === task || !namespace(other.output_namespace)) continue
+      if (
+        other.output_namespace === task.output_namespace ||
+        other.output_namespace.startsWith(`${task.output_namespace}/`)
+      )
+        errors.push(`tasks.${task.task_id}.namespace_overlap`)
+    }
+    for (const dependency of Array.isArray(task.depends_on) ? task.depends_on : []) {
       if (!tasks.has(dependency)) errors.push(`tasks.${task.task_id}.depends_on.${dependency}`)
       if (dependency === task.task_id) errors.push(`tasks.${task.task_id}.cycle`)
     }
   }
+  if (errors.length) return Object.freeze([...new Set(errors)].sort(stableCompare))
   // Kahn's algorithm gives a deterministic cycle check without running delegates.
   const remaining = new Map<string, number>(
-    plan.tasks.map((task) => [task.task_id, (task.depends_on ?? []).filter((id) => tasks.has(id)).length]),
+    plan.tasks.map((task) => [
+      task.task_id,
+      (task.depends_on ?? []).filter((id: string) => tasks.has(id)).length,
+    ]),
   )
   const queue = [...remaining.entries()]
     .filter(([, count]) => count === 0)
@@ -186,14 +254,26 @@ export function readyMultiAgentTasks(
   plan: MultiAgentPlan,
   attempts: readonly AgentAttempt[],
 ): readonly AgentTask[] {
-  const terminal = new Map<string, AttemptStatus>()
-  for (const attempt of attempts) terminal.set(attempt.task_id, attempt.status)
-  return Object.freeze(
-    plan.tasks
-      .filter((task) => !terminal.has(task.task_id))
-      .filter((task) => (task.depends_on ?? []).every((id) => terminal.get(id) === 'completed'))
-      .sort((a, b) => stableCompare(a.task_id, b.task_id)),
+  const errors = [...validateMultiAgentPlan(plan), ...validateAgentAttempts(plan, attempts)]
+  if (errors.length) throw new Error(`invalid multi-agent state: ${errors.join(', ')}`)
+  const terminal = new Map<string, readonly AgentAttempt[]>()
+  for (const attempt of attempts)
+    terminal.set(attempt.task_id, [...(terminal.get(attempt.task_id) ?? []), attempt])
+  const active = attempts.filter((attempt) => attempt.status === 'queued' || attempt.status === 'running')
+  if (
+    active.some((attempt) => plan.tasks.find((task) => task.task_id === attempt.task_id)?.mode === 'serial')
   )
+    return Object.freeze([])
+  const ready = plan.tasks
+    .filter((task) => !terminal.has(task.task_id))
+    .filter((task) =>
+      (task.depends_on ?? []).every((id) =>
+        terminal.get(id)?.every((attempt) => attempt.status === 'completed'),
+      ),
+    )
+    .sort((a, b) => stableCompare(a.task_id, b.task_id))
+  if (!active.length && ready[0]?.mode === 'serial') return Object.freeze([ready[0]])
+  return Object.freeze(ready.filter((task) => task.mode === 'parallel'))
 }
 
 /** Creates an immutable queued attempt with an agent-owned artifact namespace. */
@@ -205,12 +285,13 @@ export function queueAgentAttempt(
   const task = plan.tasks.find((candidate) => candidate.task_id === taskId)
   if (!task) throw new Error(`unknown task: ${taskId}`)
   if (validateMultiAgentPlan(plan).length) throw new Error('invalid multi-agent plan')
-  return Object.freeze({
+  if (!namespace(input.attempt_id) || input.attempt_id.includes('/')) throw new Error('invalid attempt_id')
+  return immutable({
     attempt_id: input.attempt_id,
     task_id: task.task_id,
     agent_id: task.agent_id,
     ...(input.parent_attempt_id ? { parent_attempt_id: input.parent_attempt_id } : {}),
-    namespace: task.output_namespace,
+    namespace: `${task.output_namespace}/${input.attempt_id}`,
     status: 'queued',
     input_artifact_ids: Object.freeze([...(task.input_artifact_ids ?? [])]),
     output_artifact_ids: Object.freeze([]),
@@ -235,7 +316,10 @@ export function createReviewerSnapshot(
     ),
     ledger_refs: unique(input.ledger_refs),
   }
-  return Object.freeze({ ...base, checksum: sha256(base) })
+  const snapshot = immutable({ ...base, checksum: sha256(base) })
+  const errors = validateReviewerSnapshot(snapshot)
+  if (errors.length) throw new Error(`invalid reviewer snapshot: ${errors.join(', ')}`)
+  return snapshot
 }
 
 /** Accepts a finding only from a reviewer attempt and only for frozen evidence. */
@@ -245,22 +329,49 @@ export function submitAgentFinding(
   attempt: AgentAttempt,
   input: Readonly<Omit<AgentFinding, 'attempt_id' | 'agent_id'>>,
 ): AgentFinding {
+  if (validateMultiAgentPlan(plan).length) throw new Error('invalid multi-agent plan')
+  if (validateReviewerSnapshot(snapshot).length) throw new Error('invalid reviewer snapshot')
   const descriptor = plan.agents.find((agent) => agent.agent_id === attempt.agent_id)
-  if (!descriptor || descriptor.role !== 'reviewer') throw new Error('attempt is not a reviewer')
+  if (descriptor?.role !== 'reviewer') throw new Error('attempt is not a reviewer')
   if (attempt.status !== 'running' && attempt.status !== 'completed')
     throw new Error('reviewer attempt is not active')
-  if (!attempt.attempt_id || !plan.tasks.some((task) => task.task_id === attempt.task_id))
+  if (
+    !attempt.attempt_id ||
+    !plan.tasks.some(
+      (task) =>
+        task.task_id === attempt.task_id &&
+        task.agent_id === attempt.agent_id &&
+        attempt.namespace === `${task.output_namespace}/${attempt.attempt_id}`,
+    )
+  )
     throw new Error('unknown reviewer attempt')
+  if (
+    !nonempty(input.finding_id) ||
+    !nonempty(input.message) ||
+    !['pass', 'warn', 'fail', 'unknown'].includes(input.status) ||
+    !strings(input.evidence_refs)
+  )
+    throw new Error('invalid reviewer finding')
+  if (input.status === 'pass' && !input.evidence_refs.length)
+    throw new Error('pass finding requires evidence')
   const allowed = new Set([
     ...snapshot.ledger_refs,
     ...snapshot.artifacts.map((artifact) => `artifact:${artifact.id}@${artifact.version}`),
   ])
   if (input.evidence_refs.some((ref) => !allowed.has(ref)))
     throw new Error('finding references evidence outside reviewer snapshot')
-  return Object.freeze({
+  if (
+    input.artifact_ids &&
+    (!strings(input.artifact_ids) ||
+      input.artifact_ids.some((id) => !snapshot.artifacts.some((artifact) => artifact.id === id)))
+  )
+    throw new Error('finding references artifacts outside reviewer snapshot')
+  return immutable({
     ...input,
     attempt_id: attempt.attempt_id,
     agent_id: attempt.agent_id,
+    snapshot_checksum: snapshot.checksum,
+    certificate_checksum: snapshot.certificate_checksum,
     evidence_refs: unique(input.evidence_refs),
     ...(input.artifact_ids ? { artifact_ids: unique(input.artifact_ids) } : {}),
   })
@@ -271,25 +382,87 @@ export function aggregateMultiAgentFindings(
   plan: MultiAgentPlan,
   attempts: readonly AgentAttempt[],
   findings: readonly AgentFinding[],
+  options: Readonly<{
+    verification?: VerificationInput
+    reviewer_snapshots?: readonly ReviewerSnapshot[]
+  }> = {},
 ): MultiAgentAggregation {
-  const planErrors = validateMultiAgentPlan(plan)
-  const attemptIds = new Set(attempts.map((attempt) => attempt.attempt_id))
-  const validFindings = findings.filter((finding) => attemptIds.has(finding.attempt_id))
+  const errors = [...validateMultiAgentPlan(plan)]
+  if (!errors.length) errors.push(...validateAgentAttempts(plan, attempts))
+  const attemptIds = new Map(attempts.map((attempt) => [attempt.attempt_id, attempt]))
+  const findingIds = new Set<string>()
+  for (const finding of findings) {
+    const attempt = attemptIds.get(finding.attempt_id)
+    if (!attempt || attempt.agent_id !== finding.agent_id || findingIds.has(finding.finding_id))
+      errors.push(`findings.${finding.finding_id}.binding`)
+    findingIds.add(finding.finding_id)
+    const snapshot = options.reviewer_snapshots?.find((item) => item.checksum === finding.snapshot_checksum)
+    try {
+      if (!attempt || !snapshot) throw new Error('missing snapshot')
+      const submitted = submitAgentFinding(plan, snapshot, attempt, finding)
+      if (submitted.certificate_checksum !== finding.certificate_checksum)
+        throw new Error('certificate mismatch')
+      if (options.verification && snapshot.certificate_checksum !== sha256(options.verification.certificate))
+        throw new Error('stale snapshot')
+      if (options.verification) {
+        if (
+          snapshot.artifacts.some(
+            (artifact) =>
+              !options.verification?.artifacts.some(
+                (item) =>
+                  item.id === artifact.id &&
+                  item.version === artifact.version &&
+                  item.checksum === artifact.checksum,
+              ),
+          )
+        )
+          throw new Error('snapshot artifact mismatch')
+        if (
+          snapshot.ledger_refs.some(
+            (ref) => !options.verification?.ledger.some((event) => `ledger:${event.id}` === ref),
+          )
+        )
+          throw new Error('snapshot ledger mismatch')
+      }
+    } catch {
+      errors.push(`findings.${finding.finding_id}.snapshot`)
+    }
+  }
   const orderedAttempts = sorted(attempts, (attempt) => attempt.attempt_id)
-  const orderedFindings = sorted(validFindings, (finding) => finding.finding_id)
-  const status: Status = planErrors.length
+  const orderedFindings = sorted(findings, (finding) => finding.finding_id)
+  if (options.verification) {
+    const available = new Set(options.verification.artifacts.map((artifact) => artifact.id))
+    for (const attempt of attempts) {
+      if ([...attempt.input_artifact_ids, ...attempt.output_artifact_ids].some((id) => !available.has(id)))
+        errors.push(`attempts.${attempt.attempt_id}.missing_artifact`)
+    }
+  }
+  const verification = options.verification ? verifyCertificate(options.verification) : undefined
+  const incomplete =
+    plan.tasks.some(
+      (task) =>
+        !attempts.some((attempt) => attempt.task_id === task.task_id && attempt.status === 'completed'),
+    ) ||
+    orderedAttempts.some((attempt) => attempt.status !== 'completed') ||
+    plan.tasks.some(
+      (task) =>
+        plan.agents.find((agent) => agent.agent_id === task.agent_id)?.role === 'reviewer' &&
+        !findings.some((finding) => attemptIds.get(finding.attempt_id)?.task_id === task.task_id),
+    )
+  const status: Status = errors.length
     ? 'fail'
     : orderedAttempts.some((attempt) => attempt.status === 'failed' || attempt.status === 'blocked')
       ? 'fail'
-      : orderedFindings.some((finding) => finding.status === 'fail')
+      : verification?.status === 'fail' || orderedFindings.some((finding) => finding.status === 'fail')
         ? 'fail'
-        : orderedFindings.some((finding) => finding.status === 'unknown')
+        : incomplete ||
+            !verification ||
+            verification.status === 'unknown' ||
+            orderedFindings.some((finding) => finding.status === 'unknown')
           ? 'unknown'
-          : orderedFindings.some((finding) => finding.status === 'warn')
+          : verification.status === 'warn' || orderedFindings.some((finding) => finding.status === 'warn')
             ? 'warn'
-            : orderedAttempts.some((attempt) => attempt.status !== 'completed')
-              ? 'unknown'
-              : 'pass'
+            : 'pass'
   const base = {
     schema_version: 1 as const,
     plan_checksum: plan.checksum,
@@ -297,8 +470,10 @@ export function aggregateMultiAgentFindings(
     findings: orderedFindings,
     attempts: orderedAttempts,
     issued_by: 'harness' as const,
+    validation_errors: unique(errors),
+    ...(verification ? { verification } : {}),
   }
-  return Object.freeze({ ...base, report_checksum: sha256(base) })
+  return immutable({ ...base, report_checksum: sha256(base) })
 }
 
 /** Converts delegate attempts/findings into the existing research activity sidecar. */
@@ -306,8 +481,10 @@ export function multiAgentActivities(
   plan: MultiAgentPlan,
   attempts: readonly AgentAttempt[],
 ): readonly ResearchActivity[] {
+  const errors = [...validateMultiAgentPlan(plan), ...validateAgentAttempts(plan, attempts)]
+  if (errors.length) throw new Error(`invalid multi-agent state: ${errors.join(', ')}`)
   const descriptors = new Map(plan.agents.map((agent) => [agent.agent_id, agent]))
-  return Object.freeze(
+  return immutable(
     sorted(attempts, (attempt) => attempt.attempt_id).map((attempt) => {
       const agent = descriptors.get(attempt.agent_id)
       const task = plan.tasks.find((candidate) => candidate.task_id === attempt.task_id)
@@ -320,7 +497,12 @@ export function multiAgentActivities(
       return {
         activity_id: `agent:${attempt.attempt_id}`,
         ...(attempt.parent_attempt_id ? { parent_id: `agent:${attempt.parent_attempt_id}` } : {}),
-        kind: task?.agent_id === plan.root_agent_id ? ('plan' as const) : ('run' as const),
+        kind:
+          agent?.role === 'verifier'
+            ? ('verification' as const)
+            : task?.agent_id === plan.root_agent_id
+              ? ('plan' as const)
+              : ('run' as const),
         status,
         started_at: attempt.started_at ?? '',
         ...(attempt.ended_at ? { ended_at: attempt.ended_at } : {}),
@@ -342,6 +524,12 @@ export function buildMultiAgentResearchManifest(
     base: Omit<Parameters<typeof buildResearchRunManifest>[0], 'activities' | 'artifacts'>
   }>,
 ): ResearchRunManifest {
+  if (input.base.run_id !== input.plan.run_id) throw new Error('manifest run_id does not match plan')
+  const available = new Set(input.artifacts.map((artifact) => artifact.id))
+  for (const attempt of input.attempts) {
+    if ([...attempt.input_artifact_ids, ...attempt.output_artifact_ids].some((id) => !available.has(id)))
+      throw new Error('attempt references missing artifact')
+  }
   const planArtifact: ResearchArtifact = {
     id: `plan:${input.plan.plan_id}`,
     version: input.plan.checksum,
@@ -350,16 +538,23 @@ export function buildMultiAgentResearchManifest(
     role: 'source',
     content_type: 'application/json',
   }
-  return buildResearchRunManifest({
-    ...input.base,
-    activities: multiAgentActivities(input.plan, input.attempts),
-    artifacts: [...input.artifacts, planArtifact] as readonly ResearchArtifact[],
-  })
+  return immutable(
+    buildResearchRunManifest({
+      ...input.base,
+      activities: multiAgentActivities(input.plan, input.attempts),
+      artifacts: [...input.artifacts, planArtifact] as readonly ResearchArtifact[],
+    }),
+  )
 }
 
 /** Narrows a generic artifact reference to an attempt-owned namespace. */
 export function attemptArtifactRef(attempt: AgentAttempt, artifact: ArtifactRef): ArtifactRef {
-  if (!artifact.id.startsWith(`${attempt.namespace}/`))
+  if (
+    !namespace(artifact.id) ||
+    !namespace(attempt.namespace) ||
+    !artifact.id.startsWith(`${attempt.namespace}/`)
+  )
     throw new Error(`artifact ${artifact.id} is outside attempt namespace ${attempt.namespace}`)
+  if (!nonempty(artifact.version) || !digest(artifact.checksum)) throw new Error('invalid artifact identity')
   return Object.freeze({ ...artifact })
 }

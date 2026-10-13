@@ -42,6 +42,8 @@
       </header>
 
       <p id="notice" role="alert"></p>
+      <div class="workbench-layout">
+      <div class="conversation-column">
       <div class="workbench-split">
       <div class="session-tabs-bar">
       <div class="session-tabs" role="tablist" aria-label="Session views" data-i18n-aria="index-shell.tabsView">
@@ -53,11 +55,13 @@
       <div id="conversation-shell" class="conversation-shell" role="tabpanel" aria-labelledby="view-chat" data-agnes-region="conversation">
       </div>
       <aside id="trace-panel" role="tabpanel" aria-labelledby="view-trace" data-agnes-region="trace" hidden aria-label="Run trace" data-i18n-aria="index-shell.tracePanel"></aside>
-      <aside id="rightbar-panel" data-agnes-region="rightbar" hidden aria-label="Extension panels" data-i18n-aria="index-shell.rightbarPanel"></aside>
       </div>
 
       <section id="approval" data-agnes-region="approval" hidden aria-live="polite"></section>
       <div id="composer-mount"></div>
+      </div>
+      <aside id="rightbar-panel" data-agnes-region="rightbar" hidden aria-label="Extension panels" data-i18n-aria="index-shell.rightbarPanel"></aside>
+      </div>
     </main>
 
     <dialog data-agnes-region="dialog" id="new-session" aria-labelledby="new-session-title">

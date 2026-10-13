@@ -406,6 +406,9 @@ export {
   submitAgentFinding,
   validateMultiAgentPlan,
 } from './multi-agent.js'
+export type { AgentDelegate, AgentDelegateResult } from './multi-agent-runner.js'
+export { runMultiAgentPlan } from './multi-agent-runner.js'
+export { validateAgentAttempts, validateReviewerSnapshot } from './multi-agent-validation.js'
 export {
   researchActivityFromComputeJob,
   researchActivityFromNotebookRun,

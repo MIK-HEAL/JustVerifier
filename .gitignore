@@ -115,4 +115,6 @@ docs/
 .omo/
 
 
-.catalog_stamp
+*.catalog_stamp
+
+*.md

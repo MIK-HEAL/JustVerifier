@@ -8,6 +8,7 @@ export const AGENTS = [
 ]
 
 export const roleInfo = (role) => AGENTS.find((agent) => agent.role === role) ?? AGENTS[3]
+export const protocolRole = (role) => (['agnes', 'synthesizer'].includes(role) ? 'executor' : role)
 
 export function nextNodeId(nodes, role) {
   let suffix = nodes.filter((node) => node.role === role).length + 1
