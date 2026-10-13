@@ -1,3 +1,4 @@
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 
@@ -17,9 +18,24 @@ function packageFromInput(workingDirectory, input) {
   if (name === '@agnes' || name.startsWith('@agnes/')) return undefined
 
   const packageSegments = first.startsWith('@') ? [first, scopedName] : [first]
+  const direct = join(segments.slice(0, nodeModules + 1).join(sep), ...packageSegments)
+  if (existsSync(join(direct, 'package.json'))) return { name, directory: direct }
+
+  // esbuild resolves workspace symlinks to their real path. In a pnpm workspace that real path
+  // can point at a sibling checkout's node_modules, while the build is intentionally using this
+  // checkout's dependency store. Resolve the package from the current workspace's pnpm store.
+  const pnpmRoot = join(workingDirectory, 'node_modules', '.pnpm')
+  if (existsSync(pnpmRoot)) {
+    const encoded = name.replaceAll('/', '+')
+    for (const entry of readdirSync(pnpmRoot)) {
+      if (!entry.startsWith(`${encoded}@`)) continue
+      const candidate = join(pnpmRoot, entry, 'node_modules', ...packageSegments)
+      if (existsSync(join(candidate, 'package.json'))) return { name, directory: candidate }
+    }
+  }
   return {
     name,
-    directory: join(segments.slice(0, nodeModules + 1).join(sep), ...packageSegments),
+    directory: direct,
   }
 }
 
