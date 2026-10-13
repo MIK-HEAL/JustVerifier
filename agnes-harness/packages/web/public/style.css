@@ -1242,7 +1242,17 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
   grid-template-columns: minmax(0, 1fr);
 }
 .workbench-split:has([data-agnes-region="rightbar"]:not([hidden])) {
-  grid-template-columns: minmax(0, 1fr) var(--agnes-rightbar-width, min(32vw, 520px));
+  grid-template-columns: minmax(0, 1fr) min(
+      var(--agnes-rightbar-width, min(32vw, 520px)),
+      max(0px, calc(100% - 20rem))
+    );
+}
+/* Composer lives outside the split. Match its queue/input to the conversation column,
+   keeping at least 20rem for the conversation when the viewport can accommodate it. */
+@media (min-width: 721px) {
+  main:has([data-agnes-region="rightbar"]:not([hidden])) > #composer-mount {
+    width: min(100%, max(20rem, calc(100% - var(--agnes-rightbar-width, min(32vw, 520px)))));
+  }
 }
 /* 页签行：tablist 与「报告问题」按钮同级，按钮不进 tablist，以免破坏 tab 语义。 */
 .session-tabs-bar {
@@ -1318,7 +1328,7 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
   overflow: hidden;
   border-left: 1px solid var(--agnes-line-primary);
   background: var(--agnes-bg-page);
-  box-shadow: -8px 0 24px rgb(16 24 40 / 5%);
+  box-shadow: var(--shadow-elevation-soft);
 }
 #rightbar-content,
 #rightbar-session {
@@ -1478,9 +1488,18 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
   z-index: 2;
   top: 0;
   bottom: 0;
-  left: -0.25rem;
+  left: 0;
   width: 0.5rem;
   cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+body:has([data-rightbar-resizing]) {
+  cursor: ew-resize;
+  user-select: none;
+}
+body:has([data-rightbar-resizing]) #composer-mount {
+  pointer-events: none;
 }
 #rightbar-session {
   display: flex;

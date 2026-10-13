@@ -613,6 +613,76 @@ describe('migrated trace region', () => {
 })
 
 describe('DSH rightbar region', () => {
+  it('shares resized width with the composer and isolates and retires the drag gesture', async () => {
+    const slots = await registry()
+    const main = document.createElement('main')
+    const split = document.createElement('div')
+    const rightbar = document.createElement('aside')
+    const composer = document.createElement('form')
+    const composerMount = document.createElement('div')
+    const prompt = document.createElement('textarea')
+    const toggle = document.createElement('button')
+    composer.id = 'composer'
+    composerMount.id = 'composer-mount'
+    composer.append(prompt)
+    composerMount.append(composer)
+    split.append(rightbar)
+    main.append(split, composerMount, toggle)
+    document.body.append(main)
+    const mount = mountRightbarRegion(slots, rightbar, { toggle }, zhLocaleService())
+    mounts.push(mount)
+    toggle.click()
+    const handle = rightbar.querySelector<HTMLElement>('[data-rightbar-resize="true"]')
+    if (!handle) throw new Error('rightbar resize handle is missing')
+    const inputMove = vi.fn()
+    prompt.addEventListener('pointermove', inputMove)
+    const pointer = (type: string, x: number, pointerId = 1, button = 0): PointerEvent =>
+      new PointerEvent(type, {
+        clientX: x,
+        pointerId,
+        button,
+        isPrimary: true,
+        bubbles: true,
+        cancelable: true,
+      })
+
+    expect(main.style.getPropertyValue('--agnes-rightbar-width')).toBe('520px')
+    handle.dispatchEvent(pointer('pointerdown', 800, 1, 2))
+    expect(rightbar.hasAttribute('data-rightbar-resizing')).toBe(false)
+    handle.dispatchEvent(pointer('pointerdown', 800))
+    expect(rightbar.hasAttribute('data-rightbar-resizing')).toBe(true)
+    prompt.dispatchEvent(pointer('pointermove', 700, 2))
+    window.dispatchEvent(pointer('pointerup', 700, 2))
+    expect(main.style.getPropertyValue('--agnes-rightbar-width')).toBe('520px')
+    expect(rightbar.hasAttribute('data-rightbar-resizing')).toBe(true)
+    inputMove.mockClear()
+    const move = pointer('pointermove', 700)
+    prompt.dispatchEvent(move)
+    expect(inputMove).not.toHaveBeenCalled()
+    expect(move.defaultPrevented).toBe(true)
+    await vi.waitFor(
+      () => expect(main.style.getPropertyValue('--agnes-rightbar-width')).toBe('620px'),
+      committed,
+    )
+    expect(localStorage.getItem('agnes.web.rightbar.width')).toBe('620')
+
+    window.dispatchEvent(pointer('pointercancel', 700))
+    expect(rightbar.hasAttribute('data-rightbar-resizing')).toBe(false)
+    prompt.dispatchEvent(pointer('pointermove', 650))
+    expect(inputMove).toHaveBeenCalledOnce()
+    expect(main.style.getPropertyValue('--agnes-rightbar-width')).toBe('620px')
+
+    handle.dispatchEvent(pointer('pointerdown', 700))
+    toggle.click()
+    await vi.waitFor(() => expect(rightbar.hasAttribute('data-rightbar-resizing')).toBe(false), committed)
+    toggle.click()
+    handle.dispatchEvent(pointer('pointerdown', 700))
+    mount.dispose()
+    expect(rightbar.hasAttribute('data-rightbar-resizing')).toBe(false)
+    window.dispatchEvent(pointer('pointermove', 600))
+    expect(main.style.getPropertyValue('--agnes-rightbar-width')).toBe('620px')
+  })
+
   it('keeps the second display surface hidden until a session contribution is live', async () => {
     const slots = await registry()
     const rightbar = document.createElement('aside')

@@ -220,6 +220,7 @@ const MASK_PROPERTIES = new Set(['mask', '-webkit-mask'])
  * 新增使用点必须同步改这里——这份摩擦是刻意的。
  */
 const DYNAMIC_CUSTOM_PROPERTIES = new Set([
+  '--agnes-rightbar-width', // region-slots.ts persists the shared split/composer width
   '--usage-pct', // packages/web/src/usage.ts 的用量环，var() 自带 0% 回退
 ])
 

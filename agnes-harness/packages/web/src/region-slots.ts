@@ -6,6 +6,7 @@
  * Only the section's children move behind a SlotOutlet.  A browser module can shadow the built-in
  * entry by registering the same slot with a lower priority; the surrounding page remains intact.
  */
+import type { UITimeline } from '@agnes/protocol'
 import {
   type ClientDocumentArtifact,
   ClientResourceReclaimedError,
@@ -65,9 +66,9 @@ import {
   type PointerEvent as ReactPointerEvent,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
-import type { UITimeline } from '@agnes/protocol'
 import { flushSync } from 'react-dom'
 import type { ClaimResolver } from './client-modules/boot.js'
 import { observeSlotCards } from './client-modules/timeline-slot.js'
@@ -1105,12 +1106,16 @@ function storedRightbarWidth(): number {
 
 function RightbarBuiltin(): ReturnType<typeof createElement> {
   const [width, setWidth] = useState(storedRightbarWidth)
+  const stopResize = useRef<(() => void) | undefined>(undefined)
+
+  useLayoutEffect(() => () => stopResize.current?.(), [])
 
   useLayoutEffect(() => {
     const containers = Array.from(document.querySelectorAll<HTMLElement>('[data-agnes-region="rightbar"]'))
     if (containers.length === 0) return
     for (const container of containers) {
-      container.parentElement?.style.setProperty('--agnes-rightbar-width', `${width}px`)
+      const layout = container.closest('main') ?? container.parentElement
+      layout?.style.setProperty('--agnes-rightbar-width', `${width}px`)
     }
     try {
       localStorage.setItem(RIGHTBAR_WIDTH_STORAGE_KEY, String(width))
@@ -1120,20 +1125,52 @@ function RightbarBuiltin(): ReturnType<typeof createElement> {
   }, [width])
 
   const beginResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0 || event.isPrimary === false) return
+    stopResize.current?.()
     event.preventDefault()
+    event.stopPropagation()
+    const pointerId = event.pointerId
     const startX = event.clientX
-    const startWidth = width
+    const handle = event.currentTarget
+    const container = handle.closest<HTMLElement>('[data-agnes-region="rightbar"]')
+    const startWidth = container?.getBoundingClientRect().width || width
+    handle.setPointerCapture?.(pointerId)
+    container?.setAttribute('data-rightbar-resizing', '')
     const onMove = (move: PointerEvent): void => {
+      if (move.pointerId !== pointerId) return
+      move.preventDefault()
+      move.stopPropagation()
       setWidth(clampRightbarWidth(startWidth + startX - move.clientX))
     }
     const stop = (): void => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', stop)
-      window.removeEventListener('pointercancel', stop)
+      stopResize.current = undefined
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onEnd, true)
+      window.removeEventListener('pointercancel', onEnd, true)
+      window.removeEventListener('blur', stop)
+      handle.removeEventListener('lostpointercapture', stop)
+      visibility.disconnect()
+      container?.removeAttribute('data-rightbar-resizing')
+      if (handle.hasPointerCapture?.(pointerId)) {
+        handle.releasePointerCapture?.(pointerId)
+      }
     }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', stop)
-    window.addEventListener('pointercancel', stop)
+    const onEnd = (end: PointerEvent): void => {
+      if (end.pointerId !== pointerId) return
+      end.preventDefault()
+      end.stopPropagation()
+      stop()
+    }
+    const visibility = new MutationObserver(() => {
+      if (container?.hidden) stop()
+    })
+    if (container) visibility.observe(container, { attributes: true, attributeFilter: ['hidden'] })
+    stopResize.current = stop
+    window.addEventListener('pointermove', onMove, { capture: true, passive: false })
+    window.addEventListener('pointerup', onEnd, true)
+    window.addEventListener('pointercancel', onEnd, true)
+    window.addEventListener('blur', stop)
+    handle.addEventListener('lostpointercapture', stop)
   }
 
   return createElement(
