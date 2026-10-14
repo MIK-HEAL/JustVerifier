@@ -1,5 +1,5 @@
 import { createElement, useEffect, useRef, useState } from 'react'
-import { CLOSE_EVENT, OPEN_EVENT } from './workbench.js'
+import { CLOSE_EVENT, OPEN_EVENT } from './events.js'
 
 export function Entry() {
   const [active, setActive] = useState(false)

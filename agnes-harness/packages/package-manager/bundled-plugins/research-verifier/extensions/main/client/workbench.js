@@ -5,9 +5,7 @@ import { Canvas } from './canvas.js'
 import { Inspector } from './inspector.js'
 import { validateGraph } from './plan.js'
 import { useVerificationRun } from './use-verification-run.js'
-
-export const OPEN_EVENT = 'agnes:multi-agent-open'
-export const CLOSE_EVENT = 'agnes:multi-agent-close'
+import { CLOSE_EVENT, OPEN_EVENT } from './events.js'
 
 const Icon = ({ path, className = 'ma-icon' }) =>
   createElement(
