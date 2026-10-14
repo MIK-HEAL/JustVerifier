@@ -21,6 +21,15 @@ function artifactLabel(id) {
   return parts.at(-1) === 'result' ? `${parts.at(-2) ?? '输出'} · 结果` : text
 }
 
+function reportExplanation(report) {
+  if (!report) return '验证器尚未返回最终报告。'
+  if (report.status === 'unknown')
+    return 'Agent 已完成任务，但本次运行没有生成可重放的验证证书。系统因此无法确认结论，也不会仅凭 Agent 的文字把它判定为通过。'
+  if (report.status === 'fail') return '至少一项必要校验失败，请查看下方的规则详情和校验问题。'
+  if (report.status === 'warn') return '验证完成，但有部分证据或假设需要人工注意。'
+  return '所有必要校验均已通过。'
+}
+
 function ResultDialog({ result, onClose }) {
   useEffect(() => {
     const onKey = (event) => event.key === 'Escape' && onClose()
@@ -49,7 +58,7 @@ function ResultDialog({ result, onClose }) {
             { className: 'ma-result-section ma-result-summary' },
             createElement('div', { className: 'ma-result-section-title' }, '验证结论'),
             createElement('div', { className: 'ma-result-status', 'data-status': report.status }, reportLabels[report.status] ?? report.status),
-            createElement('p', null, report.status === 'unknown' ? '缺少可重放的证书或证据，系统不会把本次运行判定为通过。' : report.verification?.summary ?? '结果已由验证器汇总。'),
+            createElement('p', null, reportExplanation(report)),
           ),
         createElement(
           'section',
@@ -66,6 +75,21 @@ function ResultDialog({ result, onClose }) {
             ),
           ),
         ),
+        report?.verification?.results?.length
+          ? createElement(
+              'section',
+              { className: 'ma-result-section' },
+              createElement('div', { className: 'ma-result-section-title' }, '校验规则详情'),
+              ...report.verification.results.map((rule) =>
+                createElement(
+                  'article',
+                  { key: rule.rule_id, className: 'ma-result-rule' },
+                  createElement('div', { className: 'ma-result-rule-head' }, createElement('strong', null, rule.rule_id), createElement('span', { 'data-status': rule.status }, reportLabels[rule.status] ?? rule.status)),
+                  createElement('p', null, rule.message),
+                ),
+              ),
+            )
+          : null,
         createElement(
           'section',
           { className: 'ma-result-section' },
@@ -76,6 +100,7 @@ function ResultDialog({ result, onClose }) {
               { key: `${artifact.id}@${artifact.version}`, className: 'ma-result-artifact' },
               createElement('summary', null, artifactLabel(artifact.id)),
               createElement('code', null, `${artifact.id}@${artifact.version}\n${artifact.checksum}`),
+              artifact.preview ? createElement('pre', { className: 'ma-result-preview' }, artifact.preview) : createElement('p', { className: 'ma-result-meta' }, '没有可显示的 Agent 输出正文。'),
             ),
           ),
         ),
@@ -196,7 +221,7 @@ export function Inspector({
           createElement(
             'p',
             null,
-            `验证结论：${result.report.status}${result.report.status === 'unknown' ? '（缺少可重放的证书或证据）' : ''}`,
+            `验证结论：${reportLabels[result.report.status] ?? result.report.status}。${reportExplanation(result.report)}`,
           ),
         createElement('button', { className: 'ma-button ma-result-open', type: 'button', onClick: () => setResultOpen(true) }, '查看完整结果'),
         ...(result.attempts ?? []).slice(0, 3).map((attempt) =>

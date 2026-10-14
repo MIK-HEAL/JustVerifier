@@ -752,9 +752,14 @@
 .ma-result-attempt-head span { color: var(--ma-muted); }
 .ma-result-meta { color: var(--ma-muted); font-size: 11px; overflow-wrap: anywhere; }
 .ma-result-error { margin: 2px 0 0; color: var(--ma-danger); font-size: 11px; overflow-wrap: anywhere; }
+.ma-result-rule { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--ma-border); border-radius: 8px; }
+.ma-result-rule-head { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
+.ma-result-rule-head span { color: var(--ma-muted); }
+.ma-result-rule p { margin: 0; color: var(--ma-muted); font-size: 11px; line-height: 1.5; }
 .ma-result-artifact { border: 1px solid var(--ma-border); border-radius: 7px; padding: 8px 10px; }
 .ma-result-artifact summary { cursor: pointer; font-size: 11px; font-weight: 650; }
 .ma-result-artifact code { display: block; margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ma-muted); font: 10px/1.5 ui-monospace, 'Cascadia Mono', Consolas, monospace; }
+.ma-result-preview { max-height: 240px; margin: 10px 0 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; background: #f8fafc; color: var(--ma-ink, #172033); font: 12px/1.55 ui-monospace, 'Cascadia Mono', Consolas, monospace; }
 .ma-result-errors { padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--ma-danger) 30%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--ma-danger) 5%, transparent); }
 .ma-result-errors ul { display: grid; gap: 5px; margin: 0; padding-left: 18px; color: var(--ma-danger); font-size: 11px; }
 

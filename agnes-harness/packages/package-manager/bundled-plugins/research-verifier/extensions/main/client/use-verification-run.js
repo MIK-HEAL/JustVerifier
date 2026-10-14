@@ -12,6 +12,15 @@ const labels = {
   failed: '执行失败',
   cancelled: '已取消',
 }
+const traceLabels = {
+  'run.started': '验证已开始',
+  'run.finished': '验证已结束',
+  'run.cancel.requested': '已请求取消验证',
+  'plan.accepted': '验证计划已接收',
+  'attempt.child': 'Agent 已启动子任务',
+  'attempt.changed': 'Agent 状态已更新',
+  'artifact.created': '验证输出已记录为证据',
+}
 
 export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, errors }) {
   const [status, setStatus] = useState('等待编排')
@@ -71,7 +80,7 @@ export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, error
           setTrace(
             (output.trace ?? [])
               .map((item) => ({
-                message: `${item.kind}${item.attempt?.task_id ? ` · ${item.attempt.task_id}: ${item.attempt.status}` : ''}`,
+                message: `${traceLabels[item.kind] ?? '验证事件'}${item.attempt?.task_id ? ` · ${item.attempt.task_id}：${labels[item.attempt.status] ?? item.attempt.status}` : ''}${item.status ? `（${labels[item.status] ?? item.status}）` : ''}`,
                 kind: item.kind,
                 time: '',
               }))

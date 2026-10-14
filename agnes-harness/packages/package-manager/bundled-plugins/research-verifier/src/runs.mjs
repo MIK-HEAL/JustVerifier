@@ -343,6 +343,9 @@ export function registerResearchRuns(ctx, verifier) {
               version: '1',
               checksum: verifier.sha256(text),
               ref,
+              // The checksum remains the integrity identity; this bounded preview makes the
+              // result inspectable in the UI without requiring a second artifact fetch.
+              preview: text.slice(0, 16_000),
             })
             run.artifacts.set(artifact.id, artifact)
             append('artifact.created', { artifact, attempt_id: attempt.attempt_id })
