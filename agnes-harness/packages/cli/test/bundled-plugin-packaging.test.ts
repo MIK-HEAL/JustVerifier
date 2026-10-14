@@ -332,6 +332,46 @@ it('ships the research-verifier client extension into local builds', async () =>
   expect(events.length).toBeGreaterThan(0)
   await execute.execute({ run_id: accepted.run_id }, context)
   expect(children).toHaveLength(2)
+  const resumable = await direct.handler(
+    { prompt: 'verify', agent_id: 'executor-resumable', role: 'executor' },
+    session,
+  )
+  let resumableCollects = 0
+  const resumableCancels: string[] = []
+  const first = await execute.execute(
+    { run_id: resumable.run_id },
+    {
+      ...context,
+      subagent: {
+        ...context.subagent,
+        collect: async () =>
+          ++resumableCollects === 1
+            ? { status: 'running', waitTimedOut: true }
+            : { status: 'completed', text: 'eventual observation' },
+        cancel: async (childKey: string) => {
+          resumableCancels.push(childKey)
+          return { status: 'cancelled' }
+        },
+      },
+    },
+  )
+  expect(first.structured).toMatchObject({
+    status: 'running',
+    attempts: [{ status: 'running' }],
+  })
+  expect(resumableCancels).toEqual([])
+  const resumed = await execute.execute(
+    { run_id: resumable.run_id },
+    {
+      ...context,
+      subagent: {
+        ...context.subagent,
+        collect: async () => ({ status: 'completed', text: 'eventual observation' }),
+      },
+    },
+  )
+  expect(resumed.structured).toMatchObject({ status: 'completed' })
+  expect(resumed.structured.attempts[0]?.error?.code).toBeUndefined()
   const review = await direct.handler({ prompt: 'verify', agent_id: 'reviewer-1', role: 'reviewer' }, session)
   expect(review).toMatchObject({ status: 'queued' })
   let reviewerOptions: unknown

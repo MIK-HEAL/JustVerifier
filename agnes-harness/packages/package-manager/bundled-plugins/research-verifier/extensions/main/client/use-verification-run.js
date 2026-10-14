@@ -54,7 +54,7 @@ export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, error
           throw new Error(accepted.reason ?? '编排未进入执行队列')
         // This goes through the ordinary session command admission and tool ledger.
         const dispatched = ctx.session.commands.prompt(
-          `调用 research_multiagent_run 执行已授权的不可变编排，参数为 ${JSON.stringify({ run_id: accepted.run_id })}。以工具返回的报告为准。`,
+          `调用 research_multiagent_run 执行已授权的不可变编排，参数为 ${JSON.stringify({ run_id: accepted.run_id })}。若返回 running，继续以相同参数调用，直到返回 completed、failed 或 cancelled；以工具返回的报告为准。`,
         )
         let dispatchError
         void dispatched.catch((error) => {

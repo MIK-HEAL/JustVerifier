@@ -102,6 +102,8 @@ export function registerResearchRuns(ctx, verifier) {
       status: 'queued',
       controller: new AbortController(),
       attempts: new Map(),
+      children: new Map(),
+      started: new Map(),
       artifacts: new Map(),
       trace: [],
     }
@@ -220,28 +222,12 @@ export function registerResearchRuns(ctx, verifier) {
     meta,
     async execute(input, tctx) {
       const run = lookup(input.run_id, tctx.session.key)
-      if (run.status !== 'queued')
+      if (!['queued', 'running', 'cancelling'].includes(run.status))
         return { content: [{ type: 'text', text: JSON.stringify(view(run)) }], structured: view(run) }
-      run.status = 'running'
       const signal = AbortSignal.any([
         run.controller.signal,
-        tctx.signal,
         ...(extension.ctx?.signal ? [extension.ctx.signal] : []),
       ])
-      const inFlight = new Set()
-      const drain = async () => {
-        let timer
-        try {
-          return await Promise.race([
-            Promise.allSettled([...inFlight]).then(() => true),
-            new Promise((resolve) => {
-              timer = setTimeout(() => resolve(false), Math.min(5_000, tctx.timeoutMs ?? 5_000))
-            }),
-          ])
-        } finally {
-          clearTimeout(timer)
-        }
-      }
       let writes = Promise.resolve()
       const append = (kind, data) => {
         trace(run, kind, {
@@ -256,43 +242,153 @@ export function registerResearchRuns(ctx, verifier) {
         )
         void writes.catch(() => undefined)
       }
-      append('run.started', { plan: run.plan })
+      const updateAttempt = (attempt) => {
+        run.attempts.set(attempt.task_id, freeze(attempt))
+        append('attempt.changed', { attempt })
+      }
+      const response = async (terminal = false) => {
+        await writes
+        const structured = view(run)
+        return {
+          content: [{ type: 'text', text: JSON.stringify(structured) }],
+          structured,
+          ...(terminal ? { terminate: true } : {}),
+          ...(run.status === 'failed' ? { isError: true } : {}),
+        }
+      }
+      const settle = (status) => {
+        const report = verifier.aggregateMultiAgentFindings(run.plan, [...run.attempts.values()], [])
+        run.report = report
+        run.status = status
+        append('run.finished', { status, report })
+      }
+      const cancelRunning = async () => {
+        await Promise.allSettled([...run.children.values()].map((key) => tctx.subagent.cancel(key)))
+        run.children.clear()
+        for (const attempt of run.attempts.values())
+          if (attempt.status === 'running')
+            updateAttempt({
+              ...attempt,
+              status: 'cancelled',
+              error: { code: 'CANCELLED', message: 'Task was cancelled.' },
+            })
+      }
+      if (run.status === 'queued') {
+        run.status = 'running'
+        append('run.started', { plan: run.plan })
+      }
       try {
-        const report = await verifier.runMultiAgentPlan({
-          plan: run.plan,
-          signal,
-          attempt_prefix: run.id,
-          max_concurrency: 4,
-          on_attempt: (attempt) => {
-            run.attempts.set(attempt.task_id, attempt)
-            append('attempt.changed', { attempt })
-          },
-          delegate: (request) => {
-            const execute = async () => {
-              const { task, attempt, signal: taskSignal } = request
+        if (signal.aborted || run.status === 'cancelling') {
+          await cancelRunning()
+          for (const task of run.plan.tasks.filter((item) => !run.attempts.has(item.task_id)))
+            updateAttempt({
+              ...verifier.queueAgentAttempt(run.plan, task.task_id, {
+                attempt_id: `${run.id}-${task.task_id}`,
+              }),
+              status: 'cancelled',
+              error: { code: 'CANCELLED', message: 'Task was not executed.' },
+            })
+          settle('cancelled')
+          return response(true)
+        }
+
+        for (;;) {
+          if (signal.aborted || run.status === 'cancelling') {
+            await cancelRunning()
+            for (const task of run.plan.tasks.filter((item) => !run.attempts.has(item.task_id)))
+              updateAttempt({
+                ...verifier.queueAgentAttempt(run.plan, task.task_id, {
+                  attempt_id: `${run.id}-${task.task_id}`,
+                }),
+                status: 'cancelled',
+                error: { code: 'CANCELLED', message: 'Task was not executed.' },
+              })
+            settle('cancelled')
+            return response(true)
+          }
+          for (const [taskId, childKey] of [...run.children]) {
+            const task = run.plan.tasks.find((item) => item.task_id === taskId)
+            const attempt = run.attempts.get(taskId)
+            const elapsed = Date.now() - (run.started.get(taskId) ?? Date.now())
+            if (task?.budget?.timeout_ms !== undefined && elapsed >= task.budget.timeout_ms) {
+              await tctx.subagent.cancel(childKey)
+              run.children.delete(taskId)
+              updateAttempt({ ...attempt, status: 'failed', error: { code: 'TIMEOUT', message: 'TIMEOUT' } })
+              continue
+            }
+            const result = await tctx.subagent.collect(childKey, { wait: true })
+            if (
+              task?.budget?.timeout_ms !== undefined &&
+              Date.now() - (run.started.get(taskId) ?? Date.now()) >= task.budget.timeout_ms
+            ) {
+              await tctx.subagent.cancel(childKey)
+              run.children.delete(taskId)
+              updateAttempt({ ...attempt, status: 'failed', error: { code: 'TIMEOUT', message: 'TIMEOUT' } })
+              continue
+            }
+            if (result.waitTimedOut && result.status === 'running') return response()
+            run.children.delete(taskId)
+            if (result.status !== 'completed') {
+              const code = `CHILD_${result.status.toUpperCase()}`
+              updateAttempt({ ...attempt, status: 'failed', error: { code, message: code } })
+              continue
+            }
+            const text = result.text ?? ''
+            const ref = await tctx.artifacts.put(new TextEncoder().encode(text), {
+              mime: 'text/plain',
+              name: `${attempt.namespace}/result`,
+            })
+            const artifact = freeze({
+              id: `${attempt.namespace}/result`,
+              version: '1',
+              checksum: verifier.sha256(text),
+              ref,
+            })
+            run.artifacts.set(artifact.id, artifact)
+            append('artifact.created', { artifact, attempt_id: attempt.attempt_id })
+            updateAttempt({ ...attempt, status: 'completed', output_artifact_ids: [artifact.id] })
+          }
+
+          const ready = verifier
+            .readyMultiAgentTasks(run.plan, [...run.attempts.values()])
+            .slice(0, Math.max(0, 4 - run.children.size))
+          for (const task of ready) {
+            const queued = verifier.queueAgentAttempt(run.plan, task.task_id, {
+              attempt_id: `${run.id}-${task.task_id}`,
+            })
+            const dependencies = [...run.attempts.values()].filter((attempt) =>
+              task.depends_on?.includes(attempt.task_id),
+            )
+            const attempt = freeze({
+              ...queued,
+              status: 'running',
+              input_artifact_ids: [
+                ...new Set([
+                  ...queued.input_artifact_ids,
+                  ...dependencies.flatMap((item) => item.output_artifact_ids),
+                ]),
+              ].sort(),
+            })
+            updateAttempt(attempt)
+            try {
               const agent = run.plan.agents.find((item) => item.agent_id === task.agent_id)
               if (
                 ['reviewer', 'verifier'].includes(agent.role) &&
                 tctx.subagent.capabilities?.toolAccess !== 'none'
               )
                 fail('REVIEWER_ISOLATION_UNAVAILABLE')
-              // This backend does not yet attest step/credit usage through collect.
               if (task.budget?.max_steps !== undefined || task.budget?.credits !== undefined)
                 fail('BUDGET_ATTESTATION_UNAVAILABLE')
-              const evidence = attempt.input_artifact_ids.map((artifactId) => {
-                const artifact = run.artifacts.get(artifactId)
-                if (!artifact) fail('INPUT_ARTIFACT_UNAVAILABLE')
-                return artifact
-              })
               const inputs = await Promise.all(
-                evidence.map(async (artifact) => {
+                attempt.input_artifact_ids.map(async (artifactId) => {
+                  const artifact = run.artifacts.get(artifactId)
+                  if (!artifact) fail('INPUT_ARTIFACT_UNAVAILABLE')
                   const text = new TextDecoder().decode(await tctx.artifacts.get(artifact.ref))
                   if (verifier.sha256(text) !== artifact.checksum) fail('INPUT_ARTIFACT_CHECKSUM_MISMATCH')
                   return { ...artifact, text }
                 }),
               )
-              taskSignal.throwIfAborted()
-              const child = await tctx.subagent.spawn(
+              const spawning = tctx.subagent.spawn(
                 JSON.stringify({
                   run_id: run.id,
                   attempt_id: attempt.attempt_id,
@@ -310,73 +406,63 @@ export function registerResearchRuns(ctx, verifier) {
                   ...(['reviewer', 'verifier'].includes(agent.role) ? { toolAccess: 'none' } : {}),
                 },
               )
-              const cancel = () => {
-                void tctx.subagent.cancel(child.childKey).catch(() => undefined)
-              }
-              taskSignal.addEventListener('abort', cancel, { once: true })
-              let finished = false
+              let onCallAbort
+              const callAborted = new Promise((_, reject) => {
+                onCallAbort = () =>
+                  reject(
+                    Object.assign(new Error('CHILD_CREATION_UNKNOWN'), { code: 'CHILD_CREATION_UNKNOWN' }),
+                  )
+                tctx.signal?.addEventListener('abort', onCallAbort, { once: true })
+                if (tctx.signal?.aborted) onCallAbort()
+              })
+              let child
               try {
-                taskSignal.throwIfAborted()
-                append('attempt.child', { attempt_id: attempt.attempt_id, child_key: child.childKey })
-                const result = await tctx.subagent.collect(child.childKey, { wait: true })
-                taskSignal.throwIfAborted()
-                if (result.status !== 'completed')
-                  fail(result.waitTimedOut ? 'CHILD_TIMEOUT' : `CHILD_${result.status.toUpperCase()}`)
-                const text = result.text ?? ''
-                const ref = await tctx.artifacts.put(new TextEncoder().encode(text), {
-                  mime: 'text/plain',
-                  name: `${attempt.namespace}/result`,
-                })
-                taskSignal.throwIfAborted()
-                const artifact = freeze({
-                  id: `${attempt.namespace}/result`,
-                  version: '1',
-                  checksum: verifier.sha256(text),
-                  ref,
-                })
-                run.artifacts.set(artifact.id, artifact)
-                append('artifact.created', { artifact, attempt_id: attempt.attempt_id })
-                finished = true
-                return { output_artifact_ids: [artifact.id] }
+                child = await Promise.race([spawning, callAborted])
+              } catch (error) {
+                if (tctx.signal?.aborted)
+                  void spawning.then((late) => tctx.subagent.cancel(late.childKey)).catch(() => undefined)
+                throw error
               } finally {
-                taskSignal.removeEventListener('abort', cancel)
-                if (!finished) await tctx.subagent.cancel(child.childKey)
+                if (onCallAbort) tctx.signal?.removeEventListener('abort', onCallAbort)
               }
+              run.children.set(task.task_id, child.childKey)
+              run.started.set(task.task_id, Date.now())
+              append('attempt.child', { attempt_id: attempt.attempt_id, child_key: child.childKey })
+            } catch (error) {
+              const code = error?.code ?? error?.message ?? 'DELEGATE_FAILED'
+              if (code === 'CHILD_CREATION_UNKNOWN') throw error
+              updateAttempt({ ...attempt, status: 'failed', error: { code, message: code } })
             }
-            const pending = execute()
-            inFlight.add(pending)
-            void pending.finally(() => inFlight.delete(pending)).catch(() => undefined)
-            return pending
-          },
-        })
-        if (!(await drain())) fail('CHILD_CLEANUP_UNKNOWN')
-        const status = signal.aborted
-          ? 'cancelled'
-          : report.attempts.some((attempt) => ['failed', 'blocked'].includes(attempt.status))
-            ? 'failed'
-            : 'completed'
-        append('run.finished', { status, report })
-        await writes
-        run.report = report
-        run.status = status
-        return {
-          content: [{ type: 'text', text: JSON.stringify(view(run)) }],
-          structured: view(run),
-          terminate: true,
-          ...(status === 'failed' ? { isError: true } : {}),
+          }
+          if (run.children.size) continue
+          if (run.attempts.size === run.plan.tasks.length) {
+            const failed = [...run.attempts.values()].some((attempt) =>
+              ['failed', 'blocked'].includes(attempt.status),
+            )
+            settle(failed ? 'failed' : 'completed')
+            return response(true)
+          }
+          if (!ready.length) {
+            for (const task of run.plan.tasks.filter((item) => !run.attempts.has(item.task_id)))
+              updateAttempt({
+                ...verifier.queueAgentAttempt(run.plan, task.task_id, {
+                  attempt_id: `${run.id}-${task.task_id}`,
+                }),
+                status: 'blocked',
+                error: { code: 'DEPENDENCY_FAILED', message: 'Task was not executed.' },
+              })
+            settle('failed')
+            return response(true)
+          }
         }
       } catch (error) {
-        run.controller.abort(error)
-        const drained = await drain()
-        run.status = drained ? (tctx.signal.aborted ? 'cancelled' : 'failed') : 'unknown'
+        const unknown = (error?.code ?? error?.message) === 'CHILD_CREATION_UNKNOWN'
+        if (!unknown) run.controller.abort(error)
+        await cancelRunning()
+        run.status = unknown ? 'unknown' : 'failed'
         run.error = error?.code ?? error?.message ?? 'RUN_FAILED'
         trace(run, 'run.failed', { reason: run.error })
-        await writes.catch(() => undefined)
-        return {
-          content: [{ type: 'text', text: JSON.stringify(view(run)) }],
-          structured: view(run),
-          isError: true,
-        }
+        return response(true)
       }
     },
   })
