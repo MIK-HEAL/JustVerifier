@@ -162,7 +162,7 @@ it.each([
       entry: { integrity: science.entry.integrity },
     })
     expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({
-      version: 7,
+      version: 8,
       phase: 'installed',
       integrity: { '@agnes/agnes-science': science.entry.integrity },
     })
@@ -194,7 +194,7 @@ it('bumps a completed v6 receipt to v7 without touching installed packages', asy
   const state = JSON.parse(readFileSync(file, 'utf8'))
   writeFileSync(file, JSON.stringify({ ...state, version: 6 }))
   await initializeDefaultHelpers(s)
-  expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ version: 7, phase: 'complete' })
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ version: 8, phase: 'complete' })
   expect(await s.manager.inventory(s.profileDir)).toEqual(before)
   expect(s.exec).not.toHaveBeenCalled()
 }, 60_000)
@@ -215,7 +215,7 @@ it('migrates a v6 receipt without reinstalling an explicitly removed verifier', 
   writeFileSync(file, JSON.stringify({ ...state, version: 6, phase: 'complete' }))
   await initializeDefaultHelpers(s)
   const migrated = JSON.parse(readFileSync(file, 'utf8'))
-  expect(migrated.version).toBe(7)
+  expect(migrated.version).toBe(8)
   expect(migrated.phase).toBe('complete')
   expect(Object.hasOwn(migrated.integrity, '@agnes/research-verifier')).toBe(false)
   expect((await s.manager.inventory(s.profileDir)).packages.map((p) => p.id)).not.toContain(
@@ -341,7 +341,7 @@ it.each([1, 2])(
     })
     expect(
       JSON.parse(readFileSync(join(s.profileDir, 'default-helpers', 'state.json'), 'utf8')).version,
-    ).toBe(7)
+    ).toBe(8)
     for (const pkg of (await s.manager.inventory(s.profileDir)).packages) {
       await s.manager.setEnabled(s.profileDir, pkg.id, false)
       await s.manager.remove(s.profileDir, pkg.id)

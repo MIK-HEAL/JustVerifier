@@ -234,6 +234,36 @@ export async function initializeDefaultHelpers(options: {
         }
       }
     }
+    // v8 refreshes the verifier after changes to its client/runtime bundle. Without this
+    // explicit migration an already-complete profile keeps serving the old snapshot, so the
+    // browser and backend can disagree and effect calls fail closed with HTTP 503.
+    if (state.version === 7 && state.phase === 'complete') {
+      const verifier = BUNDLED_HELPERS.find((helper) => helper.name === 'research-verifier')
+      if (verifier && Object.hasOwn(state.integrity, verifier.id)) {
+        const root = bundledPluginSourceRoot(verifier.ref)
+        if (!root) throw new Error('Bundled helper source unavailable')
+        const expectedIntegrity = hashDirectory(join(root, 'bundled-plugins', verifier.name))
+        const inventory = existsSync(lockPath(options.profileDir))
+          ? await options.manager.inventory(options.profileDir)
+          : undefined
+        const installed = inventory?.packages.find((pkg) => pkg.id === verifier.id)
+        if (
+          installed !== undefined &&
+          installed.entry.source.ref === verifier.ref &&
+          installed.entry.integrity === state.integrity[verifier.id] &&
+          installed.entry.integrity !== expectedIntegrity
+        ) {
+          refreshVerifier = {
+            id: verifier.id,
+            source: parseSource(verifier.ref),
+            expectedIntegrity,
+            preserveEnabled: installed.entry.state.enabled ?? true,
+          }
+        }
+      }
+      state = { ...state, version: 8 }
+      save(state)
+    }
     await options.initializePolicy()
     if (refreshVerifier) {
       await options.manager.recover(options.profileDir)
@@ -263,7 +293,7 @@ export async function initializeDefaultHelpers(options: {
       state = { ...state, phase: 'complete' }
       state = {
         ...state,
-        version: 7,
+        version: 8,
         integrity: { ...state.integrity, [refreshVerifier.id]: refreshVerifier.expectedIntegrity },
       }
       save(state)

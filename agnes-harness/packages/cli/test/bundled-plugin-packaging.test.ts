@@ -167,6 +167,7 @@ it('ships the research-verifier client extension into local builds', async () =>
     'agents.js',
     'canvas.js',
     'entry.js',
+    'events.js',
     'index.css',
     'index.js',
     'inspector.js',
