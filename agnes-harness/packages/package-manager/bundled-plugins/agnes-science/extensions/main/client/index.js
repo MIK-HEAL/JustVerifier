@@ -22,6 +22,7 @@ const empty = () => ({
 })
 export function Library({ ctx, sessionId }) {
   const [open, setOpen] = useState(false)
+  const [panel, setPanel] = useState('home')
   const [rows, setRows] = useState([])
   const [selectedId, setSelectedId] = useState('')
   const [query, setQuery] = useState('')
@@ -37,6 +38,7 @@ export function Library({ ctx, sessionId }) {
     scope.current = current
     setRows([])
     setSelectedId('')
+    setPanel('home')
     setDraft(null)
     setImportText('')
     setQuery('')
@@ -168,6 +170,14 @@ export function Library({ ctx, sessionId }) {
         .toLowerCase()
         .includes(query.toLowerCase()),
   )
+  const fileCount = rows.reduce((total, row) => total + row.files.length, 0)
+  const versionCount = fileCount
+  const collectionCount = new Set(rows.map((row) => row.collection).filter(Boolean)).size
+  const pdfCount = rows.reduce(
+    (total, row) => total + row.files.filter((file) => file.mime === 'application/pdf').length,
+    0,
+  )
+  const recent = rows.slice(-3).reverse()
   const button = (label, action, disabled = busy) =>
     h('button', { key: label, type: 'button', onClick: action, disabled }, label)
   return h(
@@ -178,184 +188,364 @@ export function Library({ ctx, sessionId }) {
       h(
         'div',
         { className: 'science-library-body' },
-        h('h3', {}, 'Literature Library'),
-        h('p', {}, '项目文献、附件与版本。写入通过当前会话执行；元数据保存在项目目录。'),
-        !ctx.session.sessionId && h('p', {}, '请先打开一个会话。'),
-        h('input', {
-          type: 'search',
-          'aria-label': '检索文献',
-          placeholder: '标题、作者、DOI、标签',
-          value: query,
-          onChange: (e) => setQuery(e.target.value),
-        }),
         h(
-          'select',
-          { 'aria-label': '文献集合', value: collection, onChange: (e) => setCollection(e.target.value) },
-          h('option', { value: '' }, '全部集合'),
-          ...[...new Set(rows.map((r) => r.collection).filter(Boolean))].map((c) =>
-            h('option', { key: c, value: c }, c),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'science-actions' },
-          button('新增文献', () => setDraft({ record: empty() })),
-          button('刷新', () => refresh()),
-        ),
-        h(
-          'details',
-          {},
-          h('summary', {}, '导入 CSL-JSON'),
-          h('textarea', {
-            'aria-label': 'CSL-JSON 内容',
-            value: importText,
-            placeholder: '[{"title":"…","DOI":"10.…"}]',
-            onChange: (e) => setImportText(e.target.value),
-          }),
-          button(
-            '导入文献',
-            () => mutate({ action: 'import', content: importText }),
-            busy || !importText.trim(),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'science-actions' },
-          ...['bibtex', 'ris', 'csl'].map((format) =>
-            button(`导出 ${format.toUpperCase()}`, () => exportFile(format)),
-          ),
-        ),
-        h('p', { role: 'status' }, status),
-        draft &&
-          h(
-            'form',
-            {
-              onSubmit: (e) => {
-                e.preventDefault()
-                const split = (value) =>
-                  value
-                    .split(';')
-                    .map((s) => s.trim())
-                    .filter(Boolean)
-                void mutate({
-                  action: 'save',
-                  ...draft,
-                  record: {
-                    ...draft.record,
-                    authors: split(draft.record.authors),
-                    tags: split(draft.record.tags),
-                  },
-                })
-              },
-            },
-            ...[
-              ['title', '标题'],
-              ['authors', '作者（用分号分隔）'],
-              ['year', '年份'],
-              ['doi', 'DOI'],
-              ['journal', '期刊'],
-              ['url', '链接'],
-              ['tags', '标签（用分号分隔）'],
-              ['collection', '集合'],
-              ['notes', '备注'],
-            ].map(([key, label]) =>
-              h(
-                'label',
-                { key },
-                label,
-                h(key === 'notes' ? 'textarea' : 'input', {
-                  required: key === 'title',
-                  maxLength: key === 'notes' ? 16000 : 2048,
-                  value: draft.record[key],
-                  onChange: (e) =>
-                    setDraft({
-                      ...draft,
-                      record: {
-                        ...draft.record,
-                        [key]: e.target.value,
-                      },
-                    }),
-                }),
-              ),
-            ),
-            h('button', { type: 'submit', disabled: busy }, '保存文献'),
-            button('取消编辑', () => setDraft(null)),
-          ),
-        h(
-          'ul',
-          { className: 'science-records' },
-          ...filtered.map((r) =>
+          'nav',
+          { className: 'science-workbench-nav', 'aria-label': '科研工作台分区' },
+          ...[
+            ['home', '工作台'],
+            ['library', '文献库'],
+            ['files', '文件与预览'],
+          ].map(([value, label]) =>
             h(
-              'li',
-              { key: r.id },
-              h(
-                'button',
-                {
-                  type: 'button',
-                  'aria-pressed': selectedId === r.id,
-                  onClick: () => {
-                    setSelectedId(r.id)
-                    setDraft(null)
-                  },
-                },
-                h('strong', {}, r.title),
-                h('span', {}, `${r.authors.join(', ')} · ${r.year} · ${r.files.length} 个文件版本`),
-              ),
+              'button',
+              {
+                key: value,
+                type: 'button',
+                className: panel === value ? 'is-active' : '',
+                'aria-current': panel === value ? 'page' : undefined,
+                onClick: () => setPanel(value),
+              },
+              label,
             ),
           ),
         ),
-        !filtered.length && h('p', {}, '还没有匹配的文献。可新增记录或导入 CSL-JSON。'),
-        selected &&
+        panel === 'home' &&
           h(
-            'article',
-            { key: selected.id, className: 'science-record-detail' },
-            h('h4', {}, selected.title),
-            h('p', {}, selected.doi),
-            h('p', {}, selected.notes),
-            selected.url &&
-              h('a', { href: selected.url, target: '_blank', rel: 'noopener noreferrer' }, '打开文献链接'),
+            'div',
+            { className: 'science-panel science-panel-home' },
+            h(
+              'section',
+              { className: 'science-workbench-hero', 'data-science-dashboard': true },
+              h(
+                'div',
+                { className: 'science-workbench-heading' },
+                h('span', {}, 'SCIENCE WORKBENCH'),
+                h('h3', {}, '科研工作台'),
+              ),
+              h('p', {}, '在对话旁管理文献、文件版本、数据预览和引用。'),
+              h(
+                'div',
+                { className: 'science-metrics' },
+                ...[
+                  ['文献', rows.length],
+                  ['文件', fileCount],
+                  ['版本', versionCount],
+                  ['PDF', pdfCount],
+                ].map(([label, value]) =>
+                  h('div', { key: label }, h('strong', {}, value), h('span', {}, label)),
+                ),
+              ),
+              h(
+                'div',
+                { className: 'science-quick-actions' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: () => {
+                      setDraft({ record: empty() })
+                      setPanel('library')
+                    },
+                  },
+                  '新增文献',
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: () => setPanel('library'),
+                  },
+                  '浏览文献',
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: () => setPanel('files'),
+                  },
+                  '查看文件',
+                ),
+                h('button', { type: 'button', onClick: () => exportFile('bibtex') }, '导出引用'),
+              ),
+            ),
+            h(
+              'section',
+              { className: 'science-dashboard-cards' },
+              h(
+                'article',
+                {},
+                h('strong', {}, 'Literature Library'),
+                h('p', {}, `${rows.length} 条文献 · ${collectionCount} 个集合`),
+                h('span', {}, '检索标题、作者、DOI 和标签'),
+              ),
+              h(
+                'article',
+                {},
+                h('strong', {}, '科研文件'),
+                h('p', {}, `${fileCount} 个文件 · ${versionCount} 个版本`),
+                h('span', {}, 'PDF、表格、结构文件均可预览'),
+              ),
+              h(
+                'article',
+                {},
+                h('strong', {}, '来源与复用'),
+                h('p', {}, 'CSL-JSON · BibTeX · RIS'),
+                h('span', {}, '让引用和项目资料保持可迁移'),
+              ),
+            ),
+            h(
+              'section',
+              { className: 'science-recent', 'aria-label': '最近加入' },
+              h(
+                'div',
+                { className: 'science-section-heading' },
+                h('h4', {}, '最近加入'),
+                h('span', {}, `${collectionCount} 个集合`),
+              ),
+              recent.length
+                ? recent.map((row) =>
+                    h(
+                      'button',
+                      {
+                        key: row.id,
+                        type: 'button',
+                        onClick: () => {
+                          setSelectedId(row.id)
+                          setPanel('library')
+                        },
+                      },
+                      h('strong', {}, row.title),
+                      h('span', {}, `${row.authors.join(', ') || '未填写作者'} · ${row.files.length} 个文件`),
+                    ),
+                  )
+                : h('p', {}, '还没有文献。新增记录或导入 CSL-JSON 后，这里会显示项目最近内容。'),
+            ),
+          ),
+        panel === 'library' &&
+          h(
+            'div',
+            { className: 'science-panel science-panel-library' },
+            h('h3', {}, 'Literature Library'),
+            h('div', { id: 'science-library-records', className: 'science-library-anchor' }),
+            h('p', {}, '项目文献、附件与版本。写入通过当前会话执行；元数据保存在项目目录。'),
+            !ctx.session.sessionId && h('p', {}, '请先打开一个会话。'),
+            h('input', {
+              type: 'search',
+              'aria-label': '检索文献',
+              placeholder: '标题、作者、DOI、标签',
+              value: query,
+              onChange: (e) => setQuery(e.target.value),
+            }),
+            h(
+              'select',
+              { 'aria-label': '文献集合', value: collection, onChange: (e) => setCollection(e.target.value) },
+              h('option', { value: '' }, '全部集合'),
+              ...[...new Set(rows.map((r) => r.collection).filter(Boolean))].map((c) =>
+                h('option', { key: c, value: c }, c),
+              ),
+            ),
             h(
               'div',
               { className: 'science-actions' },
-              button('编辑', () =>
-                setDraft({
-                  id: selected.id,
-                  revision: selected.revision,
-                  record: {
-                    ...selected,
-                    authors: selected.authors.join('; '),
-                    tags: selected.tags.join('; '),
-                  },
-                }),
-              ),
-              button('删除文献', () => {
-                if (window.confirm('移除这条文献？已有文件与版本记录会保留在项目目录。'))
-                  void mutate({ action: 'remove', id: selected.id, revision: selected.revision })
+              button('新增文献', () => setDraft({ record: empty() })),
+              button('刷新', () => refresh()),
+            ),
+            h(
+              'details',
+              {},
+              h('summary', {}, '导入 CSL-JSON'),
+              h('textarea', {
+                'aria-label': 'CSL-JSON 内容',
+                value: importText,
+                placeholder: '[{"title":"…","DOI":"10.…"}]',
+                onChange: (e) => setImportText(e.target.value),
               }),
+              button(
+                '导入文献',
+                () => mutate({ action: 'import', content: importText }),
+                busy || !importText.trim(),
+              ),
             ),
             h(
               'div',
               { className: 'science-actions' },
               ...['bibtex', 'ris', 'csl'].map((format) =>
-                button(`引用 ${format.toUpperCase()}`, () => exportFile(format, [selected.id])),
+                button(`导出 ${format.toUpperCase()}`, () => exportFile(format)),
               ),
             ),
-            h(
-              'label',
-              {},
-              '添加 PDF／数据／结构附件',
-              h('input', {
-                type: 'file',
-                disabled: busy,
-                onChange: (e) => {
-                  const file = e.target.files?.[0]
-                  e.target.value = ''
-                  if (file)
-                    void mutate({ action: 'attach', id: selected.id, revision: selected.revision }, file)
+            h('p', { role: 'status' }, status),
+            draft &&
+              h(
+                'form',
+                {
+                  onSubmit: (e) => {
+                    e.preventDefault()
+                    const split = (value) =>
+                      value
+                        .split(';')
+                        .map((s) => s.trim())
+                        .filter(Boolean)
+                    void mutate({
+                      action: 'save',
+                      ...draft,
+                      record: {
+                        ...draft.record,
+                        authors: split(draft.record.authors),
+                        tags: split(draft.record.tags),
+                      },
+                    })
+                  },
                 },
-              }),
+                ...[
+                  ['title', '标题'],
+                  ['authors', '作者（用分号分隔）'],
+                  ['year', '年份'],
+                  ['doi', 'DOI'],
+                  ['journal', '期刊'],
+                  ['url', '链接'],
+                  ['tags', '标签（用分号分隔）'],
+                  ['collection', '集合'],
+                  ['notes', '备注'],
+                ].map(([key, label]) =>
+                  h(
+                    'label',
+                    { key },
+                    label,
+                    h(key === 'notes' ? 'textarea' : 'input', {
+                      required: key === 'title',
+                      maxLength: key === 'notes' ? 16000 : 2048,
+                      value: draft.record[key],
+                      onChange: (e) =>
+                        setDraft({
+                          ...draft,
+                          record: {
+                            ...draft.record,
+                            [key]: e.target.value,
+                          },
+                        }),
+                    }),
+                  ),
+                ),
+                h('button', { type: 'submit', disabled: busy }, '保存文献'),
+                button('取消编辑', () => setDraft(null)),
+              ),
+            h(
+              'ul',
+              { className: 'science-records' },
+              ...filtered.map((r) =>
+                h(
+                  'li',
+                  { key: r.id },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      'aria-pressed': selectedId === r.id,
+                      onClick: () => {
+                        setSelectedId(r.id)
+                        setDraft(null)
+                      },
+                    },
+                    h('strong', {}, r.title),
+                    h('span', {}, `${r.authors.join(', ')} · ${r.year} · ${r.files.length} 个文件版本`),
+                  ),
+                ),
+              ),
             ),
-            h(FileVersions, { record: selected, ctx, busy, mutate }),
+            !filtered.length && h('p', {}, '还没有匹配的文献。可新增记录或导入 CSL-JSON。'),
+            selected &&
+              h(
+                'article',
+                { key: selected.id, className: 'science-record-detail' },
+                h('h4', {}, selected.title),
+                h('p', {}, selected.doi),
+                h('p', {}, selected.notes),
+                selected.url &&
+                  h(
+                    'a',
+                    { href: selected.url, target: '_blank', rel: 'noopener noreferrer' },
+                    '打开文献链接',
+                  ),
+                h(
+                  'div',
+                  { className: 'science-actions' },
+                  button('编辑', () =>
+                    setDraft({
+                      id: selected.id,
+                      revision: selected.revision,
+                      record: {
+                        ...selected,
+                        authors: selected.authors.join('; '),
+                        tags: selected.tags.join('; '),
+                      },
+                    }),
+                  ),
+                  button('删除文献', () => {
+                    if (window.confirm('移除这条文献？已有文件与版本记录会保留在项目目录。'))
+                      void mutate({ action: 'remove', id: selected.id, revision: selected.revision })
+                  }),
+                ),
+                h(
+                  'div',
+                  { className: 'science-actions' },
+                  ...['bibtex', 'ris', 'csl'].map((format) =>
+                    button(`引用 ${format.toUpperCase()}`, () => exportFile(format, [selected.id])),
+                  ),
+                ),
+                h(
+                  'label',
+                  {},
+                  '添加 PDF／数据／结构附件',
+                  h('input', {
+                    type: 'file',
+                    disabled: busy,
+                    onChange: (e) => {
+                      const file = e.target.files?.[0]
+                      e.target.value = ''
+                      if (file)
+                        void mutate({ action: 'attach', id: selected.id, revision: selected.revision }, file)
+                    },
+                  }),
+                ),
+              ),
+          ),
+        panel === 'files' &&
+          h(
+            'div',
+            { className: 'science-panel science-panel-files' },
+            h('h3', {}, '文件与预览'),
+            h(
+              'p',
+              {},
+              selected
+                ? `当前文献：${selected.title}`
+                : '先在文献库选择一条文献，再从这里查看 PDF、表格或分子结构。',
+            ),
+            selected
+              ? h(
+                  'div',
+                  { className: 'science-file-workbench' },
+                  h(
+                    'label',
+                    {},
+                    '添加附件',
+                    h('input', {
+                      type: 'file',
+                      disabled: busy,
+                      onChange: (e) => {
+                        const file = e.target.files?.[0]
+                        e.target.value = ''
+                        if (file)
+                          void mutate(
+                            { action: 'attach', id: selected.id, revision: selected.revision },
+                            file,
+                          )
+                      },
+                    }),
+                  ),
+                  h(FileVersions, { record: selected, ctx, busy, mutate }),
+                )
+              : h('button', { type: 'button', onClick: () => setPanel('library') }, '去文献库选择记录'),
           ),
       ),
   )
@@ -390,7 +580,7 @@ export function FileVersions({ record, ctx, busy, mutate }) {
   const groups = [...new Set(record.files.map((f) => f.id))]
   return h(
     'section',
-    { className: 'science-file-versions' },
+    { className: 'science-file-versions', id: 'science-library-files' },
     h('h4', {}, '文件与不可变版本'),
     ...groups.map((id) => {
       const files = record.files.filter((f) => f.id === id)

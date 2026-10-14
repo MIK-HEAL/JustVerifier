@@ -1,4 +1,91 @@
-import { createElement } from 'react'
+import { createElement, useEffect, useState } from 'react'
+
+const statusLabels = {
+  completed: '已完成',
+  failed: '失败',
+  blocked: '已阻塞',
+  cancelled: '已取消',
+  running: '执行中',
+  queued: '排队中',
+}
+const reportLabels = { pass: '验证通过', warn: '需要注意', fail: '验证失败', unknown: '无法判定' }
+const roleLabels = { planner: '规划 Agent', executor: '执行 Agent', reviewer: '审查 Agent', verifier: '验证 Agent' }
+
+function humanStatus(value) {
+  return statusLabels[value] ?? value ?? '未知'
+}
+
+function artifactLabel(id) {
+  const text = String(id ?? '')
+  const parts = text.split('/')
+  return parts.at(-1) === 'result' ? `${parts.at(-2) ?? '输出'} · 结果` : text
+}
+
+function ResultDialog({ result, onClose }) {
+  useEffect(() => {
+    const onKey = (event) => event.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  const report = result?.report
+  return createElement(
+    'div',
+    { className: 'ma-result-backdrop', role: 'presentation', onMouseDown: (event) => event.target === event.currentTarget && onClose() },
+    createElement(
+      'section',
+      { className: 'ma-result-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': '完整验证结果' },
+      createElement(
+        'header',
+        { className: 'ma-result-header' },
+        createElement('div', null, createElement('h2', null, '完整验证结果'), createElement('p', null, `运行状态：${humanStatus(result.status)}`)),
+        createElement('button', { className: 'ma-button', type: 'button', onClick: onClose, 'aria-label': '关闭结果' }, '关闭'),
+      ),
+      createElement(
+        'div',
+        { className: 'ma-result-body' },
+        report &&
+          createElement(
+            'section',
+            { className: 'ma-result-section ma-result-summary' },
+            createElement('div', { className: 'ma-result-section-title' }, '验证结论'),
+            createElement('div', { className: 'ma-result-status', 'data-status': report.status }, reportLabels[report.status] ?? report.status),
+            createElement('p', null, report.status === 'unknown' ? '缺少可重放的证书或证据，系统不会把本次运行判定为通过。' : report.verification?.summary ?? '结果已由验证器汇总。'),
+          ),
+        createElement(
+          'section',
+          { className: 'ma-result-section' },
+          createElement('div', { className: 'ma-result-section-title' }, `Agent 执行（${result.attempts?.length ?? 0}）`),
+          ...(result.attempts ?? []).map((attempt) =>
+            createElement(
+              'article',
+              { key: attempt.attempt_id, className: 'ma-result-attempt' },
+              createElement('div', { className: 'ma-result-attempt-head' }, createElement('strong', null, attempt.task_id), createElement('span', { 'data-status': attempt.status }, humanStatus(attempt.status))),
+              createElement('div', { className: 'ma-result-meta' }, `${roleLabels[attempt.agent_id] ?? attempt.agent_id} · ${attempt.attempt_id}`),
+              attempt.error && createElement('p', { className: 'ma-result-error' }, `${attempt.error.code}：${attempt.error.message}`),
+              attempt.output_artifact_ids?.length ? createElement('div', { className: 'ma-result-meta' }, `输出：${attempt.output_artifact_ids.map(artifactLabel).join('、')}`) : null,
+            ),
+          ),
+        ),
+        createElement(
+          'section',
+          { className: 'ma-result-section' },
+          createElement('div', { className: 'ma-result-section-title' }, `证据与校验和（${result.artifacts?.length ?? 0}）`),
+          ...(result.artifacts ?? []).map((artifact) =>
+            createElement(
+              'details',
+              { key: `${artifact.id}@${artifact.version}`, className: 'ma-result-artifact' },
+              createElement('summary', null, artifactLabel(artifact.id)),
+              createElement('code', null, `${artifact.id}@${artifact.version}\n${artifact.checksum}`),
+            ),
+          ),
+        ),
+        report?.validation_errors?.length
+          ? createElement('section', { className: 'ma-result-section ma-result-errors' }, createElement('div', { className: 'ma-result-section-title' }, '校验问题'), createElement('ul', null, ...report.validation_errors.map((error) => createElement('li', { key: error }, error))))
+          : null,
+      ),
+    ),
+  )
+}
 
 function TraceItem({ item }) {
   return createElement(
@@ -59,6 +146,7 @@ export function Inspector({
   onNodePromptChange,
   onRunSingleAgent,
 }) {
+  const [resultOpen, setResultOpen] = useState(false)
   const selectedNode = selection?.kind === 'node' ? selection.node : undefined
   const selectedEdge = selection?.kind === 'edge' ? selection.edge : undefined
   return createElement(
@@ -103,21 +191,22 @@ export function Inspector({
       createElement(
         'div',
         { className: 'ma-inspector' },
-        createElement('strong', null, `执行结果 · ${result.status}`),
+        createElement('strong', null, `执行结果 · ${humanStatus(result.status)}`),
         result.report &&
           createElement(
             'p',
             null,
             `验证结论：${result.report.status}${result.report.status === 'unknown' ? '（缺少可重放的证书或证据）' : ''}`,
           ),
-        ...(result.attempts ?? []).map((attempt) =>
+        createElement('button', { className: 'ma-button ma-result-open', type: 'button', onClick: () => setResultOpen(true) }, '查看完整结果'),
+        ...(result.attempts ?? []).slice(0, 3).map((attempt) =>
           createElement(
             'div',
             { key: attempt.attempt_id, className: 'ma-status' },
             `${attempt.task_id} · ${attempt.status}${attempt.error ? ` · ${attempt.error.code}` : ''}`,
           ),
         ),
-        ...(result.artifacts ?? []).map((artifact) =>
+        ...(result.artifacts ?? []).slice(0, 2).map((artifact) =>
           createElement(
             'details',
             { key: artifact.id },
@@ -126,6 +215,7 @@ export function Inspector({
           ),
         ),
       ),
+    resultOpen && result && createElement(ResultDialog, { result, onClose: () => setResultOpen(false) }),
     createElement(
       'div',
       { className: 'ma-panel-heading' },

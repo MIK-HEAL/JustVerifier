@@ -110,6 +110,14 @@ it('exposes a real rightbar library, filters literature, and sends immutable sav
   await act(async () => {
     host.querySelector<HTMLButtonElement>('[data-literature-library] > button')?.click()
   })
+  expect(host.querySelector('[data-science-dashboard]')?.textContent).toContain('科研工作台')
+  expect(host.querySelector('.science-metrics')?.textContent).toContain('文献')
+  expect(host.querySelector('.science-dashboard-cards')?.textContent).toContain('科研文件')
+  await act(async () => {
+    Array.from(host.querySelectorAll<HTMLButtonElement>('.science-workbench-nav button'))
+      .find((button) => button.textContent === '文献库')
+      ?.click()
+  })
   await vi.waitFor(() => expect(host.querySelector('.science-records')?.textContent).toContain('Water study'))
   await act(async () => {
     host.querySelector<HTMLButtonElement>('.science-records button')?.click()
@@ -145,6 +153,75 @@ it('exposes a real rightbar library, filters literature, and sends immutable sav
     expect(host.querySelector('.science-records')?.textContent).toContain('Edited title'),
   )
   expect(host.textContent).toContain('已保存')
+})
+
+it('keeps workbench sections focused while preserving the selected record for file previews', async () => {
+  const { apply } = await loadPlugin()
+  const ctx = new Context()
+  await ctx.plugin(SlotRegistry)
+  const slots = (ctx as unknown as { slots: SlotRegistry }).slots
+  const session = new SessionService(ctx, 'session-b')
+  slots.bindSession(session)
+  const records = [
+    {
+      id: 'paper',
+      revision: 'rev',
+      title: 'Water study',
+      authors: ['Ada'],
+      doi: '',
+      year: '2026',
+      journal: '',
+      url: '',
+      tags: [],
+      collection: '',
+      notes: '',
+      files: [],
+    },
+  ]
+  const call = vi.fn(async (name: string) => ({
+    output: name === 'science.library.list' ? { records } : { status: 'completed' },
+  }))
+  const host = document.createElement('aside')
+  host.id = 'rightbar-panel'
+  host.dataset.agnesRegion = 'rightbar'
+  document.body.append(host)
+  let mount!: ReturnType<typeof mountRightbarRegion>
+  await act(async () => {
+    mount = mountRightbarRegion(slots, host, { session })
+  })
+  cleanup.push(async () => {
+    mount.dispose()
+    await act(async () => ctx.fiber.dispose())
+  })
+  await act(async () =>
+    apply({
+      session: {
+        ...session,
+        sessionId: 'session-b',
+        projection: session.projection,
+        commands: { prompt: vi.fn() },
+      },
+      slots,
+      commands: { registerEffect: vi.fn() },
+      agnes: { services: { call } },
+    }),
+  )
+  await vi.waitFor(() => expect(host.querySelector('[data-literature-library]')).toBeTruthy())
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-literature-library] > button')?.click())
+  await act(async () =>
+    Array.from(host.querySelectorAll<HTMLButtonElement>('.science-workbench-nav button'))
+      .find((button) => button.textContent === '文献库')
+      ?.click(),
+  )
+  await vi.waitFor(() => expect(host.querySelector('.science-records')?.textContent).toContain('Water study'))
+  await act(async () => host.querySelector<HTMLButtonElement>('.science-records button')?.click())
+  await act(async () =>
+    Array.from(host.querySelectorAll<HTMLButtonElement>('.science-workbench-nav button'))
+      .find((button) => button.textContent === '文件与预览')
+      ?.click(),
+  )
+  expect(host.querySelector('.science-panel-files')?.textContent).toContain('Water study')
+  expect(host.querySelector('.science-panel-library')).toBeNull()
 })
 
 it('verifies preview bytes, refuses a stale session or bad hash, and releases delivered URLs', async () => {
