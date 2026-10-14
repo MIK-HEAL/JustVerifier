@@ -62,10 +62,20 @@ export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, error
         if (accepted.status !== 'queued' || !accepted.run_id)
           throw new Error(accepted.reason ?? '编排未进入执行队列')
         // This goes through the ordinary session command admission and tool ledger.
-        const dispatched = ctx.session.commands.prompt(
-          `调用 research_multiagent_run 执行已授权的不可变编排，参数为 ${JSON.stringify({ run_id: accepted.run_id })}。若返回 running，继续以相同参数调用，直到返回 completed、failed 或 cancelled；以工具返回的报告为准。`,
-        )
+        const dispatchPrompt = () =>
+          ctx.session.commands.prompt(
+            `调用 research_multiagent_run 执行已授权的不可变编排，参数为 ${JSON.stringify({ run_id: accepted.run_id })}。若返回 running，继续以相同参数调用，直到返回 completed、failed 或 cancelled；以工具返回的报告为准。`,
+          )
+        let dispatching = true
         let dispatchError
+        const dispatched = dispatchPrompt()
+        void dispatched
+          .catch((error) => {
+            dispatchError = error
+          })
+          .finally(() => {
+          dispatching = false
+          })
         void dispatched.catch((error) => {
           dispatchError = error
         })
@@ -95,6 +105,17 @@ export function useVerificationRun({ nodes, edges, prompt, sessionId, ctx, error
               : '',
           )
           if (terminal.has(output.status)) return
+          // The tool may return a bounded `running` snapshot while a child is still working.
+          // Once that turn has settled, explicitly dispatch the same run again so execution
+          // continues instead of leaving the UI on a permanently stale running attempt.
+          if (output.status === 'running' && !dispatching) {
+            dispatching = true
+            void dispatchPrompt().catch((error) => {
+              dispatchError = error
+            }).finally(() => {
+              dispatching = false
+            })
+          }
           if (Date.now() > deadline) {
             await ctx.commands.execute('research.multiagent.cancel', { run_id: current.runId })
             throw new Error('等待执行超时，已请求取消；可在会话账本检查最终状态')

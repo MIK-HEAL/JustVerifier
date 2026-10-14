@@ -9,6 +9,7 @@ const object = (properties, required = Object.keys(properties)) => ({
 const string = { [Kind]: 'String', type: 'string', minLength: 1, maxLength: 32_000 }
 const id = { ...string, maxLength: 256 }
 const prompts = { type: 'object', additionalProperties: { type: 'string', maxLength: 8_000 } }
+const DEFAULT_TASK_TIMEOUT_MS = 120_000
 const runInput = object({ run_id: id })
 const output = {
   type: 'object',
@@ -310,23 +311,21 @@ export function registerResearchRuns(ctx, verifier) {
             const task = run.plan.tasks.find((item) => item.task_id === taskId)
             const attempt = run.attempts.get(taskId)
             const elapsed = Date.now() - (run.started.get(taskId) ?? Date.now())
-            if (task?.budget?.timeout_ms !== undefined && elapsed >= task.budget.timeout_ms) {
+            const timeoutMs = task?.budget?.timeout_ms ?? DEFAULT_TASK_TIMEOUT_MS
+            if (elapsed >= timeoutMs) {
               await tctx.subagent.cancel(childKey)
               run.children.delete(taskId)
-              updateAttempt({ ...attempt, status: 'failed', error: { code: 'TIMEOUT', message: 'TIMEOUT' } })
+              updateAttempt({ ...attempt, status: 'failed', error: { code: 'TIMEOUT', message: `Agent 超过 ${timeoutMs / 1000} 秒未返回结果。` } })
               continue
             }
             const result = await tctx.subagent.collect(childKey, { wait: true })
-            if (
-              task?.budget?.timeout_ms !== undefined &&
-              Date.now() - (run.started.get(taskId) ?? Date.now()) >= task.budget.timeout_ms
-            ) {
+            if (Date.now() - (run.started.get(taskId) ?? Date.now()) >= timeoutMs) {
               await tctx.subagent.cancel(childKey)
               run.children.delete(taskId)
-              updateAttempt({ ...attempt, status: 'failed', error: { code: 'TIMEOUT', message: 'TIMEOUT' } })
+              updateAttempt({ ...attempt, status: 'failed', error: { code: 'TIMEOUT', message: `Agent 超过 ${timeoutMs / 1000} 秒未返回结果。` } })
               continue
             }
-            if (result.waitTimedOut && result.status === 'running') return response()
+            if (result.waitTimedOut && result.status === 'running') continue
             run.children.delete(taskId)
             if (result.status !== 'completed') {
               const code = `CHILD_${result.status.toUpperCase()}`
