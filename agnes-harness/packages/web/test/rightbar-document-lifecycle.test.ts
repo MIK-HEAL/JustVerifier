@@ -109,7 +109,11 @@ describe('real rightbar document resource boundary', () => {
   ] as const)('decodes %s through the real adapter', async (kind, content, selector, expected) => {
     const call = vi.fn(async (_method, input) => result(input, content))
     const f = await fixture(reference(kind, content), call)
-    await vi.waitFor(() => expect(f.host.querySelector(selector)?.textContent).toBe(expected))
+    await vi.waitFor(() =>
+      expect(
+        f.host.querySelector('[data-rightbar-document-preview]')?.querySelector(selector)?.textContent,
+      ).toBe(expected),
+    )
     expect(f.host.querySelector('img')).toBeNull()
     expect(
       call.mock.calls.every(

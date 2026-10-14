@@ -334,6 +334,7 @@ it('serves esbuild shared chunks and still rejects arbitrary files', async () =>
       'assistant-ui',
       'cordis',
       'web-client',
+      'pdf-render-worker',
       'chunk-ABCDEF12',
     ]) {
       for (const suffix of ['.js', '.js.map']) {
@@ -346,6 +347,10 @@ it('serves esbuild shared chunks and still rejects arbitrary files', async () =>
         expect(response.headers.get('content-type')).toContain(
           suffix === '.js' ? 'text/javascript' : 'application/json',
         )
+        expect(response.headers.get('content-security-policy')?.includes("'wasm-unsafe-eval'")).toBe(
+          file === 'pdf-render-worker.js',
+        )
+        expect(response.headers.get('content-security-policy')).not.toContain("'unsafe-eval'")
       }
     }
     const head = await fetch(`${server.url}/vendor/react.js`, { method: 'HEAD' })

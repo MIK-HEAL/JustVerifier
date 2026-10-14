@@ -2,6 +2,15 @@
   "scope": "External dependencies directly used by product runtime or optional integration paths.",
   "packages": [
     {
+      "name": "@hyzyla/pdfium",
+      "version": "2.1.13",
+      "license": "MIT",
+      "source": "https://github.com/hyzyla/pdfium",
+      "purpose": "Render authorized Literature Library PDF pages and extract page text in an isolated Web Worker.",
+      "rationale": "Reuse the pinned PDFium wrapper used by document-reader; bounded bitmap rendering avoids browser PDF iframe restrictions. Bundles retain wrapper and PDFium third-party notices.",
+      "consumers": ["packages/package-manager/bundled-plugins/document-reader", "packages/web-ui"]
+    },
+    {
       "name": "@ant-design/x-markdown",
       "version": "2.9.0",
       "license": "MIT",

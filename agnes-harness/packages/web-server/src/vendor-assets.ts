@@ -8,4 +8,5 @@ export const VENDOR_ENTRY_NAMES = new Set([
   'assistant-ui',
   'cordis',
   'web-client',
+  'pdf-render-worker',
 ])

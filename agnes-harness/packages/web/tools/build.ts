@@ -117,6 +117,21 @@ export async function buildWeb(options: { clean?: boolean } = {}): Promise<Build
       },
     }),
   )
+  metafiles.push(
+    await build({
+      absWorkingDir: root,
+      entryPoints: {
+        'pdf-render-worker': join(root, '..', 'web-ui', 'src', 'conversation', 'pdf-render-worker.ts'),
+      },
+      outdir: join(out, 'vendor'),
+      bundle: true,
+      splitting: false,
+      format: 'esm',
+      platform: 'browser',
+      target: ['es2023'],
+      metafile: true,
+    }),
+  )
   // 首帧主题必须用阻塞式 <script> 在 <head> 里跑完，早于第一次绘制。
   // ESM 一律 defer，会闪一帧浅色，所以这一份单独打成 IIFE。
   // CSP 是 script-src 'self' 无 unsafe-inline，内联脚本这条路走不通。
@@ -160,6 +175,19 @@ export async function buildWeb(options: { clean?: boolean } = {}): Promise<Build
   await rm(generatedMarkdownCss)
   await rm(`${generatedMarkdownCss}.map`, { force: true })
   await collectThirdPartyNotices(root, out, metafiles)
+  await cp(
+    join(
+      root,
+      '..',
+      'package-manager',
+      'bundled-plugins',
+      'document-reader',
+      'src',
+      'notices',
+      'pdfium-third-party.txt',
+    ),
+    join(out, 'THIRD-PARTY-NOTICES', 'pdfium-third-party.txt'),
+  )
   return metafiles
 }
 

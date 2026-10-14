@@ -35,3 +35,12 @@ learn/
 outputs/
 spikes/
 docs/task-records/
+
+# Keep the bundled research file workflow guide with its runtime payload.
+!packages/package-manager/bundled-plugins/agnes-science/README.md
+!docs/
+docs/*
+!docs/guide/
+docs/guide/*
+!docs/guide/open-science.md
+!docs/guide/open-science.zh-CN.md

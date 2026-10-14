@@ -101,12 +101,26 @@ it('ships the bundled scientific tools with their Skill support files', async ()
   const packageRoot = join(output, 'bundled-plugins', 'agnes-science')
   expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))).toMatchObject({
     name: '@agnes/agnes-science',
-    version: '0.35.2',
+    version: '0.35.3',
     exports: './index.mjs',
   })
   expect((await readdir(join(packageRoot, 'skills'))).length).toBeGreaterThanOrEqual(20)
   expect(await readFile(join(packageRoot, 'src', 'core.mjs'), 'utf8')).toContain('write_artifact_file')
   expect(await readFile(join(packageRoot, 'src', 'notebook.mjs'), 'utf8')).toContain('notebook_execute')
+  const descriptor = JSON.parse(
+    await readFile(join(packageRoot, 'extensions/main/agnes.client.json'), 'utf8'),
+  )
+  expect(descriptor.client.services).toContain('science.library.file')
+  const clientBuild = await build({
+    entryPoints: [join(packageRoot, 'extensions/main/client/index.js')],
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    write: false,
+    external: ['react', '@agnes/web-ui/assistant-ui'],
+  })
+  expect(clientBuild.outputFiles).toHaveLength(1)
+  expect(clientBuild.outputFiles[0]?.text).toContain('science.library.enqueue')
   expect(existsSync(join(packageRoot, 'mcp'))).toBe(false)
 })
 

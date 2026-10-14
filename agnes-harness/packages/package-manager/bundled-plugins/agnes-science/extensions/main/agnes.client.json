@@ -1,0 +1,17 @@
+{
+  "client": {
+    "entry": "./client/index.js",
+    "styles": ["./client/index.css"],
+    "slots": ["sidebar.right.tab.guide"],
+    "slotCatalogVersion": "dsh-client-slots/v1",
+    "services": [
+      "science.library.list",
+      "science.library.enqueue",
+      "science.library.status",
+      "science.library.export",
+      "science.library.file"
+    ],
+    "projections": [],
+    "publicConfig": { "label": "Literature Library" }
+  }
+}

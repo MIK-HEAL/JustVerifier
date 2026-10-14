@@ -38,7 +38,7 @@ export const BUNDLED_HELPERS = Object.freeze([
   {
     name: 'agnes-science',
     id: '@agnes/agnes-science',
-    version: '0.35.2',
+    version: '0.35.3',
     license: 'Apache-2.0',
     ref: BUNDLED_AGNES_SCIENCE_REF,
   },

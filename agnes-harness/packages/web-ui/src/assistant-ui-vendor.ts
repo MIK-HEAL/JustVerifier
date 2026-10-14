@@ -25,6 +25,8 @@ export {
   projectConversationMessages,
   useConversationRuntime,
 } from './conversation/runtime.js'
+export { scientificFileKind } from './conversation/scientific-data.js'
+export { ScientificFilePreview } from './conversation/scientific-file-preview.js'
 export {
   ConversationTurnActions,
   type ConversationTurnActionsProps,

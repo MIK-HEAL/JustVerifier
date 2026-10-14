@@ -52,4 +52,23 @@ describe('trace region layout', () => {
     expect(declarations('.trace-body')).toContain('min-height: 0')
     expect(declarations('.trace-list')).toContain('overflow: auto')
   })
+
+  it('constrains the real rightbar slot wrappers and restores a visible scroll container', async () => {
+    runtime = await mountRenderedIndex()
+    const region = document.querySelector('#rightbar-panel')
+    const content = region?.querySelector('#rightbar-content')
+    expect(content?.parentElement?.hasAttribute('data-slot-entry')).toBe(true)
+    expect(content?.parentElement?.parentElement?.getAttribute('data-slot')).toBe('rightbar')
+    expect(content?.parentElement?.parentElement?.parentElement).toBe(region)
+    expect(declarations('.workbench-layout')).toContain('grid-template-rows: minmax(0, 1fr)')
+    expect(
+      declarations(
+        '[data-agnes-region="rightbar"] > [data-slot], [data-agnes-region="rightbar"] > [data-slot] > [data-slot-entry]',
+      ),
+    ).toContain('display: contents')
+    expect(declarations('#rightbar-content')).toContain('min-height: 0')
+    expect(declarations('.rightbar-body')).toContain('overflow: auto')
+    expect(declarations('.rightbar-body')).toContain('scrollbar-width: thin')
+    expect(declarations('.rightbar-body::-webkit-scrollbar')).toContain('display: block')
+  })
 })

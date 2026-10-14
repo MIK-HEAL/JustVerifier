@@ -1,6 +1,6 @@
 {
   "name": "@agnes/agnes-science",
-  "version": "0.35.2",
+  "version": "0.35.3",
   "description": "Bundled scientific research tools for Agnes Harness",
   "type": "module",
   "exports": "./index.mjs",
@@ -18,7 +18,8 @@
     "skills",
     "manifest.lock.json",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "extensions"
   ],
   "agnes": {
     "contributions": [
@@ -154,7 +155,20 @@
         "id": "ext:agnes-science/main",
         "inject": [
           "extension"
+        ],
+        "services": [
+          "science.library.list",
+          "science.library.enqueue",
+          "science.library.status",
+          "science.library.export",
+          "science.library.file"
         ]
+      }
+    ],
+    "clientDescriptors": [
+      {
+        "rowId": "ext:agnes-science/main",
+        "path": "./extensions/main/agnes.client.json"
       }
     ]
   }

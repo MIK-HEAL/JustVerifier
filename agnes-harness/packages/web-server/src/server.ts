@@ -667,7 +667,9 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
       const documentCsp =
         file === 'index.html'
           ? `${contentSecurityPolicy}; img-src 'self' blob:; frame-src 'self' blob:`
-          : contentSecurityPolicy
+          : file === 'vendor/pdf-render-worker.js'
+            ? contentSecurityPolicy.replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'")
+            : contentSecurityPolicy
       const responseCsp = documentNonce
         ? documentCsp.replace("style-src 'self'", `style-src 'self' 'nonce-${documentNonce}'`)
         : documentCsp

@@ -283,7 +283,9 @@ const INITIAL_CEILING: Record<string, number> = {
   'packages/web-slots/src': 605,
   // Failed shell calls read as their exit code (+19 lines); measured 4891, exact cap.
   // Approval reasons: the approval card label reads the decision reason (+22). Measured 6651, exact cap.
-  'packages/web-ui/src': 6640,
+  // Literature files: bounded data/molecule parsers, previews and isolated PDF worker (+599).
+  // Exact measured total 7285, including the previously committed 6686-line UI baseline.
+  'packages/web-ui/src': 7285,
   // W8a-3: retire the native tool renderer in favor of one compatibility root; measured 4630.
   // 2026-10-04 image upload merged onto the queue view: the composer reads, downscales and previews
   // attachments, and the queue row markup above stays. Measured: 5923, exact, no spare.
@@ -661,7 +663,8 @@ const INITIAL_CEILING: Record<string, number> = {
   // W5a merges pinned XMarkdown CSS and ships its MIT license with the local Web assets.
   // Measured with countLines(): 287, exact cap.
   // Research verifier packaging adds exactly two lines; the existing two-line overage remains visible.
-  'packages/cli/tools/build-local': 318,
+  // Literature PDF worker and preserved PDFium notices (+24); exact total from the 320-line baseline.
+  'packages/cli/tools/build-local': 344,
   // The PM5 bootstrap fallback retains the existing scoped owner/data-dir contract when a selected
   // Profile has not yet been materialized. The final recovery retry admits only an explicit
   // E_LOCK_MISMATCH path and re-resolves with an empty package lock; this is exact compatibility

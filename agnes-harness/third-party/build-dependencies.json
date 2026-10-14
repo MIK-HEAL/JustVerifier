@@ -2,15 +2,6 @@
   "scope": "External dependencies directly used for building, testing, type checking or development.",
   "packages": [
     {
-      "name": "@hyzyla/pdfium",
-      "version": "2.1.13",
-      "license": "MIT",
-      "source": "https://github.com/hyzyla/pdfium",
-      "purpose": "Bundle PDF text extraction and rasterization into the document-reader plugin.",
-      "rationale": "Ships a platform-independent WASM engine without Office or native Node addons.",
-      "consumers": ["packages/package-manager/bundled-plugins/document-reader"]
-    },
-    {
       "name": "@tesseract.js-data/chi_sim",
       "version": "1.0.0",
       "license": "MIT (npm packaging); Apache-2.0 (upstream traineddata)",

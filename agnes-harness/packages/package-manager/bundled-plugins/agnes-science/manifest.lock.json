@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "packageId": "@agnes/agnes-science",
-  "version": "0.35.2",
+  "version": "0.35.3",
   "license": "Apache-2.0",
   "source": "bundled-plugins/agnes-science",
   "upstream": {
@@ -139,9 +139,13 @@
   ],
   "files": {
     "LICENSE": "sha256:b038148f912bdd6e61e33e56214d02c4d8a9640f7a637e21dfcf939332816979",
-    "README.md": "sha256:11559ca201c288eb495c2db76e5ab6d28bec2c572f4c5968ade3d52aebe00b91",
-    "index.mjs": "sha256:47f711592795b033c55d158c0d633684f1f8adc944960d14bd81a6ff17fbefc1",
-    "package.json": "sha256:ac298f2aa66b434920b209c62aacccc451dd193950469169f65bd733375a10f2",
+    "README.md": "sha256:92f4ab1a23bc37fb874c71992123588df7d45e8f4f45ad8308ee28f559abb391",
+    "extensions/main/agnes.client.json": "sha256:d7d9f31b873e76f528cd2a89409334c8c2c61fb0defa591b563e444237494d1a",
+    "extensions/main/client/index.css": "sha256:b3efd7bff36d0e71a27b6e72498eb853e0ea762b11c726c3568cc66eae2bca22",
+    "extensions/main/client/index.js": "sha256:e34b699024eb0c5645f31ea539636c9eff79bc991023b9f03d7d5ddd9829e6ba",
+    "extensions/main/client/resources.js": "sha256:590b2a40793864875243d4e2b627a30388073780dfa8aa7837914b0b6c926a91",
+    "index.mjs": "sha256:9edb0bfbd867065d5de67cc382e815efb3357d1f5ca4b127e6cd06ade769161f",
+    "package.json": "sha256:f69a33d2154783902579fd1fb37c48b6a31de54fea54e6da692766967e4da3c1",
     "skills/alphafold2/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
     "skills/alphafold2/SKILL.md": "sha256:984cfa7956ac50d878e3714563af881f8430b2281f1a927887a5f18304b81cee",
     "skills/boltz/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
@@ -222,8 +226,10 @@
     "skills/skill-creator/scripts/utils.js": "sha256:a20cd0b00dc73b76754318ae52004329d4a202353dc48dfc328e6fa89907918d",
     "skills/solublempnn/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
     "skills/solublempnn/SKILL.md": "sha256:c5c9b5cba2668bfafc54e899e5165a68e07a1425ab25667cab8c86807d3f6e0c",
+    "src/citations.mjs": "sha256:d8b82e6a5824a4cac6c47d0fd8443f7140675acd22bf80d08f7683c5534b28e0",
     "src/core.mjs": "sha256:20e94c7c3acd0f79d409a8cc386d0f40f6feb3afda6bfc3e6487fe2bd15c6016",
     "src/library.mjs": "sha256:4e4198e2c7baba0b429f7790ea7b1db4f02ddcf27652ffb5f30d243b705b2492",
+    "src/literature-store.mjs": "sha256:9f370e4f13f8fc43cfa904d42c20045b0b1bcc20bdfaa56181633d1277c4fcc3",
     "src/notebook.mjs": "sha256:9f726be8f806f644b9c21dedd1bef36928c440374a7f574658e99e6f4d9d0709",
     "src/schema.mjs": "sha256:579c7f3eea3aa14bb85c957fddc362d305922180ac736df73b3e79b19d251474"
   }

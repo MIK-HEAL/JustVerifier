@@ -51,9 +51,14 @@ it('builds local web assets with the shared platform vendor modules', async () =
       'react-dom-client.js',
       'cordis.js',
       'web-client.js',
+      'pdf-render-worker.js',
     ]) {
       await expect(readFile(join(output, 'vendor', entry), 'utf8')).resolves.toBeTruthy()
     }
+    expect(await readFile(join(output, 'THIRD-PARTY-NOTICES/pdfium-third-party.txt'), 'utf8')).toContain(
+      'PDFium',
+    )
+    expect(await readFile(join(output, 'THIRD-PARTY-NOTICES/hyzyla-pdfium.txt'), 'utf8')).toContain('MIT')
 
     for (const page of ['index.html', 'admin.html', 'resources.html']) {
       const source = await readFile(join(output, page), 'utf8')
@@ -112,6 +117,7 @@ it('rejects a local package when an HTML or import-map asset is missing', async 
       'vendor/assistant-ui.js',
       'vendor/cordis.js',
       'vendor/web-client.js',
+      'vendor/pdf-render-worker.js',
     ]) {
       const path = join(web, asset)
       const contents = await readFile(path)

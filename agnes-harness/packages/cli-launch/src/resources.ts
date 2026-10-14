@@ -52,6 +52,7 @@ const requiredWebAssets = [
   'vendor/assistant-ui.js',
   'vendor/cordis.js',
   'vendor/web-client.js',
+  'vendor/pdf-render-worker.js',
   // 侧栏品牌位与过程行头像用的位图：缺了它页面不会报错，只会静默地没有 logo 和头像
   // （CSS mask 取不到图），所以它属于"必备"而不是"可选"。
   'brand-mark.png',

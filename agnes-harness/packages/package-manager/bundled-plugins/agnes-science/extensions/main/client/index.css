@@ -1,0 +1,62 @@
+.science-library {
+  min-width: 0;
+  color: var(--agnes-text-primary);
+}
+.science-library-body {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.75rem;
+}
+.science-library-body h3,
+.science-library-body h4,
+.science-library-body p {
+  margin: 0;
+}
+.science-library-body p,
+.science-records span {
+  font-size: var(--font-size-xs);
+  color: var(--agnes-text-secondary);
+  overflow-wrap: anywhere;
+}
+.science-library-body input,
+.science-library-body select,
+.science-library-body textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 0.4rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: var(--radius-control);
+  color: var(--agnes-text-primary);
+  background: var(--agnes-bg-page);
+}
+.science-library-body textarea {
+  min-height: 5rem;
+}
+.science-library-body form,
+.science-record-detail,
+.science-file-versions,
+.science-file-versions > div {
+  display: grid;
+  gap: 0.6rem;
+}
+.science-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.science-records {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.science-records button {
+  display: grid;
+  gap: 0.3rem;
+  width: 100%;
+  text-align: left;
+}
+.science-records button[aria-pressed="true"] {
+  outline: 2px solid var(--agnes-brand-focus-ring);
+}

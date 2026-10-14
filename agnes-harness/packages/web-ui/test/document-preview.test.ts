@@ -4,6 +4,9 @@ import { DocumentPreview, type DocumentPreviewProps } from '@agnes/web-ui/assist
 import { act, createElement, StrictMode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { PdfPagePreview } from '../src/conversation/pdf-page-preview.js'
+import { parseDataTable, parseMolecule } from '../src/conversation/scientific-data.js'
+import { ScientificFilePreview } from '../src/conversation/scientific-file-preview.js'
 import { zhT } from './locale.js'
 
 let host: HTMLDivElement
@@ -20,12 +23,170 @@ afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 
 async function render(props: DocumentPreviewProps) {
   await act(async () => root.render(createElement(DocumentPreview, { ...props, t: zhT })))
 }
+
+it('renders authorized PDF pages, ignores superseded responses and retires workers on replacement', async () => {
+  const instances: FakeWorker[] = []
+  class FakeWorker {
+    onmessage?: (event: { data: unknown }) => void
+    onerror?: () => void
+    postMessage = vi.fn()
+    terminate = vi.fn()
+    constructor() {
+      instances.push(this)
+    }
+    emit(data: unknown) {
+      this.onmessage?.({ data })
+    }
+  }
+  vi.stubGlobal('Worker', FakeWorker)
+  vi.stubGlobal(
+    'ImageData',
+    class {
+      constructor(
+        public data: unknown,
+        public width: number,
+        public height: number,
+      ) {}
+    },
+  )
+  const paint = vi.fn()
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    putImageData: paint,
+  } as unknown as CanvasRenderingContext2D)
+  const show = async (bytes: Uint8Array) =>
+    act(async () => root.render(createElement(PdfPagePreview, { bytes, title: 'Paper' })))
+  await show(new Uint8Array([1, 2]))
+  const first = instances[0]
+  if (!first) throw new Error('Missing PDF worker')
+  expect(first.postMessage.mock.calls[0]?.[0]).toMatchObject({ type: 'open' })
+  await act(async () => first.emit({ type: 'ready', pages: 2 }))
+  const reply = (id: number, text: string) => ({
+    type: 'page',
+    id,
+    width: 1,
+    height: 1,
+    pixels: new Uint8ClampedArray([255, 0, 0, 255]),
+    text,
+  })
+  const request = first.postMessage.mock.calls.at(-1)?.[0] as { id: number }
+  await act(async () => first.emit(reply(request.id, 'First page')))
+  expect(host.textContent).toContain('First page')
+  expect(paint).toHaveBeenCalled()
+  await act(async () =>
+    Array.from(host.querySelectorAll('button'))
+      .find((b) => b.textContent === '下一页')
+      ?.click(),
+  )
+  await act(async () => first.emit(reply(request.id, 'Stale page')))
+  expect(host.textContent).not.toContain('Stale page')
+  const next = first.postMessage.mock.calls.at(-1)?.[0] as { id: number; page: number }
+  expect(next.page).toBe(1)
+  await act(async () => first.emit(reply(next.id, 'Second page')))
+  expect(host.textContent).toContain('Second page')
+  await show(new Uint8Array([3]))
+  expect(first.terminate).toHaveBeenCalled()
+  await act(async () => first.emit(reply(next.id, 'Late old document')))
+  expect(host.textContent).not.toContain('Late old document')
+  await act(async () => instances[1]?.emit({ type: 'error', message: 'Invalid PDF' }))
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('Invalid PDF')
+  expect(instances[1]?.terminate).toHaveBeenCalled()
+  await render({ kind: 'text', content: 'replacement' })
+})
+
+it('terminates a hung PDF worker and refuses oversized files before dispatch', async () => {
+  vi.useFakeTimers()
+  const terminate = vi.fn(),
+    dispatch = vi.fn()
+  vi.stubGlobal(
+    'Worker',
+    class {
+      terminate = terminate
+      postMessage = dispatch
+    },
+  )
+  await act(async () =>
+    root.render(
+      createElement(PdfPagePreview, { title: 'Large', bytes: new Uint8Array(16 * 1024 * 1024 + 1) }),
+    ),
+  )
+  expect(dispatch).not.toHaveBeenCalled()
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('16 MiB')
+  await act(async () =>
+    root.render(createElement(PdfPagePreview, { title: 'Hung', bytes: new Uint8Array([1]) })),
+  )
+  await act(async () => vi.advanceTimersByTime(30_000))
+  expect(terminate).toHaveBeenCalled()
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('超时')
+})
+
+it('previews CSV/TSV and JSON tables with literal cells, quoted multiline values and bounded rows', async () => {
+  expect(parseDataTable('name,value\r\n"a,b","one\ntwo"\r\n"a""b",3', 'data.csv').rows).toEqual([
+    ['a,b', 'one\ntwo'],
+    ['a"b', '3'],
+  ])
+  expect(parseDataTable('a\tb\n1\t2', 'data.tsv').rows).toEqual([['1', '2']])
+  expect(parseDataTable('[{"a":1},{"b":2}]', 'data.json')).toMatchObject({
+    columns: ['a', 'b'],
+    rows: [
+      ['1', ''],
+      ['', '2'],
+    ],
+  })
+  expect(
+    parseDataTable(`a\n${Array.from({ length: 250 }, (_, i) => i).join('\n')}`, 'data.csv'),
+  ).toMatchObject({ truncated: true })
+  expect(() => parseDataTable('a\n"broken', 'data.csv')).toThrow('未闭合')
+  await act(async () =>
+    root.render(
+      createElement(ScientificFilePreview, {
+        filename: 'data.csv',
+        mime: 'text/csv',
+        content: 'name\n<script>literal</script>',
+      }),
+    ),
+  )
+  expect(host.querySelector('td')?.textContent).toBe('<script>literal</script>')
+  expect(host.querySelector('script')).toBeNull()
+})
+
+it('parses structure formats, rejects invalid atoms/bonds and changes the visible molecular view', async () => {
+  const xyz = '3\nwater\nO 0 0 0\nH 1 0 0\nH 0 1 0'
+  expect(parseMolecule(xyz, 'water.xyz').atoms).toHaveLength(3)
+  const mol =
+    'water\n\n\n  2  1  0  0  0  0            999 V2000\n    0.0000    0.0000    0.0000 O   0  0\n    1.0000    0.0000    0.0000 H   0  0\n  1  2  1  0\nM  END\n$$$$'
+  expect(parseMolecule(mol, 'water.sdf').bonds).toEqual([[0, 1, 1]])
+  expect(
+    parseMolecule(
+      'HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O',
+      'water.pdb',
+    ).atoms[0]?.element,
+  ).toBe('O')
+  expect(() => parseMolecule('1\nx\nC NaN 0 0', 'bad.xyz')).toThrow('坐标无效')
+  expect(() => parseMolecule(mol.replace('  1  2  1  0', '  1 99  1  0'), 'bad.mol')).toThrow('键索引')
+  await act(async () =>
+    root.render(
+      createElement(ScientificFilePreview, { filename: 'water.xyz', mime: 'chemical/x-xyz', content: xyz }),
+    ),
+  )
+  const before = host.querySelector('svg')?.innerHTML
+  const range = host.querySelector<HTMLInputElement>('input[type="range"]')
+  if (!range) throw new Error('Missing molecular rotation control')
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(range, '80')
+    range.dispatchEvent(new Event('input', { bubbles: true }))
+    range.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  expect(host.querySelectorAll('circle')).toHaveLength(3)
+  expect(host.querySelector('svg')?.innerHTML).not.toBe(before)
+})
 
 it('renders literal text and code with stable nodes, empty defaults and removable title', async () => {
   await render({ kind: 'text', title: '预览', content: '<script>literal</script>' })

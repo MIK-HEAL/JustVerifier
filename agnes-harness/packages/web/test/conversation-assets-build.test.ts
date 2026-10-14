@@ -50,6 +50,10 @@ it('resolves assistant-ui from the shared vendor instead of bundling a second ap
   const output = resolve(web, 'dist/web')
   const license = await readFile(resolve(output, 'THIRD-PARTY-NOTICES/ant-design-x-markdown.txt'), 'utf8')
   expect(license).toContain('Copyright (c) 2015-present Ant UED')
+  expect(await readFile(resolve(output, 'vendor/pdf-render-worker.js'), 'utf8')).toContain('WebAssembly')
+  expect(await readFile(resolve(output, 'THIRD-PARTY-NOTICES/pdfium-third-party.txt'), 'utf8')).toContain(
+    'PDFium',
+  )
   const app = await readFile(resolve(output, 'app.js'), 'utf8')
   expect(/from\s+["']@agnes\/web-ui\/assistant-ui["']/.test(app)).toBe(true)
 
