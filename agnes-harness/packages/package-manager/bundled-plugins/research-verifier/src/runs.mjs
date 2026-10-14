@@ -35,7 +35,10 @@ const meta = {
   isDestructive: false,
   isConcurrencySafe: false,
   isOpenWorld: true,
-  replay: 'never',
+  // A run_id is an idempotent state handle: repeating the call resumes/reads the same
+  // execution. Marking this as `never` makes the session layer report "unknown after dispatch"
+  // even when the run has already completed.
+  replay: 'idempotent',
   costHint: {},
   deferLoading: false,
   requiresApproval: 'never',
@@ -405,7 +408,9 @@ export function registerResearchRuns(ctx, verifier) {
                 }),
                 {
                   isolation: 'shared',
-                  ...(['reviewer', 'verifier'].includes(agent.role) ? { toolAccess: 'none' } : {}),
+                  // Child agents must not call the orchestration tool recursively. They can
+                  // still report their observations and outputs to this harness.
+                  toolAccess: 'none',
                 },
               )
               let onCallAbort
