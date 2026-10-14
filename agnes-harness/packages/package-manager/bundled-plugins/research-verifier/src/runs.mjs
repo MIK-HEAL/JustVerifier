@@ -54,6 +54,17 @@ const fail = (code, message = code) => {
   throw Object.assign(new Error(message), { code })
 }
 
+function arithmeticClaim(prompt) {
+  const match = String(prompt ?? '').match(/(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)/u)
+  if (!match) return undefined
+  const left = Number(match[1])
+  const right = Number(match[2])
+  const expected = Number(match[3])
+  if (![left, right, expected].every(Number.isSafeInteger) || left > 1_000_000 || right > 1_000_000)
+    return undefined
+  return { left, right, expected, actual: left + right }
+}
+
 /** Services admit data only. Execution and evidence writes belong to the active session tool. */
 export function registerResearchRuns(ctx, verifier) {
   const extension = ctx.extension()
@@ -261,7 +272,31 @@ export function registerResearchRuns(ctx, verifier) {
         }
       }
       const settle = (status) => {
-        const report = verifier.aggregateMultiAgentFindings(run.plan, [...run.attempts.values()], [])
+        let report = verifier.aggregateMultiAgentFindings(run.plan, [...run.attempts.values()], [])
+        if (status === 'completed') {
+          const arithmetic = arithmeticClaim(run.input.prompt)
+          if (arithmetic && [...run.attempts.values()].every((attempt) => attempt.status === 'completed')) {
+            const passed = arithmetic.actual === arithmetic.expected
+            const verification = {
+              kind: 'deterministic-arithmetic',
+              status: passed ? 'pass' : 'fail',
+              summary: passed ? '由 harness 内置的确定性整数加法规则独立复算。' : '确定性整数加法复算不一致。',
+              results: [{
+                rule_id: 'deterministic-arithmetic',
+                status: passed ? 'pass' : 'fail',
+                message: passed
+                  ? `${arithmetic.left} + ${arithmetic.right} = ${arithmetic.actual}，与待验证结果 ${arithmetic.expected} 一致。`
+                  : `${arithmetic.left} + ${arithmetic.right} = ${arithmetic.actual}，但待验证结果是 ${arithmetic.expected}。`,
+                evidence_refs: [],
+                observed: arithmetic.actual,
+                expected: arithmetic.expected,
+                blocking: !passed,
+              }],
+            }
+            const withoutChecksum = { ...report, status: passed ? 'pass' : 'fail', verification }
+            report = Object.freeze({ ...withoutChecksum, report_checksum: verifier.sha256(withoutChecksum) })
+          }
+        }
         run.report = report
         run.status = status
         append('run.finished', { status, report })
@@ -404,7 +439,7 @@ export function registerResearchRuns(ctx, verifier) {
                   evidence_checksum: verifier.sha256(inputs),
                   output_namespace: attempt.namespace,
                   verification_policy:
-                    'Report observations and uncertainty. Final certificate verification belongs to the harness.',
+                    '只处理本任务本身，并基于提供的 evidence 给出简洁结论。不要调用或讨论 research_multiagent_run，不要输出 run_id、attempt_id、工具注册状态、轮询状态或“需要重新注册工具”等编排元信息。不要把外层 harness 的状态当作任务答案。可以说明证据局限，但最后必须明确回答任务。最终证书验证归 harness。',
                 }),
                 {
                   isolation: 'shared',
