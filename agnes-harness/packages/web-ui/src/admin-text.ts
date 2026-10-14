@@ -23,16 +23,18 @@ export { ADMIN_LOCALE_NAMESPACE }
 
 const englishText = createCatalogTranslator(adminLocaleCatalog, 'en')
 
-const SCIENCE_PACKAGE_ID = '@agnes/open-science'
+const SCIENCE_PACKAGE_IDS = new Set(['@agnes/agnes-science', '@agnes/open-science'])
+const isSciencePackage = (packageId: string | undefined): boolean =>
+  packageId !== undefined && SCIENCE_PACKAGE_IDS.has(packageId)
 
-/** Keep the bundled scientific package's implementation identity out of operator-facing text. */
+/** Keep the scientific package's implementation identity out of operator-facing text. */
 export function displayPackageName(packageId: string, t: LocaleTranslator = englishText): string {
-  return packageId === SCIENCE_PACKAGE_ID ? t('package.science-name') : packageId
+  return isSciencePackage(packageId) ? t('package.science-name') : packageId
 }
 
 /** Display legacy bundled MCP labels without changing their persisted service identity. */
 export function displayMcpLabel(label: string): string {
-  return label.replace(/^(?:Open-Science |open-science-)/, '')
+  return label.replace(/^(?:Agnes Science |agnes-science-|Open-Science |open-science-)/, '')
 }
 
 export function hasPermission(permissions: readonly string[], permission: string): boolean {
@@ -47,7 +49,7 @@ export function sourceLabel(
   const sourceTypeKey = `source.${source.type}`
   const translatedType = t(sourceTypeKey)
   const type = translatedType === sourceTypeKey ? source.type : translatedType
-  if (packageId === SCIENCE_PACKAGE_ID || source.ref.toLocaleLowerCase().includes('open-science'))
+  if (isSciencePackage(packageId) || /(?:agnes-science|open-science)/iu.test(source.ref))
     return `${type} · ${t('package.science-source')}`
   return `${type} · ${source.ref}`
 }
@@ -62,8 +64,9 @@ export function contributionText(
     const translatedKind = t(kindKey)
     const kind = translatedKind === kindKey ? contribution.kind : translatedKind
     const id =
-      item.id === SCIENCE_PACKAGE_ID && contribution.id.startsWith('open-science/')
-        ? contribution.id.slice('open-science/'.length)
+      isSciencePackage(item.id) &&
+      (contribution.id.startsWith('agnes-science/') || contribution.id.startsWith('open-science/'))
+        ? contribution.id.slice(contribution.id.indexOf('/') + 1)
         : contribution.id
     return `${kind} · ${id}`
   })

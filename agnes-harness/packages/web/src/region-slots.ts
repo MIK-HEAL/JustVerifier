@@ -78,6 +78,7 @@ import { createModelPicker } from './model-picker.js'
 import { renderSessionNavigation } from './navigation.js'
 import { createPermissionPicker } from './permission-picker.js'
 import { isComposerSubmitShortcut, resizeComposer } from './presentation.js'
+import { projectSessionResearch, type ResearchArtifactVersion } from './research-panel.js'
 import { bindSidebar } from './shell.js'
 import { createTimelineRenderer } from './timeline.js'
 import { TimelineNodeHost } from './timeline-node-host.js'
@@ -206,6 +207,28 @@ function EmptyStateBuiltin({
 }: {
   t?: (key: string) => string
 }): ReturnType<typeof createElement> {
+  const examplePrompt = t('app.justVerifier.examplePrompt')
+  const fillComposer = (value: string): void => {
+    const prompt = document.getElementById('prompt')
+    if (!(prompt instanceof HTMLTextAreaElement)) return
+    prompt.value = value
+    prompt.dispatchEvent(new Event('input', { bubbles: true }))
+    prompt.focus()
+  }
+  const openAttachmentPicker = (): void => {
+    const attach = document.getElementById('composer-attach')
+    if (attach instanceof HTMLButtonElement) attach.click()
+  }
+  const startDecomposition = (): void => {
+    fillComposer(examplePrompt)
+    // research-verifier listens for this event and opens its planner with a starter graph.
+    // The event is intentionally optional: the Composer flow still works when the plugin is absent.
+    window.dispatchEvent(
+      new CustomEvent('agnes:research-idea', {
+        detail: { prompt: examplePrompt, autoPlan: true },
+      }),
+    )
+  }
   return createElement(
     'div',
     { 'data-agnes-region-owner': 'builtin', 'data-agnes-region-unit': 'empty-state' },
@@ -233,9 +256,60 @@ function EmptyStateBuiltin({
         hideWhenEmpty: true,
       }),
     ),
-    createElement('span', { className: 'agnes-mark empty-brand-mark', 'aria-hidden': 'true' }),
-    createElement('h2', { id: 'empty-state-title', className: 'empty-state-heading' }, 'Agnes Harness'),
-    createElement('p', { className: 'empty-state-copy' }, t('app.emptyState.tagline')),
+    createElement(
+      'div',
+      { className: 'just-verifier-brand' },
+      createElement('span', { className: 'just-verifier-mark', 'aria-hidden': 'true' }, 'JV'),
+      createElement('span', null, 'JustVerifier'),
+    ),
+    createElement(
+      'h2',
+      { id: 'empty-state-title', className: 'empty-state-heading' },
+      t('app.justVerifier.title'),
+    ),
+    createElement('p', { className: 'empty-state-tagline' }, t('app.justVerifier.tagline')),
+    createElement('p', { className: 'empty-state-copy' }, t('app.justVerifier.copy')),
+    createElement(
+      'div',
+      { className: 'just-verifier-steps', 'aria-label': t('app.justVerifier.stepsLabel') },
+      createElement(
+        'div',
+        { className: 'just-verifier-step' },
+        createElement('span', { className: 'just-verifier-step-number' }, '1'),
+        createElement('span', null, t('app.justVerifier.stepUpload')),
+      ),
+      createElement(
+        'div',
+        { className: 'just-verifier-step' },
+        createElement('span', { className: 'just-verifier-step-number' }, '2'),
+        createElement('span', null, t('app.justVerifier.stepIdea')),
+      ),
+      createElement(
+        'div',
+        { className: 'just-verifier-step' },
+        createElement('span', { className: 'just-verifier-step-number' }, '3'),
+        createElement('span', null, t('app.justVerifier.stepVerify')),
+      ),
+    ),
+    createElement(
+      'div',
+      { className: 'just-verifier-actions' },
+      createElement(
+        'button',
+        { className: 'primary-button', type: 'button', onClick: startDecomposition },
+        t('app.justVerifier.start'),
+      ),
+      createElement(
+        'button',
+        { className: 'secondary-button', type: 'button', onClick: openAttachmentPicker },
+        t('app.justVerifier.upload'),
+      ),
+    ),
+    createElement(
+      'button',
+      { className: 'just-verifier-example', type: 'button', onClick: () => fillComposer(examplePrompt) },
+      t('app.justVerifier.tryExample'),
+    ),
   )
 }
 
@@ -945,7 +1019,8 @@ function RightbarSessionOverview({
   session?: SessionService
 }): ReturnType<typeof createElement> {
   const [timeline, setTimeline] = useState<UITimeline | undefined>()
-  const [activeView, setActiveView] = useState<'home' | 'files' | 'compute' | 'library'>('home')
+  const [activeView, setActiveView] = useState<'home' | 'files' | 'compute' | 'provenance'>('home')
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>()
   useLayoutEffect(() => {
     if (!session) {
       setTimeline(undefined)
@@ -973,9 +1048,15 @@ function RightbarSessionOverview({
 
   const nodes = timeline?.nodes ?? []
   const tools = nodes.filter((node) => node.kind === 'tool')
-  const artifacts = nodes.filter((node) => node.kind === 'artifact')
+  const research = projectSessionResearch(timeline)
+  const artifacts = research.artifacts
   const messages = nodes.filter((node) => node.kind === 'user' || node.kind === 'assistant')
   const lastTools = tools.slice(-5).reverse()
+  const selectedArtifact = artifacts.find((artifact) => artifact.id === selectedArtifactId) ?? artifacts[0]
+  const selectArtifact = (artifact: ResearchArtifactVersion): void => {
+    setSelectedArtifactId(artifact.id)
+    setActiveView('files')
+  }
   const cards = [
     {
       id: 'files' as const,
@@ -992,11 +1073,11 @@ function RightbarSessionOverview({
       count: tools.length,
     },
     {
-      id: 'library' as const,
+      id: 'provenance' as const,
       title: '来源与证据',
-      description: '保持消息和证据记录靠近当前对话。',
-      action: '打开来源',
-      count: messages.length,
+      description: '查看 Artifact、工具活动和验证证据之间的关系。',
+      action: '打开溯源',
+      count: research.graph.edges.length,
     },
   ]
   return createElement(
@@ -1020,7 +1101,14 @@ function RightbarSessionOverview({
               createElement('p', {}, card.description),
               createElement(
                 'button',
-                { type: 'button', onClick: () => setActiveView(card.id) },
+                {
+                  type: 'button',
+                  onClick: () => {
+                    setActiveView(card.id)
+                    if (card.id === 'files' && selectedArtifact === undefined)
+                      setSelectedArtifactId(artifacts[0]?.id)
+                  },
+                },
                 `${card.action} · ${card.count}`,
               ),
             ),
@@ -1050,13 +1138,38 @@ function RightbarSessionOverview({
                   ),
                 )
               : createElement('p', { className: 'rightbar-empty' }, '还没有工具调用记录。')
-            : createElement(
-                'p',
-                { className: 'rightbar-empty' },
-                activeView === 'files'
-                  ? `当前会话记录了 ${artifacts.length} 个产物。`
-                  : `当前会话记录了 ${messages.length} 条消息。`,
-              ),
+            : activeView === 'files'
+              ? createElement(
+                  'div',
+                  { className: 'rightbar-artifact-browser', 'data-rightbar-artifacts': 'true' },
+                  artifacts.length > 0
+                    ? artifacts.map((artifact) =>
+                        createElement(
+                          'button',
+                          {
+                            key: artifact.id,
+                            type: 'button',
+                            className: `rightbar-artifact-row${selectedArtifact?.id === artifact.id ? ' is-selected' : ''}`,
+                            'data-rightbar-artifact-id': artifact.id,
+                            onClick: () => selectArtifact(artifact),
+                          },
+                          createElement('strong', {}, artifact.name),
+                          createElement('span', {}, `${artifact.mime} · ${formatBytes(artifact.size)}`),
+                        ),
+                      )
+                    : createElement('p', { className: 'rightbar-empty' }, '当前会话还没有 Artifact。'),
+                  selectedArtifact
+                    ? createElement(ArtifactDetail, {
+                        artifact: selectedArtifact,
+                        graph: research.graph,
+                      })
+                    : null,
+                )
+              : createElement(ProvenanceDetail, {
+                  graph: research.graph,
+                  artifactCount: artifacts.length,
+                  toolCount: tools.length,
+                }),
         ),
     createElement(
       'div',
@@ -1080,6 +1193,105 @@ function RightbarSessionOverview({
           ),
         )
       : createElement('p', { className: 'rightbar-empty' }, '对话或工具调用后，这里会显示会话信息。'),
+  )
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KiB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+function ArtifactDetail({
+  artifact,
+  graph,
+}: {
+  artifact: ResearchArtifactVersion
+  graph: ReturnType<typeof projectSessionResearch>['graph']
+}): ReturnType<typeof createElement> {
+  const artifactNodeId = `artifact:${artifact.id}@${artifact.version}`
+  const lineage = graph.edges.filter((edge) => edge.to === artifactNodeId || edge.from === artifactNodeId)
+  return createElement(
+    'article',
+    { className: 'rightbar-artifact-detail', 'data-rightbar-artifact-detail': artifact.id },
+    createElement('h4', {}, 'Artifact 详情'),
+    createElement(
+      'dl',
+      { className: 'rightbar-artifact-fields' },
+      createElement('div', {}, createElement('dt', {}, '名称'), createElement('dd', {}, artifact.name)),
+      createElement('div', {}, createElement('dt', {}, '类型'), createElement('dd', {}, artifact.mime)),
+      createElement(
+        'div',
+        {},
+        createElement('dt', {}, '大小'),
+        createElement('dd', {}, formatBytes(artifact.size)),
+      ),
+      createElement('div', {}, createElement('dt', {}, '版本'), createElement('dd', {}, artifact.version)),
+      createElement('div', {}, createElement('dt', {}, '角色'), createElement('dd', {}, artifact.role)),
+      createElement(
+        'div',
+        {},
+        createElement('dt', {}, 'SHA-256'),
+        createElement('dd', { className: 'rightbar-artifact-checksum' }, artifact.checksum),
+      ),
+    ),
+    createElement(
+      'div',
+      { className: 'rightbar-artifact-lineage' },
+      createElement('strong', {}, 'Provenance'),
+      lineage.length > 0
+        ? lineage.map((edge) =>
+            createElement(
+              'span',
+              { key: `${edge.from}-${edge.to}-${edge.relation}` },
+              `${edge.relation}: ${edge.from}`,
+            ),
+          )
+        : createElement('span', { className: 'rightbar-empty' }, '暂无可确认的活动关联。'),
+    ),
+  )
+}
+
+function ProvenanceDetail({
+  graph,
+  artifactCount,
+  toolCount,
+}: {
+  graph: ReturnType<typeof projectSessionResearch>['graph']
+  artifactCount: number
+  toolCount: number
+}): ReturnType<typeof createElement> {
+  return createElement(
+    'div',
+    { className: 'rightbar-provenance', 'data-rightbar-provenance': graph.completeness },
+    createElement(
+      'div',
+      { className: `rightbar-provenance-status is-${graph.completeness}` },
+      graph.completeness === 'complete' ? '证据链完整' : '证据链部分可用',
+      createElement('span', {}, `${artifactCount} 个 Artifact · ${toolCount} 个活动`),
+    ),
+    graph.reasonCodes.length > 0
+      ? createElement(
+          'p',
+          { className: 'rightbar-provenance-reasons' },
+          `完整性原因：${graph.reasonCodes.join('、')}`,
+        )
+      : null,
+    graph.edges.length > 0
+      ? createElement(
+          'div',
+          { className: 'rightbar-provenance-edges' },
+          ...graph.edges.map((edge) =>
+            createElement(
+              'div',
+              { className: 'rightbar-provenance-edge', key: `${edge.from}-${edge.to}-${edge.relation}` },
+              createElement('code', {}, edge.from),
+              createElement('span', {}, edge.relation),
+              createElement('code', {}, edge.to),
+            ),
+          ),
+        )
+      : createElement('p', { className: 'rightbar-empty' }, '当前会话还没有可展示的 provenance 关系。'),
   )
 }
 

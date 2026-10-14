@@ -53,6 +53,8 @@ node packages/cli/dist/local/agnes.mjs resources enable SKILL_RESOURCE_ID --expe
 
 同名按去除首尾空白并忽略大小写分组；非删除候选先按有效优先级降序，同分按 `sourceId` 排序。`winner` 是解析结果，仍须通过自己的 trust/desired 检查才会 ready。高优先级项未信任、被拒绝或停用时，不会仅因不可用就自动选择低优先级项。
 
+从 `@agnes/open-science` 升级到 `@agnes/agnes-science` 后，已安装列表可能保留两个内置包。Agnes Science 已启用、已信任且验证通过时，包 Skill inventory 会排除旧内置包，避免同名 Skills 重复注册。重启更新后的 daemon 或刷新全部 Skill 来源即可重建 inventory。通过其他来源安装的用户包仍遵循上述优先级规则。
+
 刷新失败可能留下 stale/最近已知内容，不把 stale 当作本次扫描成功。磁盘内容改变需要重新核对 revision 与信任。
 
 ## 调整同名候选优先级

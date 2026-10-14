@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "packageId": "@agnes/agnes-science",
+  "version": "0.35.2",
+  "license": "Apache-2.0",
+  "source": "bundled-plugins/agnes-science",
+  "upstream": {
+    "project": "open-science",
+    "version": "0.35.1",
+    "manifest": "./skills/manifest.json",
+    "license": "Apache-2.0"
+  },
+  "contributions": [
+    {
+      "kind": "skill",
+      "id": "agnes-science/alphafold2",
+      "path": "./skills/alphafold2/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/boltz",
+      "path": "./skills/boltz/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/borzoi",
+      "path": "./skills/borzoi/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/chai1",
+      "path": "./skills/chai1/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/compute-env-setup",
+      "path": "./skills/compute-env-setup/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/customize",
+      "path": "./skills/customize/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/diffdock",
+      "path": "./skills/diffdock/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/env-management",
+      "path": "./skills/env-management/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/esmfold2",
+      "path": "./skills/esmfold2/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/evo2",
+      "path": "./skills/evo2/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/fair-esm2",
+      "path": "./skills/fair-esm2/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/figure-composer",
+      "path": "./skills/figure-composer/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/figure-style",
+      "path": "./skills/figure-style/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/indication-dossier",
+      "path": "./skills/indication-dossier/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/ligandmpnn",
+      "path": "./skills/ligandmpnn/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/literature-review",
+      "path": "./skills/literature-review/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/openfold3",
+      "path": "./skills/openfold3/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/paper-narrative",
+      "path": "./skills/paper-narrative/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/proteinmpnn",
+      "path": "./skills/proteinmpnn/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/remote-compute-ssh",
+      "path": "./skills/remote-compute-ssh/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/scgpt",
+      "path": "./skills/scgpt/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/scvi-tools",
+      "path": "./skills/scvi-tools/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/self-awareness",
+      "path": "./skills/self-awareness/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/skill-creator",
+      "path": "./skills/skill-creator/SKILL.md"
+    },
+    {
+      "kind": "skill",
+      "id": "agnes-science/solublempnn",
+      "path": "./skills/solublempnn/SKILL.md"
+    }
+  ],
+  "files": {
+    "LICENSE": "sha256:b038148f912bdd6e61e33e56214d02c4d8a9640f7a637e21dfcf939332816979",
+    "README.md": "sha256:11559ca201c288eb495c2db76e5ab6d28bec2c572f4c5968ade3d52aebe00b91",
+    "index.mjs": "sha256:47f711592795b033c55d158c0d633684f1f8adc944960d14bd81a6ff17fbefc1",
+    "package.json": "sha256:ac298f2aa66b434920b209c62aacccc451dd193950469169f65bd733375a10f2",
+    "skills/alphafold2/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/alphafold2/SKILL.md": "sha256:984cfa7956ac50d878e3714563af881f8430b2281f1a927887a5f18304b81cee",
+    "skills/boltz/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/boltz/SKILL.md": "sha256:3971ac101972455d8c92fba4fb950da05d65f4781634bf6bd06d99976b711584",
+    "skills/borzoi/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/borzoi/SKILL.md": "sha256:865e8a8c58420823bfb2dd4d25f09d7fe674dfe6ede2ab7acc91a8df3a2ca457",
+    "skills/chai1/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/chai1/SKILL.md": "sha256:d51de643f87eea10a7aae76cc71c34e3309a6a71e96948c71abab33120a7cde5",
+    "skills/compute-env-setup/SKILL.md": "sha256:c62770e0c3185eb22f729f8eb5ea7e48c68ebddb1426ef8717a7a5ca6d631cc7",
+    "skills/customize/SKILL.md": "sha256:729e03c353ff309a1e14ddbf43046df557d64f34e519dc1769b679eee89d3e7b",
+    "skills/diffdock/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/diffdock/SKILL.md": "sha256:43a40762af778709ce1c8e1abd834543a8a89368bb3e2c758792473c206e7e17",
+    "skills/diffdock/references/workflows.md": "sha256:cbd7560976a2c0f2a09b27a158f73e503cc701c2165321f0d23ac1cee9af757d",
+    "skills/env-management/SKILL.md": "sha256:9421043a9c3e6337146fbb161e26b0b49dbb6ace091bcc01f43d7456ef0e33eb",
+    "skills/esmfold2/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/esmfold2/SKILL.md": "sha256:f5bdaff9ffdc2c0a4a66c1f4d7613f919ffeafa0da84e0a5ba9adb40d1191307",
+    "skills/esmfold2/references/design-hook.md": "sha256:f100def8706fcadd5ffba599137b910ed7b2896b23e46473f81c414f5335f75a",
+    "skills/esmfold2/references/esmc.md": "sha256:62ce8706e7493a537af64e1550c6203d36e2c29a36a46fc2d3afc1b87681abce",
+    "skills/evo2/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/evo2/SKILL.md": "sha256:52cf901c5321b2feeaed231daa8374dd12b025bdd27efd2115a0abc6e709da81",
+    "skills/fair-esm2/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/fair-esm2/SKILL.md": "sha256:b1cc3fb1a02f13ec983cca14772f2d8ab0746be39d3d94ea0c68eef73db0443a",
+    "skills/figure-composer/SKILL.md": "sha256:48572edcdbd2bf04e4d84cb76e5e536340993b0d7e1bb595a671c724abdb43d4",
+    "skills/figure-composer/kernel.py": "sha256:ea0aad9c600e21983e941cabfceca22369be03a04e45fa613625cbcc22eded38",
+    "skills/figure-composer/open-science.json": "sha256:cbd47fd8e999395a2a5b29e63201499a5bbd7afeaad9eaf7135a12345b986a23",
+    "skills/figure-style/SKILL.md": "sha256:85817cda5f54d88956b7123eaea91efc1a09120d5971dc67375b6eabed4a761c",
+    "skills/figure-style/kernel.py": "sha256:8020d409bfb60f0c8dfa43d0dfe7bb97f7458e1a3908fefbcb6e4551e0feae4e",
+    "skills/figure-style/open-science.json": "sha256:5cbe94328b3d9d01d1e2e1eaf3ec10cc7c1437923b5a058d3c64dbfceea5047f",
+    "skills/indication-dossier/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/indication-dossier/SKILL.md": "sha256:43ad5ad355abb38201155d61a67fdd2dca7d9a5206ca545406858653af039ce1",
+    "skills/indication-dossier/references/00-research-standards.md": "sha256:f4fad6faa98f43c20f80517be606bd03b4020f2bf4d03d5d717885b2341d685b",
+    "skills/indication-dossier/references/01-meta-initialization.md": "sha256:4e2146e22f179ba472e378d5f045c2d03269accef73594506ac0c04aa34dcc9b",
+    "skills/indication-dossier/references/02-epidemiology-research.md": "sha256:ee8fc544587a5059d5b7b2606fcc42a0c8130e203755109d222392426261ce8c",
+    "skills/indication-dossier/references/03-biology-soc-research.md": "sha256:d2eb550857a59a5abfc308fe65a889ae233e0a5f925c97b2e395c970f56d9b95",
+    "skills/indication-dossier/references/04-regulatory-trials-research.md": "sha256:057b5d40dcf24da89c02a50a0bada072b23e1edcd4b2af2d5e2f8c6ed7672980",
+    "skills/indication-dossier/references/05-synthesis.md": "sha256:4a3591a250546e92d0b5bddaab6cfad4336295ca04a43fefc659feac6103cbfd",
+    "skills/indication-dossier/references/06-writing-style.md": "sha256:c4282e80b9c418a67019061c01e4a50c5496a06e8d2c70e62a80ca2d43970617",
+    "skills/indication-dossier/references/waypoint-schemas.md": "sha256:04f8632a9d2a431cd02296932a6facd6d4fa5dbc6b9036290fa701c39fe64574",
+    "skills/ligandmpnn/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/ligandmpnn/SKILL.md": "sha256:57ec2d14fafdbb4b58d85b8db43d229ab65c5ef1dea4a486579c7c00d7284382",
+    "skills/literature-review/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/literature-review/SKILL.md": "sha256:f8926cbc0b2628d1597f0185aabc38d2c71e5acc52c72b20f6a4173d940c7aed",
+    "skills/literature-review/kernel.py": "sha256:c69051344fc0fb9a21466ad3ed502146aa9cd9251a0b9030674f0943ae48cb9e",
+    "skills/literature-review/kernel.test.ts": "sha256:4795a92e35f54759d45c7d78121b277fc77a5dd5e0c02722a973ba6edeae8658",
+    "skills/literature-review/test_kernel.py": "sha256:c4bb266a4cc7304f6f198dbda630b7a62e495b830a503370478b6db8bc962bb5",
+    "skills/manifest.json": "sha256:0250db9a59a7b75e5f9ecbab469f407def40aa3977c0f52f3e6856c94fa36723",
+    "skills/openfold3/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/openfold3/SKILL.md": "sha256:5239e7c71cbd92bc35118b7f426318a656c505c97ab1657d018c8103d449b158",
+    "skills/paper-narrative/SKILL.md": "sha256:634abc8ca44a71819f14d8c3d3ca73155bb061040f1af830cf30175f8057114f",
+    "skills/paper-narrative/kernel.py": "sha256:868670ab1a487762633c84c848cfe8e16907c54fae48afd3384afb5bc615ab7c",
+    "skills/paper-narrative/open-science.json": "sha256:186ba293aa86be662b1d80f17c772ecd97548d7ce1074dfa397a6c3ab47a3864",
+    "skills/proteinmpnn/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/proteinmpnn/SKILL.md": "sha256:fb284aced53d394b82411b022ab00ff1da07be2fd16da4d4d08d28d6e74540ba",
+    "skills/remote-compute-ssh/SKILL.md": "sha256:748a2293c5d9cbbd0cc07469311a1085cc8e808e1ccfc744e559388b495dc728",
+    "skills/scgpt/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/scgpt/SKILL.md": "sha256:a87b3b7f3990ca24e087feb462201129711dc6684788ff7b789a2874bff95282",
+    "skills/scvi-tools/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/scvi-tools/SKILL.md": "sha256:27779ca65ae12363dc7e60d40320d2e9d19085c3f8cf7ba016c3a2e4b799bf96",
+    "skills/scvi-tools/kernel.py": "sha256:90bd20df51dc5c8a246aa087cde56973dc356171a274bf6ebd0fab295e389fe0",
+    "skills/scvi-tools/test_kernel.py": "sha256:38d0ca2fb05b7a0f0b48d19c6edddd119343a77d70c259713fa45b16b47b6f32",
+    "skills/self-awareness/SKILL.md": "sha256:e8c4e6b4ef0029d710c0cd90b8a03c02ee3d591551d5a7595577803927c52e60",
+    "skills/skill-creator/SKILL.md": "sha256:7ce0f08eb94a185a59f3d5ee2c2e99ee00a74102b877032c3143b23b739c3e5e",
+    "skills/skill-creator/agents/analyzer.md": "sha256:545e189751b7250074a36de6db601d43a6817249f7a7b94e774ffe97df676bc5",
+    "skills/skill-creator/agents/comparator.md": "sha256:892a0c57508ca155572d24539f4e487dad0bfc8c233b2b78cfdc172ce053bbc5",
+    "skills/skill-creator/agents/grader.md": "sha256:2a9a67788bf180f063f21b3a6aa5f9a108b55d4c5b5df434873a564fbde56919",
+    "skills/skill-creator/assets/eval_review.html": "sha256:18bf8f8930ba3827abd9039dd01b5564854e2dd4586a75facfe8c73968a9d079",
+    "skills/skill-creator/eval-viewer/generate-review.js": "sha256:ba92eb4c4c0d9ca7e0dbd3450b1e4e1eb52b4fb0aed82ebe82b355429de5fd1d",
+    "skills/skill-creator/eval-viewer/viewer.html": "sha256:a9887ab25c3c444f0adf8a404c76315d89c3e90aed50b1112d33bef743488eb3",
+    "skills/skill-creator/package.json": "sha256:8005a3491db7d92f36ac66369861589f9c47123d3a7c71e643fc2c06168cd45a",
+    "skills/skill-creator/references/schemas.md": "sha256:b10f2d80c08bc4bc436f6962970c8e7882b1a63c7e96753e6afdc84acc1a46c0",
+    "skills/skill-creator/scripts/aggregate-benchmark.js": "sha256:f1817f29dec2bc7bbb42cf00ea552a219a097cc5eadf50773cfd441deac6df4a",
+    "skills/skill-creator/scripts/generate-report.js": "sha256:8ff199e783321b2cf39e5125ee21143c4061ebdfee5daa0d98dfb771a51b73a6",
+    "skills/skill-creator/scripts/improve-description.js": "sha256:01f4e746882373a03311b5d6182081192e0dd72a65fefda04b72abd83f21e2a2",
+    "skills/skill-creator/scripts/index.js": "sha256:aa60a305c247d0d60fe98787e62a19ffc37bfbeecc7461622060a6292d699724",
+    "skills/skill-creator/scripts/quick-validate.js": "sha256:dfc53848aba2ef32fcdbfa9917b248cc910c4cdb23b0ac539935ebef7dbddc73",
+    "skills/skill-creator/scripts/run-eval.js": "sha256:9e1bf2f6697036e36d92dfe600816dae7cfa136012391135b54081002f763bde",
+    "skills/skill-creator/scripts/run-loop.js": "sha256:04550cacf241e9a33fe31040c5d3fb65205925718f8c3d4e7d7bb91a8e2652ba",
+    "skills/skill-creator/scripts/utils.js": "sha256:a20cd0b00dc73b76754318ae52004329d4a202353dc48dfc328e6fa89907918d",
+    "skills/solublempnn/.catalog_stamp": "sha256:6b4f4a453e289bdd74fadc95afa2dfbb031cf6a976459b71501b55eed519814d",
+    "skills/solublempnn/SKILL.md": "sha256:c5c9b5cba2668bfafc54e899e5165a68e07a1425ab25667cab8c86807d3f6e0c",
+    "src/core.mjs": "sha256:20e94c7c3acd0f79d409a8cc386d0f40f6feb3afda6bfc3e6487fe2bd15c6016",
+    "src/library.mjs": "sha256:4e4198e2c7baba0b429f7790ea7b1db4f02ddcf27652ffb5f30d243b705b2492",
+    "src/notebook.mjs": "sha256:9f726be8f806f644b9c21dedd1bef36928c440374a7f574658e99e6f4d9d0709",
+    "src/schema.mjs": "sha256:579c7f3eea3aa14bb85c957fddc362d305922180ac736df73b3e79b19d251474"
+  }
+}

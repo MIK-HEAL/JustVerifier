@@ -25,7 +25,7 @@ it('delivers research MCP processes that relocate, validate input and close with
     expect(result).toContain('doi: stdio initialization, 4 tools and refusal checks passed')
     expect(result).toContain('zenodo: stdio initialization, 2 tools and refusal checks passed')
     const notices = join(relocated, 'research-metadata-notices')
-    expect(await readFile(join(notices, 'Open-Science-Apache-2.0.txt'), 'utf8')).toContain('Apache License')
+    expect(await readFile(join(notices, 'Agnes-Science-Apache-2.0.txt'), 'utf8')).toContain('Apache License')
     expect(await readdir(join(notices, 'THIRD-PARTY-NOTICES'))).toEqual(
       expect.arrayContaining(['modelcontextprotocol-sdk.txt', 'ajv.txt', 'zod.txt']),
     )

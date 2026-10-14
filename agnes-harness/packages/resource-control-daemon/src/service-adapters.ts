@@ -201,8 +201,8 @@ export function installResourceServiceAdapters(input: ResourceAdapterOptions): {
       refresh: async ({ profile, rootKey, workspaceId, signal }) => {
         if (profile !== o.profile.name) throw new Error('resource profile mismatch')
         // PackageManager inventory is authoritative and verifies the installed tree on every
-        // package-root refresh; this is never a free-form package directory scan.
-        if (rootKey === 'package') await refreshPackageSkills()
+        // refresh that includes packages; this is never a free-form package directory scan.
+        if (rootKey === undefined || rootKey === 'package') await refreshPackageSkills()
         const bound = await boundWorkspace(workspaceId)
         const snapshotRevision = await currentSnapshotRevision()
         const link = await sharedWorker(signal)

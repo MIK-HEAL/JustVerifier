@@ -21,23 +21,23 @@ describe('admin text labels', () => {
     expect(operationName('enable', createCatalogTranslator(adminLocaleCatalog, 'zh-CN'))).toBe('启用')
   })
 
-  it('uses a user-facing label for the bundled scientific package', () => {
+  it('uses a user-facing label for the standalone scientific package', () => {
     const en = createCatalogTranslator(adminLocaleCatalog, 'en')
     const zh = createCatalogTranslator(adminLocaleCatalog, 'zh-CN')
-    expect(displayPackageName('@agnes/open-science', en)).toBe('Scientific tools')
-    expect(displayPackageName('@agnes/open-science', zh)).toBe('科学扩展')
-    expect(displayMcpLabel('Open-Science notebook')).toBe('notebook')
-    expect(displayMcpLabel('open-science-notebook')).toBe('notebook')
+    expect(displayPackageName('@agnes/agnes-science', en)).toBe('Scientific tools')
+    expect(displayPackageName('@agnes/agnes-science', zh)).toBe('科学扩展')
+    expect(displayMcpLabel('Agnes Science notebook')).toBe('notebook')
+    expect(displayMcpLabel('agnes-science-notebook')).toBe('notebook')
     expect(displayMcpLabel('Custom notebook')).toBe('Custom notebook')
-    expect(sourceLabel({ type: 'file', ref: 'file:./bundled-plugins/open-science' }, zh)).toBe(
-      '本地文件 · 内置科学扩展',
+    expect(sourceLabel({ type: 'file', ref: 'file:./plugins/agnes-science' }, zh)).toBe(
+      '本地文件 · 独立 Agnes Science 插件',
     )
   })
 
   it('removes the internal scientific namespace from contribution labels', () => {
     const item = {
-      id: '@agnes/open-science',
-      contributions: [{ kind: 'skill', id: 'open-science/alphafold2' }],
+      id: '@agnes/agnes-science',
+      contributions: [{ kind: 'skill', id: 'agnes-science/alphafold2' }],
     }
     expect(contributionText(item, createCatalogTranslator(adminLocaleCatalog, 'zh-CN'))).toBe(
       '技能 · alphafold2',

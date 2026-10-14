@@ -113,6 +113,41 @@ export function Workbench({ sessionId, ctx }) {
     setSelected({ kind: 'node', id: 'planner-1' })
   }
 
+  // The JustVerifier home hero can hand the user's idea directly to this planner.
+  // Keeping this as a browser event makes the entry point optional and avoids coupling the
+  // host shell to the research-verifier package.
+  useEffect(() => {
+    const onResearchIdea = (event) => {
+      const detail = event?.detail ?? {}
+      if (typeof detail.prompt === 'string' && detail.prompt.trim()) setPrompt(detail.prompt)
+      setOpen(true)
+      if (detail.autoPlan) {
+        const rect = canvasRef.current?.getBoundingClientRect()
+        const center = {
+          x: Math.max(32, (rect?.width ?? 640) / 2 - 78),
+          y: Math.max(32, (rect?.height ?? 400) / 2 - 30),
+        }
+        const roles = ['planner', 'executor', 'reviewer', 'verifier']
+        setNodes(
+          roles.map((role, index) =>
+            createNode(role, `${role}-1`, {
+              x: center.x + (index % 2) * 190,
+              y: center.y + Math.floor(index / 2) * 120,
+            }),
+          ),
+        )
+        setEdges([
+          { from: 'planner-1', to: 'executor-1' },
+          { from: 'executor-1', to: 'reviewer-1' },
+          { from: 'reviewer-1', to: 'verifier-1' },
+        ])
+        setSelected({ kind: 'node', id: 'planner-1' })
+      }
+    }
+    window.addEventListener('agnes:research-idea', onResearchIdea)
+    return () => window.removeEventListener('agnes:research-idea', onResearchIdea)
+  }, [])
+
   const paletteAdd = (role) => {
     const rect = canvasRef.current?.getBoundingClientRect()
     const width = rect?.width ?? 640

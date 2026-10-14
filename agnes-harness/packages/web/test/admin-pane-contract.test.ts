@@ -90,7 +90,7 @@ it('exposes MCP setup and creation controls in the embedded settings pane', asyn
 it('keeps the bundled resource action free of product branding in settings', async () => {
   const runtime = await mountRenderedIndex()
   const html = document.documentElement.outerHTML
-  expect(html).not.toMatch(/Open Science|科学扩展/i)
+  expect(html).not.toMatch(/Agnes Science|科学扩展/i)
   expect(html).toContain('资源套件')
   await runtime.dispose()
   resetWebDom()

@@ -1,0 +1,161 @@
+{
+  "name": "@agnes/agnes-science",
+  "version": "0.35.2",
+  "description": "Bundled scientific research tools for Agnes Harness",
+  "type": "module",
+  "exports": "./index.mjs",
+  "license": "Apache-2.0",
+  "source": {
+    "project": "open-science",
+    "version": "0.35.1",
+    "manifest": "./skills/manifest.json",
+    "license": "Apache-2.0"
+  },
+  "files": [
+    "package.json",
+    "index.mjs",
+    "src",
+    "skills",
+    "manifest.lock.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "agnes": {
+    "contributions": [
+      {
+        "kind": "skill",
+        "id": "agnes-science/alphafold2",
+        "path": "./skills/alphafold2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/boltz",
+        "path": "./skills/boltz/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/borzoi",
+        "path": "./skills/borzoi/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/chai1",
+        "path": "./skills/chai1/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/compute-env-setup",
+        "path": "./skills/compute-env-setup/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/customize",
+        "path": "./skills/customize/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/diffdock",
+        "path": "./skills/diffdock/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/env-management",
+        "path": "./skills/env-management/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/esmfold2",
+        "path": "./skills/esmfold2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/evo2",
+        "path": "./skills/evo2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/fair-esm2",
+        "path": "./skills/fair-esm2/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/figure-composer",
+        "path": "./skills/figure-composer/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/figure-style",
+        "path": "./skills/figure-style/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/indication-dossier",
+        "path": "./skills/indication-dossier/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/ligandmpnn",
+        "path": "./skills/ligandmpnn/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/literature-review",
+        "path": "./skills/literature-review/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/openfold3",
+        "path": "./skills/openfold3/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/paper-narrative",
+        "path": "./skills/paper-narrative/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/proteinmpnn",
+        "path": "./skills/proteinmpnn/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/remote-compute-ssh",
+        "path": "./skills/remote-compute-ssh/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/scgpt",
+        "path": "./skills/scgpt/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/scvi-tools",
+        "path": "./skills/scvi-tools/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/self-awareness",
+        "path": "./skills/self-awareness/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/skill-creator",
+        "path": "./skills/skill-creator/SKILL.md"
+      },
+      {
+        "kind": "skill",
+        "id": "agnes-science/solublempnn",
+        "path": "./skills/solublempnn/SKILL.md"
+      }
+    ],
+    "plugins": [
+      {
+        "export": "agnesScience",
+        "id": "ext:agnes-science/main",
+        "inject": [
+          "extension"
+        ]
+      }
+    ]
+  }
+}

@@ -207,8 +207,9 @@ function contributionLines(
 }
 
 function displayContributionId(id: string, packageId?: string): string {
-  return packageId === '@agnes/open-science' && id.startsWith('open-science/')
-    ? id.slice('open-science/'.length)
+  return (packageId === '@agnes/agnes-science' || packageId === '@agnes/open-science') &&
+    (id.startsWith('agnes-science/') || id.startsWith('open-science/'))
+    ? id.slice(id.indexOf('/') + 1)
     : id
 }
 

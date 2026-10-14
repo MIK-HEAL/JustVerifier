@@ -197,7 +197,7 @@ beforeEach(async () => {
 })
 
 it('shows MCP creation only when the MCP tab is selected', () => {
-  expect(document.getElementById('mcp-import-open-science')).toBeNull()
+  expect(document.getElementById('mcp-import-agnes-science')).toBeNull()
   expect(byId<HTMLButtonElement>('mcp-create').hidden).toBe(false)
   byId('skills-tab').click()
   expect(byId<HTMLButtonElement>('mcp-create').hidden).toBe(true)

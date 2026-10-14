@@ -8,11 +8,11 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./open-science-manifest": "./src/open-science-manifest.ts"
+    "./agnes-science-manifest": "./src/agnes-science-manifest.ts"
   },
   "scripts": {
     "test": "vitest run",
-    "audit:open-science": "node tools/open-science-audit.mjs",
+    "audit:agnes-science": "node tools/agnes-science-audit.mjs",
     "typecheck": "tsc -b"
   },
   "dependencies": {

@@ -24,6 +24,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\start-local.ps1 -
 
 默认端口为 `4180`，以启动后打印的完整 URL 为准。终端保持打开。
 
+本地构建包含文献元数据和科研数据 MCP，复用仓库里的 Crossref、DataCite 和 Zenodo 连接器，
+提供无需密钥的 4 个 DOI 工具和 2 个 Zenodo 工具。登记并启用后，AGH 自动启动 stdio
+子进程并管理回收；不需要额外终端、HTTP 端口或手动启动服务。
+首次登记和验证步骤见 [内置 MCP 说明](../agnes-harness/tools/local-mcp/README.md)。
+
 `start-local.ps1` 支持 `-Port`、`-Profile`、`-AghHome` 和 `-OutputDir`。默认 home 与宿主保持一致：`AGH_HOME` → `AGNES_HOME` → `HOME/.agh` → `USERPROFILE/.agh`。
 
 如果仍然出现 `daemon child exited before readiness (1)`，直接显示原始 daemon 错误：

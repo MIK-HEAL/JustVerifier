@@ -1,4 +1,4 @@
-import { OPEN_SCIENCE_MANIFEST, type OpenScienceManifest } from '@agnes/package-manager/open-science-manifest'
+import { AGNES_SCIENCE_MANIFEST, type AgnesScienceManifest } from '@agnes/package-manager/agnes-science-manifest'
 
 export type ScienceExtensionManifest = Readonly<{
   id: string
@@ -13,8 +13,8 @@ export type ScienceExtensionManifest = Readonly<{
 
 /** Package identity is manifest-owned; installed rows supply actual revisions and lifecycle state. */
 export const SCIENCE_EXTENSION: ScienceExtensionManifest = Object.freeze({
-  id: 'open-science',
-  ...OPEN_SCIENCE_MANIFEST,
+  id: 'agnes-science',
+  ...AGNES_SCIENCE_MANIFEST,
 })
 
 export type ScienceExtensionState = 'enabled' | 'partial' | 'disabled' | 'unavailable'
@@ -65,7 +65,7 @@ export function scienceExtensionState(
 }
 
 export function scienceExtensionManifest(
-  manifest: OpenScienceManifest = OPEN_SCIENCE_MANIFEST,
+  manifest: AgnesScienceManifest = AGNES_SCIENCE_MANIFEST,
 ): ScienceExtensionManifest {
-  return Object.freeze({ id: 'open-science', ...manifest })
+  return Object.freeze({ id: 'agnes-science', ...manifest })
 }

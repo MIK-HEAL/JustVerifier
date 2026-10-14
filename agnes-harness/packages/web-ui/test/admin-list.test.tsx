@@ -53,10 +53,10 @@ describe('plugin list localization', () => {
         ...listProps,
         rows: [
           {
-            id: '@agnes/open-science',
+            id: '@agnes/agnes-science',
             version: '0.35.1',
-            source: { type: 'file', ref: 'file:./bundled-plugins/open-science' },
-            contributions: [{ kind: 'skill', id: 'open-science/alphafold2' }],
+            source: { type: 'file', ref: 'file:./plugins/agnes-science' },
+            contributions: [{ kind: 'skill', id: 'agnes-science/alphafold2' }],
             desired: 'disabled',
             actual: 'not-running',
             blockers: [],
@@ -71,7 +71,7 @@ describe('plugin list localization', () => {
     const text = host.textContent ?? ''
 
     expect(text).toContain('Scientific tools')
-    expect(text).not.toContain('open-science')
+    expect(text).not.toContain('agnes-science')
     const toggle = host.querySelector<HTMLButtonElement>('button[role="switch"]')
     expect(toggle?.getAttribute('aria-label')).toBe('Request to enable Scientific tools')
     expect(toggle?.disabled).toBe(false)

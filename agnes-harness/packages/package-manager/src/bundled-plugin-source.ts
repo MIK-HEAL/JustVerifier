@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 
 declare const AGNES_PACKAGED_BUILTINS: boolean | undefined
 export const BUNDLED_SKILL_HELPER_REF = 'file:./bundled-plugins/skill-helper'
-export const BUNDLED_OPEN_SCIENCE_REF = 'file:./bundled-plugins/open-science'
+export const BUNDLED_AGNES_SCIENCE_REF = 'file:./bundled-plugins/agnes-science'
 export const BUNDLED_RESEARCH_VERIFIER_REF = 'file:./bundled-plugins/research-verifier'
 
 export const BUNDLED_HELPERS = Object.freeze([
@@ -36,11 +36,11 @@ export const BUNDLED_HELPERS = Object.freeze([
     ref: 'file:./bundled-plugins/document-reader',
   },
   {
-    name: 'open-science',
-    id: '@agnes/open-science',
+    name: 'agnes-science',
+    id: '@agnes/agnes-science',
     version: '0.35.2',
     license: 'Apache-2.0',
-    ref: BUNDLED_OPEN_SCIENCE_REF,
+    ref: BUNDLED_AGNES_SCIENCE_REF,
   },
   {
     name: 'research-verifier',

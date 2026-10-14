@@ -18,6 +18,21 @@ export async function writePackageSkillInventory(
     cwd: profileDir,
   })
   const inventory = await manager.inventory(profileDir)
+  // Agnes Science replaced the former Open-Science bundled helper. A profile
+  // upgraded in place can briefly contain both package rows; their Skill
+  // frontmatter names are intentionally compatible, so publishing both would
+  // make one row appear as SHADOWED even though the new package is the active
+  // release-owned source. Suppress only the exact retired bundled source. A
+  // user package with a different source remains eligible and is handled by
+  // the normal Skill priority rules.
+  const hasActiveAgnesScience = inventory.packages.some(
+    (pkg) =>
+      pkg.id === '@agnes/agnes-science' &&
+      pkg.enabled &&
+      pkg.trusted &&
+      pkg.blockers.length === 0 &&
+      pkg.directory !== null,
+  )
   const skills: Array<{
     packageId: string
     contributionId: string
@@ -25,6 +40,12 @@ export async function writePackageSkillInventory(
     source: string
   }> = []
   for (const installed of inventory.packages) {
+    if (
+      hasActiveAgnesScience &&
+      installed.id === '@agnes/open-science' &&
+      installed.entry.source.ref === 'file:./bundled-plugins/open-science'
+    )
+      continue
     if (!installed.enabled || !installed.trusted || !installed.directory) continue
     const root = resolve(installed.directory)
     for (const contribution of installed.contributions) {

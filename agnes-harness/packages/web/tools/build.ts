@@ -59,12 +59,12 @@ export async function buildWeb(options: { clean?: boolean } = {}): Promise<Build
       target: ['es2023'],
       sourcemap: true,
       alias: {
-        '@agnes/package-manager/open-science-manifest': join(
+        '@agnes/package-manager/agnes-science-manifest': join(
           root,
           '..',
           'package-manager',
           'src',
-          'open-science-manifest.ts',
+          'agnes-science-manifest.ts',
         ),
       },
       external: platformExternals,

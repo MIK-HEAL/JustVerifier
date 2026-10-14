@@ -24,7 +24,10 @@ export async function buildResearchMcp(outputDirectory) {
   const notices = resolve(outputDirectory, 'research-metadata-notices')
   await collectThirdPartyNotices(harness, notices, [result])
   await mkdir(notices, { recursive: true })
-  await copyFile(resolve(harness, '../open-science/LICENSE'), resolve(notices, 'Open-Science-Apache-2.0.txt'))
+  await copyFile(
+    resolve(harness, 'tools/local-mcp/agnes-science/LICENSE'),
+    resolve(notices, 'Agnes-Science-Apache-2.0.txt'),
+  )
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

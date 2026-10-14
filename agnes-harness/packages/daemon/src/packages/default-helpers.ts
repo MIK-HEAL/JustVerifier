@@ -41,10 +41,10 @@ export async function initializeDefaultHelpers(options: {
         if (
           state?.version === 1 &&
           state.phase !== 'existing' &&
-          !['plugin-helper', 'document-reader', 'open-science'].includes(helper.name)
+          !['plugin-helper', 'document-reader', 'agnes-science'].includes(helper.name)
         )
           continue
-        if (state?.version === 2 && !['document-reader', 'open-science'].includes(helper.name)) continue
+        if (state?.version === 2 && !['document-reader', 'agnes-science'].includes(helper.name)) continue
         if (inventory?.packages.some((pkg) => pkg.id === helper.id)) continue
         const root = bundledPluginSourceRoot(helper.ref)
         if (!root) throw new Error('Bundled helper source unavailable')
@@ -55,8 +55,8 @@ export async function initializeDefaultHelpers(options: {
       save(state)
     } else if (state.version === 3) {
       // Add newly shipped defaults without replaying the old helper set. This preserves a user's
-      // explicit removal/disable choices while making the new bundled research package available.
-      const science = BUNDLED_HELPERS.find((helper) => helper.name === 'open-science')
+      // explicit removal/disable choices while making the bundled science package available.
+      const science = BUNDLED_HELPERS.find((helper) => helper.name === 'agnes-science')
       if (!science || Object.hasOwn(state.integrity, science.id)) state = { ...state, version: 4 }
       else {
         const root = bundledPluginSourceRoot(science.ref)
@@ -208,10 +208,9 @@ export async function initializeDefaultHelpers(options: {
           }
         }
       }
-      // The scientific tools moved from a forwarding catalog to Agnes-owned tools. Refresh an
-      // existing release-owned snapshot once its recorded pin still matches the installed bytes;
-      // absent or foreign rows remain untouched so explicit removals and user packages survive.
-      const science = BUNDLED_HELPERS.find((helper) => helper.name === 'open-science')
+      // Refresh the bundled science package when a completed release receipt still pins the
+      // previous bundled bytes. Existing explicit removals and foreign package rows are preserved.
+      const science = BUNDLED_HELPERS.find((helper) => helper.name === 'agnes-science')
       if (science && Object.hasOwn(state.integrity, science.id)) {
         const root = bundledPluginSourceRoot(science.ref)
         if (!root) throw new Error('Bundled helper source unavailable')

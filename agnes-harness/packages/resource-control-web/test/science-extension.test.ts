@@ -18,10 +18,10 @@ describe('science extension preset', () => {
           { name: 'indication-dossier', desired: 'enabled' },
         ],
         [
-          { serverId: 'open-science-notebook', desired: 'enabled' },
-          { serverId: 'open-science-artifacts', desired: 'enabled' },
-          { serverId: 'open-science-literature', desired: 'enabled' },
-          { serverId: 'open-science-library', desired: 'enabled' },
+          { serverId: 'agnes-science-notebook', desired: 'enabled' },
+          { serverId: 'agnes-science-artifacts', desired: 'enabled' },
+          { serverId: 'agnes-science-literature', desired: 'enabled' },
+          { serverId: 'agnes-science-library', desired: 'enabled' },
         ],
       ),
     ).toBe('enabled')

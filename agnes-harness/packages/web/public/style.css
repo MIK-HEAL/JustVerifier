@@ -1491,6 +1491,149 @@ body:not([data-connection="reconnecting"]):not([data-connection="closed"]) .conn
 .rightbar-empty {
   margin-bottom: 0;
 }
+.rightbar-artifact-browser {
+  display: grid;
+  gap: 0.55rem;
+}
+.rightbar-artifact-row {
+  display: grid;
+  min-width: 0;
+  gap: 0.15rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.55rem;
+  color: var(--agnes-text-primary);
+  background: var(--agnes-bg-surface);
+  cursor: pointer;
+  text-align: left;
+}
+.rightbar-artifact-row:hover,
+.rightbar-artifact-row:focus-visible,
+.rightbar-artifact-row.is-selected {
+  border-color: var(--agnes-brand-primary);
+  background: var(--agnes-bg-hover);
+}
+.rightbar-artifact-row strong,
+.rightbar-artifact-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rightbar-artifact-row strong {
+  font-size: var(--font-size-xs);
+}
+.rightbar-artifact-row span {
+  color: var(--agnes-text-tertiary);
+  font-size: 0.68rem;
+}
+.rightbar-artifact-detail {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.8rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.65rem;
+  background: var(--agnes-bg-surface);
+}
+.rightbar-artifact-detail h4 {
+  margin: 0;
+  color: var(--agnes-text-primary);
+  font-size: var(--font-size-sm);
+}
+.rightbar-artifact-fields {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+}
+.rightbar-artifact-fields > div {
+  display: grid;
+  grid-template-columns: 4.2rem minmax(0, 1fr);
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.68rem;
+}
+.rightbar-artifact-fields dt {
+  color: var(--agnes-text-tertiary);
+}
+.rightbar-artifact-fields dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--agnes-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rightbar-artifact-checksum {
+  font-family: var(--font-family-mono, ui-monospace, monospace);
+}
+.rightbar-artifact-lineage {
+  display: grid;
+  gap: 0.3rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--agnes-line-primary);
+  color: var(--agnes-text-secondary);
+  font-size: 0.68rem;
+}
+.rightbar-artifact-lineage span {
+  overflow: hidden;
+  color: var(--agnes-text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rightbar-provenance {
+  display: grid;
+  gap: 0.6rem;
+}
+.rightbar-provenance-status {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.7rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.6rem;
+  color: var(--agnes-text-primary);
+  background: var(--agnes-bg-surface);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+.rightbar-provenance-status.is-partial {
+  border-color: color-mix(in srgb, var(--agnes-warning, #d97706) 55%, var(--agnes-line-primary));
+}
+.rightbar-provenance-status span {
+  color: var(--agnes-text-tertiary);
+  font-size: 0.68rem;
+  font-weight: 400;
+}
+.rightbar-provenance-reasons {
+  margin: 0;
+  color: var(--agnes-text-tertiary);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+.rightbar-provenance-edges {
+  display: grid;
+  gap: 0.35rem;
+}
+.rightbar-provenance-edge {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.45rem;
+  color: var(--agnes-text-tertiary);
+  font-size: 0.62rem;
+}
+.rightbar-provenance-edge code {
+  overflow: hidden;
+  color: var(--agnes-text-secondary);
+  font-family: var(--font-family-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rightbar-provenance-edge span {
+  color: var(--agnes-brand-primary);
+  font-size: 0.6rem;
+}
 .rightbar-resize-handle {
   position: absolute;
   z-index: 2;
@@ -2082,6 +2225,103 @@ button.trace-gantt-bar:focus-visible {
   color: var(--agnes-text-secondary);
   font-size: 0.875rem;
   line-height: 1.5rem;
+}
+.just-verifier-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0 0 1.1rem;
+  color: var(--agnes-text-primary);
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.just-verifier-mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid color-mix(in srgb, var(--agnes-brand-primary) 40%, transparent);
+  border-radius: 0.65rem;
+  color: var(--agnes-brand-primary);
+  background: color-mix(in srgb, var(--agnes-brand-primary) 10%, transparent);
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+.empty-state-tagline {
+  margin: 0.6rem 0 0;
+  color: var(--agnes-text-emphasis);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.just-verifier-steps {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.5rem;
+  width: min(100%, 38rem);
+  margin: 1.45rem 0 0;
+}
+.just-verifier-step {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--agnes-line-primary);
+  border-radius: 0.7rem;
+  color: var(--agnes-text-secondary);
+  background: color-mix(in srgb, var(--agnes-bg-surface) 80%, transparent);
+  font-size: 0.72rem;
+  line-height: 1.2;
+  text-align: left;
+}
+.just-verifier-step-number {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  color: var(--agnes-brand-primary);
+  background: color-mix(in srgb, var(--agnes-brand-primary) 12%, transparent);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+.just-verifier-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 1.35rem;
+}
+.just-verifier-actions button {
+  min-height: 2.35rem;
+  padding-inline: 1rem;
+}
+.just-verifier-example {
+  margin-top: 0.85rem;
+  border: 0;
+  color: var(--agnes-text-tertiary);
+  background: transparent;
+  font-size: 0.72rem;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.18em;
+}
+.just-verifier-example:hover {
+  color: var(--agnes-text-emphasis);
+}
+@media (max-width: 720px) {
+  .just-verifier-steps {
+    flex-direction: column;
+    width: min(100%, 20rem);
+  }
+  .just-verifier-step {
+    justify-content: flex-start;
+  }
 }
 /* 仅新收到的文字淡入；尾段重建时沿用已开始的进度，已读正文与布局保持稳定。
    时长和负延时由 text-reveal 提供，历史快照与选区释放后的积压内容直接显示。 */

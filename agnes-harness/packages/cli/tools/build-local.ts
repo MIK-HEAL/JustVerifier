@@ -208,11 +208,11 @@ export async function buildLocalWeb(webOut: string): Promise<void> {
     alias: {
       // The local rebuild can run before pnpm has refreshed workspace links after a package
       // manifest change. Resolve this browser-safe projection directly from the checkout.
-      '@agnes/package-manager/open-science-manifest': join(
+      '@agnes/package-manager/agnes-science-manifest': join(
         repoPackages,
         'package-manager',
         'src',
-        'open-science-manifest.ts',
+        'agnes-science-manifest.ts',
       ),
     },
     external: platformExternals,

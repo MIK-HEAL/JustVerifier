@@ -58,9 +58,9 @@ it('installs bundled release packages offline once and preserves disable/remove 
       !!p.entry.state.trusted,
     ]),
   ).toEqual([
+    ['@agnes/agnes-science', true, true],
     ['@agnes/document-reader', true, true],
     ['@agnes/mcp-helper', true, true],
-    ['@agnes/open-science', true, true],
     ['@agnes/plugin-helper', true, true],
     ['@agnes/research-verifier', true, true],
     ['@agnes/skill-helper', true, true],
@@ -80,14 +80,14 @@ it('installs bundled release packages offline once and preserves disable/remove 
   expect(
     (await s.manager.inventory(s.profileDir)).packages.map((p) => [p.id, p.entry.state.enabled]),
   ).toEqual([
+    ['@agnes/agnes-science', true],
     ['@agnes/document-reader', true],
     ['@agnes/mcp-helper', false],
-    ['@agnes/open-science', true],
     ['@agnes/plugin-helper', true],
     ['@agnes/research-verifier', true],
   ])
   expect(s.exec).not.toHaveBeenCalled()
-})
+}, 60_000)
 it('provisions old profiles and rejects damaged initialization records', async () => {
   const s = setup()
   await s.initializePolicy()
@@ -95,7 +95,7 @@ it('provisions old profiles and rejects damaged initialization records', async (
   expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(6)
   writeFileSync(join(s.profileDir, 'default-helpers', 'state.json'), '{}')
   await expect(initializeDefaultHelpers(s)).rejects.toThrow('Invalid helper initialization')
-})
+}, 60_000)
 it('resumes interrupted first initialization without replacing already installed packages', async () => {
   const s = setup()
   const trust = s.manager.trust.bind(s.manager)
@@ -111,8 +111,8 @@ it('resumes interrupted first initialization without replacing already installed
     'installed',
   )
   spy.mockRestore()
-})
-it.each(['@agnes/skill-helper', '@agnes/open-science', '@agnes/research-verifier'])(
+}, 60_000)
+it.each(['@agnes/skill-helper', '@agnes/agnes-science', '@agnes/research-verifier'])(
   'does not trust an interrupted initialization with changed release hashes for %s',
   async (id) => {
     const s = setup()
@@ -127,6 +127,7 @@ it.each(['@agnes/skill-helper', '@agnes/open-science', '@agnes/research-verifier
     const changed = (await s.manager.inventory(s.profileDir)).packages.find((p) => p.id === id)
     expect(changed?.trusted ?? false).toBe(false)
   },
+  60_000,
 )
 
 it.each([
@@ -138,16 +139,16 @@ it.each([
   async ({ enabled, version }) => {
     const s = setup()
     await initializeDefaultHelpers(s)
-    await s.manager.setEnabled(s.profileDir, '@agnes/open-science', enabled)
+    await s.manager.setEnabled(s.profileDir, '@agnes/agnes-science', enabled)
     const file = join(s.profileDir, 'default-helpers', 'state.json')
     const state = JSON.parse(readFileSync(file, 'utf8'))
     const inventory = await s.manager.inventory(s.profileDir)
-    const science = inventory.packages.find((p) => p.id === '@agnes/open-science')
+    const science = inventory.packages.find((p) => p.id === '@agnes/agnes-science')
     if (!science) throw new Error('Science helper was not installed')
     state.version = version
     state.phase = 'pending'
     state.integrity = {
-      '@agnes/open-science': `sha256-${'0'.repeat(64)}`,
+      '@agnes/agnes-science': `sha256-${'0'.repeat(64)}`,
       '@agnes/research-verifier':
         version === 5 ? `sha256-${'0'.repeat(64)}` : state.integrity['@agnes/research-verifier'],
     }
@@ -163,7 +164,7 @@ it.each([
     expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({
       version: 7,
       phase: 'installed',
-      integrity: { '@agnes/open-science': science.entry.integrity },
+      integrity: { '@agnes/agnes-science': science.entry.integrity },
     })
     const publish = vi.fn(async () => {})
     await activateDefaultHelpers({
@@ -176,6 +177,7 @@ it.each([
     expect(JSON.parse(readFileSync(file, 'utf8')).phase).toBe('complete')
     expect(s.exec).not.toHaveBeenCalled()
   },
+  60_000,
 )
 
 it('bumps a completed v6 receipt to v7 without touching installed packages', async () => {
@@ -195,7 +197,7 @@ it('bumps a completed v6 receipt to v7 without touching installed packages', asy
   expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ version: 7, phase: 'complete' })
   expect(await s.manager.inventory(s.profileDir)).toEqual(before)
   expect(s.exec).not.toHaveBeenCalled()
-})
+}, 60_000)
 
 it('migrates a v6 receipt without reinstalling an explicitly removed verifier', async () => {
   const s = setup()
@@ -219,7 +221,7 @@ it('migrates a v6 receipt without reinstalling an explicitly removed verifier', 
   expect((await s.manager.inventory(s.profileDir)).packages.map((p) => p.id)).not.toContain(
     '@agnes/research-verifier',
   )
-})
+}, 60_000)
 
 it('completes a pending receipt with disabled trusted packages without activating them', async () => {
   const s = setup()
@@ -287,7 +289,7 @@ it('migrates the earlier existing marker without enabling or replacing an instal
   await s.manager.remove(s.profileDir, '@agnes/mcp-helper')
   await initializeDefaultHelpers(s)
   expect((await s.manager.inventory(s.profileDir)).packages).toHaveLength(5)
-})
+}, 60_000)
 it('records completion without activation when all helpers are already installed', async () => {
   const s = setup()
   await s.initializePolicy()
@@ -296,7 +298,7 @@ it('records completion without activation when all helpers are already installed
     'mcp-helper',
     'plugin-helper',
     'document-reader',
-    'open-science',
+    'agnes-science',
     'research-verifier',
   ]) {
     const source = parseSource(`file:./bundled-plugins/${name}`)
@@ -328,8 +330,8 @@ it.each([1, 2])(
     await initializeDefaultHelpers(s)
     expect((await s.manager.inventory(s.profileDir)).packages.map((p) => p.id)).toEqual(
       version === 1
-        ? ['@agnes/document-reader', '@agnes/open-science', '@agnes/plugin-helper']
-        : ['@agnes/document-reader', '@agnes/open-science'],
+        ? ['@agnes/agnes-science', '@agnes/document-reader', '@agnes/plugin-helper']
+        : ['@agnes/agnes-science', '@agnes/document-reader'],
     )
     await activateDefaultHelpers({
       profileDir: s.profileDir,

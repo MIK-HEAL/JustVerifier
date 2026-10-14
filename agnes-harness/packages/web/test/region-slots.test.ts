@@ -92,7 +92,9 @@ describe('migrated empty-state region', () => {
     await vi.waitFor(() => {
       expect(section.querySelector('[data-slot="ui:empty-state"]')).toBeTruthy()
       expect(section.querySelector('[data-agnes-region-unit="empty-state"]')).toBeTruthy()
-      expect(section.querySelector('#empty-state-title')?.textContent).toBe('Agnes Harness')
+      expect(section.querySelector('#empty-state-title')?.textContent).toBe('app.justVerifier.title')
+      expect(section.querySelectorAll('.just-verifier-step')).toHaveLength(3)
+      expect(section.querySelector('.just-verifier-actions')).toBeTruthy()
     }, committed)
   })
 
@@ -126,7 +128,7 @@ describe('migrated empty-state region', () => {
     )
     await vi.waitFor(() => {
       expect(section.querySelector('[data-agnes-conversation-hero] #fixture-hero-workspace')).toBeTruthy()
-      expect(section.querySelector('#empty-state-title')?.textContent).toBe('Agnes Harness')
+      expect(section.querySelector('#empty-state-title')?.textContent).toBe('app.justVerifier.title')
     }, committed)
     remove()
   })

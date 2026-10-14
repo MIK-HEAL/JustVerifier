@@ -413,6 +413,7 @@ describe('installResourceServiceAdapters — Skill scan/removal over the shared 
   it('refresh omits rootKey from the command params when none is given', async () => {
     const { store, capturedAdapters } = fakeStoreWith()
     const calls: Array<{ method: string; params: unknown }> = []
+    const refreshPackageSkills = vi.fn(async () => undefined)
     const acquireSharedWorker = vi.fn(async () => ({
       hello: Promise.resolve({}),
       command: async (method: string, params: unknown) => {
@@ -427,7 +428,7 @@ describe('installResourceServiceAdapters — Skill scan/removal over the shared 
       pool: { acquire: vi.fn(), acquireSharedWorker } as unknown as FakePool,
       profile: { name: 'local-dev', hash: 'a'.repeat(64) },
       workspaceRoot: '/ws/default',
-      refreshPackageSkills: async () => undefined,
+      refreshPackageSkills,
     })
     const adapters = capturedAdapters()
 
@@ -435,6 +436,7 @@ describe('installResourceServiceAdapters — Skill scan/removal over the shared 
 
     const params = calls[0]?.params as Record<string, unknown> | undefined
     expect(params && 'rootKey' in params).toBe(false)
+    expect(refreshPackageSkills).toHaveBeenCalledOnce()
   })
 
   it('removeSkill resolves the workspace from the descriptor and sends resourceSkillRemove, without acquiring or closing a candidate worker', async () => {

@@ -94,13 +94,13 @@ it.each([
 })
 
 it('ships the bundled scientific tools with their Skill support files', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'agnes-open-science-delivery-'))
+  const root = await mkdtemp(join(tmpdir(), 'agnes-agnes-science-delivery-'))
   roots.push(root)
   const output = join(root, 'runtime')
   await copyBundledPlugins(output)
-  const packageRoot = join(output, 'bundled-plugins', 'open-science')
+  const packageRoot = join(output, 'bundled-plugins', 'agnes-science')
   expect(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))).toMatchObject({
-    name: '@agnes/open-science',
+    name: '@agnes/agnes-science',
     version: '0.35.2',
     exports: './index.mjs',
   })

@@ -59,6 +59,8 @@ Default priorities, with higher values taking precedence:
 
 Names are grouped after trimming whitespace and ignoring case. Candidates not marked for deletion are ordered by effective priority descending, then by `sourceId` for ties. The resolved `winner` must still pass its own trust/desired checks to become ready. A higher-priority candidate that is untrusted, rejected, or disabled does not automatically yield to a lower-priority candidate merely because it is unavailable.
 
+Upgrades from `@agnes/open-science` to `@agnes/agnes-science` can leave both bundled packages installed. When Agnes Science is enabled, trusted, and verified, the package Skill inventory omits the retired bundled package to avoid duplicate same-name Skills. Restart the updated daemon or refresh all Skill sources to rebuild this inventory. User packages installed from other sources still follow the priority rules above.
+
 A failed refresh may leave stale or last-known content. Stale data is not evidence of a successful scan. Disk changes require revision and trust review again.
 
 <a id="调整同名候选优先级"></a>
